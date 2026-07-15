@@ -23,6 +23,7 @@ function HoverCardTrigger({
 
 function HoverCardContent({
   className,
+  children,
   align = "center",
   sideOffset = 4,
   ...props
@@ -40,7 +41,10 @@ function HoverCardContent({
           className
         )}
         {...props}
-      />
+      >
+        {children}
+        <HoverCardPrimitive.Arrow className="z-50 fill-popover stroke-ember/30" />
+      </HoverCardPrimitive.Content>
     </HoverCardPrimitive.Portal>
   )
 }

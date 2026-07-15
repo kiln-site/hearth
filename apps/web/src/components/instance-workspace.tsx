@@ -31,7 +31,6 @@ import {
 import type { InstanceTab } from "@/components/app-sidebar"
 import { ConsoleWorkspace } from "@/components/console-workspace"
 import { ToolbarSidebarTrigger } from "@/components/global-page-toolbar"
-import { PanelFooter } from "@/components/panel-footer"
 import { SettingsWorkspace } from "@/components/settings-workspace"
 import { performRelayAction } from "@/server/relay"
 
@@ -274,7 +273,7 @@ export function InstanceWorkspace({
                     </PopoverTrigger>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" sideOffset={6}>
-                    Server power and lifecycle actions
+                    Power Options
                   </TooltipContent>
                 </Tooltip>
                 <PopoverContent
@@ -468,9 +467,6 @@ export function InstanceWorkspace({
           />
         </div>
       </div>
-      <PanelFooter
-        className={activeTab === "info" ? undefined : "max-md:hidden"}
-      />
     </div>
   )
 }
@@ -570,12 +566,17 @@ function ResourceMeters({ instance }: { instance: RelayInstance }) {
               collisionPadding={12}
               className="w-max max-w-[calc(100vw-1.5rem)] rounded-none border-border/90 bg-popover px-3 py-2 shadow-xl"
             >
-              <time
-                dateTime={instance.startedAt ?? undefined}
-                className="block font-mono text-xs whitespace-nowrap text-foreground/85"
-              >
-                {startedAt}
-              </time>
+              <div className="text-left">
+                <p className="font-mono text-[8px] font-medium tracking-[0.1em] text-muted-foreground/70 uppercase">
+                  Started on
+                </p>
+                <time
+                  dateTime={instance.startedAt ?? undefined}
+                  className="mt-1 block font-mono text-xs whitespace-nowrap text-foreground/85"
+                >
+                  {startedAt}
+                </time>
+              </div>
             </HoverCardContent>
           ) : null}
         </HoverCard>
@@ -858,7 +859,7 @@ function ResourceHistoryHoverCard({
         side="bottom"
         sideOffset={8}
         collisionPadding={12}
-        className="w-[min(20rem,calc(100vw-1.5rem))] overflow-hidden border-border/90 bg-popover p-0 shadow-2xl"
+        className="w-[min(20rem,calc(100vw-1.5rem))] border-border/90 bg-popover p-0 shadow-2xl"
       >
         <ResourceHistoryCard resource={resource} history={history} />
       </HoverCardContent>
@@ -900,49 +901,16 @@ function ResourceHistoryCard({
   }))
 
   return (
-    <div>
-      <div className="flex items-start justify-between gap-4 border-b border-border/70 px-3.5 py-3">
-        <div className="min-w-0">
-          <p className="font-mono text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
-            {resource.label} history
-          </p>
-          <p className="mt-1.5 truncate text-[11px] text-muted-foreground">
-            {resource.historyDetail ?? resource.detail}
-          </p>
-        </div>
-        {resource.id === "network" ? (
-          <div className="flex shrink-0 items-start gap-3 text-right">
-            <NetworkHistoryValue
-              direction="down"
-              value={latest?.networkReceived ?? null}
-              average={receivedStats.average}
-              peak={receivedStats.peak}
-            />
-            <NetworkHistoryValue
-              direction="up"
-              value={latest?.networkSent ?? null}
-              average={sentStats.average}
-              peak={sentStats.peak}
-            />
-          </div>
-        ) : (
-          <div className="shrink-0 text-right">
-            <span
-              className={`block font-mono text-base font-semibold tabular-nums ${resource.valueClassName}`}
-            >
-              {resource.displayValue}
-            </span>
-            <span className="mt-1 block font-mono text-[8px] leading-none tracking-[0.05em] text-muted-foreground tabular-nums">
-              AVG{" "}
-              {average === null
-                ? "—"
-                : formatHistoryValue(resource.id, average)}
-              <span className="px-1 text-border">·</span>
-              PEAK {peak === null ? "—" : formatHistoryValue(resource.id, peak)}
-            </span>
-          </div>
-        )}
-      </div>
+    <div className="overflow-hidden rounded-[inherit]">
+      <ResourceHistoryHeader
+        resource={resource}
+        average={average}
+        peak={peak}
+        networkReceived={latest?.networkReceived ?? null}
+        networkSent={latest?.networkSent ?? null}
+        receivedStats={receivedStats}
+        sentStats={sentStats}
+      />
 
       <div className="px-2.5 pt-2.5">
         <React.Suspense
@@ -967,6 +935,90 @@ function ResourceHistoryCard({
   )
 }
 
+function ResourceHistoryHeader({
+  resource,
+  average,
+  peak,
+  networkReceived,
+  networkSent,
+  receivedStats,
+  sentStats,
+}: {
+  resource: ResourceItem
+  average: number | null
+  peak: number | null
+  networkReceived: number | null
+  networkSent: number | null
+  receivedStats: ReturnType<typeof historyStatistics>
+  sentStats: ReturnType<typeof historyStatistics>
+}) {
+  return (
+    <div className="h-[61px] border-b border-border/70 bg-muted/[0.08]">
+      <div className="flex h-6 items-center justify-between border-b border-border/45 px-3">
+        <span className="font-mono text-[11px] font-semibold tracking-[0.1em] text-foreground/85 uppercase">
+          {resource.label}
+        </span>
+        <span className="font-mono text-[9px] tracking-[0.08em] text-muted-foreground/70">
+          60s window
+        </span>
+      </div>
+
+      {resource.id === "network" ? (
+        <div className="grid h-9 grid-cols-2 divide-x divide-border/55">
+          <NetworkHistoryValue
+            direction="down"
+            value={networkReceived}
+            average={receivedStats.average}
+            peak={receivedStats.peak}
+          />
+          <NetworkHistoryValue
+            direction="up"
+            value={networkSent}
+            average={sentStats.average}
+            peak={sentStats.peak}
+          />
+        </div>
+      ) : (
+        <div className="grid h-9 grid-cols-[1fr_4.5rem_4.5rem] divide-x divide-border/55">
+          <div className="flex min-w-0 items-center gap-2 px-3">
+            <span
+              className={`truncate font-mono text-xl font-semibold tracking-[-0.04em] tabular-nums ${resource.valueClassName}`}
+            >
+              {resource.displayValue}
+            </span>
+            <span className="font-mono text-[9px] tracking-[0.06em] text-muted-foreground/60 uppercase">
+              Now
+            </span>
+          </div>
+          <HistoryStat
+            label="Avg"
+            value={
+              average === null ? "—" : formatHistoryValue(resource.id, average)
+            }
+          />
+          <HistoryStat
+            label="Peak"
+            value={peak === null ? "—" : formatHistoryValue(resource.id, peak)}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function HistoryStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex min-w-0 flex-col justify-center px-2 text-right">
+      <span className="font-mono text-[9px] leading-none tracking-[0.06em] text-muted-foreground/65 uppercase">
+        {label}
+      </span>
+      <span className="mt-1 truncate font-mono text-xs leading-none font-medium text-foreground/85 tabular-nums">
+        {value}
+      </span>
+    </div>
+  )
+}
+
 function NetworkHistoryValue({
   direction,
   value,
@@ -979,18 +1031,23 @@ function NetworkHistoryValue({
   peak: number | null
 }) {
   return (
-    <div>
-      <span
-        className={`block font-mono text-sm font-semibold tabular-nums ${direction === "down" ? "text-cyan-200/95" : "text-primary"}`}
-      >
-        {direction === "down" ? "↓" : "↑"}{" "}
-        {value === null ? "—" : formatBytesPerSecond(value)}
-      </span>
-      <span className="mt-1 block font-mono text-[7px] leading-none tracking-[0.04em] text-muted-foreground tabular-nums">
-        AVG {average === null ? "—" : formatBytesPerSecond(average)}
-        <span className="px-1 text-border">·</span>PEAK{" "}
-        {peak === null ? "—" : formatBytesPerSecond(peak)}
-      </span>
+    <div className="min-w-0 px-3 py-1.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="font-mono text-[9px] tracking-[0.06em] text-muted-foreground/70 uppercase">
+          {direction === "down" ? "↓ In" : "↑ Out"}
+        </span>
+        <span
+          className={`truncate font-mono text-[13px] leading-none font-semibold tracking-[-0.03em] tabular-nums ${direction === "down" ? "text-cyan-200/95" : "text-primary"}`}
+        >
+          {value === null ? "—" : formatBytesPerSecond(value)}
+        </span>
+      </div>
+      <div className="mt-1 flex items-center justify-between gap-2 font-mono text-[7px] leading-none tracking-[0.02em] text-muted-foreground/60 uppercase tabular-nums">
+        <span>
+          Avg {average === null ? "—" : formatBytesPerSecond(average)}
+        </span>
+        <span>Peak {peak === null ? "—" : formatBytesPerSecond(peak)}</span>
+      </div>
     </div>
   )
 }

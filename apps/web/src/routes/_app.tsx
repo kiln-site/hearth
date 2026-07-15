@@ -17,6 +17,7 @@ import {
 import { AppSidebar } from "@/components/app-sidebar"
 import type { GlobalSection, InstanceTab } from "@/components/app-sidebar"
 import { InstanceWorkspace } from "@/components/instance-workspace"
+import { PanelFooter } from "@/components/panel-footer"
 import { getRelaySnapshot } from "@/server/relay"
 import { getAuthState } from "@/server/auth"
 import { getAccessCapabilities } from "@/server/access"
@@ -217,29 +218,35 @@ function AppLayout() {
         }}
       />
       <SidebarInset className="h-svh min-w-0 overflow-hidden">
-        {activeSection ? (
-          <Outlet />
-        ) : instance && activeTab ? (
-          <>
-            <InstanceWorkspace
-              instance={instance}
-              node={snapshot.node}
-              activeTab={activeTab}
-              filePath={activeTab === "files" ? filePath : undefined}
-              permissions={{
-                consoleWrite: can("instance.console.write"),
-                filesWrite: can("instance.files.write"),
-                power: can("instance.power"),
-                settings: can("instance.settings"),
-                shareLogs: can("instance.logs.share"),
-              }}
-              onInstanceUpdate={updateInstance}
-            />
+        <div
+          data-slot="app-content"
+          className="flex min-h-0 flex-1 flex-col overflow-hidden"
+        >
+          {activeSection ? (
             <Outlet />
-          </>
-        ) : (
-          <EmptyServerState />
-        )}
+          ) : instance && activeTab ? (
+            <>
+              <InstanceWorkspace
+                instance={instance}
+                node={snapshot.node}
+                activeTab={activeTab}
+                filePath={activeTab === "files" ? filePath : undefined}
+                permissions={{
+                  consoleWrite: can("instance.console.write"),
+                  filesWrite: can("instance.files.write"),
+                  power: can("instance.power"),
+                  settings: can("instance.settings"),
+                  shareLogs: can("instance.logs.share"),
+                }}
+                onInstanceUpdate={updateInstance}
+              />
+              <Outlet />
+            </>
+          ) : (
+            <EmptyServerState />
+          )}
+        </div>
+        <PanelFooter />
       </SidebarInset>
     </SidebarProvider>
   )
@@ -270,7 +277,7 @@ function MobileSidebarNavigationDismiss({ pathname }: { pathname: string }) {
 
 function EmptyServerState() {
   return (
-    <div className="grid h-svh place-items-center bg-background px-6 text-center">
+    <div className="grid min-h-0 flex-1 place-items-center bg-background px-6 text-center">
       <div className="max-w-sm border border-border/70 bg-card/35 p-6">
         <p className="font-heading text-xl font-semibold">No managed servers</p>
         <p className="mt-2 text-sm text-muted-foreground">

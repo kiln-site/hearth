@@ -1,10 +1,12 @@
+import * as React from "react"
 import {
   Boxes,
   ChevronsUpDown,
   CircleHelp,
-  File,
-  FileText,
+  Folder,
   ListTodo,
+  LoaderCircle,
+  LogOut,
   Server,
   Settings,
   SlidersHorizontal,
@@ -12,7 +14,7 @@ import {
   UserRoundCog,
 } from "lucide-react"
 import type { RelayInstance } from "@workspace/contracts"
-import { Link, useNavigate } from "@tanstack/react-router"
+import { useNavigate } from "@tanstack/react-router"
 
 import { Avatar, AvatarFallback } from "@workspace/ui/components/avatar"
 import {
@@ -38,6 +40,11 @@ import {
   SidebarSeparator,
   useSidebar,
 } from "@workspace/ui/components/sidebar"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@workspace/ui/components/tooltip"
 
 import { HearthMark } from "@/components/hearth-mark"
 import { ServerTypeIcon } from "@/components/server-type-icon"
@@ -54,7 +61,7 @@ const instanceItems: Array<{
   icon: typeof TerminalSquare
 }> = [
   { title: "Console", value: "console", icon: TerminalSquare },
-  { title: "Files", value: "files", icon: File },
+  { title: "Files", value: "files", icon: Folder },
   { title: "Info", value: "info", icon: SlidersHorizontal },
 ]
 
@@ -81,14 +88,14 @@ export function AppSidebar({
 }) {
   const navigate = useNavigate()
   const { isMobile } = useSidebar()
+  const [signingOut, setSigningOut] = React.useState(false)
   const platformItems = [
     {
       title: "Bricks",
       icon: Boxes,
       badge: String(instances.length),
-      to: "/bricks",
     },
-    { title: "Relays", icon: Server, badge: "1", to: "/settings" },
+    { title: "Relays", icon: Server, badge: "1" },
   ] as const
   return (
     <Sidebar collapsible="icon" className="border-sidebar-border/80">
@@ -119,20 +126,19 @@ export function AppSidebar({
               {platformItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton
-                    tooltip={item.title}
-                    isActive={
-                      activeSection ===
-                      (item.to === "/bricks" ? "bricks" : "settings")
-                    }
-                    className="data-active:bg-primary/10 data-active:text-primary"
-                    asChild
+                    tooltip={{
+                      children: `${item.title} - Coming Soon`,
+                      hidden: false,
+                    }}
+                    type="button"
+                    aria-disabled="true"
+                    tabIndex={-1}
+                    className="text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
                   >
-                    <Link to={item.to}>
-                      <item.icon />
-                      <span>{item.title}</span>
-                    </Link>
+                    <item.icon />
+                    <span>{item.title}</span>
                   </SidebarMenuButton>
-                  <SidebarMenuBadge className="text-sidebar-foreground/60">
+                  <SidebarMenuBadge className="text-sidebar-foreground/25">
                     {item.badge}
                   </SidebarMenuBadge>
                 </SidebarMenuItem>
@@ -155,7 +161,7 @@ export function AppSidebar({
                     <DropdownMenuTrigger asChild>
                       <SidebarMenuButton
                         size="lg"
-                        tooltip={`Switch server — ${instance.name} (${instance.observedState})`}
+                        tooltip="Switch server"
                         className={`mb-2 h-auto min-h-13 border border-l-2 border-sidebar-border/80 bg-background/45 py-2 ${statusBorderTone(instance.observedState)} group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:min-h-8 group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:p-2!`}
                       >
                         <ServerTypeIcon
@@ -241,13 +247,31 @@ export function AppSidebar({
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton tooltip="Help & documentation" type="button">
+            <SidebarMenuButton
+              tooltip={{
+                children: "Help & docs - Coming Soon",
+                hidden: false,
+              }}
+              type="button"
+              aria-disabled="true"
+              tabIndex={-1}
+              className="text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
+            >
               <CircleHelp />
               <span>Help & docs</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
-            <SidebarMenuButton tooltip="Operations" type="button">
+            <SidebarMenuButton
+              tooltip={{
+                children: "Operations - Coming Soon",
+                hidden: false,
+              }}
+              type="button"
+              aria-disabled="true"
+              tabIndex={-1}
+              className="text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
+            >
               <ListTodo />
               <span>Operations</span>
             </SidebarMenuButton>
@@ -255,7 +279,7 @@ export function AppSidebar({
           <SidebarMenuItem>
             {canManageAccess ? (
               <SidebarMenuButton
-                tooltip="Users, roles, and invitations"
+                tooltip="Access"
                 isActive={activeSection === "access"}
                 type="button"
                 onClick={() => void navigate({ to: "/access" })}
@@ -268,10 +292,14 @@ export function AppSidebar({
           {isPlatformAdmin ? (
             <SidebarMenuItem>
               <SidebarMenuButton
-                tooltip="Application settings and account security"
-                isActive={activeSection === "settings"}
+                tooltip={{
+                  children: "Settings - Coming Soon",
+                  hidden: false,
+                }}
                 type="button"
-                onClick={() => void navigate({ to: "/settings" })}
+                aria-disabled="true"
+                tabIndex={-1}
+                className="text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
               >
                 <Settings />
                 <span>Settings</span>
@@ -279,52 +307,55 @@ export function AppSidebar({
             </SidebarMenuItem>
           ) : null}
           <SidebarMenuItem>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <SidebarMenuButton
-                  size="lg"
-                  className="h-11 group-data-[collapsible=icon]:justify-center"
+            <div className="flex h-11 items-center gap-2 px-2 group-data-[collapsible=icon]:px-0">
+              <Avatar
+                size="sm"
+                className="rounded-none group-data-[collapsible=icon]:hidden"
+              >
+                <AvatarFallback className="rounded-none bg-primary/12 text-[10px] font-bold text-primary">
+                  {initials(user.name)}
+                </AvatarFallback>
+              </Avatar>
+              <span className="flex min-w-0 flex-1 flex-col items-start leading-none group-data-[collapsible=icon]:hidden">
+                <span className="w-full truncate text-xs font-semibold">
+                  {user.name}
+                </span>
+                <span className="mt-1 w-full truncate text-[10px] text-sidebar-foreground/60">
+                  {user.isDevelopmentBypass
+                    ? "Development bypass"
+                    : user.email}
+                </span>
+              </span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="ml-auto grid size-7 shrink-0 place-items-center text-sidebar-foreground/55 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring/45 disabled:pointer-events-none disabled:opacity-45 group-data-[collapsible=icon]:mx-auto"
+                    aria-label={signingOut ? "Signing out" : "Sign out"}
+                    disabled={signingOut}
+                    onClick={() => {
+                      setSigningOut(true)
+                      void signOut(user.isDevelopmentBypass).catch(() => {
+                        setSigningOut(false)
+                      })
+                    }}
+                  >
+                    {signingOut ? (
+                      <LoaderCircle className="size-4 animate-spin" />
+                    ) : (
+                      <LogOut className="size-4" />
+                    )}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="right"
+                  align="center"
+                  hidden={isMobile}
                 >
-                  <Avatar size="sm" className="rounded-none">
-                    <AvatarFallback className="rounded-none bg-primary/12 text-[10px] font-bold text-primary">
-                      {initials(user.name)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <span className="flex min-w-0 flex-1 flex-col items-start leading-none group-data-[collapsible=icon]:hidden">
-                    <span className="truncate text-xs font-semibold">
-                      {user.name}
-                    </span>
-                    <span className="mt-1 truncate text-[10px] text-sidebar-foreground/60">
-                      {user.isDevelopmentBypass
-                        ? "Development bypass"
-                        : user.email}
-                    </span>
-                  </span>
-                  <ChevronsUpDown className="ml-auto size-3.5! text-sidebar-foreground/60 group-data-[collapsible=icon]:hidden" />
-                </SidebarMenuButton>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent side="top" align="start" className="w-56">
-                <DropdownMenuLabel className="min-w-0">
-                  <span className="block truncate">{user.name}</span>
-                  <span className="block truncate text-[10px] font-normal text-muted-foreground">
-                    {user.email}
-                  </span>
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onSelect={() => void navigate({ to: "/security" })}
-                >
-                  <FileText /> Account settings
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onSelect={() => {
-                    void signOut(user.isDevelopmentBypass)
-                  }}
-                >
-                  Sign out
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                  Logout
+                </TooltipContent>
+              </Tooltip>
+            </div>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>

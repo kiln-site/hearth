@@ -44,6 +44,11 @@ import {
   PopoverTrigger,
 } from "@workspace/ui/components/popover"
 import { floatingSurfaceClassName } from "@workspace/ui/lib/surface-styles"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@workspace/ui/components/tooltip"
 import { SyntaxCodeEditor } from "@/components/syntax-code-editor"
 import type { SyntaxCodeEditorHandle } from "@/components/syntax-code-editor"
 import { redactSensitiveText } from "@/lib/redaction"
@@ -215,8 +220,8 @@ function Editor({
                 <EditorTooltip
                   content={
                     pathCopyState === "copied"
-                      ? "Full file path copied."
-                      : "Copy the full file path."
+                      ? "File Path Copied"
+                      : "Copy File Path"
                   }
                 >
                   <button
@@ -252,9 +257,13 @@ function Editor({
               {canShare ? (
                 <EditorTooltip
                   content={
-                    redactSensitive
-                      ? "Upload the redacted file to mclo.gs and copy its link."
-                      : "Upload this file to mclo.gs and copy its link."
+                    shareState === "uploading"
+                      ? "Uploading to mclo.gs"
+                      : shareState === "copied"
+                        ? "Link Copied"
+                        : shareState === "error"
+                          ? "Retry mclo.gs Upload"
+                          : "Upload to mclo.gs"
                   }
                 >
                   <Button
@@ -293,11 +302,7 @@ function Editor({
                 </EditorTooltip>
               ) : null}
               <EditorTooltip
-                content={
-                  searchOpen
-                    ? "Close file search."
-                    : "Search within this file. You can also use Command or Control + F."
-                }
+                content={searchOpen ? "Hide Search in File" : "Search in File"}
               >
                 <Button
                   variant={searchOpen ? "secondary" : "ghost"}
@@ -312,17 +317,13 @@ function Editor({
                 </Button>
               </EditorTooltip>
               <EditorTooltip
-                content={
-                  wrapLines
-                    ? "Keep long file lines on one row."
-                    : "Wrap long file lines to the available width."
-                }
+                content={wrapLines ? "Disable Line Wrap" : "Enable Line Wrap"}
               >
                 <Button
                   variant={wrapLines ? "secondary" : "ghost"}
                   size="icon"
                   aria-label={
-                    wrapLines ? "Disable text wrapping" : "Enable text wrapping"
+                    wrapLines ? "Disable line wrap" : "Enable line wrap"
                   }
                   aria-pressed={wrapLines}
                   onClick={() => setWrapLines((current) => !current)}
@@ -333,8 +334,8 @@ function Editor({
               <EditorTooltip
                 content={
                   copyState === "copied"
-                    ? "File contents copied."
-                    : "Copy file contents."
+                    ? "File Contents Copied"
+                    : "Copy File Contents"
                 }
               >
                 <Button
@@ -342,8 +343,8 @@ function Editor({
                   size="icon"
                   aria-label={
                     copyState === "copied"
-                      ? "File contents copied"
-                      : "Copy file contents"
+                      ? "File Contents Copied"
+                      : "Copy File Contents"
                   }
                   onClick={handleCopy}
                 >
@@ -358,18 +359,16 @@ function Editor({
                 content={
                   dirty
                     ? reviewChanges
-                      ? "Hide changes since the last save."
-                      : "Review changes since the last save."
-                    : "Make an edit to review changes."
+                      ? "Hide Changes"
+                      : "Highlight Changes"
+                    : "No Changes"
                 }
               >
                 <Button
                   variant={reviewChanges ? "secondary" : "ghost"}
                   size="icon"
                   aria-label={
-                    reviewChanges
-                      ? "Hide unsaved changes"
-                      : "Review unsaved changes"
+                    reviewChanges ? "Hide Changes" : "Highlight Changes"
                   }
                   aria-pressed={reviewChanges}
                   disabled={!dirty || loading || file.readOnly}
@@ -609,10 +608,12 @@ function EditorSaveButton({
     <EditorTooltip
       content={
         file.readOnly
-          ? "Archived logs are read only."
-          : dirty
-            ? "Save changes to this file."
-            : "All changes are saved."
+          ? "Read Only"
+          : saving
+            ? "Saving"
+            : dirty
+              ? "Save"
+              : "Saved"
       }
     >
       <Button
@@ -698,18 +699,21 @@ function EditorTooltip({
   children,
 }: {
   content: string
-  children: React.ReactElement
+  children: React.ReactElement<{ disabled?: boolean }>
 }) {
+  const trigger = children.props.disabled ? (
+    <span className="inline-flex max-w-full min-w-0">{children}</span>
+  ) : (
+    children
+  )
+
   return (
-    <span className="group/editor-tooltip relative inline-flex max-w-full min-w-0">
-      {children}
-      <span
-        role="tooltip"
-        className="pointer-events-none invisible absolute top-full right-0 z-50 mt-1.5 w-max max-w-[min(20rem,calc(100vw-1.5rem))] translate-y-0.5 border border-border/80 bg-popover px-2.5 py-1.5 text-left text-xs leading-relaxed text-popover-foreground opacity-0 shadow-lg shadow-black/30 transition-[opacity,transform,visibility] duration-100 group-focus-within/editor-tooltip:visible group-focus-within/editor-tooltip:translate-y-0 group-focus-within/editor-tooltip:opacity-100 group-hover/editor-tooltip:visible group-hover/editor-tooltip:translate-y-0 group-hover/editor-tooltip:opacity-100"
-      >
+    <Tooltip>
+      <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>
         {content}
-      </span>
-    </span>
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -805,15 +809,18 @@ function FileTreePanel({
         </label>
         <div className="flex shrink-0 items-center gap-0.5">
           <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Add to instance files"
-              >
-                <Plus />
-              </Button>
-            </PopoverTrigger>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <PopoverTrigger asChild>
+                  <Button variant="ghost" size="icon-sm" aria-label="New">
+                    <Plus />
+                  </Button>
+                </PopoverTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={6}>
+                New…
+              </TooltipContent>
+            </Tooltip>
             <PopoverContent
               align="end"
               side="bottom"
@@ -829,15 +836,34 @@ function FileTreePanel({
               <FileActionPreview icon={<Network />} label="Connect with SFTP" />
             </PopoverContent>
           </Popover>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Refresh files"
-            disabled={refreshing}
-            onClick={onRefresh}
-          >
-            <RefreshCw className={refreshing ? "animate-spin" : undefined} />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              {refreshing ? (
+                <span className="inline-flex">
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Refreshing files"
+                    disabled
+                  >
+                    <RefreshCw className="animate-spin" />
+                  </Button>
+                </span>
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Refresh files"
+                  onClick={onRefresh}
+                >
+                  <RefreshCw />
+                </Button>
+              )}
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>
+              {refreshing ? "Refreshing Files" : "Refresh Files"}
+            </TooltipContent>
+          </Tooltip>
         </div>
       </div>
       <div

@@ -612,13 +612,7 @@ export function ConsoleWorkspace({
           ) : null}
         </div>
         <Popover>
-          <ConsoleTooltip
-            content={
-              allLevels
-                ? "Filter console output by log level."
-                : `Showing ${levels.size} of ${LEVELS.length} log levels.`
-            }
-          >
+          <ConsoleTooltip content="Filter Log Level">
             <PopoverTrigger asChild>
               <Button
                 variant={allLevels ? "ghost" : "secondary"}
@@ -674,9 +668,13 @@ export function ConsoleWorkspace({
         <div className="ml-auto flex items-center gap-1.5">
           <ConsoleTooltip
             content={
-              redactSensitive
-                ? "Upload the redacted latest.log to mclo.gs and copy its link."
-                : "Upload latest.log to mclo.gs and copy its link."
+              shareState === "uploading"
+                ? "Uploading to mclo.gs"
+                : shareState === "copied"
+                  ? "Link Copied"
+                  : shareState === "error"
+                    ? "Retry mclo.gs Upload"
+                    : "Upload to mclo.gs"
             }
           >
             <Button
@@ -717,9 +715,9 @@ export function ConsoleWorkspace({
               <span className="inline-flex">
                 <ConsoleTooltip
                   content={
-                    selected.size > 0
-                      ? `Copy ${selected.size} selected ${selected.size === 1 ? "line" : "lines"}.`
-                      : "Select console lines to copy."
+                    copyState === "copied"
+                      ? "Selected Lines Copied"
+                      : "Copy Selected Lines"
                   }
                 >
                   <Button
@@ -728,8 +726,8 @@ export function ConsoleWorkspace({
                     className="size-8"
                     aria-label={
                       selected.size > 0
-                        ? `Copy ${selected.size} selected ${selected.size === 1 ? "line" : "lines"}`
-                        : "Copy selected console lines"
+                        ? `Copy ${selected.size} Selected ${selected.size === 1 ? "Line" : "Lines"}`
+                        : "Copy Selected Lines"
                     }
                     disabled={selected.size === 0}
                     onClick={copySelected}
@@ -755,7 +753,7 @@ export function ConsoleWorkspace({
                   ? `${selected.size} ${selected.size === 1 ? "line" : "lines"} copied`
                   : `${selected.size} ${selected.size === 1 ? "line" : "lines"} selected`}
               </span>
-              <ConsoleTooltip content="Clear selection (Esc).">
+              <ConsoleTooltip content="Clear Selection">
                 <Button
                   variant="ghost"
                   size="icon"
@@ -768,14 +766,12 @@ export function ConsoleWorkspace({
               </ConsoleTooltip>
             </PopoverContent>
           </Popover>
-          <ConsoleTooltip content="Hide IP addresses in the console, copied lines, and mclo.gs uploads.">
+          <ConsoleTooltip content={redactSensitive ? "Show IPs" : "Censor IPs"}>
             <Button
               variant={redactSensitive ? "secondary" : "ghost"}
               size="icon"
               className="size-8"
-              aria-label={
-                redactSensitive ? "Disable IP redaction" : "Enable IP redaction"
-              }
+              aria-label={redactSensitive ? "Show IPs" : "Censor IPs"}
               aria-pressed={redactSensitive}
               onClick={() => setRedactSensitive((value) => !value)}
             >
@@ -784,18 +780,14 @@ export function ConsoleWorkspace({
           </ConsoleTooltip>
           {canShare ? (
             <ConsoleTooltip
-              content={
-                wrapLines
-                  ? "Keep long console lines on one row."
-                  : "Wrap long console lines to the available width."
-              }
+              content={wrapLines ? "Disable Line Wrap" : "Enable Line Wrap"}
             >
               <Button
                 variant={wrapLines ? "secondary" : "ghost"}
                 size="icon"
                 className="size-8"
                 aria-label={
-                  wrapLines ? "Disable text wrapping" : "Enable text wrapping"
+                  wrapLines ? "Disable Line Wrap" : "Enable Line Wrap"
                 }
                 aria-pressed={wrapLines}
                 onClick={() => setWrapLines((value) => !value)}
@@ -805,11 +797,7 @@ export function ConsoleWorkspace({
             </ConsoleTooltip>
           ) : null}
           <ConsoleTooltip
-            content={
-              showTimestamps
-                ? "Hide timestamps from console rows."
-                : "Show the timestamp for each console row."
-            }
+            content={showTimestamps ? "Hide Timestamps" : "Show Timestamps"}
           >
             <Button
               variant={showTimestamps ? "secondary" : "ghost"}
