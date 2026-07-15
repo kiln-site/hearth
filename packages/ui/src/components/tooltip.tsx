@@ -54,7 +54,7 @@ function TooltipContent({
         {...props}
       >
         {children}
-        <TooltipPrimitive.Arrow className="z-50 fill-popover stroke-ember/30" />
+        <TooltipPrimitive.Arrow className="z-50 fill-popover stroke-ember/30 [&>polygon]:[stroke-dasharray:0_30_36.1_0]" />
       </TooltipPrimitive.Content>
     </TooltipPrimitive.Portal>
   )

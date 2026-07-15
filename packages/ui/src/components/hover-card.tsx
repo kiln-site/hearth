@@ -43,7 +43,7 @@ function HoverCardContent({
         {...props}
       >
         {children}
-        <HoverCardPrimitive.Arrow className="z-50 fill-popover stroke-ember/30" />
+        <HoverCardPrimitive.Arrow className="z-50 fill-popover stroke-ember/30 [&>polygon]:[stroke-dasharray:0_30_36.1_0]" />
       </HoverCardPrimitive.Content>
     </HoverCardPrimitive.Portal>
   )
