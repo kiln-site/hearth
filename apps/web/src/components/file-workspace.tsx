@@ -63,6 +63,9 @@ function formatName(path: string) {
   return path.split("/").filter(Boolean).at(-1) ?? path
 }
 
+const fileEditorHeaderClassName =
+  "flex h-14 shrink-0 items-center gap-2 border-b px-2 sm:px-3 md:h-auto md:min-h-14 md:flex-wrap md:gap-x-3 md:gap-y-2 md:py-2.5"
+
 function parentDirectoryPaths(path: string) {
   const parts = path.split("/").filter(Boolean)
   return parts.slice(0, -1).map((_, index) => {
@@ -210,7 +213,7 @@ function Editor({
     <section className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-card">
       <Popover open={searchOpen} onOpenChange={setSearchOpen}>
         <PopoverAnchor asChild>
-          <div className="flex h-14 shrink-0 items-center gap-2 border-b px-2 sm:px-3 md:h-auto md:min-h-14 md:flex-wrap md:gap-x-3 md:gap-y-2 md:py-2.5">
+          <div className={fileEditorHeaderClassName} data-file-toolbar>
             <div className="flex min-w-0 flex-1 items-center gap-2.5 md:gap-3">
               <FileCode2 className="size-5 shrink-0 text-primary" />
               <div className="min-w-0 flex-1">
@@ -941,20 +944,47 @@ function UnavailablePreview({
   path,
   loading,
   message,
+  canShare,
 }: {
   path: string
   loading: boolean
   message: string | null
+  canShare: boolean
 }) {
   return (
-    <section className="flex min-h-[360px] min-w-0 flex-1 flex-col bg-card">
-      <div className="flex h-12 shrink-0 items-center gap-2.5 border-b px-4">
-        <FileCode2 className="size-4 text-muted-foreground" />
-        <div className="min-w-0">
-          <p className="truncate text-xs font-semibold">{formatName(path)}</p>
-          <p className="truncate font-mono text-[10px] text-muted-foreground">
-            /data/{path}
-          </p>
+    <section
+      className="flex min-h-[360px] min-w-0 flex-1 flex-col bg-card"
+      aria-busy={loading}
+    >
+      <div className={fileEditorHeaderClassName} data-file-toolbar>
+        <div className="flex min-w-0 flex-1 items-center gap-2.5 md:gap-3">
+          <FileCode2 className="size-5 shrink-0 text-primary" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold">{formatName(path)}</p>
+            <p className="truncate font-mono text-[10px] text-muted-foreground sm:text-[11px]">
+              /data/{path}
+            </p>
+          </div>
+        </div>
+
+        <div
+          className="ml-auto hidden max-w-full min-w-0 flex-wrap items-center justify-end gap-1 md:flex"
+          aria-hidden="true"
+        >
+          {canShare ? (
+            <span className="h-8 w-[5.5rem] animate-pulse bg-muted/35" />
+          ) : null}
+          {Array.from({ length: 5 }, (_, index) => (
+            <span key={index} className="size-8 animate-pulse bg-muted/35" />
+          ))}
+        </div>
+
+        <div
+          className="ml-auto flex shrink-0 items-center gap-1 md:hidden"
+          aria-hidden="true"
+        >
+          <span className="size-8 animate-pulse bg-muted/35" />
+          <span className="size-8 animate-pulse bg-muted/35" />
         </div>
       </div>
       <div className="grid flex-1 place-items-center px-6 text-center">
@@ -1004,6 +1034,7 @@ export function FileWorkspace({
   const [refreshing, setRefreshing] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const fileRequest = React.useRef(0)
+  const requestedPath = React.useRef("")
 
   React.useEffect(() => {
     const request = ++fileRequest.current
@@ -1013,34 +1044,39 @@ export function FileWorkspace({
     setMobileTreeOpen(true)
     setLoadingFile(true)
     setError(null)
+    requestedPath.current = ""
 
     void (async () => {
       try {
         const nextTree = await getRelayTree({
           data: { instanceId: instance.id },
         })
-        const requestedPath = initialRoutePath.current
+        const initialRequestedPath = initialRoutePath.current
         if (request !== fileRequest.current) return
         setTree(nextTree)
-        if (!requestedPath && window.matchMedia("(max-width: 767px)").matches) {
+        if (
+          !initialRequestedPath &&
+          window.matchMedia("(max-width: 767px)").matches
+        ) {
           return
         }
         const initialPath =
-          requestedPath &&
-          nextTree.paths.includes(requestedPath) &&
-          !requestedPath.endsWith("/")
-            ? requestedPath
+          initialRequestedPath &&
+          nextTree.paths.includes(initialRequestedPath) &&
+          !initialRequestedPath.endsWith("/")
+            ? initialRequestedPath
             : nextTree.paths.includes("server.properties")
               ? "server.properties"
               : nextTree.paths.find((path) => !path.endsWith("/"))
         if (!initialPath)
           throw new Error(`${instance.name} has no readable files`)
+        requestedPath.current = initialPath
+        setSelectedPath(initialPath)
         const nextFile = await getRelayFile({
           data: { instanceId: instance.id, path: initialPath },
         })
         if (request !== fileRequest.current) return
         setFile(nextFile)
-        setSelectedPath(initialPath)
         setMobileTreeOpen(false)
       } catch (cause) {
         if (request === fileRequest.current) {
@@ -1056,7 +1092,8 @@ export function FileWorkspace({
 
   const loadPath = React.useCallback(
     async (path: string) => {
-      if (path === selectedPath) return
+      if (path === requestedPath.current) return
+      requestedPath.current = path
       const request = ++fileRequest.current
       setSelectedPath(path)
       setLoadingFile(true)
@@ -1068,6 +1105,7 @@ export function FileWorkspace({
         if (request === fileRequest.current) setFile(next)
       } catch (cause) {
         if (request === fileRequest.current) {
+          requestedPath.current = ""
           setError(
             cause instanceof Error ? cause.message : "Could not read file"
           )
@@ -1076,17 +1114,26 @@ export function FileWorkspace({
         if (request === fileRequest.current) setLoadingFile(false)
       }
     },
-    [instance.id, selectedPath]
+    [instance.id]
   )
 
   const handlePathChange = React.useCallback(
     async (path: string) => {
       if (active && normalizedRoutePath !== path) {
-        void navigate({
-          to: "/$serverId/files/$",
-          params: { serverId: instance.shortId, _splat: path },
-          replace: true,
-        })
+        try {
+          await navigate({
+            to: "/$serverId/files/$",
+            params: { serverId: instance.shortId, _splat: path },
+            replace: true,
+          })
+        } catch (cause) {
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : "Could not open the selected file"
+          )
+        }
+        return
       }
       await loadPath(path)
     },
@@ -1098,7 +1145,7 @@ export function FileWorkspace({
   }, [])
 
   React.useEffect(() => {
-    if (!active || !tree || !selectedPath) return
+    if (!active || !tree) return
 
     const routePathIsValid =
       normalizedRoutePath &&
@@ -1106,17 +1153,22 @@ export function FileWorkspace({
       !normalizedRoutePath.endsWith("/")
 
     if (!routePathIsValid) {
+      if (!selectedPath) return
       void navigate({
         to: "/$serverId/files/$",
         params: { serverId: instance.shortId, _splat: selectedPath },
         replace: true,
+      }).catch((cause: unknown) => {
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "Could not update the file URL"
+        )
       })
       return
     }
 
-    if (normalizedRoutePath !== selectedPath) {
-      void loadPath(normalizedRoutePath)
-    }
+    void loadPath(normalizedRoutePath)
   }, [
     active,
     instance.shortId,
@@ -1155,7 +1207,10 @@ export function FileWorkspace({
   }
 
   return (
-    <div className="relative flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden md:flex-row">
+    <div
+      className="relative flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden md:flex-row"
+      data-file-workspace
+    >
       {tree ? (
         <FileTreePanel
           key={instance.id}
@@ -1176,12 +1231,14 @@ export function FileWorkspace({
             path={selectedPath || instance.name}
             loading={loadingFile}
             message={error}
+            canShare={canShare}
           />
         ) : selectedPath !== file.path ? (
           <UnavailablePreview
             path={selectedPath}
             loading={loadingFile}
             message={error}
+            canShare={canShare}
           />
         ) : (
           <Editor
