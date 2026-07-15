@@ -195,7 +195,7 @@ export function SettingsWorkspace({
             </p>
             <button
               type="button"
-              className="group mt-5 flex w-full items-center justify-between rounded-lg border border-primary/20 bg-primary/7 px-3 py-3 text-left hover:bg-primary/10"
+              className="group mt-5 flex w-full items-center justify-between rounded-lg border border-primary/25 bg-primary/7 px-3 py-3 text-left transition-[background-color,border-color,box-shadow] outline-none hover:border-primary/40 hover:bg-primary/12 focus-visible:border-ring/70 focus-visible:ring-2 focus-visible:ring-ring/35"
               onClick={copyAddress}
             >
               <span>
@@ -214,7 +214,7 @@ export function SettingsWorkspace({
                 )}
               </span>
             </button>
-            <p className="mt-3 font-mono text-[9px] text-muted-foreground/65">
+            <p className="mt-3 font-mono text-[9px] text-muted-foreground/75">
               {copied ? "Address copied to clipboard" : "Click to copy"}
             </p>
           </div>

@@ -22,7 +22,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@workspace/ui/components/popover"
-import { SidebarTrigger } from "@workspace/ui/components/sidebar"
 import {
   Tooltip,
   TooltipContent,
@@ -31,6 +30,7 @@ import {
 
 import type { InstanceTab } from "@/components/app-sidebar"
 import { ConsoleWorkspace } from "@/components/console-workspace"
+import { ToolbarSidebarTrigger } from "@/components/global-page-toolbar"
 import { PanelFooter } from "@/components/panel-footer"
 import { SettingsWorkspace } from "@/components/settings-workspace"
 import { performRelayAction } from "@/server/relay"
@@ -146,17 +146,7 @@ export function InstanceWorkspace({
       <header className="shrink-0 border-b bg-background/90 backdrop-blur-xl">
         <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-3 px-3 py-3 sm:px-5 lg:min-h-20 lg:py-2 xl:grid-cols-[minmax(0,1fr)_39rem_auto] xl:gap-x-5">
           <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-2">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <SidebarTrigger
-                  className="-ml-1 size-8 shrink-0 text-muted-foreground shadow-none hover:bg-muted/50 hover:text-foreground"
-                  aria-label="Toggle sidebar"
-                />
-              </TooltipTrigger>
-              <TooltipContent side="bottom" sideOffset={6}>
-                Toggle sidebar
-              </TooltipContent>
-            </Tooltip>
+            <ToolbarSidebarTrigger />
             <span
               className="h-6 w-px shrink-0 bg-border/80"
               aria-hidden="true"
@@ -379,7 +369,7 @@ export function InstanceWorkspace({
                       </button>
                       <button
                         type="button"
-                        className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-foreground transition-colors hover:bg-muted/50 disabled:cursor-default disabled:opacity-35"
+                        className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-foreground transition-colors hover:bg-accent/55 focus-visible:bg-accent/65 focus-visible:outline-none disabled:cursor-default disabled:opacity-35"
                         disabled={!isRunning}
                         onClick={() => {
                           setServerActionsOpen(false)
@@ -478,30 +468,32 @@ export function InstanceWorkspace({
           />
         </div>
       </div>
-      <PanelFooter />
+      <PanelFooter
+        className={activeTab === "info" ? undefined : "max-md:hidden"}
+      />
     </div>
   )
 }
 
 const RESOURCE_STYLES = {
   cpu: {
-    indicator: "bg-sky-400/70",
-    value: "text-sky-300/80",
+    indicator: "bg-sky-400/85",
+    value: "text-sky-300/95",
     chart: "oklch(0.74 0.13 235)",
   },
   memory: {
-    indicator: "bg-violet-400/70",
-    value: "text-violet-300/80",
+    indicator: "bg-violet-400/85",
+    value: "text-violet-300/95",
     chart: "oklch(0.7 0.15 292)",
   },
   storage: {
-    indicator: "bg-emerald-400/65",
-    value: "text-emerald-300/80",
+    indicator: "bg-emerald-400/80",
+    value: "text-emerald-300/95",
     chart: "oklch(0.72 0.13 160)",
   },
   network: {
-    indicator: "bg-cyan-300/70",
-    value: "text-cyan-200/80",
+    indicator: "bg-cyan-300/85",
+    value: "text-cyan-200/95",
     chart: "oklch(0.78 0.11 205)",
   },
 } as const
@@ -529,12 +521,12 @@ function ResourceMeters({ instance }: { instance: RelayInstance }) {
               tabIndex={0}
             >
               <div className="flex items-center justify-between gap-1.5 font-mono text-[11px] leading-none tracking-[0.065em] xl:text-xs">
-                <span className="shrink-0 font-medium text-muted-foreground/75 transition-colors group-hover:text-muted-foreground">
+                <span className="shrink-0 font-medium text-muted-foreground/85 transition-colors group-hover:text-foreground/85">
                   {resource.label}
                 </span>
                 {resource.id === "network" ? (
                   <span className="flex min-w-0 items-center gap-1 font-medium tracking-[-0.045em] tabular-nums xl:gap-1.5">
-                    <span className="truncate text-cyan-200/80">
+                    <span className="truncate text-cyan-200/95">
                       ↓ {resource.receivedDisplayValue}
                     </span>
                     <span className="truncate text-primary/90">
@@ -560,7 +552,7 @@ function ResourceMeters({ instance }: { instance: RelayInstance }) {
               aria-label={`Instance uptime ${uptime ?? "unavailable"}`}
               tabIndex={startedAt ? 0 : undefined}
             >
-              <span className="block font-medium tracking-[0.065em] text-muted-foreground/75">
+              <span className="block font-medium tracking-[0.065em] text-muted-foreground/85">
                 UPTIME
               </span>
               <div className="mt-2.5 flex h-2 items-center justify-center">
@@ -765,7 +757,7 @@ function ResourceBar({
         <>
           <div className="overflow-hidden bg-muted/55">
             <div
-              className="h-full bg-cyan-300/70 transition-[width] duration-500 ease-out"
+              className="h-full bg-cyan-300/85 transition-[width] duration-500 ease-out"
               style={{ width: `${width(resource.receivedValue)}%` }}
             />
           </div>
@@ -989,7 +981,7 @@ function NetworkHistoryValue({
   return (
     <div>
       <span
-        className={`block font-mono text-sm font-semibold tabular-nums ${direction === "down" ? "text-cyan-200/80" : "text-primary/90"}`}
+        className={`block font-mono text-sm font-semibold tabular-nums ${direction === "down" ? "text-cyan-200/95" : "text-primary"}`}
       >
         {direction === "down" ? "↓" : "↑"}{" "}
         {value === null ? "—" : formatBytesPerSecond(value)}

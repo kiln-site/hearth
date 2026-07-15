@@ -168,13 +168,13 @@ export function BricksPage({ initialStudio }: { initialStudio: Studio }) {
                     key={brick.id}
                     type="button"
                     onClick={() => chooseBrick(brick)}
-                    className={`group relative min-h-44 overflow-hidden rounded-2xl border p-5 text-left transition-all duration-200 ${
+                    className={`group relative min-h-44 overflow-hidden rounded-2xl border p-5 text-left transition-[color,background-color,border-color,box-shadow,transform] duration-200 outline-none focus-visible:border-ring/70 focus-visible:ring-2 focus-visible:ring-ring/35 ${
                       active
                         ? "border-primary/55 bg-primary/[0.07] shadow-[0_0_0_1px_color-mix(in_oklch,var(--primary)_18%,transparent)]"
-                        : "border-border/75 bg-card/35 hover:-translate-y-0.5 hover:border-border hover:bg-card/65"
+                        : "border-border/75 bg-card/35 hover:-translate-y-0.5 hover:border-primary/25 hover:bg-accent/25"
                     }`}
                   >
-                    <span className="absolute top-4 right-4 font-mono text-[9px] text-muted-foreground/45">
+                    <span className="absolute top-4 right-4 font-mono text-[9px] text-muted-foreground/60">
                       0{index + 1}
                     </span>
                     <div
@@ -191,7 +191,7 @@ export function BricksPage({ initialStudio }: { initialStudio: Studio }) {
                     <p className="mt-1.5 max-w-sm text-[11px] leading-5 text-muted-foreground">
                       {brick.description}
                     </p>
-                    <div className="mt-4 flex items-center gap-2 font-mono text-[9px] text-muted-foreground/65">
+                    <div className="mt-4 flex items-center gap-2 font-mono text-[9px] text-muted-foreground/75">
                       <span>JAVA {brick.javaVersion}</span>
                       <span className="text-border">/</span>
                       <span>{brick.defaultMemory}</span>
@@ -229,7 +229,7 @@ export function BricksPage({ initialStudio }: { initialStudio: Studio }) {
                       key={instance.id}
                       to="/$serverId/console"
                       params={{ serverId: instance.shortId }}
-                      className="flex items-center gap-3 px-5 py-3 transition-colors hover:bg-muted/30"
+                      className="flex items-center gap-3 px-5 py-3 transition-colors outline-none hover:bg-accent/35 focus-visible:bg-accent/45 focus-visible:ring-1 focus-visible:ring-ring/35 focus-visible:ring-inset"
                     >
                       <ServerTypeIcon
                         implementation={instance.implementation}

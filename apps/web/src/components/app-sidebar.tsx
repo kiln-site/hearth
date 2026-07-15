@@ -132,7 +132,7 @@ export function AppSidebar({
                       <span>{item.title}</span>
                     </Link>
                   </SidebarMenuButton>
-                  <SidebarMenuBadge className="text-sidebar-foreground/45">
+                  <SidebarMenuBadge className="text-sidebar-foreground/60">
                     {item.badge}
                   </SidebarMenuBadge>
                 </SidebarMenuItem>
@@ -160,19 +160,19 @@ export function AppSidebar({
                       >
                         <ServerTypeIcon
                           implementation={instance.implementation}
-                          className="size-4 shrink-0 text-sidebar-foreground/70"
+                          className="size-4 shrink-0 text-sidebar-foreground/80"
                           aria-hidden="true"
                         />
                         <span className="flex min-w-0 flex-1 flex-col items-start leading-none">
                           <span className="w-full truncate text-xs font-semibold">
                             {instance.name}
                           </span>
-                          <span className="mt-1 truncate font-mono text-[9px] text-sidebar-foreground/45">
+                          <span className="mt-1 truncate font-mono text-[9px] text-sidebar-foreground/60">
                             {instance.implementation} {instance.version} ·{" "}
                             {instance.shortId}
                           </span>
                         </span>
-                        <ChevronsUpDown className="ml-auto size-3.5! text-sidebar-foreground/45" />
+                        <ChevronsUpDown className="ml-auto size-3.5! text-sidebar-foreground/60" />
                       </SidebarMenuButton>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent
@@ -294,13 +294,13 @@ export function AppSidebar({
                     <span className="truncate text-xs font-semibold">
                       {user.name}
                     </span>
-                    <span className="mt-1 truncate text-[10px] text-sidebar-foreground/45">
+                    <span className="mt-1 truncate text-[10px] text-sidebar-foreground/60">
                       {user.isDevelopmentBypass
                         ? "Development bypass"
                         : user.email}
                     </span>
                   </span>
-                  <ChevronsUpDown className="ml-auto size-3.5! text-sidebar-foreground/45 group-data-[collapsible=icon]:hidden" />
+                  <ChevronsUpDown className="ml-auto size-3.5! text-sidebar-foreground/60 group-data-[collapsible=icon]:hidden" />
                 </SidebarMenuButton>
               </DropdownMenuTrigger>
               <DropdownMenuContent side="top" align="start" className="w-56">

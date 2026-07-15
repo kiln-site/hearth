@@ -43,6 +43,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@workspace/ui/components/popover"
+import { floatingSurfaceClassName } from "@workspace/ui/lib/surface-styles"
 import { SyntaxCodeEditor } from "@/components/syntax-code-editor"
 import type { SyntaxCodeEditorHandle } from "@/components/syntax-code-editor"
 import { redactSensitiveText } from "@/lib/redaction"
@@ -411,7 +412,7 @@ function Editor({
                   side="bottom"
                   sideOffset={7}
                   collisionPadding={8}
-                  className="w-[min(18rem,calc(100vw-1rem))] border-border/90 bg-popover/98 p-1.5 shadow-xl shadow-black/40 backdrop-blur-xl"
+                  className="w-[min(18rem,calc(100vw-1rem))] p-1.5"
                 >
                   <p className="px-2 pt-1 pb-1.5 font-mono text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
                     File actions
@@ -488,7 +489,7 @@ function Editor({
           side="bottom"
           sideOffset={7}
           collisionPadding={12}
-          className="w-[min(18rem,calc(100vw-1rem))] border-border/90 bg-popover/98 p-2 shadow-xl shadow-black/35 backdrop-blur-xl"
+          className="w-[min(18rem,calc(100vw-1rem))] p-2"
           onOpenAutoFocus={(event) => {
             event.preventDefault()
             searchInputRef.current?.focus()
@@ -670,7 +671,7 @@ function MobileFileAction({
   return (
     <button
       type="button"
-      className="group flex w-full items-center gap-2.5 border-t border-border/45 px-2 py-2 text-left transition-colors first:border-t-0 hover:bg-muted/45 focus-visible:bg-muted/45 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40"
+      className="group flex w-full items-center gap-2.5 border-t border-border/45 px-2 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/45 focus-visible:bg-accent/55 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40"
       disabled={disabled}
       onClick={onClick}
     >
@@ -781,7 +782,7 @@ function FileTreePanel({
             value={search.value}
             placeholder="Search files…"
             aria-label="Search instance files"
-            className="h-full min-w-0 flex-1 bg-transparent px-2 font-mono text-[11px] text-foreground outline-none placeholder:text-muted-foreground/55"
+            className="h-full min-w-0 flex-1 bg-transparent px-2 font-mono text-[11px] text-foreground outline-none placeholder:text-muted-foreground/70"
             onChange={(event) => {
               const value = event.target.value
               if (value) search.setValue(value)
@@ -817,7 +818,7 @@ function FileTreePanel({
               align="end"
               side="bottom"
               sideOffset={6}
-              className="w-56 border-border/90 bg-popover/98 p-1 shadow-xl shadow-black/35 backdrop-blur-xl"
+              className="w-56 p-1"
             >
               <p className="border-b px-2 py-2 text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
                 Add to instance
@@ -848,16 +849,17 @@ function FileTreePanel({
           className="block size-full min-h-[210px]"
           style={
             {
-              "--trees-selected-bg-override": "oklch(0.67 0.16 47 / 0.2)",
-              "--trees-selected-fg-override": "oklch(0.94 0.012 70)",
-              "--trees-bg-override": "oklch(0.18 0.012 48)",
-              "--trees-bg-muted-override": "oklch(0.23 0.02 48)",
-              "--trees-fg-override": "oklch(0.87 0.012 70)",
-              "--trees-fg-muted-override": "oklch(0.61 0.018 60)",
-              "--trees-input-bg-override": "oklch(0.145 0.009 48)",
-              "--trees-search-bg-override": "oklch(0.145 0.009 48)",
-              "--trees-search-fg-override": "oklch(0.92 0.012 70)",
-              "--trees-border-color-override": "oklch(0.29 0.018 48)",
+              "--trees-selected-bg-override":
+                "color-mix(in oklch, var(--primary) 20%, transparent)",
+              "--trees-selected-fg-override": "var(--foreground)",
+              "--trees-bg-override": "var(--card)",
+              "--trees-bg-muted-override": "var(--muted)",
+              "--trees-fg-override": "var(--foreground)",
+              "--trees-fg-muted-override": "var(--muted-foreground)",
+              "--trees-input-bg-override": "var(--background)",
+              "--trees-search-bg-override": "var(--background)",
+              "--trees-search-fg-override": "var(--foreground)",
+              "--trees-border-color-override": "var(--border)",
               "--trees-border-radius-override": "0px",
               "--trees-font-family-override": "'Archivo Variable', sans-serif",
               "--trees-font-size-override": "12px",
@@ -865,7 +867,9 @@ function FileTreePanel({
             } as React.CSSProperties
           }
           renderContextMenu={(item) => (
-            <div className="absolute top-full right-0 z-[100] min-w-36 border bg-popover p-1 text-xs text-popover-foreground shadow-xl shadow-black/40">
+            <div
+              className={`${floatingSurfaceClassName} absolute top-full right-0 z-[100] min-w-36 border border-border/90 p-1 text-xs`}
+            >
               <button className="flex w-full px-2 py-1.5 hover:bg-accent">
                 Open {item.path}
               </button>
@@ -894,13 +898,13 @@ function FileActionPreview({
     <button
       type="button"
       disabled
-      className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-muted-foreground/70 disabled:cursor-default"
+      className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-muted-foreground/80 transition-colors hover:bg-accent/45 hover:text-foreground focus-visible:bg-accent/55 focus-visible:text-foreground focus-visible:outline-none disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-muted-foreground/80"
     >
       <span className="grid size-7 shrink-0 place-items-center border border-border/70 bg-card [&>svg]:size-3.5">
         {icon}
       </span>
       <span className="min-w-0 flex-1 text-foreground/75">{label}</span>
-      <span className="font-mono text-[8px] tracking-wider text-muted-foreground/45 uppercase">
+      <span className="font-mono text-[8px] tracking-wider text-muted-foreground/60 uppercase">
         Soon
       </span>
     </button>

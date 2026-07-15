@@ -46,7 +46,7 @@ export function LegalPage({
           </div>
         </article>
 
-        <PanelFooter />
+        <PanelFooter className="-mx-5 w-[calc(100%+2.5rem)] sm:mx-0 sm:w-full" />
       </div>
     </main>
   )

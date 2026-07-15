@@ -595,13 +595,13 @@ export function ConsoleWorkspace({
             align="start"
             side="bottom"
             sideOffset={7}
-            className="w-52 border-border/90 bg-popover/98 p-1 shadow-xl shadow-black/35 backdrop-blur-xl"
+            className="w-52 p-1"
           >
             <div className="flex items-center justify-between border-b px-2 py-2">
               <p className="text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
                 Console levels
               </p>
-              <span className="font-mono text-[9px] text-muted-foreground/60 tabular-nums">
+              <span className="font-mono text-[9px] text-muted-foreground/75 tabular-nums">
                 {levels.size}/{LEVELS.length}
               </span>
             </div>
@@ -694,7 +694,7 @@ export function ConsoleWorkspace({
               align="center"
               side="bottom"
               sideOffset={7}
-              className="flex w-auto min-w-36 items-center gap-2 border-border/90 bg-popover/98 px-2.5 py-2 shadow-lg shadow-black/30 backdrop-blur-xl"
+              className="flex w-auto min-w-36 items-center gap-2 px-2.5 py-2"
               onOpenAutoFocus={(event) => event.preventDefault()}
               onEscapeKeyDown={clearSelection}
             >
@@ -824,7 +824,7 @@ export function ConsoleWorkspace({
                   }}
                 >
                   {showTimestamps ? (
-                    <span className="mr-2 ml-3 w-[3.25rem] shrink-0 text-[9px] text-muted-foreground/50 tabular-nums">
+                    <span className="mr-2 ml-3 w-[3.25rem] shrink-0 text-[9px] text-muted-foreground/65 tabular-nums">
                       {formatTimestamp(line.timestamp)}
                     </span>
                   ) : null}
@@ -926,7 +926,7 @@ export function ConsoleWorkspace({
                 align="start"
                 side="top"
                 sideOffset={7}
-                className="max-h-56 w-[var(--radix-popover-trigger-width)] min-w-64 overflow-y-auto border-border/90 bg-popover/98 p-1 shadow-xl shadow-black/35 backdrop-blur-xl"
+                className="max-h-56 w-[var(--radix-popover-trigger-width)] min-w-64 overflow-y-auto p-1"
                 onOpenAutoFocus={(event) => event.preventDefault()}
                 onCloseAutoFocus={(event) => event.preventDefault()}
               >
@@ -993,7 +993,7 @@ function ConsoleLevelFilter({
   return (
     <button
       type="button"
-      className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-foreground transition-colors hover:bg-muted/50"
+      className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-foreground transition-colors hover:bg-accent/55 focus-visible:bg-accent/65 focus-visible:outline-none"
       aria-pressed={active}
       onClick={onClick}
     >
@@ -1022,8 +1022,8 @@ function consoleLevelFilterTone(level: RelayConsoleLevel): string {
   if (level === "error") return "bg-red-400"
   if (level === "warn") return "bg-amber-400"
   if (level === "info") return "bg-sky-400"
-  if (level === "debug") return "bg-emerald-400/75"
-  return "bg-violet-400/75"
+  if (level === "debug") return "bg-emerald-400/90"
+  return "bg-violet-400/90"
 }
 
 function ConsoleTooltip({
@@ -1081,7 +1081,7 @@ function renderConsoleText(text: string, query: string): React.ReactNode {
           <TooltipTrigger asChild>
             <span
               tabIndex={0}
-              className="cursor-help text-muted-foreground/65 transition-colors hover:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring/40 focus-visible:outline-none"
+              className="cursor-help text-muted-foreground/75 transition-colors hover:text-foreground/85 focus-visible:ring-1 focus-visible:ring-ring/40 focus-visible:outline-none"
             >
               {part}
             </span>
