@@ -1,0 +1,143 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/archivo";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:is(.dark *));
+@source "../../../apps/**/*.{ts,tsx}";
+@source "../../../components/**/*.{ts,tsx}";
+@source "../**/*.{ts,tsx}";
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+  --font-sans: "Archivo Variable", sans-serif;
+  --font-mono: "JetBrains Mono Variable", monospace;
+}
+
+:root,
+.dark {
+  color-scheme: dark;
+  --background: oklch(0.145 0.009 48);
+  --foreground: oklch(0.92 0.012 70);
+  --card: oklch(0.18 0.012 48);
+  --card-foreground: oklch(0.92 0.012 70);
+  --popover: oklch(0.205 0.016 48);
+  --popover-foreground: oklch(0.92 0.012 70);
+  --primary: oklch(0.68 0.17 47);
+  --primary-foreground: oklch(0.15 0.015 45);
+  --secondary: oklch(0.235 0.018 48);
+  --secondary-foreground: oklch(0.9 0.012 70);
+  --muted: oklch(0.225 0.015 48);
+  --muted-foreground: oklch(0.65 0.018 62);
+  --accent: oklch(0.245 0.025 48);
+  --accent-foreground: oklch(0.94 0.014 70);
+  --destructive: oklch(0.66 0.2 27);
+  --border: oklch(0.29 0.018 48);
+  --input: oklch(0.31 0.02 48);
+  --ring: oklch(0.68 0.17 47);
+  --chart-1: oklch(0.68 0.17 47);
+  --chart-2: oklch(0.7 0.14 155);
+  --chart-3: oklch(0.65 0.12 245);
+  --chart-4: oklch(0.76 0.13 82);
+  --chart-5: oklch(0.62 0.13 22);
+  --radius: 0rem;
+  --sidebar: oklch(0.16 0.011 48);
+  --sidebar-foreground: oklch(0.88 0.012 70);
+  --sidebar-primary: oklch(0.68 0.17 47);
+  --sidebar-primary-foreground: oklch(0.15 0.015 45);
+  --sidebar-accent: oklch(0.225 0.019 48);
+  --sidebar-accent-foreground: oklch(0.94 0.014 70);
+  --sidebar-border: oklch(0.27 0.017 48);
+  --sidebar-ring: oklch(0.68 0.17 47);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    background-image:
+      radial-gradient(
+        circle at 78% -18%,
+        oklch(0.58 0.12 48 / 0.09),
+        transparent 32rem
+      ),
+      linear-gradient(oklch(0.2 0.014 48 / 0.15), transparent 24rem);
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+@layer utilities {
+  .editor-grid {
+    background-image: linear-gradient(
+      to right,
+      transparent 0,
+      transparent calc(100% - 1px),
+      oklch(0.55 0.03 55 / 0.06) calc(100% - 1px)
+    );
+    background-size: 80ch 100%;
+  }
+
+  @media (max-width: 767px) {
+    .kiln-code-editor .cm-content {
+      padding-right: 2px !important;
+    }
+
+    .kiln-code-editor .cm-line {
+      padding-left: 7px !important;
+    }
+
+    .kiln-code-editor .cm-lineNumbers .cm-gutterElement {
+      min-width: 30px !important;
+      padding-right: 5px !important;
+      padding-left: 3px !important;
+    }
+
+    .kiln-code-editor .cm-deletedChunk {
+      padding-left: 40px !important;
+    }
+  }
+}

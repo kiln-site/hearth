@@ -1,0 +1,36 @@
+{
+  "name": "hearth",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "build": "turbo build",
+    "db:down": "docker compose down",
+    "db:migrate": "pnpm --filter web db:migrate",
+    "db:reset": "docker compose down -v && docker compose up -d --wait mysql && pnpm db:migrate",
+    "db:up": "docker compose up -d mysql",
+    "dev:docker": "docker compose -f compose.yaml -f compose.dev.yaml up hearth",
+    "dev:docker:down": "docker compose -f compose.yaml -f compose.dev.yaml down",
+    "dev": "turbo dev",
+    "e2e:docker": "node scripts/e2e-docker.mjs",
+    "lint": "turbo lint",
+    "format": "turbo format",
+    "typecheck": "turbo typecheck"
+  },
+  "devDependencies": {
+    "playwright-core": "1.55.0",
+    "prettier": "^3.8.3",
+    "prettier-plugin-tailwindcss": "^0.8.0",
+    "turbo": "^2.9.18",
+    "typescript": "^6"
+  },
+  "packageManager": "pnpm@10.33.4",
+  "engines": {
+    "node": ">=20"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "lightningcss"
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+.env
+.env.*
+.git/*
+!.git/HEAD
+!.git/packed-refs
+!.git/refs
+!.git/refs/**
+.gitignore
+.turbo
+**/.DS_Store
+**/dist
+**/node_modules
+**/*.tsbuildinfo
+artifacts

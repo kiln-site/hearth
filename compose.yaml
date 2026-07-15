@@ -1,0 +1,83 @@
+services:
+  runner-java21:
+    image: kiln-runner:java21
+    profiles: ["images"]
+    build:
+      context: .
+      dockerfile: apps/runner/Dockerfile
+      args:
+        JAVA_VERSION: "21"
+
+  runner-java25:
+    image: kiln-runner:java25
+    profiles: ["images"]
+    build:
+      context: .
+      dockerfile: apps/runner/Dockerfile
+      args:
+        JAVA_VERSION: "25"
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: hearth
+      MYSQL_PASSWORD: kiln
+      MYSQL_ROOT_PASSWORD: kiln-root
+      MYSQL_USER: kiln
+      TZ: America/New_York
+    volumes:
+      - hearth-mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-ukiln", "-pkiln"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "127.0.0.1:3306:3306"
+
+  relay:
+    build:
+      context: .
+      dockerfile: apps/relay/Dockerfile
+    restart: unless-stopped
+    environment:
+      KILN_RELAY_KEY: ${KILN_RELAY_KEY:?Set KILN_RELAY_KEY in .env}
+      KILN_RELAY_PORT: ${KILN_RELAY_PORT:-4100}
+    ports:
+      - "${KILN_RELAY_PORT:-4100}:${KILN_RELAY_PORT:-4100}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - relay-data:/data
+
+  hearth:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      relay:
+        condition: service_started
+    environment:
+      DATABASE_URL: mysql://kiln:kiln@mysql:3306/hearth
+      KILN_ENVIRONMENT: ${KILN_ENVIRONMENT:-prod}
+      KILN_ENABLE_SIGNUPS: ${KILN_ENABLE_SIGNUPS:-false}
+      KILN_RELAY_KEY: ${KILN_RELAY_KEY:?Set KILN_RELAY_KEY in .env}
+      KILN_SUPER_USER_EMAIL: ${KILN_SUPER_USER_EMAIL:-}
+      KILN_SUPER_USER_PASSWORD: ${KILN_SUPER_USER_PASSWORD:-}
+      KILN_URL: ${KILN_URL:-http://localhost:3000}
+      BETTER_AUTH_TRUSTED_ORIGINS: ${BETTER_AUTH_TRUSTED_ORIGINS:-}
+      RELAY_URL: http://relay:${KILN_RELAY_PORT:-4100}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL:-}
+    ports:
+      - "3000:3000"
+    volumes:
+      - hearth-data:/data
+
+volumes:
+  hearth-data:
+  hearth-mysql:
+  relay-data:

@@ -1,0 +1,190 @@
+# Kiln Hearth
+
+Hearth is the TanStack Start control plane for [Kiln](./VISION.md). Relay is the
+small privileged service that discovers and operates labeled Minecraft
+containers. The interface uses shadcn/ui, Tailwind CSS 4, and `@pierre/trees`.
+
+## Docker setup
+
+Copy [`.env.example`](./.env.example) to `.env`, then set two values:
+
+```dotenv
+KILN_URL=http://localhost:3000
+KILN_RELAY_KEY=replace-with-the-output-of-openssl-rand-base64-48
+```
+
+Build and start the full stack:
+
+```bash
+docker compose up -d --build --wait
+```
+
+Build the two compact Kiln Java runner images used by official Bricks:
+
+```bash
+docker compose --profile images build runner-java21 runner-java25
+```
+
+The stack contains Hearth, Relay, and MySQL. Hearth creates the database schema,
+generates a Better Auth secret, and persists that secret in its `/data` volume.
+The operator does not need to supply `DATABASE_URL`, `BETTER_AUTH_SECRET`, or
+`BETTER_AUTH_URL` when using the provided Compose file.
+
+On an empty database, opening `KILN_URL` starts the first-boot administrator
+flow. Alternatively, these optional values create a verified administrator on
+the first request:
+
+```dotenv
+KILN_SUPER_USER_EMAIL=admin@example.com
+KILN_SUPER_USER_PASSWORD=a-long-unique-password
+```
+
+Public signup is disabled by default. Set `KILN_ENABLE_SIGNUPS=true` to expose
+account creation. Invitations remain usable while public signup is disabled.
+
+`KILN_ENVIRONMENT` defaults to `prod`, including when it is absent. A trusted
+local installation can set `KILN_ENVIRONMENT=dev` to expose a non-persistent
+**Skip login for development** action on both the login and first-boot setup
+screens. Docker deployment environment changes require recreating the Hearth
+container. The bypass is ignored whenever the environment returns to `prod`.
+
+Email delivery is optional. Set both values to deliver verification, recovery,
+and invitation messages through Resend:
+
+```dotenv
+RESEND_API_KEY=re_...
+RESEND_FROM_EMAIL=Kiln <auth@example.com>
+```
+
+If either value is absent, six-digit authentication codes and invitation links
+are written to `docker compose logs hearth`. A mail-less first boot can skip
+verification for the initial administrator.
+
+`KILN_URL` is Better Auth's base URL and is always trusted. Kiln also trusts
+`http://localhost:3000`, `https://hearth.kiln.site`, and the local OrbStack
+origin `https://hearth.hearth.orb.local`. Additional trusted origins can be
+supplied as a comma-separated `BETTER_AUTH_TRUSTED_ORIGINS`.
+`KILN_RELAY_PORT` defaults to `4100`.
+
+The production images are defined in [apps/web/Dockerfile](./apps/web/Dockerfile),
+[apps/relay/Dockerfile](./apps/relay/Dockerfile), and
+[apps/runner/Dockerfile](./apps/runner/Dockerfile). Relay's only application
+settings are `KILN_RELAY_KEY` and `KILN_RELAY_PORT`; it also needs the Docker
+socket and a persistent `/data` volume. The runner is a stripped Java runtime
+on Debian slim; it contains no panel daemon and downloads only the artifact
+declared by its Brick.
+
+## Authentication and access
+
+Kiln uses email and password identities—there are no usernames. Verification
+and password recovery use expiring, single-use Better Auth OTPs. Unverified
+accounts expire after 24 hours. Authenticator-app TOTP, encrypted recovery
+codes, trusted devices, and WebAuthn passkeys are managed from **Account
+security**.
+
+Every control-plane route, server function, and live console stream requires a
+session. The development bypass is available only when the explicit
+`KILN_ENVIRONMENT=dev` switch is present; optimized Docker builds continue to
+run with `NODE_ENV=production`.
+
+Platform administrators can configure Relay connections and manage users.
+Scoped Relay and instance roles are:
+
+- **Owner** — every permission, including owner assignment and Relay removal.
+- **Admin** — access management, Relay configuration, and all instance actions.
+- **Operator** — commands, file writes, power actions, and log sharing.
+- **Viewer** — read-only info, console, files, and log sharing.
+
+Invitations are bound to one normalized email address, expire after seven days,
+and can be revoked before acceptance.
+
+## Bricks and Relay lifecycle
+
+Hearth's **Bricks** screen asks a selected Relay to create the server. The
+official catalog currently includes Paper, Folia, Fabric, and Velocity. A
+Brick is a small declarative runtime definition—not a Compose fragment and not
+a long-running per-instance agent.
+
+Relay creates one isolated container and one persistent data directory for
+every Brick. Containers use a read-only root filesystem, a writable `/server`
+mount, a bounded ephemeral `/tmp`, dropped Linux capabilities,
+`no-new-privileges`, PID and memory limits, and the private `kiln-minecraft`
+bridge. The Minecraft JVM remains the only substantial process in the
+container. Relay applies these labels itself:
+
+```yaml
+labels:
+  kiln.relay.managed: "true"
+  kiln.relay.owned: "true"
+  kiln.server.id: "40-character-hexadecimal-id"
+  kiln.brick.id: "paper"
+```
+
+Relay uses the first eight ID characters in Hearth URLs and rejects short-ID
+collisions. It directly owns start, stop, restart, deletion, interactive
+console streaming, bounded file access, and read-only decompression for
+Minecraft `.log.gz` archives. Deletion sends a graceful stop before removing
+the container; persisted server data is removed only when explicitly requested.
+
+The Tailnet routing controls let Relay own a CoreDNS wildcard zone, PicoLimbo,
+the private Minecraft network, and a single Velocity entrypoint. Point
+Tailscale split DNS at the node, then names such as `1.21.11.paper.test` resolve
+to its Tailnet address. Port `25565` is omitted from displayed connection names.
+
+The custom runner is derived from GraalVM with `jlink`, then copied into Debian
+slim with only certificates, `curl`, and `tini`. It downloads the selected
+server artifact into persistent storage on first boot; no `itzg` image or
+Pterodactyl/Pelican daemon is involved.
+
+## Development
+
+For the complete Docker-backed development stack with Vite hot module
+replacement, run:
+
+```bash
+pnpm dev:docker
+```
+
+This uses `compose.dev.yaml` to bind-mount the repository into a development
+Node container while keeping Linux `node_modules` and the pnpm store in named
+volumes. Hearth runs with `NODE_ENV=development` and `KILN_ENVIRONMENT=dev`;
+the production Compose path and production image remain unchanged. Both
+`http://localhost:3000` and `https://hearth.hearth.orb.local` reach the HMR
+server. Stop the development stack with `pnpm dev:docker:down`.
+
+For a host-run development process instead, install dependencies, start MySQL,
+and apply the development schema:
+
+```bash
+pnpm install
+pnpm db:up
+pnpm db:migrate
+```
+
+Then run Relay and Hearth:
+
+```bash
+pnpm --filter relay dev
+pnpm --filter web dev
+```
+
+The root `.env` is read automatically. For development-only overrides, see
+[`.env.example`](./.env.example).
+
+## Checks
+
+```bash
+pnpm typecheck
+pnpm lint
+pnpm build
+```
+
+## Structure
+
+```text
+apps/relay/          Relay node API and Docker/filesystem drivers
+apps/web/            TanStack Start control-plane application
+packages/contracts/  Shared Zod wire contracts
+packages/ui/         Shared shadcn/ui design system and theme
+VISION.md            Product and architecture direction
+```

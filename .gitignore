@@ -1,0 +1,23 @@
+node_modules
+.pnpm-store/
+.DS_Store
+dist
+dist-ssr
+*.local
+.env*
+!.env.example
+.tanstack
+.wrangler
+.output
+.vinxi
+__unconfig*
+todos.json
+artifacts/
+coverage/
+*.log
+
+# turbo
+.turbo
+
+# typescript
+*.tsbuildinfo

@@ -1,0 +1,541 @@
+import * as React from "react"
+import {
+  HighlightStyle,
+  StreamLanguage,
+  bracketMatching,
+  syntaxHighlighting,
+} from "@codemirror/language"
+import { json } from "@codemirror/legacy-modes/mode/javascript"
+import { properties } from "@codemirror/legacy-modes/mode/properties"
+import { toml } from "@codemirror/legacy-modes/mode/toml"
+import { xml } from "@codemirror/legacy-modes/mode/xml"
+import { yaml } from "@codemirror/legacy-modes/mode/yaml"
+import {
+  SearchQuery,
+  closeSearchPanel,
+  findNext as findNextSearchMatch,
+  findPrevious as findPreviousSearchMatch,
+  openSearchPanel,
+  search,
+  searchKeymap,
+  searchPanelOpen,
+  setSearchQuery,
+} from "@codemirror/search"
+import {
+  getOriginalDoc,
+  unifiedMergeView,
+  updateOriginalDoc,
+} from "@codemirror/merge"
+import {
+  ChangeSet,
+  Compartment,
+  EditorState,
+  Prec,
+  Text,
+} from "@codemirror/state"
+import type { Extension } from "@codemirror/state"
+import {
+  Decoration,
+  EditorView,
+  ViewPlugin,
+  WidgetType,
+  highlightActiveLine,
+  highlightActiveLineGutter,
+  gutter,
+  keymap,
+  lineNumbers,
+} from "@codemirror/view"
+import type { DecorationSet, Panel, ViewUpdate } from "@codemirror/view"
+import { tags } from "@lezer/highlight"
+import { minimalSetup } from "codemirror"
+
+import { findSensitiveTextRedactions } from "@/lib/redaction"
+
+const kilnHighlightStyle = HighlightStyle.define([
+  { tag: tags.comment, color: "oklch(0.59 0.018 72)", fontStyle: "italic" },
+  { tag: [tags.keyword, tags.modifier], color: "oklch(0.73 0.13 50)" },
+  { tag: [tags.bool, tags.null, tags.atom], color: "oklch(0.73 0.09 292)" },
+  {
+    tag: [tags.string, tags.special(tags.string)],
+    color: "oklch(0.76 0.09 148)",
+  },
+  { tag: tags.quote, color: "oklch(0.76 0.075 148)" },
+  { tag: [tags.number, tags.integer, tags.float], color: "oklch(0.76 0.1 79)" },
+  {
+    tag: [tags.propertyName, tags.attributeName],
+    color: "oklch(0.74 0.08 225)",
+  },
+  { tag: [tags.variableName, tags.name], color: "oklch(0.87 0.018 70)" },
+  {
+    tag: tags.definition(tags.variableName),
+    color: "oklch(0.74 0.08 225)",
+  },
+  { tag: [tags.typeName, tags.className], color: "oklch(0.78 0.08 185)" },
+  { tag: [tags.operator, tags.punctuation], color: "oklch(0.61 0.025 65)" },
+  { tag: [tags.meta, tags.labelName], color: "oklch(0.66 0.055 60)" },
+  { tag: tags.heading, color: "oklch(0.76 0.11 55)", fontWeight: "600" },
+  { tag: tags.link, color: "oklch(0.73 0.1 225)", textDecoration: "none" },
+  { tag: tags.invalid, color: "oklch(0.71 0.15 27)" },
+])
+
+const kilnEditorTheme = EditorView.theme(
+  {
+    "&": {
+      height: "100%",
+      width: "100%",
+      minWidth: "0",
+      maxWidth: "100%",
+      backgroundColor: "transparent",
+      color: "oklch(0.87 0.018 70)",
+      fontSize: "12px",
+    },
+    "&.cm-focused": { outline: "none" },
+    "&.cm-editor.cm-focused .cm-cursor": {
+      borderLeftColor: "oklch(0.72 0.14 50)",
+    },
+    ".cm-scroller": {
+      fontFamily: "'JetBrains Mono Variable', 'JetBrains Mono', monospace",
+      lineHeight: "1.65rem",
+      minWidth: "0",
+      maxWidth: "100%",
+      overflow: "auto",
+    },
+    ".cm-content": {
+      minHeight: "100%",
+      padding: "16px 24px 16px 0",
+      caretColor: "oklch(0.72 0.14 50)",
+    },
+    ".cm-line": { paddingLeft: "16px" },
+    ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection":
+      {
+        backgroundColor: "oklch(0.67 0.16 47 / 0.2) !important",
+      },
+    ".cm-activeLine": { backgroundColor: "oklch(0.24 0.015 52 / 0.32)" },
+    ".cm-gutters": {
+      minHeight: "100%",
+      backgroundColor: "oklch(0.2 0.012 48 / 0.6)",
+      color: "oklch(0.58 0.015 65 / 0.55)",
+      borderRight: "1px solid oklch(0.29 0.018 48)",
+    },
+    ".cm-lineNumbers .cm-gutterElement": {
+      minWidth: "44px",
+      padding: "0 12px 0 8px",
+    },
+    ".cm-activeLineGutter": {
+      backgroundColor: "oklch(0.25 0.018 50 / 0.65)",
+      color: "oklch(0.69 0.055 58)",
+    },
+    ".cm-matchingBracket": {
+      backgroundColor: "oklch(0.67 0.16 47 / 0.16)",
+      color: "oklch(0.84 0.1 65)",
+      outline: "1px solid oklch(0.67 0.16 47 / 0.3)",
+    },
+    ".cm-foldPlaceholder": {
+      backgroundColor: "transparent",
+      border: "none",
+      color: "oklch(0.58 0.02 65)",
+    },
+    ".cm-redacted-ip": {
+      color: "oklch(0.62 0.018 65)",
+      cursor: "help",
+    },
+    ".cm-search-bridge": { display: "none" },
+    ".cm-searchMatch": {
+      backgroundColor: "oklch(0.67 0.16 47 / 0.16)",
+      outline: "1px solid oklch(0.67 0.16 47 / 0.24)",
+    },
+    ".cm-searchMatch-selected": {
+      backgroundColor: "oklch(0.67 0.16 47 / 0.3)",
+      outlineColor: "oklch(0.72 0.15 50 / 0.55)",
+    },
+    "&.cm-merge-b .cm-changedLine, .cm-inlineChangedLine": {
+      backgroundColor: "oklch(0.66 0.09 175 / 0.09)",
+    },
+    "&.cm-merge-b .cm-changedText": {
+      background: "oklch(0.7 0.1 175 / 0.18)",
+      borderBottom: "1px solid oklch(0.7 0.1 175 / 0.42)",
+    },
+    "&.cm-merge-b .cm-activeLine.cm-changedLine, &.cm-merge-b .cm-activeLine.cm-inlineChangedLine":
+      {
+        backgroundColor: "oklch(0.24 0.015 52 / 0.32)",
+      },
+    "&.cm-merge-b .cm-activeLine .cm-changedText": {
+      background: "transparent",
+      borderBottomColor: "transparent",
+    },
+    "&.cm-merge-b .cm-activeLine .cm-deletedText": {
+      display: "none",
+    },
+    ".cm-deletedChunk": {
+      margin: "0",
+      paddingLeft: "60px",
+      backgroundColor: "oklch(0.57 0.11 28 / 0.075)",
+      boxShadow:
+        "inset 0 1px oklch(0.57 0.11 28 / 0.14), inset 0 -1px oklch(0.57 0.11 28 / 0.14)",
+      color: "oklch(0.69 0.03 40 / 0.72)",
+    },
+    ".cm-deletedChunk .cm-deletedText": {
+      background: "oklch(0.57 0.11 28 / 0.16)",
+      borderBottom: "1px solid oklch(0.62 0.12 28 / 0.34)",
+    },
+    ".cm-changeGutter": {
+      width: "3px",
+      paddingLeft: "0",
+      backgroundColor: "oklch(0.2 0.012 48 / 0.6)",
+    },
+    "&.cm-merge-b .cm-changedLineGutter, .cm-inlineChangedLineGutter": {
+      backgroundColor: "oklch(0.7 0.1 175 / 0.72)",
+    },
+    ".cm-deletedLineGutter": {
+      backgroundColor: "oklch(0.62 0.12 28 / 0.62)",
+    },
+  },
+  { dark: true }
+)
+
+function createSearchBridgePanel(): Panel {
+  const dom = document.createElement("div")
+  dom.className = "cm-search cm-search-bridge"
+  dom.hidden = true
+  return { dom, top: true }
+}
+
+const mergeGutterSpacer = gutter({
+  class: "cm-changeGutter cm-changeGutter-placeholder",
+})
+
+function createMergeReview(original: string): Extension {
+  return unifiedMergeView({
+    original,
+    allowInlineDiffs: true,
+    gutter: true,
+    highlightChanges: true,
+    mergeControls: false,
+    diffConfig: { scanLimit: 800, timeout: 750 },
+  })
+}
+
+class RedactedIpWidget extends WidgetType {
+  constructor(readonly replacement: string) {
+    super()
+  }
+
+  eq(other: RedactedIpWidget) {
+    return other.replacement === this.replacement
+  }
+
+  toDOM() {
+    const element = document.createElement("span")
+    element.className = "cm-redacted-ip"
+    element.textContent = this.replacement
+    element.setAttribute("aria-label", "IP address redacted")
+    return element
+  }
+}
+
+function visibleDocumentRanges(view: EditorView) {
+  const ranges: Array<{ from: number; to: number }> = []
+  for (const visible of view.visibleRanges) {
+    const from = view.state.doc.lineAt(visible.from).from
+    const to = view.state.doc.lineAt(visible.to).to
+    const previous = ranges.at(-1)
+    if (previous && from <= previous.to) {
+      previous.to = Math.max(previous.to, to)
+    } else {
+      ranges.push({ from, to })
+    }
+  }
+  return ranges
+}
+
+function buildRedactionDecorations(view: EditorView): DecorationSet {
+  const decorations = []
+  for (const range of visibleDocumentRanges(view)) {
+    const visibleText = view.state.doc.sliceString(range.from, range.to)
+    for (const redaction of findSensitiveTextRedactions(visibleText)) {
+      decorations.push(
+        Decoration.replace({
+          widget: new RedactedIpWidget(redaction.replacement),
+        }).range(range.from + redaction.from, range.from + redaction.to)
+      )
+    }
+  }
+  return Decoration.set(decorations, true)
+}
+
+const redactSensitiveExtension = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet
+
+    constructor(view: EditorView) {
+      this.decorations = buildRedactionDecorations(view)
+    }
+
+    update(update: ViewUpdate) {
+      if (update.docChanged || update.viewportChanged) {
+        this.decorations = buildRedactionDecorations(update.view)
+      }
+    }
+  },
+  { decorations: (plugin) => plugin.decorations }
+)
+
+const logLanguage = StreamLanguage.define({
+  token(stream) {
+    if (stream.match(/^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]/)) return "meta"
+    if (stream.match(/^\[[^\]]+\/(?:ERROR|FATAL)\]/i)) return "invalid"
+    if (stream.match(/^\[[^\]]+\/WARN\]/i)) return "keyword"
+    if (stream.match(/^\[[^\]]+\/(?:INFO|DEBUG|TRACE)\]/i)) return "labelName"
+    if (stream.match(/^https?:\/\/\S+/)) return "link"
+    if (stream.match(/^(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?/)) return "number"
+    if (stream.match(/^#.*$/)) return "comment"
+    stream.next()
+    return null
+  },
+})
+
+function languageForPath(path: string): Extension {
+  const lowerPath = path.toLowerCase()
+  if (
+    lowerPath.endsWith(".json") ||
+    lowerPath.endsWith(".json5") ||
+    lowerPath.endsWith(".mcmeta")
+  ) {
+    return StreamLanguage.define(json)
+  }
+  if (lowerPath.endsWith(".yml") || lowerPath.endsWith(".yaml")) {
+    return StreamLanguage.define(yaml)
+  }
+  if (lowerPath.endsWith(".xml")) return StreamLanguage.define(xml)
+  if (lowerPath.endsWith(".toml")) return StreamLanguage.define(toml)
+  if (lowerPath.endsWith(".log") || lowerPath.endsWith(".log.gz"))
+    return logLanguage
+  if (
+    lowerPath.endsWith(".properties") ||
+    lowerPath.endsWith(".cfg") ||
+    lowerPath.endsWith(".conf")
+  ) {
+    return StreamLanguage.define(properties)
+  }
+  return []
+}
+
+export type SyntaxCodeEditorHandle = {
+  findNext: () => boolean
+  findPrevious: () => boolean
+}
+
+type SyntaxCodeEditorProps = {
+  ariaLabel: string
+  disabled: boolean
+  onChange: (value: string) => void
+  onSearchOpenChange: (open: boolean) => void
+  originalValue: string
+  path: string
+  redactSensitive: boolean
+  readOnly: boolean
+  searchOpen: boolean
+  searchQuery: string
+  showChanges: boolean
+  value: string
+  wrapLines: boolean
+}
+
+export const SyntaxCodeEditor = React.forwardRef<
+  SyntaxCodeEditorHandle,
+  SyntaxCodeEditorProps
+>(function SyntaxCodeEditor(
+  {
+    ariaLabel,
+    disabled,
+    onChange,
+    onSearchOpenChange,
+    originalValue,
+    path,
+    redactSensitive,
+    readOnly,
+    searchOpen,
+    searchQuery,
+    showChanges,
+    value,
+    wrapLines,
+  },
+  ref
+) {
+  const host = React.useRef<HTMLDivElement>(null)
+  const view = React.useRef<EditorView | null>(null)
+  const onChangeRef = React.useRef(onChange)
+  const onSearchOpenChangeRef = React.useRef(onSearchOpenChange)
+  const initialValue = React.useRef(value)
+  const initialOriginalValue = React.useRef(originalValue)
+  const initialShowChanges = React.useRef(showChanges)
+  const syncing = React.useRef(false)
+  const editability = React.useRef(new Compartment())
+  const mergeReview = React.useRef(new Compartment())
+  const redaction = React.useRef(new Compartment())
+  const wrapping = React.useRef(new Compartment())
+
+  onChangeRef.current = onChange
+  onSearchOpenChangeRef.current = onSearchOpenChange
+
+  React.useImperativeHandle(
+    ref,
+    () => ({
+      findNext() {
+        return view.current ? findNextSearchMatch(view.current) : false
+      },
+      findPrevious() {
+        return view.current ? findPreviousSearchMatch(view.current) : false
+      },
+    }),
+    []
+  )
+
+  React.useEffect(() => {
+    if (!host.current) return
+
+    const nextView = new EditorView({
+      parent: host.current,
+      state: EditorState.create({
+        doc: initialValue.current,
+        extensions: [
+          minimalSetup,
+          search({ top: true, createPanel: createSearchBridgePanel }),
+          Prec.highest(
+            keymap.of([
+              {
+                key: "Mod-f",
+                run: () => {
+                  onSearchOpenChangeRef.current(true)
+                  return true
+                },
+              },
+            ])
+          ),
+          keymap.of(searchKeymap),
+          lineNumbers(),
+          highlightActiveLine(),
+          highlightActiveLineGutter(),
+          bracketMatching(),
+          languageForPath(path),
+          syntaxHighlighting(kilnHighlightStyle),
+          kilnEditorTheme,
+          EditorView.contentAttributes.of({
+            "aria-label": ariaLabel,
+            autocapitalize: "off",
+            autocomplete: "off",
+            spellcheck: "false",
+          }),
+          editability.current.of([
+            EditorState.readOnly.of(readOnly),
+            EditorView.editable.of(!readOnly && !disabled),
+          ]),
+          mergeReview.current.of(
+            initialShowChanges.current
+              ? createMergeReview(initialOriginalValue.current)
+              : mergeGutterSpacer
+          ),
+          redaction.current.of(redactSensitive ? redactSensitiveExtension : []),
+          wrapping.current.of(wrapLines ? EditorView.lineWrapping : []),
+          EditorView.updateListener.of((update) => {
+            if (update.docChanged && !syncing.current) {
+              onChangeRef.current(update.state.doc.toString())
+            }
+            const searchWasOpen = searchPanelOpen(update.startState)
+            const searchIsOpen = searchPanelOpen(update.state)
+            if (searchWasOpen !== searchIsOpen) {
+              onSearchOpenChangeRef.current(searchIsOpen)
+            }
+          }),
+        ],
+      }),
+    })
+
+    view.current = nextView
+    return () => {
+      nextView.destroy()
+      view.current = null
+    }
+  }, [ariaLabel, disabled, path, readOnly])
+
+  React.useEffect(() => {
+    const editor = view.current
+    if (!editor) return
+    const currentValue = editor.state.doc.toString()
+    if (currentValue === value) return
+    syncing.current = true
+    editor.dispatch({
+      changes: { from: 0, to: currentValue.length, insert: value },
+    })
+    syncing.current = false
+  }, [value])
+
+  React.useEffect(() => {
+    view.current?.dispatch({
+      effects: redaction.current.reconfigure(
+        redactSensitive ? redactSensitiveExtension : []
+      ),
+    })
+  }, [redactSensitive])
+
+  React.useEffect(() => {
+    view.current?.dispatch({
+      effects: wrapping.current.reconfigure(
+        wrapLines ? EditorView.lineWrapping : []
+      ),
+    })
+  }, [wrapLines])
+
+  React.useEffect(() => {
+    const editor = view.current
+    if (!editor) return
+
+    editor.dispatch({
+      effects: mergeReview.current.reconfigure(
+        showChanges ? createMergeReview(originalValue) : mergeGutterSpacer
+      ),
+    })
+  }, [showChanges])
+
+  React.useEffect(() => {
+    const editor = view.current
+    if (!editor || !showChanges) return
+
+    const currentOriginal = getOriginalDoc(editor.state)
+    const nextOriginal = Text.of(originalValue.split(/\r?\n/))
+    if (currentOriginal.eq(nextOriginal)) return
+
+    const changes = ChangeSet.of(
+      { from: 0, to: currentOriginal.length, insert: nextOriginal },
+      currentOriginal.length
+    )
+    editor.dispatch({
+      effects: updateOriginalDoc.of({ doc: nextOriginal, changes }),
+    })
+  }, [originalValue, showChanges])
+
+  React.useEffect(() => {
+    const editor = view.current
+    if (!editor || searchPanelOpen(editor.state) === searchOpen) return
+    if (searchOpen) openSearchPanel(editor)
+    else closeSearchPanel(editor)
+  }, [searchOpen])
+
+  React.useEffect(() => {
+    view.current?.dispatch({
+      effects: setSearchQuery.of(new SearchQuery({ search: searchQuery })),
+    })
+  }, [searchQuery])
+
+  return (
+    <div
+      ref={host}
+      className={
+        disabled
+          ? "kiln-code-editor h-full max-w-full min-w-0 overflow-hidden opacity-40"
+          : "kiln-code-editor h-full max-w-full min-w-0 overflow-hidden"
+      }
+      data-syntax-language={path.split(".").at(-1)?.toLowerCase() ?? "text"}
+    />
+  )
+})

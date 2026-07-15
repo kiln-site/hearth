@@ -1,0 +1,94 @@
+import { randomBytes } from "node:crypto"
+import { spawn } from "node:child_process"
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises"
+import { resolve } from "node:path"
+
+import mysql from "mysql2/promise"
+
+process.env.NODE_ENV = "production"
+process.env.DATABASE_URL ||= "mysql://kiln:kiln@mysql:3306/hearth"
+process.env.KILN_URL ||= "http://localhost:3000"
+process.env.BETTER_AUTH_SECRET ||= await persistentSecret()
+
+await migrateDatabase()
+
+const server = spawn(
+  resolve("node_modules/.bin/srvx"),
+  [
+    "serve",
+    "--prod",
+    "--static=../client",
+    "--entry=dist/server/server.js",
+  ],
+  { env: process.env, stdio: "inherit" }
+)
+
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => server.kill(signal))
+}
+
+server.once("exit", (code, signal) => {
+  if (signal) process.kill(process.pid, signal)
+  else process.exit(code ?? 1)
+})
+
+async function persistentSecret() {
+  const dataDirectory = process.env.KILN_DATA_DIR?.trim() || "/data"
+  const path = resolve(dataDirectory, "better-auth-secret")
+  await mkdir(dataDirectory, { recursive: true })
+  try {
+    return (await readFile(path, "utf8")).trim()
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error
+  }
+
+  const secret = randomBytes(48).toString("base64url")
+  try {
+    await writeFile(path, `${secret}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 })
+    return secret
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error
+    return (await readFile(path, "utf8")).trim()
+  } finally {
+    await chmod(path, 0o600).catch(() => undefined)
+  }
+}
+
+async function migrateDatabase() {
+  const databaseUrl = process.env.DATABASE_URL
+  let connection
+  let lastError
+  for (let attempt = 1; attempt <= 30; attempt += 1) {
+    try {
+      connection = await mysql.createConnection({
+        uri: databaseUrl,
+        multipleStatements: true,
+        timezone: "Z",
+      })
+      break
+    } catch (error) {
+      lastError = error
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 2_000))
+    }
+  }
+  if (!connection) throw lastError ?? new Error("Could not connect to MySQL")
+
+  try {
+    const [tables] = await connection.query(
+      `SELECT table_name FROM information_schema.tables
+        WHERE table_schema = DATABASE() AND table_name = 'user'`
+    )
+    if (tables.length === 0) {
+      const authSql = await readFile(
+        new URL("../migrations/auth.sql", import.meta.url),
+        "utf8"
+      )
+      await connection.query(authSql)
+      console.info("Kiln authentication tables created")
+    }
+  } finally {
+    await connection.end()
+  }
+
+  await import("./migrate-app.mjs")
+}
