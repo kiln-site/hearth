@@ -36,7 +36,7 @@ function HoverCardContent({
         className={cn(
           floatingSurfaceClassName,
           floatingMotionClassName,
-          "z-50 w-64 origin-(--radix-hover-card-content-transform-origin) rounded-lg p-2.5 text-sm ring-1 ring-border/90 outline-hidden",
+          "z-50 w-64 origin-(--radix-hover-card-content-transform-origin) rounded-lg p-2.5 text-sm ring-1 ring-ember/22 outline-hidden",
           className
         )}
         {...props}

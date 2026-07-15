@@ -99,12 +99,16 @@ const TERMINAL_EDIT_PATTERN = new RegExp(
 )
 const MINECRAFT_LOG_PREFIX_PATTERN =
   /\[\d{2}:\d{2}:\d{2} (?:INFO|WARN(?:ING)?|ERROR|FATAL|SEVERE|DEBUG|TRACE)\]:/iu
+const CONSOLE_TTY_COLUMNS = 120
+const CONSOLE_TTY_ROWS = 40
 /* eslint-enable no-control-regex */
 
 export class DockerDriver {
   readonly #config: RelayConfig
   #cachedDockerVersion: string | null | undefined
   readonly #consoleLocks = new Map<string, Promise<void>>()
+  readonly #consoleSizeStarts = new Map<string, string>()
+  readonly #consoleSizePending = new Map<string, Promise<void>>()
   readonly #resourceCache = new Map<string, ResourceCacheEntry>()
 
   constructor(config: RelayConfig) {
@@ -120,6 +124,17 @@ export class DockerDriver {
       if (!activeContainerIds.has(containerId))
         this.#resourceCache.delete(containerId)
     }
+    for (const containerId of this.#consoleSizeStarts.keys()) {
+      if (!activeContainerIds.has(containerId))
+        this.#consoleSizeStarts.delete(containerId)
+    }
+    await Promise.all(
+      discovered.map(({ config, container }) =>
+        config.managedByRelay
+          ? this.#ensureConsoleSize(container).catch(() => undefined)
+          : Promise.resolve()
+      )
+    )
 
     const instances = discovered.map(({ config, container }) => {
       const desiredState: RelayDesiredState = container.State.Running
@@ -458,6 +473,57 @@ export class DockerDriver {
       })
       attachRequest.on("error", (error) => settle(error))
       attachRequest.end()
+    })
+  }
+
+  async #ensureConsoleSize(container: DockerInspect): Promise<void> {
+    const { Id: containerId, Config: config, State: state } = container
+    if (!state.Running || !config.Tty) return
+    if (this.#consoleSizeStarts.get(containerId) === state.StartedAt) return
+
+    const pending = this.#consoleSizePending.get(containerId)
+    if (pending) {
+      await pending
+      if (this.#consoleSizeStarts.get(containerId) === state.StartedAt) return
+    }
+
+    const resize = this.#resizeConsole(containerId)
+      .then(() => {
+        this.#consoleSizeStarts.set(containerId, state.StartedAt)
+      })
+      .finally(() => this.#consoleSizePending.delete(containerId))
+    this.#consoleSizePending.set(containerId, resize)
+    await resize
+  }
+
+  async #resizeConsole(containerId: string): Promise<void> {
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      const resizePath = `/containers/${encodeURIComponent(containerId)}/resize?h=${CONSOLE_TTY_ROWS}&w=${CONSOLE_TTY_COLUMNS}`
+      const resizeRequest = request({
+        socketPath: this.#config.dockerSocket,
+        path: resizePath,
+        method: "POST",
+      })
+      let settled = false
+      const settle = (error?: Error) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        if (error) rejectPromise(error)
+        else resolvePromise()
+      }
+      const timer = setTimeout(() => {
+        resizeRequest.destroy(new Error("Docker console resize timed out"))
+      }, 5_000)
+
+      resizeRequest.on("response", (response) => {
+        response.resume()
+        const status = response.statusCode ?? 500
+        if (status >= 200 && status < 300) settle()
+        else settle(new Error(`Docker console resize returned HTTP ${status}`))
+      })
+      resizeRequest.on("error", (error) => settle(error))
+      resizeRequest.end()
     })
   }
 
@@ -931,6 +997,10 @@ function parseConsoleLine(value: string): ParsedConsoleLine | null {
 function isTerminalOnlyConsoleFrame(value: string): boolean {
   const normalized = stripAnsi(value)
   if (MINECRAFT_LOG_PREFIX_PATTERN.test(normalized)) return false
+  const terminalText = normalized
+    .replace(/^\d{4}-\d{2}-\d{2}T\S+Z\s*/u, "")
+    .trimStart()
+  if (/^>\s*/u.test(terminalText)) return true
   if (TERMINAL_EDIT_PATTERN.test(value)) return true
 
   const ansiSequenceCount = value.match(ANSI_PATTERN)?.length ?? 0
@@ -972,6 +1042,10 @@ function parseConsoleCompletion(
       )
       .slice(0, 100)
     return { completedPrefix: null, suggestions }
+  }
+
+  if (output.includes("\u0007")) {
+    return { completedPrefix: null, suggestions: [] }
   }
 
   const rendered = renderTerminalLine(output).trimEnd()

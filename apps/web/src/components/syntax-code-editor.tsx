@@ -113,9 +113,9 @@ const kilnEditorTheme = EditorView.theme(
     ".cm-activeLine": { backgroundColor: "oklch(0.24 0.015 52 / 0.32)" },
     ".cm-gutters": {
       minHeight: "100%",
-      backgroundColor: "oklch(0.2 0.012 48 / 0.6)",
+      backgroundColor: "oklch(0.2 0.008 20 / 0.6)",
       color: "oklch(0.58 0.015 65 / 0.55)",
-      borderRight: "1px solid oklch(0.29 0.018 48)",
+      borderRight: "1px solid oklch(0.285 0.016 22)",
     },
     ".cm-lineNumbers .cm-gutterElement": {
       minWidth: "44px",
@@ -181,7 +181,7 @@ const kilnEditorTheme = EditorView.theme(
     ".cm-changeGutter": {
       width: "3px",
       paddingLeft: "0",
-      backgroundColor: "oklch(0.2 0.012 48 / 0.6)",
+      backgroundColor: "oklch(0.2 0.008 20 / 0.6)",
     },
     "&.cm-merge-b .cm-changedLineGutter, .cm-inlineChangedLineGutter": {
       backgroundColor: "oklch(0.7 0.1 175 / 0.72)",

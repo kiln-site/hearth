@@ -36,7 +36,7 @@ function PopoverContent({
         className={cn(
           floatingSurfaceClassName,
           floatingMotionClassName,
-          "z-50 w-72 origin-(--radix-popover-content-transform-origin) border border-border/90 p-3 outline-none",
+          "z-50 w-72 origin-(--radix-popover-content-transform-origin) border border-ember/22 p-3 outline-none",
           className
         )}
         {...props}

@@ -671,7 +671,7 @@ function MobileFileAction({
   return (
     <button
       type="button"
-      className="group flex w-full items-center gap-2.5 border-t border-border/45 px-2 py-2 text-left transition-colors first:border-t-0 hover:bg-accent/45 focus-visible:bg-accent/55 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40"
+      className="group flex w-full items-center gap-2.5 border-t border-border/45 px-2 py-2 text-left transition-colors first:border-t-0 hover:bg-popover-accent/75 focus-visible:bg-popover-accent focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40"
       disabled={disabled}
       onClick={onClick}
     >
@@ -870,10 +870,10 @@ function FileTreePanel({
             <div
               className={`${floatingSurfaceClassName} absolute top-full right-0 z-[100] min-w-36 border border-border/90 p-1 text-xs`}
             >
-              <button className="flex w-full px-2 py-1.5 hover:bg-accent">
+              <button className="flex w-full px-2 py-1.5 hover:bg-popover-accent">
                 Open {item.path}
               </button>
-              <button className="flex w-full px-2 py-1.5 hover:bg-accent">
+              <button className="flex w-full px-2 py-1.5 hover:bg-popover-accent">
                 Rename
               </button>
               <button className="flex w-full px-2 py-1.5 text-destructive hover:bg-destructive/10">
@@ -898,7 +898,7 @@ function FileActionPreview({
     <button
       type="button"
       disabled
-      className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-muted-foreground/80 transition-colors hover:bg-accent/45 hover:text-foreground focus-visible:bg-accent/55 focus-visible:text-foreground focus-visible:outline-none disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-muted-foreground/80"
+      className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-muted-foreground/80 transition-colors hover:bg-popover-accent/75 hover:text-foreground focus-visible:bg-popover-accent focus-visible:text-foreground focus-visible:outline-none disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-muted-foreground/80"
     >
       <span className="grid size-7 shrink-0 place-items-center border border-border/70 bg-card [&>svg]:size-3.5">
         {icon}

@@ -56,6 +56,7 @@ interface CommandCompletions {
   cursor: number
   input: string
   selectedIndex: number
+  status: "empty" | "loading" | "ready" | "unavailable"
   suggestions: Array<string>
 }
 
@@ -93,15 +94,13 @@ export function ConsoleWorkspace({
   const [sending, setSending] = React.useState(false)
   const [commandCompletions, setCommandCompletions] =
     React.useState<CommandCompletions | null>(null)
-  const [optimisticLines, setOptimisticLines] = React.useState<
-    Array<RelayConsoleLine>
-  >([])
   const [copyState, setCopyState] = React.useState<"idle" | "copied">("idle")
   const [shareState, setShareState] = React.useState<
     "idle" | "uploading" | "copied" | "error"
   >("idle")
   const parentRef = React.useRef<HTMLDivElement>(null)
   const commandInputRef = React.useRef<HTMLInputElement>(null)
+  const completionListRef = React.useRef<HTMLDivElement>(null)
   const copyTimer = React.useRef<number | null>(null)
   const shareTimer = React.useRef<number | null>(null)
   const completionSessionActive = React.useRef(false)
@@ -111,6 +110,10 @@ export function ConsoleWorkspace({
     input: string
   }>({ cursor: -1, input: "" })
   const programmaticScroll = React.useRef(false)
+  const selectedCompletionIndex =
+    commandCompletions?.status === "ready"
+      ? commandCompletions.selectedIndex
+      : null
 
   React.useEffect(() => {
     let cancelled = false
@@ -123,7 +126,6 @@ export function ConsoleWorkspace({
     setConsoleData(null)
     setSelected(new Set())
     setLastSelected(null)
-    setOptimisticLines([])
     setLoading(true)
     setConnectionState("connecting")
 
@@ -212,6 +214,24 @@ export function ConsoleWorkspace({
     setCommandCompletions(null)
   }, [instance.id])
 
+  React.useEffect(() => {
+    if (selectedCompletionIndex === null) return
+    let scrollFrame = 0
+    const selectionFrame = window.requestAnimationFrame(() => {
+      scrollFrame = window.requestAnimationFrame(() => {
+        const selectedOption =
+          completionListRef.current?.querySelector<HTMLElement>(
+            `#console-completion-${selectedCompletionIndex}`
+          )
+        selectedOption?.scrollIntoView({ block: "nearest", inline: "nearest" })
+      })
+    })
+    return () => {
+      window.cancelAnimationFrame(selectionFrame)
+      window.cancelAnimationFrame(scrollFrame)
+    }
+  }, [selectedCompletionIndex])
+
   React.useEffect(
     () => () => {
       if (copyTimer.current) window.clearTimeout(copyTimer.current)
@@ -239,7 +259,7 @@ export function ConsoleWorkspace({
 
   const filteredLines = React.useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
-    return [...(consoleData?.lines ?? []), ...optimisticLines]
+    return [...(consoleData?.lines ?? [])]
       .map((line) => ({
         ...line,
         text: redactSensitive ? redactSensitiveText(line.text) : line.text,
@@ -250,7 +270,7 @@ export function ConsoleWorkspace({
           (!normalizedQuery ||
             line.text.toLowerCase().includes(normalizedQuery))
       )
-  }, [consoleData?.lines, levels, optimisticLines, query, redactSensitive])
+  }, [consoleData?.lines, levels, query, redactSensitive])
 
   const rowVirtualizer = useVirtualizer({
     count: filteredLines.length,
@@ -391,7 +411,7 @@ export function ConsoleWorkspace({
   }
 
   function applyCommandCompletion(suggestion: string) {
-    if (!commandCompletions) return
+    if (!commandCompletions || commandCompletions.status !== "ready") return
     const prefix = commandCompletions.input.slice(0, commandCompletions.cursor)
     const suffix = commandCompletions.input.slice(commandCompletions.cursor)
     const tokenStart = Math.max(prefix.lastIndexOf(" ") + 1, 0)
@@ -421,7 +441,13 @@ export function ConsoleWorkspace({
     const requestId = completionRequest.current + 1
     completionRequest.current = requestId
     completionPending.current = { cursor, input }
-    setCommandCompletions(null)
+    setCommandCompletions({
+      cursor,
+      input,
+      selectedIndex: 0,
+      status: "loading",
+      suggestions: [],
+    })
     try {
       const result = await completeRelayCommand({
         data: { instanceId: instance.id, input, cursor },
@@ -444,27 +470,31 @@ export function ConsoleWorkspace({
         }
         return
       }
-      if (result.completedPrefix) {
-        const completedLength = result.completedPrefix.length
-        setCommand(`${result.completedPrefix}${input.slice(cursor)}`)
-        window.requestAnimationFrame(() => {
-          commandInputRef.current?.setSelectionRange(
-            completedLength,
-            completedLength
-          )
-        })
-        return
+      const suggestions = [...result.suggestions]
+      if (
+        result.completedPrefix &&
+        !suggestions.includes(result.completedPrefix)
+      ) {
+        suggestions.unshift(result.completedPrefix)
       }
-      if (result.suggestions.length > 0) {
+      setCommandCompletions({
+        cursor,
+        input,
+        selectedIndex: 0,
+        status: suggestions.length > 0 ? "ready" : "empty",
+        suggestions,
+      })
+    } catch {
+      if (completionRequest.current === requestId) {
+        if (activateSession) completionSessionActive.current = false
         setCommandCompletions({
           cursor,
           input,
           selectedIndex: 0,
-          suggestions: result.suggestions,
+          status: "unavailable",
+          suggestions: [],
         })
       }
-    } catch {
-      // Completion is optional; command entry remains usable if it is unavailable.
     } finally {
       if (
         completionPending.current.input === input &&
@@ -487,7 +517,7 @@ export function ConsoleWorkspace({
       return
     }
 
-    if (commandCompletions) {
+    if (commandCompletions?.status === "ready") {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault()
         const direction = event.key === "ArrowDown" ? 1 : -1
@@ -495,9 +525,10 @@ export function ConsoleWorkspace({
           if (!current) return current
           return {
             ...current,
-            selectedIndex:
-              (current.selectedIndex + direction + current.suggestions.length) %
-              current.suggestions.length,
+            selectedIndex: Math.min(
+              Math.max(current.selectedIndex + direction, 0),
+              current.suggestions.length - 1
+            ),
           }
         })
         return
@@ -535,18 +566,9 @@ export function ConsoleWorkspace({
     const value = command.trim()
     if (!value || sending) return
     stopCommandCompletions()
-    const optimisticId = `command-${Date.now()}`
-    const optimisticLine: RelayConsoleLine = {
-      id: optimisticId,
-      timestamp: new Date().toISOString(),
-      level: "info",
-      text: `> ${value}`,
-    }
-
     recordCommand(value)
     setCommand("")
     window.requestAnimationFrame(() => commandInputRef.current?.focus())
-    setOptimisticLines((current) => [...current, optimisticLine])
     setSending(true)
 
     try {
@@ -558,9 +580,6 @@ export function ConsoleWorkspace({
       setCommandError(cause instanceof Error ? cause.message : "Command failed")
       setCommand(value)
     } finally {
-      setOptimisticLines((current) =>
-        current.filter((line) => line.id !== optimisticId)
-      )
       setSending(false)
       window.requestAnimationFrame(() => commandInputRef.current?.focus())
     }
@@ -929,6 +948,8 @@ export function ConsoleWorkspace({
                       setCommand(input)
                       if (completionSessionActive.current) {
                         void requestCommandCompletion(input, cursor)
+                      } else {
+                        setCommandCompletions(null)
                       }
                     }}
                     onBlur={stopCommandCompletions}
@@ -944,7 +965,7 @@ export function ConsoleWorkspace({
                     aria-invalid={Boolean(commandError)}
                     aria-keyshortcuts="Tab ArrowUp ArrowDown Escape"
                     aria-activedescendant={
-                      commandCompletions
+                      commandCompletions?.status === "ready"
                         ? `console-completion-${commandCompletions.selectedIndex}`
                         : undefined
                     }
@@ -957,38 +978,71 @@ export function ConsoleWorkspace({
                 </div>
               </PopoverAnchor>
               <PopoverContent
+                ref={completionListRef}
                 id="console-command-completions"
                 role="listbox"
                 align="start"
                 side="top"
                 sideOffset={7}
-                className="max-h-56 w-[var(--radix-popover-trigger-width)] min-w-64 overflow-y-auto p-1"
+                className="max-h-[13.25rem] w-[var(--radix-popover-trigger-width)] min-w-64 overflow-y-scroll p-1 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:bg-muted-foreground/55 [&::-webkit-scrollbar-thumb:hover]:bg-muted-foreground/75 [&::-webkit-scrollbar-track]:bg-foreground/10"
+                style={{
+                  scrollbarColor:
+                    "color-mix(in oklab, var(--muted-foreground) 55%, transparent) color-mix(in oklab, var(--foreground) 10%, transparent)",
+                  scrollbarGutter: "stable",
+                }}
+                aria-busy={commandCompletions?.status === "loading"}
                 onOpenAutoFocus={(event) => event.preventDefault()}
                 onCloseAutoFocus={(event) => event.preventDefault()}
               >
-                {commandCompletions?.suggestions.map((suggestion, index) => (
-                  <button
-                    id={`console-completion-${index}`}
-                    role="option"
-                    aria-selected={index === commandCompletions.selectedIndex}
-                    type="button"
-                    key={suggestion}
-                    className={`block w-full px-2.5 py-2 text-left font-mono text-xs transition-colors ${
-                      index === commandCompletions.selectedIndex
-                        ? "bg-accent text-accent-foreground"
-                        : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-                    }`}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onMouseEnter={() =>
-                      setCommandCompletions((current) =>
-                        current ? { ...current, selectedIndex: index } : current
-                      )
-                    }
-                    onClick={() => applyCommandCompletion(suggestion)}
+                {commandCompletions?.status === "loading" ? (
+                  <div
+                    role="status"
+                    className="flex items-center gap-2 px-2.5 py-2 font-mono text-xs text-muted-foreground"
                   >
-                    {suggestion}
-                  </button>
-                ))}
+                    <LoaderCircle className="size-3.5 animate-spin text-primary/75" />
+                    Waiting for completions…
+                  </div>
+                ) : commandCompletions?.status === "empty" ? (
+                  <div
+                    role="status"
+                    className="px-2.5 py-2 font-mono text-xs text-muted-foreground"
+                  >
+                    No completions
+                  </div>
+                ) : commandCompletions?.status === "unavailable" ? (
+                  <div
+                    role="status"
+                    className="px-2.5 py-2 font-mono text-xs text-muted-foreground"
+                  >
+                    Completions unavailable
+                  </div>
+                ) : (
+                  commandCompletions?.suggestions.map((suggestion, index) => (
+                    <button
+                      id={`console-completion-${index}`}
+                      role="option"
+                      aria-selected={index === commandCompletions.selectedIndex}
+                      type="button"
+                      key={suggestion}
+                      className={`block w-full px-2.5 py-2 text-left font-mono text-xs ${
+                        index === commandCompletions.selectedIndex
+                          ? "bg-popover-accent text-popover-accent-foreground"
+                          : "text-muted-foreground hover:bg-muted/55 hover:text-foreground"
+                      }`}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onPointerMove={() =>
+                        setCommandCompletions((current) =>
+                          current
+                            ? { ...current, selectedIndex: index }
+                            : current
+                        )
+                      }
+                      onClick={() => applyCommandCompletion(suggestion)}
+                    >
+                      {suggestion}
+                    </button>
+                  ))
+                )}
               </PopoverContent>
             </Popover>
             <Button
@@ -1029,7 +1083,7 @@ function ConsoleLevelFilter({
   return (
     <button
       type="button"
-      className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-foreground transition-colors hover:bg-accent/55 focus-visible:bg-accent/65 focus-visible:outline-none"
+      className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-foreground transition-colors hover:bg-popover-accent/80 focus-visible:bg-popover-accent focus-visible:outline-none"
       aria-pressed={active}
       onClick={onClick}
     >

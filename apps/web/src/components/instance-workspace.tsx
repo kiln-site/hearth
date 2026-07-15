@@ -369,7 +369,7 @@ export function InstanceWorkspace({
                       </button>
                       <button
                         type="button"
-                        className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-foreground transition-colors hover:bg-accent/55 focus-visible:bg-accent/65 focus-visible:outline-none disabled:cursor-default disabled:opacity-35"
+                        className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-foreground transition-colors hover:bg-popover-accent/80 focus-visible:bg-popover-accent focus-visible:outline-none disabled:cursor-default disabled:opacity-35"
                         disabled={!isRunning}
                         onClick={() => {
                           setServerActionsOpen(false)
