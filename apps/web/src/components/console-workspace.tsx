@@ -57,7 +57,10 @@ interface CommandCompletions {
   input: string
   selectedIndex: number
   status: "empty" | "loading" | "ready" | "unavailable"
-  suggestions: Array<string>
+  suggestions: Array<{
+    label: string
+    value: string
+  }>
 }
 
 export function ConsoleWorkspace({
@@ -414,10 +417,7 @@ export function ConsoleWorkspace({
     if (!commandCompletions || commandCompletions.status !== "ready") return
     const prefix = commandCompletions.input.slice(0, commandCompletions.cursor)
     const suffix = commandCompletions.input.slice(commandCompletions.cursor)
-    const tokenStart = Math.max(prefix.lastIndexOf(" ") + 1, 0)
-    const completedPrefix = suggestion.startsWith(prefix.slice(0, tokenStart))
-      ? suggestion
-      : `${prefix.slice(0, tokenStart)}${suggestion}`
+    const completedPrefix = mergeCommandCompletion(prefix, suggestion)
     setCommandCompletions(null)
     setCommand(`${completedPrefix}${suffix}`)
     window.requestAnimationFrame(() => {
@@ -470,13 +470,18 @@ export function ConsoleWorkspace({
         }
         return
       }
-      const suggestions = [...result.suggestions]
+      const suggestionValues = [...result.suggestions]
       if (
         result.completedPrefix &&
-        !suggestions.includes(result.completedPrefix)
+        !suggestionValues.includes(result.completedPrefix)
       ) {
-        suggestions.unshift(result.completedPrefix)
+        suggestionValues.unshift(result.completedPrefix)
       }
+      const prefix = input.slice(0, cursor)
+      const suggestions = suggestionValues.map((value) => ({
+        label: commandCompletionLabel(prefix, value),
+        value,
+      }))
       setCommandCompletions({
         cursor,
         input,
@@ -537,7 +542,7 @@ export function ConsoleWorkspace({
         event.preventDefault()
         const suggestion =
           commandCompletions.suggestions[commandCompletions.selectedIndex]
-        if (suggestion) applyCommandCompletion(suggestion)
+        applyCommandCompletion(suggestion.value)
         return
       }
     }
@@ -1011,7 +1016,7 @@ export function ConsoleWorkspace({
                       role="option"
                       aria-selected={index === commandCompletions.selectedIndex}
                       type="button"
-                      key={suggestion}
+                      key={suggestion.value}
                       className={`block w-full px-2.5 py-2 text-left font-mono text-xs ${
                         index === commandCompletions.selectedIndex
                           ? "bg-popover-accent text-popover-accent-foreground"
@@ -1025,9 +1030,9 @@ export function ConsoleWorkspace({
                             : current
                         )
                       }
-                      onClick={() => applyCommandCompletion(suggestion)}
+                      onClick={() => applyCommandCompletion(suggestion.value)}
                     >
-                      {suggestion}
+                      {suggestion.label}
                     </button>
                   ))
                 )}
@@ -1331,6 +1336,51 @@ function useCommandHistory(instanceId: string) {
   )
 
   return { navigateHistory, recordCommand }
+}
+
+function mergeCommandCompletion(prefix: string, suggestion: string): string {
+  const { contextualStart, tokenStart } = commandCompletionContext(
+    prefix,
+    suggestion
+  )
+  if (contextualStart !== undefined) {
+    return `${prefix.slice(0, contextualStart)}${suggestion}`
+  }
+
+  return `${prefix.slice(0, tokenStart)}${suggestion}`
+}
+
+function commandCompletionLabel(prefix: string, suggestion: string): string {
+  const { contextualStart, tokenStart } = commandCompletionContext(
+    prefix,
+    suggestion
+  )
+  if (contextualStart === undefined) return suggestion
+
+  const completedContext = prefix.slice(contextualStart, tokenStart)
+  const label = suggestion.slice(completedContext.length)
+  return label || suggestion
+}
+
+function commandCompletionContext(prefix: string, suggestion: string) {
+  const tokenStarts = [0]
+  for (let index = 1; index < prefix.length; index += 1) {
+    if (
+      /\s/u.test(prefix[index - 1] ?? "") &&
+      !/\s/u.test(prefix[index] ?? "")
+    ) {
+      tokenStarts.push(index)
+    }
+  }
+
+  const contextualStart = tokenStarts.find((start) => {
+    const typedContext = prefix.slice(start)
+    return typedContext.length > 0 && suggestion.startsWith(typedContext)
+  })
+  const tokenStart = /\s$/u.test(prefix)
+    ? prefix.length
+    : (tokenStarts.at(-1) ?? 0)
+  return { contextualStart, tokenStart }
 }
 
 function readCommandHistory(storageKey: string): Array<string> {
