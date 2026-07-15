@@ -476,6 +476,8 @@ export class DockerDriver {
       let output = ""
       let capturing = false
       let settled = false
+      let attachReadyTimer: ReturnType<typeof setTimeout> | null = null
+      let clearLineTimer: ReturnType<typeof setTimeout> | null = null
       let quietTimer: ReturnType<typeof setTimeout> | null = null
       let hardTimer: ReturnType<typeof setTimeout> | null = null
       const requestTimer = setTimeout(() => {
@@ -486,6 +488,8 @@ export class DockerDriver {
         if (settled) return
         settled = true
         clearTimeout(requestTimer)
+        if (attachReadyTimer) clearTimeout(attachReadyTimer)
+        if (clearLineTimer) clearTimeout(clearLineTimer)
         if (quietTimer) clearTimeout(quietTimer)
         if (hardTimer) clearTimeout(hardTimer)
         if (error) rejectPromise(error)
@@ -515,16 +519,23 @@ export class DockerDriver {
           quietTimer = setTimeout(finish, 120)
         })
         socket.on("error", (error) => settle("", error))
-        socket.write("\u0015")
-        setTimeout(() => {
+        // Docker reports the upgraded attach socket before the container TTY is
+        // ready to consume input. Paper silently drops a probe sent immediately.
+        attachReadyTimer = setTimeout(() => {
           if (settled) return
-          output = ""
-          capturing = true
-          socket.write(`${prefix}\t`, (error) => {
-            if (error) settle("", error)
+          socket.write("\u0015", (clearError) => {
+            if (clearError) settle("", clearError)
           })
-          hardTimer = setTimeout(finish, 800)
-        }, 25)
+          clearLineTimer = setTimeout(() => {
+            if (settled) return
+            output = ""
+            capturing = true
+            socket.write(`${prefix}\t`, (error) => {
+              if (error) settle("", error)
+            })
+            hardTimer = setTimeout(finish, 800)
+          }, 25)
+        }, 50)
       })
       attachRequest.on("response", (response) => {
         response.resume()
@@ -918,8 +929,21 @@ function parseConsoleLine(value: string): ParsedConsoleLine | null {
 }
 
 function isTerminalOnlyConsoleFrame(value: string): boolean {
-  if (!TERMINAL_EDIT_PATTERN.test(value)) return false
-  return !MINECRAFT_LOG_PREFIX_PATTERN.test(stripAnsi(value))
+  const normalized = stripAnsi(value)
+  if (MINECRAFT_LOG_PREFIX_PATTERN.test(normalized)) return false
+  if (TERMINAL_EDIT_PATTERN.test(value)) return true
+
+  const ansiSequenceCount = value.match(ANSI_PATTERN)?.length ?? 0
+  if (ansiSequenceCount >= 4 && /\S+\s{2,}\S+/u.test(normalized)) return true
+
+  const terminalColumns = normalized
+    .replace(/^\d{4}-\d{2}-\d{2}T\S+Z\s*/u, "")
+    .trim()
+    .split(/\s{2,}/u)
+  return (
+    terminalColumns.length >= 2 &&
+    terminalColumns.every((column) => /^[a-z0-9_:.?+/-]+$/iu.test(column))
+  )
 }
 
 function parseConsoleCompletion(

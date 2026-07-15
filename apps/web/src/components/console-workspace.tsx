@@ -104,6 +104,7 @@ export function ConsoleWorkspace({
   const commandInputRef = React.useRef<HTMLInputElement>(null)
   const copyTimer = React.useRef<number | null>(null)
   const shareTimer = React.useRef<number | null>(null)
+  const completionSessionActive = React.useRef(false)
   const completionRequest = React.useRef(0)
   const completionPending = React.useRef<{
     cursor: number
@@ -205,7 +206,9 @@ export function ConsoleWorkspace({
   }, [active, instance.id])
 
   React.useEffect(() => {
+    completionSessionActive.current = false
     completionRequest.current += 1
+    completionPending.current = { cursor: -1, input: "" }
     setCommandCompletions(null)
   }, [instance.id])
 
@@ -368,16 +371,22 @@ export function ConsoleWorkspace({
     if (nextCommand === undefined) return
 
     event.preventDefault()
-    cancelCommandCompletions()
+    setCommandCompletions(null)
     setCommand(nextCommand)
     window.requestAnimationFrame(() => {
       const input = commandInputRef.current
-      if (input) input.setSelectionRange(input.value.length, input.value.length)
+      if (!input) return
+      input.setSelectionRange(input.value.length, input.value.length)
+      if (completionSessionActive.current) {
+        void requestCommandCompletion(nextCommand, nextCommand.length)
+      }
     })
   }
 
-  function cancelCommandCompletions() {
+  function stopCommandCompletions() {
+    completionSessionActive.current = false
     completionRequest.current += 1
+    completionPending.current = { cursor: -1, input: "" }
     setCommandCompletions(null)
   }
 
@@ -389,7 +398,7 @@ export function ConsoleWorkspace({
     const completedPrefix = suggestion.startsWith(prefix.slice(0, tokenStart))
       ? suggestion
       : `${prefix.slice(0, tokenStart)}${suggestion}`
-    cancelCommandCompletions()
+    setCommandCompletions(null)
     setCommand(`${completedPrefix}${suffix}`)
     window.requestAnimationFrame(() => {
       const input = commandInputRef.current
@@ -398,7 +407,11 @@ export function ConsoleWorkspace({
     })
   }
 
-  async function requestCommandCompletion(input: string, cursor: number) {
+  async function requestCommandCompletion(
+    input: string,
+    cursor: number,
+    activateSession = false
+  ) {
     if (
       completionPending.current.input === input &&
       completionPending.current.cursor === cursor
@@ -413,10 +426,22 @@ export function ConsoleWorkspace({
       const result = await completeRelayCommand({
         data: { instanceId: instance.id, input, cursor },
       })
-      if (
-        completionRequest.current !== requestId ||
-        commandInputRef.current?.value !== input
-      ) {
+      if (completionRequest.current !== requestId) return
+      if (!result.supported) {
+        completionSessionActive.current = false
+        setCommandCompletions(null)
+        return
+      }
+      if (activateSession) completionSessionActive.current = true
+
+      const currentInput = commandInputRef.current
+      if (!currentInput || currentInput.value !== input) {
+        if (activateSession && currentInput) {
+          void requestCommandCompletion(
+            currentInput.value,
+            currentInput.selectionStart ?? currentInput.value.length
+          )
+        }
         return
       }
       if (result.completedPrefix) {
@@ -453,12 +478,16 @@ export function ConsoleWorkspace({
   function handleCommandKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
     if (event.nativeEvent.isComposing) return
 
+    if (
+      event.key === "Escape" &&
+      (completionSessionActive.current || commandCompletions)
+    ) {
+      event.preventDefault()
+      stopCommandCompletions()
+      return
+    }
+
     if (commandCompletions) {
-      if (event.key === "Escape") {
-        event.preventDefault()
-        cancelCommandCompletions()
-        return
-      }
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault()
         const direction = event.key === "ArrowDown" ? 1 : -1
@@ -492,7 +521,8 @@ export function ConsoleWorkspace({
       event.preventDefault()
       void requestCommandCompletion(
         event.currentTarget.value,
-        event.currentTarget.selectionStart ?? event.currentTarget.value.length
+        event.currentTarget.selectionStart ?? event.currentTarget.value.length,
+        true
       )
       return
     }
@@ -504,7 +534,7 @@ export function ConsoleWorkspace({
     event.preventDefault()
     const value = command.trim()
     if (!value || sending) return
-    cancelCommandCompletions()
+    stopCommandCompletions()
     const optimisticId = `command-${Date.now()}`
     const optimisticLine: RelayConsoleLine = {
       id: optimisticId,
@@ -883,7 +913,7 @@ export function ConsoleWorkspace({
             <Popover
               open={Boolean(commandCompletions)}
               onOpenChange={(open) => {
-                if (!open) cancelCommandCompletions()
+                if (!open) stopCommandCompletions()
               }}
             >
               <PopoverAnchor asChild>
@@ -892,10 +922,16 @@ export function ConsoleWorkspace({
                     ref={commandInputRef}
                     value={command}
                     onChange={(event) => {
-                      cancelCommandCompletions()
+                      const input = event.currentTarget.value
+                      const cursor =
+                        event.currentTarget.selectionStart ?? input.length
                       setCommandError(null)
-                      setCommand(event.target.value)
+                      setCommand(input)
+                      if (completionSessionActive.current) {
+                        void requestCommandCompletion(input, cursor)
+                      }
                     }}
+                    onBlur={stopCommandCompletions}
                     onKeyDown={handleCommandKeyDown}
                     placeholder={
                       running ? "Send a server command…" : "Server is offline"
