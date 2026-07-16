@@ -74,7 +74,7 @@ function formatName(path: string) {
 const fileEditorHeaderClassName =
   "flex h-14 shrink-0 border-b md:h-auto md:min-h-14"
 const fileEditorHeaderContentClassName =
-  "flex min-w-0 flex-1 items-center gap-2 px-2 sm:px-3 md:flex-wrap md:gap-x-3 md:gap-y-2 md:py-2"
+  "flex min-w-0 flex-1 items-center gap-2 px-2 sm:px-3 md:flex-wrap md:gap-x-3 md:gap-y-2 md:py-[7px]"
 
 const fileTreeWidthCookieName = "file_tree_width"
 const fileTreeCollapsedCookieName = "file_tree_collapsed"
@@ -336,16 +336,18 @@ function Editor({
               <div className="flex min-w-0 flex-1 items-center gap-2.5 md:gap-3">
                 <FileCode2 className="size-5 shrink-0 text-primary" />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold">
-                    {formatName(file.path)}
-                  </p>
+                  <div className="mb-1 flex min-w-0 items-center gap-2.5">
+                    <p className="min-w-0 truncate text-sm font-semibold">
+                      {formatName(file.path)}
+                    </p>
+                    {file.encoding === "gzip" ? (
+                      <span className="hidden shrink-0 border border-primary/20 bg-primary/8 px-2 py-0.5 font-mono text-[9px] tracking-wider text-primary sm:inline-flex">
+                        READ ONLY
+                      </span>
+                    ) : null}
+                  </div>
                   <FilePathCopyButton path={file.path} />
                 </div>
-                {file.encoding === "gzip" ? (
-                  <span className="hidden border border-primary/20 bg-primary/8 px-2 py-0.5 font-mono text-[9px] tracking-wider text-primary sm:inline">
-                    GZIP · READ ONLY
-                  </span>
-                ) : null}
               </div>
 
               <div
