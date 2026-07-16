@@ -89,6 +89,13 @@ function AppLayout() {
       : pathname.endsWith("/info")
         ? "info"
         : "console"
+  const previousTabWasFiles = React.useRef(activeTab === "files")
+  const openFileTreeOnEntry =
+    activeTab === "files" && !previousTabWasFiles.current
+
+  React.useLayoutEffect(() => {
+    previousTabWasFiles.current = activeTab === "files"
+  }, [activeTab])
 
   React.useEffect(() => {
     const lifecycle = new AbortController()
@@ -231,6 +238,7 @@ function AppLayout() {
                 node={snapshot.node}
                 activeTab={activeTab}
                 filePath={activeTab === "files" ? filePath : undefined}
+                openFileTreeOnEntry={openFileTreeOnEntry}
                 fileTreePreferences={{
                   collapsed: uiPreferences.fileTreeCollapsed,
                   width: uiPreferences.fileTreeWidth,

@@ -829,6 +829,7 @@ function FileTreePanel({
   onMobileOpenChange,
   onFileSelected,
   collapsed,
+  animateCollapsedChange,
   onCollapsedChange,
   initialWidth,
 }: {
@@ -842,6 +843,7 @@ function FileTreePanel({
   onMobileOpenChange: (open: boolean) => void
   onFileSelected: () => void
   collapsed: boolean
+  animateCollapsedChange: boolean
   onCollapsedChange: (collapsed: boolean) => void
   initialWidth: number | null
 }) {
@@ -873,8 +875,10 @@ function FileTreePanel({
   const panelRef = React.useRef<HTMLElement>(null)
   const resizeHandleRef = React.useRef<HTMLDivElement>(null)
   const resizeFrame = React.useRef<number | null>(null)
+  const transitionOverflowTimer = React.useRef<number | null>(null)
   const pendingWidth = React.useRef<number | null>(null)
   const currentWidth = React.useRef(initialWidth ?? 304)
+  const previousCollapsed = React.useRef(collapsed)
   const resizeSession = React.useRef<{
     pointerId: number
     startX: number
@@ -926,6 +930,14 @@ function FileTreePanel({
       previousDocumentStyles.current.userSelect
   }
 
+  function finishPanelTransition() {
+    if (transitionOverflowTimer.current !== null) {
+      window.clearTimeout(transitionOverflowTimer.current)
+      transitionOverflowTimer.current = null
+    }
+    panelRef.current?.style.removeProperty("overflow")
+  }
+
   function finishResize(pointerId?: number) {
     if (
       pointerId !== undefined &&
@@ -943,6 +955,7 @@ function FileTreePanel({
     }
     resizeSession.current = null
     panelRef.current?.removeAttribute("data-resizing")
+    panelRef.current?.style.removeProperty("transition")
     resizeHandleRef.current?.removeAttribute("data-resizing")
     restoreDocumentAfterResize()
     persistFileTreeWidth(currentWidth.current)
@@ -956,10 +969,34 @@ function FileTreePanel({
     if (!collapsed) applyFileTreeWidth(currentWidth.current)
   }, [collapsed])
 
+  React.useLayoutEffect(() => {
+    const panel = panelRef.current
+    const changed = previousCollapsed.current !== collapsed
+    previousCollapsed.current = collapsed
+    if (!panel || !changed || !window.matchMedia("(min-width: 768px)").matches)
+      return
+    if (!animateCollapsedChange) {
+      finishPanelTransition()
+      return
+    }
+
+    panel.style.overflow = "hidden"
+    if (transitionOverflowTimer.current !== null) {
+      window.clearTimeout(transitionOverflowTimer.current)
+    }
+    transitionOverflowTimer.current = window.setTimeout(
+      finishPanelTransition,
+      240
+    )
+  }, [animateCollapsedChange, collapsed])
+
   React.useEffect(
     () => () => {
       if (resizeFrame.current !== null) {
         window.cancelAnimationFrame(resizeFrame.current)
+      }
+      if (transitionOverflowTimer.current !== null) {
+        window.clearTimeout(transitionOverflowTimer.current)
       }
       if (resizeSession.current) restoreDocumentAfterResize()
     },
@@ -981,6 +1018,7 @@ function FileTreePanel({
     }
     document.documentElement.style.userSelect = "none"
     panel.dataset.resizing = "true"
+    panel.style.transition = "none"
     event.currentTarget.dataset.resizing = "true"
     try {
       event.currentTarget.setPointerCapture(event.pointerId)
@@ -1034,7 +1072,17 @@ function FileTreePanel({
       data-mobile-file-drawer
       data-state={mobileOpen ? "open" : "closed"}
       data-collapsed={collapsed}
-      className={`absolute inset-x-0 bottom-0 z-30 flex w-full shrink-0 flex-col overflow-hidden border-t bg-card shadow-[0_-18px_45px_rgba(0,0,0,0.35)] transition-[height] duration-200 ease-out md:relative md:inset-auto md:z-auto md:h-auto md:min-h-0 md:border-t-0 md:shadow-none md:transition-none ${collapsed ? "md:!w-0 md:!max-w-0 md:!min-w-0 md:overflow-hidden" : "md:w-[var(--file-tree-width)] md:max-w-[45%] md:min-w-56 md:overflow-visible md:[--file-tree-width:17.5rem] xl:max-w-[30rem] xl:[--file-tree-width:19rem]"} ${mobileOpen ? "h-full" : "h-11"}`}
+      className={`absolute inset-x-0 bottom-0 z-30 flex w-full shrink-0 flex-col overflow-hidden border-t border-border/80 bg-card shadow-[0_-18px_45px_rgba(0,0,0,0.35)] transition-[height] duration-200 ease-out md:relative md:inset-auto md:z-auto md:h-auto md:min-h-0 md:border-t-0 md:shadow-none ${animateCollapsedChange ? "md:transition-[width,min-width,max-width] md:duration-200 md:ease-linear" : "md:transition-none"} ${collapsed ? "md:!w-0 md:!max-w-0 md:!min-w-0 md:overflow-hidden" : "md:w-[var(--file-tree-width)] md:max-w-[45%] md:min-w-56 md:overflow-visible md:[--file-tree-width:17.5rem] xl:max-w-[30rem] xl:[--file-tree-width:19rem]"} ${mobileOpen ? "h-full" : "h-11"}`}
+      onTransitionEnd={(event) => {
+        if (event.currentTarget !== event.target) return
+        if (
+          event.propertyName === "width" ||
+          event.propertyName === "min-width" ||
+          event.propertyName === "max-width"
+        ) {
+          finishPanelTransition()
+        }
+      }}
       style={
         initialWidth
           ? ({
@@ -1195,6 +1243,11 @@ function FileTreePanel({
         />
       </div>
 
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-y-0 right-0 z-30 hidden w-px bg-border/80 md:block"
+      />
+
       <div
         ref={resizeHandleRef}
         role="separator"
@@ -1341,6 +1394,7 @@ export function FileWorkspace({
   routeFilePath,
   canShare,
   canWrite,
+  openTreeOnEntry,
   initialTreeCollapsed,
   initialTreeWidth,
 }: {
@@ -1349,6 +1403,7 @@ export function FileWorkspace({
   routeFilePath?: string
   canShare: boolean
   canWrite: boolean
+  openTreeOnEntry: boolean
   initialTreeCollapsed: boolean
   initialTreeWidth: number | null
 }) {
@@ -1362,7 +1417,16 @@ export function FileWorkspace({
   const [loadingFile, setLoadingFile] = React.useState(true)
   const [refreshing, setRefreshing] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
-  const [treeCollapsed, setTreeCollapsed] = React.useState(initialTreeCollapsed)
+  const [treeCollapsed, setTreeCollapsed] = React.useState(
+    initialTreeCollapsed && !openTreeOnEntry
+  )
+  const [treeTransitionSuppressed, setTreeTransitionSuppressed] =
+    React.useState(openTreeOnEntry)
+  const handledTreeEntry = React.useRef(false)
+  const openingTreeForRouteEntry =
+    openTreeOnEntry && !handledTreeEntry.current
+  const displayedTreeCollapsed =
+    treeCollapsed && !openingTreeForRouteEntry
   const fileRequest = React.useRef(0)
   const requestedPath = React.useRef("")
 
@@ -1377,6 +1441,31 @@ export function FileWorkspace({
     () => handleTreeCollapsedChange(false),
     [handleTreeCollapsedChange]
   )
+
+  React.useLayoutEffect(() => {
+    if (!openTreeOnEntry) {
+      handledTreeEntry.current = false
+      return
+    }
+    if (handledTreeEntry.current) return
+    handledTreeEntry.current = true
+    setTreeTransitionSuppressed(true)
+    handleTreeCollapsedChange(false)
+  }, [handleTreeCollapsedChange, openTreeOnEntry])
+
+  React.useEffect(() => {
+    if (!treeTransitionSuppressed) return
+    let secondFrame: number | null = null
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        setTreeTransitionSuppressed(false)
+      })
+    })
+    return () => {
+      window.cancelAnimationFrame(firstFrame)
+      if (secondFrame !== null) window.cancelAnimationFrame(secondFrame)
+    }
+  }, [treeTransitionSuppressed])
 
   React.useEffect(() => {
     const request = ++fileRequest.current
@@ -1565,13 +1654,16 @@ export function FileWorkspace({
           onRefresh={handleRefresh}
           onMobileOpenChange={setMobileTreeOpen}
           onFileSelected={closeMobileTree}
-          collapsed={treeCollapsed}
+          collapsed={displayedTreeCollapsed}
+          animateCollapsedChange={
+            !openingTreeForRouteEntry && !treeTransitionSuppressed
+          }
           onCollapsedChange={handleTreeCollapsedChange}
           initialWidth={initialTreeWidth}
         />
       ) : (
         <FileTreeLoadingPanel
-          collapsed={treeCollapsed}
+          collapsed={displayedTreeCollapsed}
           width={initialTreeWidth}
         />
       )}
@@ -1583,7 +1675,7 @@ export function FileWorkspace({
             loading={loadingFile}
             message={error}
             canShare={canShare}
-            treeCollapsed={treeCollapsed}
+            treeCollapsed={displayedTreeCollapsed}
             onTreeExpand={handleTreeExpand}
           />
         ) : selectedPath !== file.path ? (
@@ -1593,7 +1685,7 @@ export function FileWorkspace({
             loading={loadingFile}
             message={error}
             canShare={canShare}
-            treeCollapsed={treeCollapsed}
+            treeCollapsed={displayedTreeCollapsed}
             onTreeExpand={handleTreeExpand}
           />
         ) : (
@@ -1606,7 +1698,7 @@ export function FileWorkspace({
             loading={loadingFile}
             error={error}
             onSave={handleSave}
-            treeCollapsed={treeCollapsed}
+            treeCollapsed={displayedTreeCollapsed}
             onTreeExpand={handleTreeExpand}
           />
         )}

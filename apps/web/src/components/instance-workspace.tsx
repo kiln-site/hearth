@@ -63,6 +63,7 @@ export function InstanceWorkspace({
   node,
   activeTab,
   filePath,
+  openFileTreeOnEntry,
   fileTreePreferences,
   permissions,
   onInstanceUpdate,
@@ -71,6 +72,7 @@ export function InstanceWorkspace({
   node: RelayNode
   activeTab: InstanceTab
   filePath?: string
+  openFileTreeOnEntry: boolean
   fileTreePreferences: {
     collapsed: boolean
     width: number | null
@@ -110,6 +112,8 @@ export function InstanceWorkspace({
         : "Info"
   const hasFileWorkspace =
     activeTab === "files" || retainedFilesFor === instance.id
+  const fileTreeCollapsed =
+    fileTreePreferences.collapsed && !openFileTreeOnEntry
 
   React.useEffect(() => {
     if (activeTab === "files") setRetainedFilesFor(instance.id)
@@ -457,12 +461,12 @@ export function InstanceWorkspace({
               fallback={
                 <div className="flex min-h-0 flex-1 bg-card">
                   <FileTreeLoadingPanel
-                    collapsed={fileTreePreferences.collapsed}
+                    collapsed={fileTreeCollapsed}
                     width={fileTreePreferences.width}
                   />
                   <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                     <div className="flex h-14 shrink-0 border-b">
-                      {fileTreePreferences.collapsed ? (
+                      {fileTreeCollapsed ? (
                         <div className="hidden w-12 shrink-0 place-items-center border-r text-primary md:grid">
                           <FolderTree className="size-[17px]" />
                         </div>
@@ -503,6 +507,7 @@ export function InstanceWorkspace({
                 routeFilePath={filePath}
                 canShare={permissions.shareLogs}
                 canWrite={permissions.filesWrite}
+                openTreeOnEntry={openFileTreeOnEntry}
                 initialTreeCollapsed={fileTreePreferences.collapsed}
                 initialTreeWidth={fileTreePreferences.width}
               />
