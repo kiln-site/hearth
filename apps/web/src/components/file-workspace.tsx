@@ -16,7 +16,8 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
-  Ellipsis,
+  Download,
+  EllipsisVertical,
   FileCode2,
   FilePlus,
   FolderTree,
@@ -221,7 +222,8 @@ function Editor({
   >("idle")
   const [copyState, setCopyState] = React.useState<"idle" | "copied">("idle")
   const [redactSensitive] = React.useState(true)
-  const [moreOpen, setMoreOpen] = React.useState(false)
+  const [desktopActionsOpen, setDesktopActionsOpen] = React.useState(false)
+  const [mobileActionsOpen, setMobileActionsOpen] = React.useState(false)
   const [searchOpen, setSearchOpen] = React.useState(false)
   const [searchQuery, setSearchQuery] = React.useState("")
   const [reviewChanges, setReviewChanges] = React.useState(true)
@@ -340,7 +342,7 @@ function Editor({
                   <FilePathCopyButton path={file.path} />
                 </div>
                 {file.encoding === "gzip" ? (
-                  <span className="hidden border border-primary/20 bg-primary/8 px-1.5 py-0.5 font-mono text-[8px] tracking-wider text-primary sm:inline">
+                  <span className="hidden border border-primary/20 bg-primary/8 px-2 py-0.5 font-mono text-[9px] tracking-wider text-primary sm:inline">
                     GZIP · READ ONLY
                   </span>
                 ) : null}
@@ -455,26 +457,14 @@ function Editor({
                     )}
                   </Button>
                 </EditorTooltip>
-                <EditorTooltip
-                  content={
-                    dirty
-                      ? reviewChanges
-                        ? "Hide Changes"
-                        : "Highlight Changes"
-                      : "No Changes"
-                  }
-                >
+                <EditorTooltip content="Download - Coming Soon">
                   <Button
-                    variant={reviewChanges ? "secondary" : "ghost"}
+                    variant="ghost"
                     size="icon"
-                    aria-label={
-                      reviewChanges ? "Hide Changes" : "Highlight Changes"
-                    }
-                    aria-pressed={reviewChanges}
-                    disabled={!dirty || loading || file.readOnly}
-                    onClick={() => setReviewChanges((current) => !current)}
+                    aria-label="Download - Coming Soon"
+                    disabled
                   >
-                    <GitCompareArrows className="size-[17px]" />
+                    <Download className="size-[17px]" />
                   </Button>
                 </EditorTooltip>
                 <EditorSaveButton
@@ -484,6 +474,56 @@ function Editor({
                   saving={saving}
                   onSave={handleSave}
                 />
+                <Popover
+                  open={desktopActionsOpen}
+                  onOpenChange={setDesktopActionsOpen}
+                >
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant={desktopActionsOpen ? "secondary" : "ghost"}
+                          size="icon"
+                          aria-label="More file actions"
+                          aria-expanded={desktopActionsOpen}
+                        >
+                          <EllipsisVertical className="size-[18px]" />
+                        </Button>
+                      </PopoverTrigger>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" sideOffset={6}>
+                      More File Actions
+                    </TooltipContent>
+                  </Tooltip>
+                  <PopoverContent
+                    align="end"
+                    side="bottom"
+                    sideOffset={7}
+                    collisionPadding={8}
+                    className="w-[min(17rem,calc(100vw-1rem))] p-1"
+                  >
+                    <p className="border-b px-2 py-2 text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+                      File actions
+                    </p>
+                    <FileActionMenuItem
+                      active={dirty && reviewChanges}
+                      icon={<GitCompareArrows />}
+                      label={
+                        dirty
+                          ? reviewChanges
+                            ? "Hide changes"
+                            : "Highlight changes"
+                          : "Review changes"
+                      }
+                      detail="Compare with the saved file"
+                      disabled={!dirty || loading || file.readOnly}
+                      onClick={() => {
+                        setDesktopActionsOpen(false)
+                        setReviewChanges((current) => !current)
+                      }}
+                    />
+                  </PopoverContent>
+                </Popover>
               </div>
 
               <div className="ml-auto flex shrink-0 items-center gap-1 md:hidden">
@@ -494,16 +534,19 @@ function Editor({
                   saving={saving}
                   onSave={handleSave}
                 />
-                <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+                <Popover
+                  open={mobileActionsOpen}
+                  onOpenChange={setMobileActionsOpen}
+                >
                   <PopoverTrigger asChild>
                     <Button
-                      variant={moreOpen ? "secondary" : "ghost"}
+                      variant={mobileActionsOpen ? "secondary" : "ghost"}
                       size="icon"
                       className="shadow-none"
                       aria-label="More file actions"
-                      aria-expanded={moreOpen}
+                      aria-expanded={mobileActionsOpen}
                     >
-                      <Ellipsis className="size-[18px]" />
+                      <EllipsisVertical className="size-[18px]" />
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent
@@ -517,7 +560,7 @@ function Editor({
                       File actions
                     </p>
                     {canShare ? (
-                      <MobileFileAction
+                      <FileActionMenuItem
                         icon={
                           shareState === "uploading" ? (
                             <LoaderCircle className="animate-spin" />
@@ -543,24 +586,24 @@ function Editor({
                         onClick={() => void handleShare()}
                       />
                     ) : null}
-                    <MobileFileAction
+                    <FileActionMenuItem
                       icon={<Search />}
                       label="Find in file"
                       detail="Search this document"
                       disabled={loading}
                       onClick={() => {
-                        setMoreOpen(false)
+                        setMobileActionsOpen(false)
                         window.setTimeout(() => setSearchOpen(true), 0)
                       }}
                     />
-                    <MobileFileAction
+                    <FileActionMenuItem
                       active={wrapLines}
                       icon={<WrapText />}
                       label="Wrap long lines"
                       detail="Fit text to the editor"
                       onClick={() => setWrapLines((current) => !current)}
                     />
-                    <MobileFileAction
+                    <FileActionMenuItem
                       icon={copyState === "copied" ? <Check /> : <Copy />}
                       label={
                         copyState === "copied"
@@ -570,13 +613,19 @@ function Editor({
                       detail="Redacts IP addresses"
                       onClick={() => void handleCopy()}
                     />
-                    <MobileFileAction
+                    <FileActionMenuItem
                       active={dirty && reviewChanges}
                       icon={<GitCompareArrows />}
                       label="Review changes"
                       detail="Compare with the saved file"
                       disabled={!dirty || loading || file.readOnly}
                       onClick={() => setReviewChanges((current) => !current)}
+                    />
+                    <FileActionMenuItem
+                      icon={<Download />}
+                      label="Download"
+                      detail="Coming soon"
+                      disabled
                     />
                   </PopoverContent>
                 </Popover>
@@ -755,7 +804,7 @@ function EditorSaveButton({
   )
 }
 
-function MobileFileAction({
+function FileActionMenuItem({
   active = false,
   icon,
   label,
@@ -768,7 +817,7 @@ function MobileFileAction({
   label: string
   detail: string
   disabled?: boolean
-  onClick: () => void
+  onClick?: () => void
 }) {
   return (
     <button
