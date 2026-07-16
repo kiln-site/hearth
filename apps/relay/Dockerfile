@@ -24,4 +24,6 @@ WORKDIR /app
 COPY --from=builder /output/ ./
 
 EXPOSE 4100
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:' + (process.env.KILN_RELAY_PORT || '4100') + '/health', { signal: AbortSignal.timeout(2500) }).then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
 CMD ["node", "dist/index.js"]

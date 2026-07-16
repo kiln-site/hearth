@@ -271,18 +271,28 @@ export function AppSettingsPage({
               <h2 className="text-sm font-semibold">Add a Relay</h2>
             </div>
             <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
-              Generate a shared access key, start Relay with it, then save the
-              node endpoint.
+              Paste the key already configured on Relay, or generate a new
+              shared key, then save the node endpoint.
             </p>
             <form className="mt-5 space-y-3" onSubmit={createRelay}>
               <Field label="Relay access key">
                 <div className="flex gap-1.5">
                   <Input
                     value={form.token}
-                    readOnly
-                    placeholder="Generate access key"
+                    onChange={(event) => {
+                      setCopied(false)
+                      setForm((value) => ({
+                        ...value,
+                        token: event.target.value,
+                      }))
+                    }}
+                    placeholder="Paste or generate access key"
                     className="font-mono text-[10px]"
                     autoComplete="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    minLength={32}
+                    maxLength={512}
                     required
                   />
                   <Button
@@ -360,15 +370,28 @@ export function AppSettingsPage({
                   type="checkbox"
                   checked={form.useTls}
                   onChange={(event) =>
-                    setForm((value) => ({
-                      ...value,
-                      useTls: event.target.checked,
-                    }))
+                    setForm((value) => {
+                      const useTls = event.target.checked
+                      return {
+                        ...value,
+                        useTls,
+                        port:
+                          useTls && value.port === "4100"
+                            ? "443"
+                            : !useTls && value.port === "443"
+                              ? "4100"
+                              : value.port,
+                      }
+                    })
                   }
                   className="accent-primary"
                 />
                 Connect with HTTPS
               </label>
+              <p className="text-[9px] leading-4 text-muted-foreground">
+                Behind a reverse proxy, use HTTPS on public port 443. The proxy
+                forwards traffic to Relay on its internal port, normally 4100.
+              </p>
               <Button className="w-full" disabled={pending !== null}>
                 {pending === "add" ? (
                   <LoaderCircle className="animate-spin" />

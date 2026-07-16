@@ -29,6 +29,7 @@ const MAX_CONSOLE_STREAMS_PER_INSTANCE = 6
 
 const server = createServer(async (request, response) => {
   try {
+    if (healthCheck(request, response)) return
     if (!authorize(request, response, config)) return
     await route(request, response)
   } catch (error) {
@@ -57,11 +58,6 @@ async function route(
 ): Promise<void> {
   const url = new URL(request.url ?? "/", `http://${request.headers.host}`)
   const method = request.method ?? "GET"
-
-  if (method === "GET" && url.pathname === "/health") {
-    response.writeHead(204).end()
-    return
-  }
 
   if (method === "GET" && url.pathname === "/v1/snapshot") {
     const [node, instances] = await Promise.all([
@@ -231,6 +227,18 @@ async function route(
     error: "Method not allowed",
     code: "method_not_allowed",
   })
+}
+
+function healthCheck(
+  request: IncomingMessage,
+  response: ServerResponse
+): boolean {
+  const method = request.method ?? "GET"
+  if (method !== "GET" && method !== "HEAD") return false
+  const url = new URL(request.url ?? "/", "http://relay")
+  if (url.pathname !== "/health") return false
+  response.writeHead(204, { "Cache-Control": "no-store" }).end()
+  return true
 }
 
 function authorize(

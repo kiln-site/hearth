@@ -143,6 +143,11 @@ requires the Docker socket plus a persistent `/data` volume. Ember is a
 stripped Java runtime on Debian slim; it contains no panel daemon and downloads
 only the artifact declared by its Brick.
 
+Relay serves an unauthenticated `GET /health` liveness check that does not
+query Docker or require an Ember connection. The Relay image uses it for its
+built-in Docker healthcheck. All management routes remain protected by
+`KILN_RELAY_KEY`.
+
 ## Authentication and access
 
 Kiln uses email and password identities—there are no usernames. Verification
