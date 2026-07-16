@@ -1,5 +1,9 @@
 import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router"
 import { TooltipProvider } from "@workspace/ui/components/tooltip"
+import {
+  archivoLatin,
+  jetBrainsMonoLatin,
+} from "@workspace/ui/lib/font-assets"
 
 import appCss from "@workspace/ui/globals.css?url"
 
@@ -23,6 +27,20 @@ export const Route = createRootRoute({
       },
     ],
     links: [
+      {
+        rel: "preload",
+        href: archivoLatin,
+        as: "font",
+        type: "font/woff2",
+        crossOrigin: "anonymous",
+      },
+      {
+        rel: "preload",
+        href: jetBrainsMonoLatin,
+        as: "font",
+        type: "font/woff2",
+        crossOrigin: "anonymous",
+      },
       {
         rel: "icon",
         href: "/favicon.svg",
