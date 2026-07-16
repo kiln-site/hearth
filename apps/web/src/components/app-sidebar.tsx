@@ -121,11 +121,23 @@ export function AppSidebar({
             <SidebarMenu>
               <SidebarMenuItem>
                 <SidebarMenuButton
-                  tooltip={{ children: "Bricks - Coming Soon", hidden: false }}
+                  tooltip={
+                    isPlatformAdmin
+                      ? "Bricks"
+                      : "Brick provisioning is administrator-only"
+                  }
                   type="button"
-                  aria-disabled="true"
-                  tabIndex={-1}
-                  className="text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
+                  isActive={activeSection === "bricks"}
+                  aria-disabled={!isPlatformAdmin}
+                  tabIndex={isPlatformAdmin ? 0 : -1}
+                  className={
+                    isPlatformAdmin
+                      ? "data-active:bg-primary/10 data-active:text-primary"
+                      : "text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
+                  }
+                  onClick={() => {
+                    if (isPlatformAdmin) void navigate({ to: "/bricks" })
+                  }}
                 >
                   <Boxes />
                   <span>Bricks</span>

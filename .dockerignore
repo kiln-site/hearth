@@ -6,6 +6,7 @@
 !.git/refs
 !.git/refs/**
 .gitignore
+.pnpm-store
 .turbo
 **/.DS_Store
 **/dist

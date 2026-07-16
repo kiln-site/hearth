@@ -156,9 +156,9 @@ export function AppSettingsPage({
                     Hearth is ready for its first Relay
                   </h2>
                   <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">
-                    Relay can run on a different node. Start it with the access
-                    key generated here, then enter an address reachable from
-                    this Hearth container.
+                    Relay can run on a different node. Configure the same access
+                    key on both sides, then enter an address reachable from this
+                    Hearth container.
                   </p>
                 </div>
               </div>
