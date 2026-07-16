@@ -8,7 +8,7 @@ cd /server
 
 if [[ ! -s "${KILN_ARTIFACT_FILE}" ]]; then
   temporary=".${KILN_ARTIFACT_FILE}.download"
-  echo "[Kiln runner] downloading ${KILN_IMPLEMENTATION:-server} ${KILN_VERSION:-unknown}"
+  echo "[Kiln Ember] downloading ${KILN_IMPLEMENTATION:-server} ${KILN_VERSION:-unknown}"
   curl --fail --location --retry 3 --retry-all-errors \
     --connect-timeout 15 --max-time 300 \
     --output "${temporary}" "${KILN_ARTIFACT_URL}"
@@ -38,7 +38,7 @@ else
   read -r -a server_args <<< "${KILN_SERVER_ARGS:---nogui}"
 fi
 
-echo "[Kiln runner] starting ${KILN_IMPLEMENTATION:-server} ${KILN_VERSION:-unknown} with Java $(java -version 2>&1 | head -1)"
+echo "[Kiln Ember] starting ${KILN_IMPLEMENTATION:-server} ${KILN_VERSION:-unknown} with Java $(java -version 2>&1 | head -1)"
 exec java \
   -Xms"${MIN_RAM:-512M}" \
   -Xmx"${MAX_RAM:-2G}" \

@@ -16,16 +16,31 @@ KILN_RELAY_KEY=replace-with-the-output-of-openssl-rand-base64-48
 BETTER_AUTH_SECRETS=1:replace-with-the-output-of-openssl-rand-base64-48
 ```
 
-Build and start the full stack:
+Pull and start the full stack:
 
 ```bash
-docker compose up -d --build --wait
+docker compose up -d --wait
 ```
 
-Build the two compact Kiln Java runner images used by official Bricks:
+The Compose file prefers the published Hearth and Relay images. Add `--build`
+to build them from the checked-out source instead.
+
+Published multi-architecture images are available from GitHub Container
+Registry:
+
+```text
+ghcr.io/kiln-site/hearth:latest
+ghcr.io/kiln-site/relay:latest
+ghcr.io/kiln-site/ember:java11
+ghcr.io/kiln-site/ember:java17
+ghcr.io/kiln-site/ember:java21
+ghcr.io/kiln-site/ember:java25
+```
+
+Build the compact Kiln Ember images used by official Bricks:
 
 ```bash
-docker compose --profile images build runner-java21 runner-java25
+docker compose --profile images build ember-java11 ember-java17 ember-java21 ember-java25
 ```
 
 The stack contains Hearth, Relay, and MySQL. On an empty table set it registers
@@ -114,18 +129,17 @@ If either value is absent, six-digit authentication codes and invitation links
 are written to `docker compose logs hearth`. A mail-less first boot can skip
 verification for the initial administrator.
 
-`KILN_URL` is Better Auth's explicit base URL and is always trusted. Kiln also
-trusts `http://localhost:3000`, `https://hearth.kiln.site`, and the local
-OrbStack origin `https://hearth.hearth.orb.local`. Additional trusted origins
-can be supplied as a comma-separated `BETTER_AUTH_TRUSTED_ORIGINS`.
-`KILN_RELAY_PORT` defaults to `4100`.
+`BETTER_AUTH_URL` is Better Auth's explicit base URL and defaults to
+`KILN_URL`; that origin is always trusted. Kiln also trusts
+`http://localhost:3000`, `https://hearth.kiln.site`, and the local OrbStack
+origin `https://hearth.hearth.orb.local`. Additional trusted origins can be
+supplied as a comma-separated `BETTER_AUTH_TRUSTED_ORIGINS`.
 
 The production images are defined in [apps/web/Dockerfile](./apps/web/Dockerfile),
 [apps/relay/Dockerfile](./apps/relay/Dockerfile), and
-[apps/runner/Dockerfile](./apps/runner/Dockerfile). Relay's only application
-setting required in production is `KILN_RELAY_KEY`; normal and advanced Relay
-options are documented in [`.env.relay.example`](./.env.relay.example). Relay
-also needs the Docker socket and a persistent `/data` volume. The runner is a
+[apps/ember/Dockerfile](./apps/ember/Dockerfile). Relay requires
+`KILN_RELAY_KEY`; `KILN_RELAY_PORT` is optional and defaults to `4100`. It also
+requires the Docker socket plus a persistent `/data` volume. Ember is a
 stripped Java runtime on Debian slim; it contains no panel daemon and downloads
 only the artifact declared by its Brick.
 
@@ -186,10 +200,10 @@ the private Minecraft network, and a single Velocity entrypoint. Point
 Tailscale split DNS at the node, then names such as `1.21.11.paper.test` resolve
 to its Tailnet address. Port `25565` is omitted from displayed connection names.
 
-The custom runner is derived from GraalVM with `jlink`, then copied into Debian
-slim with only certificates, `curl`, and `tini`. It downloads the selected
-server artifact into persistent storage on first boot; no `itzg` image or
-Pterodactyl/Pelican daemon is involved.
+Ember uses Eclipse Temurin and `jlink`, then copies the minimal Java runtime
+into Debian slim with only certificates, `curl`, and `tini`. It downloads the
+selected server artifact into persistent storage on first boot; no `itzg`
+image or Pterodactyl/Pelican daemon is involved.
 
 ## Development
 

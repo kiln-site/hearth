@@ -1,7 +1,10 @@
 FROM node:24-alpine AS builder
 
+ARG SOURCE_COMMIT
+
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
+ENV SOURCE_COMMIT=$SOURCE_COMMIT
 RUN corepack enable
 WORKDIR /source
 

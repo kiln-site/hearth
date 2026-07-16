@@ -871,7 +871,7 @@ export class DockerDriver {
       const mountedDirectory = basename(directory)
       if (!existsSync(resolve(this.#config.rootDirectory, mountedDirectory))) {
         throw new Error(
-          `${container.Name} mounts a directory outside RELAY_ROOT`
+          `${container.Name} mounts a directory outside the Relay data directory`
         )
       }
       relativeDirectory = mountedDirectory

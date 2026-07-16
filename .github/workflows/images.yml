@@ -1,0 +1,112 @@
+name: Container images
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: container-images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - name: Hearth
+            image: ghcr.io/kiln-site/hearth
+            file: apps/web/Dockerfile
+            channel: latest
+            version_suffix: ""
+            build_args: SOURCE_COMMIT=${{ github.sha }}
+            cache_scope: hearth
+          - name: Relay
+            image: ghcr.io/kiln-site/relay
+            file: apps/relay/Dockerfile
+            channel: latest
+            version_suffix: ""
+            build_args: ""
+            cache_scope: relay
+          - name: Ember · Java 11
+            image: ghcr.io/kiln-site/ember
+            file: apps/ember/Dockerfile
+            channel: java11
+            version_suffix: -java11
+            build_args: JAVA_VERSION=11
+            cache_scope: ember-java11
+          - name: Ember · Java 17
+            image: ghcr.io/kiln-site/ember
+            file: apps/ember/Dockerfile
+            channel: java17
+            version_suffix: -java17
+            build_args: JAVA_VERSION=17
+            cache_scope: ember-java17
+          - name: Ember · Java 21
+            image: ghcr.io/kiln-site/ember
+            file: apps/ember/Dockerfile
+            channel: java21
+            version_suffix: -java21
+            build_args: JAVA_VERSION=21
+            cache_scope: ember-java21
+          - name: Ember · Java 25
+            image: ghcr.io/kiln-site/ember
+            file: apps/ember/Dockerfile
+            channel: java25
+            version_suffix: -java25
+            build_args: JAVA_VERSION=25
+            cache_scope: ember-java25
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ matrix.image }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ matrix.channel }},enable={{is_default_branch}}
+            type=sha,prefix=sha-,suffix=${{ matrix.version_suffix }}
+            type=semver,pattern={{version}},suffix=${{ matrix.version_suffix }}
+
+      - name: Build${{ github.event_name != 'pull_request' && ' and publish' || '' }} image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          build-args: ${{ matrix.build_args }}
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.cache_scope }}
+          cache-to: type=gha,mode=min,scope=${{ matrix.cache_scope }}
+          provenance: mode=max
+          sbom: true

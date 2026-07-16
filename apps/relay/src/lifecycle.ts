@@ -15,6 +15,7 @@ import type { DockerDriver } from "./docker.js"
 
 const NETWORK_NAME = "kiln-minecraft"
 const OWNED_LABEL = "kiln.relay.owned=true"
+const EMBER_IMAGE = "ghcr.io/kiln-site/ember"
 
 interface BackendRoute {
   hostname: string
@@ -77,7 +78,7 @@ export class LifecycleDriver {
     const shortId = id.slice(0, 8)
     const containerName = `kiln-${shortId}`
     const javaVersion = javaVersionFor(input.brickId, input.version)
-    const image = `kiln-runner:java${javaVersion}`
+    const image = `${EMBER_IMAGE}:java${javaVersion}`
     const memoryLimit = containerMemoryLimit(input.memory)
     const directory = join(this.#config.rootDirectory, id)
     const hostDirectory = join(await this.#hostDataDirectory(), "instances", id)
@@ -337,9 +338,6 @@ export class LifecycleDriver {
   }
 
   async #resolveHostDataDirectory(): Promise<string> {
-    const configured = process.env.KILN_RELAY_HOST_DATA_DIR?.trim()
-    if (configured) return configured
-
     const containerId = process.env.HOSTNAME?.trim()
     if (containerId) {
       try {

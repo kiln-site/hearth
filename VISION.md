@@ -165,7 +165,7 @@ can declare:
 
 McJars will be the first Minecraft server artifact provider. Later providers
 can include Modrinth, direct downloads, and SteamCMD. Supporting a new game
-should primarily mean adding providers, runner images, and Bricks rather than
+should primarily mean adding providers, Ember images, and Bricks rather than
 changing Hearth's core lifecycle.
 
 ## Initial Minecraft Scope
