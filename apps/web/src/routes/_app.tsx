@@ -34,6 +34,9 @@ const tabRoutes = {
 } as const
 
 const selectedInstanceStorageKey = "kiln:selected-instance-id"
+const connectedRelayPollDelayMs = 5_000
+const disconnectedRelayPollDelayMs = 15_000
+const relayPollHeaders = { "x-kiln-request-purpose": "relay-poll" }
 type RelayConnection = Awaited<ReturnType<typeof getRelayConnectionState>>
 
 export const Route = createFileRoute("/_app")({
@@ -114,25 +117,51 @@ function AppLayout() {
     const lifecycle = new AbortController()
     let timer: number | null = null
     let polling = false
-    let pollDelay = initialConnection.status === "connected" ? 2_000 : 10_000
+    let pollDelay =
+      initialConnection.status === "connected"
+        ? connectedRelayPollDelayMs
+        : disconnectedRelayPollDelayMs
 
     function commitConnection(next: RelayConnection) {
       if (lifecycle.signal.aborted) return
-      pollDelay = next.status === "connected" ? 2_000 : 10_000
+      pollDelay =
+        next.status === "connected"
+          ? connectedRelayPollDelayMs
+          : disconnectedRelayPollDelayMs
       setConnection(next)
       if (next.status === "connected") setSnapshot(next.snapshot)
     }
 
+    function clearPollTimer() {
+      if (timer !== null) window.clearTimeout(timer)
+      timer = null
+    }
+
     function scheduleNextPoll() {
-      if (lifecycle.signal.aborted) return
+      if (
+        lifecycle.signal.aborted ||
+        document.visibilityState !== "visible"
+      )
+        return
+      clearPollTimer()
       timer = window.setTimeout(() => void poll(), pollDelay)
     }
 
     async function poll() {
-      if (lifecycle.signal.aborted || polling) return
+      if (
+        lifecycle.signal.aborted ||
+        polling ||
+        document.visibilityState !== "visible"
+      )
+        return
       polling = true
       try {
-        commitConnection(await getRelayConnectionState())
+        commitConnection(
+          await getRelayConnectionState({
+            headers: relayPollHeaders,
+            signal: lifecycle.signal,
+          })
+        )
       } catch {
         // A transport failure to Hearth itself is retried on the next tick.
       } finally {
@@ -141,19 +170,17 @@ function AppLayout() {
       }
     }
 
-    function resumePolling() {
-      if (document.visibilityState !== "visible") return
-      if (timer !== null) window.clearTimeout(timer)
-      timer = null
-      void poll()
+    function handleVisibilityChange() {
+      clearPollTimer()
+      if (document.visibilityState === "visible") void poll()
     }
 
-    timer = window.setTimeout(() => void poll(), pollDelay)
-    document.addEventListener("visibilitychange", resumePolling)
+    scheduleNextPoll()
+    document.addEventListener("visibilitychange", handleVisibilityChange)
     return () => {
       lifecycle.abort()
-      if (timer !== null) window.clearTimeout(timer)
-      document.removeEventListener("visibilitychange", resumePolling)
+      clearPollTimer()
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
     }
   }, [])
 

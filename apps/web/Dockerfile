@@ -37,6 +37,6 @@ COPY --from=builder --chown=node:node /source/apps/web/package.runtime.json ./pa
 
 USER node
 EXPOSE 3000
-HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=6 \
   CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || '3000') + '/api/health', { signal: AbortSignal.timeout(2500) }).then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
 CMD ["node", "scripts/start-container.mjs"]

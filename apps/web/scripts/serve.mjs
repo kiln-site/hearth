@@ -5,6 +5,9 @@ import { log } from "srvx/log"
 import { serveStatic } from "srvx/static"
 
 const HEALTH_PATH = "/api/health"
+const SERVER_FN_PATH = "/_serverFn/"
+const QUIET_REQUEST_PURPOSE_HEADER = "x-kiln-request-purpose"
+const RELAY_POLL_PURPOSE = "relay-poll"
 const app = (await import("../dist/server/server.js")).default
 const logRequest = log()
 
@@ -27,7 +30,7 @@ const server = serve({
   gracefulShutdown: true,
   hostname: process.env.HOST || "0.0.0.0",
   middleware: [
-    logUnlessSuccessfulHealthCheck,
+    logUnlessSuccessfulQuietRequest,
     serveStatic({
       dir: fileURLToPath(new URL("../dist/client", import.meta.url)),
     }),
@@ -38,8 +41,15 @@ const server = serve({
 
 await server.ready()
 
-async function logUnlessSuccessfulHealthCheck(request, next) {
-  if (new URL(request.url).pathname !== HEALTH_PATH) {
+async function logUnlessSuccessfulQuietRequest(request, next) {
+  const pathname = new URL(request.url).pathname
+  const isHealthCheck = pathname === HEALTH_PATH
+  const isRelayPoll =
+    request.method === "GET" &&
+    pathname.startsWith(SERVER_FN_PATH) &&
+    request.headers.get(QUIET_REQUEST_PURPOSE_HEADER) === RELAY_POLL_PURPOSE
+
+  if (!isHealthCheck && !isRelayPoll) {
     return logRequest(request, next)
   }
 

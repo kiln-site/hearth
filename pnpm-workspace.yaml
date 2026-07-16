@@ -2,8 +2,12 @@ packages:
   - "apps/*"
   - "packages/*"
 
+autoInstallPeers: false
+
 allowBuilds:
+  "@prisma/client": false
+  better-sqlite3: false
   esbuild: true
   lightningcss: true
-  unrs-resolver: true
   msw: false
+  unrs-resolver: true
