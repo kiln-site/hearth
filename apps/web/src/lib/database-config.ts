@@ -7,53 +7,21 @@ export interface DatabaseConnectionConfig {
 }
 
 export function databaseConnectionConfig(): DatabaseConnectionConfig {
-  const splitConfigured = [
-    "DB_HOST",
-    "DB_NAME",
-    "DB_USERNAME",
-    "DB_PASSWORD",
-  ].some((name) => process.env[name] !== undefined)
-  if (splitConfigured) {
-    const host = process.env.DB_HOST?.trim()
-    const database = process.env.DB_NAME?.trim()
-    const user = process.env.DB_USERNAME?.trim()
-    const password = process.env.DB_PASSWORD
-    if (!host || !database || !user || !password) {
-      throw new Error(
-        "DB_HOST, DB_NAME, DB_USERNAME, and DB_PASSWORD are required when split database settings are used"
-      )
-    }
-    return {
-      database,
-      host,
-      password,
-      port: databasePort(process.env.DB_PORT),
-      user,
-    }
-  }
-
-  const databaseUrl = process.env.DATABASE_URL?.trim()
-  if (!databaseUrl) {
+  const host = process.env.DB_HOST?.trim()
+  const database = process.env.DB_NAME?.trim()
+  const user = process.env.DB_USERNAME?.trim()
+  const password = process.env.DB_PASSWORD
+  if (!host || !database || !user || !password) {
     throw new Error(
-      "DB_HOST, DB_NAME, and DB_USERNAME are required (DATABASE_URL remains supported as a fallback)"
-    )
-  }
-  const url = new URL(databaseUrl)
-  if (url.protocol !== "mysql:") {
-    throw new Error("DATABASE_URL must use the mysql protocol")
-  }
-  const database = decodeURIComponent(url.pathname.replace(/^\//u, ""))
-  if (!url.hostname || !url.username || !database) {
-    throw new Error(
-      "DATABASE_URL must include a hostname, username, and database"
+      "DB_HOST, DB_NAME, DB_USERNAME, and DB_PASSWORD are required"
     )
   }
   return {
     database,
-    host: url.hostname,
-    password: decodeURIComponent(url.password),
-    port: databasePort(url.port),
-    user: decodeURIComponent(url.username),
+    host,
+    password,
+    port: databasePort(process.env.DB_PORT),
+    user,
   }
 }
 

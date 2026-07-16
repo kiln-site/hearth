@@ -13,6 +13,7 @@ all-in-one Compose stack, then replace at least these values:
 DB_PASSWORD=replace-with-a-strong-database-password
 KILN_URL=http://localhost:3000
 KILN_RELAY_KEY=replace-with-the-output-of-openssl-rand-base64-48
+BETTER_AUTH_SECRETS=1:replace-with-the-output-of-openssl-rand-base64-48
 ```
 
 Build and start the full stack:
@@ -28,26 +29,44 @@ docker compose --profile images build runner-java21 runner-java25
 ```
 
 The stack contains Hearth, Relay, and MySQL. On an empty table set it registers
-the Compose Relay automatically. Hearth creates the database schema, generates
-a Better Auth secret, and persists that secret in its `/data` volume. The
-operator does not need to supply `DATABASE_URL`, `BETTER_AUTH_SECRET`, or
-`BETTER_AUTH_URL` when using the provided Compose file.
+the Compose Relay automatically. Hearth creates the database schema and keeps
+all panel state in MySQL. `BETTER_AUTH_SECRETS` is required and supplied to the
+container from the environment; Hearth does not require a persistent volume.
 
 For a standalone Hearth image, use
 [`.env.hearth.example`](./.env.hearth.example). `DB_HOST`, `DB_NAME`,
-`DB_USERNAME`, `DB_PASSWORD`, `KILN_URL`, and a stable `BETTER_AUTH_SECRET` are
-required in production; `DB_PORT` defaults to `3306`. `DATABASE_URL` remains a
-compatibility fallback when none of the split `DB_*` connection values are set.
-`KILN_URL` is the canonical browser-facing origin even when Cloudflare,
-Traefik, Caddy, or nginx terminates TLS in front of Hearth. Kiln passes it to
-Better Auth explicitly, so a separate `BETTER_AUTH_URL` is unnecessary.
+`DB_USERNAME`, `DB_PASSWORD`, `KILN_URL`, and stable `BETTER_AUTH_SECRETS` are
+required in production; `DB_PORT` defaults to `3306`. `KILN_URL` is the
+canonical browser-facing origin even when Cloudflare, Traefik, Caddy, or nginx
+terminates TLS in front of Hearth. `BETTER_AUTH_URL` defaults to `KILN_URL` and
+can be set explicitly when Better Auth needs a different externally visible
+base URL.
+
+`BETTER_AUTH_SECRETS` is an ordered, versioned keyring shared by Better Auth and
+Hearth's encrypted Relay credentials. The first entry encrypts new data and
+the remaining entries decrypt data from earlier rotations. Start with one key:
+
+```dotenv
+BETTER_AUTH_SECRETS=1:replace-with-output-of-openssl-rand-base64-48
+```
+
+To rotate it, prepend a new version and retain the old entry:
+
+```dotenv
+BETTER_AUTH_SECRETS=2:replace-with-new-openssl-rand-base64-48,1:replace-with-previous-openssl-rand-base64-48
+```
+
+Hearth rewrites a Relay credential with the current key after successfully
+reading it. Better Auth manages key versions for its encrypted cookies and
+records. Rotating the current key invalidates existing signed session cookies,
+so users must sign in again; encrypted records remain readable through the
+retained keys. Keep every version that is still referenced by stored data, and
+back up the keyring outside MySQL.
 
 `DB_TABLE_PREFIX` applies to every Kiln and Better Auth table. It must be a
-lowercase, identifier-safe prefix ending in an underscore, such as
-`kiln432m_`. When omitted, Hearth derives a stable `kiln` + four-character
-prefix from `BETTER_AUTH_SECRET`. Keep either the explicit prefix or the secret
-stable across restarts. Changing the prefix selects a fresh table namespace;
-Kiln does not rename an existing installation's tables automatically.
+lowercase, identifier-safe prefix ending in an underscore. It defaults to
+`kiln_`. Changing the prefix selects a fresh table namespace; Kiln does not
+rename an existing installation's tables automatically.
 
 Hearth can register the first Relay without assuming that it runs on the same
 node. Set the following on the Hearth container before its first database

@@ -1,3 +1,6 @@
+import { parseSecretKeyring } from "../../keyring.mjs"
+import type { VersionedSecret } from "../../keyring.mjs"
+
 export interface EmailDeliveryConfig {
   apiKey: string
   from: string
@@ -19,6 +22,10 @@ export function developmentBypassEnabled(): boolean {
   return kilnEnvironment() === "dev"
 }
 
+export function betterAuthSecrets(): Array<VersionedSecret> {
+  return parseSecretKeyring(process.env.BETTER_AUTH_SECRETS)
+}
+
 function parseKilnEnvironment(value: string | undefined): KilnEnvironment {
   const configured = value?.trim().toLowerCase()
   if (!configured) return "prod"
@@ -27,15 +34,22 @@ function parseKilnEnvironment(value: string | undefined): KilnEnvironment {
 }
 
 export function kilnPublicUrl(): URL {
-  const configured =
-    process.env.KILN_URL?.trim() ||
-    process.env.BETTER_AUTH_URL?.trim() ||
-    "http://localhost:3000"
+  const configured = process.env.KILN_URL?.trim() || "http://localhost:3000"
 
   try {
     return new URL(configured)
   } catch {
     throw new Error("KILN_URL must be an absolute http or https URL")
+  }
+}
+
+export function betterAuthUrl(): URL {
+  const configured = process.env.BETTER_AUTH_URL?.trim()
+  if (!configured) return kilnPublicUrl()
+  try {
+    return new URL(configured)
+  } catch {
+    throw new Error("BETTER_AUTH_URL must be an absolute http or https URL")
   }
 }
 
@@ -49,12 +63,14 @@ export function emailDeliveryConfig(): EmailDeliveryConfig | null {
   return apiKey && from ? { apiKey, from } : null
 }
 
-export function parseTrustedOrigins(baseOrigin: string): Array<string> {
+export function parseTrustedOrigins(
+  ...baseOrigins: Array<string>
+): Array<string> {
   const configured = process.env.BETTER_AUTH_TRUSTED_ORIGINS?.split(",")
     .map((origin) => origin.trim())
     .filter(Boolean)
   return Array.from(
-    new Set([baseOrigin, ...DEFAULT_TRUSTED_ORIGINS, ...(configured ?? [])])
+    new Set([...baseOrigins, ...DEFAULT_TRUSTED_ORIGINS, ...(configured ?? [])])
   )
 }
 

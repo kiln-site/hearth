@@ -1,12 +1,9 @@
-import {
-  createCipheriv,
-  createHash,
-  randomBytes,
-  randomUUID,
-} from "node:crypto"
+import { randomUUID } from "node:crypto"
 import { readFile } from "node:fs/promises"
 
 import mysql from "mysql2/promise"
+
+import { encryptWithKeyring, parseSecretKeyring } from "../keyring.mjs"
 
 import {
   databaseConnectionConfig,
@@ -94,12 +91,7 @@ function configuredInitialRelay() {
       "KILN_RELAY_KEY must contain at least 32 characters when KILN_RELAY_URL is set"
     )
   }
-  const secret = process.env.BETTER_AUTH_SECRET?.trim()
-  if (!secret || secret.length < 32) {
-    throw new Error(
-      "BETTER_AUTH_SECRET must contain at least 32 characters when KILN_RELAY_URL is set"
-    )
-  }
+  parseSecretKeyring(process.env.BETTER_AUTH_SECRETS)
 
   const name = process.env.KILN_RELAY_NAME?.trim() || "Primary Relay"
   if (name.length > 120) {
@@ -109,18 +101,9 @@ function configuredInitialRelay() {
 }
 
 function encryptRelayToken(token) {
-  const secret = process.env.BETTER_AUTH_SECRET.trim()
-  const key = createHash("sha256").update(secret).digest()
-  const iv = randomBytes(12)
-  const cipher = createCipheriv("aes-256-gcm", key, iv)
-  const ciphertext = Buffer.concat([
-    cipher.update(token, "utf8"),
-    cipher.final(),
-  ])
-  return [
-    "v1",
-    iv.toString("base64url"),
-    cipher.getAuthTag().toString("base64url"),
-    ciphertext.toString("base64url"),
-  ].join(".")
+  return encryptWithKeyring(
+    token,
+    parseSecretKeyring(process.env.BETTER_AUTH_SECRETS),
+    "kiln-relay-credential"
+  )
 }

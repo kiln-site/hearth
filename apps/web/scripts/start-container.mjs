@@ -1,9 +1,10 @@
-import { randomBytes } from "node:crypto"
 import { spawn } from "node:child_process"
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises"
+import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
 
 import mysql from "mysql2/promise"
+
+import { parseSecretKeyring } from "../keyring.mjs"
 
 import {
   databaseConnectionConfig,
@@ -13,7 +14,7 @@ import {
 
 process.env.NODE_ENV = "production"
 process.env.KILN_URL ||= "http://localhost:3000"
-process.env.BETTER_AUTH_SECRET ||= await persistentSecret()
+parseSecretKeyring(process.env.BETTER_AUTH_SECRETS)
 
 await migrateDatabase()
 
@@ -31,32 +32,6 @@ server.once("exit", (code, signal) => {
   if (signal) process.kill(process.pid, signal)
   else process.exit(code ?? 1)
 })
-
-async function persistentSecret() {
-  const dataDirectory = process.env.KILN_DATA_DIR?.trim() || "/data"
-  const path = resolve(dataDirectory, "better-auth-secret")
-  await mkdir(dataDirectory, { recursive: true })
-  try {
-    return (await readFile(path, "utf8")).trim()
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error
-  }
-
-  const secret = randomBytes(48).toString("base64url")
-  try {
-    await writeFile(path, `${secret}\n`, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    })
-    return secret
-  } catch (error) {
-    if (error?.code !== "EEXIST") throw error
-    return (await readFile(path, "utf8")).trim()
-  } finally {
-    await chmod(path, 0o600).catch(() => undefined)
-  }
-}
 
 async function migrateDatabase() {
   const database = databaseConnectionConfig()

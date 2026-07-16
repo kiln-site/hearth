@@ -14,6 +14,8 @@ import { AuthCodeEmail } from "@/emails/auth-code-email"
 import { databasePool } from "@/lib/database"
 import { databaseTable, databaseTableName } from "@/lib/database-config"
 import {
+  betterAuthSecrets,
+  betterAuthUrl,
   emailDeliveryConfig,
   kilnPublicUrl,
   parseTrustedOrigins,
@@ -21,6 +23,7 @@ import {
 } from "@/lib/environment"
 
 const publicUrl = kilnPublicUrl()
+const authUrl = betterAuthUrl()
 const UNVERIFIED_ACCOUNT_TTL_MS = 1000 * 60 * 60 * 24
 
 type PendingUser = {
@@ -32,7 +35,8 @@ type PendingUser = {
 
 export const auth = betterAuth({
   appName: "Kiln",
-  baseURL: publicUrl.origin,
+  baseURL: authUrl.origin,
+  secrets: betterAuthSecrets(),
   database: databasePool,
   user: { modelName: databaseTableName("user") },
   session: {
@@ -131,10 +135,10 @@ export const auth = betterAuth({
       }
     }),
   },
-  trustedOrigins: parseTrustedOrigins(publicUrl.origin),
+  trustedOrigins: parseTrustedOrigins(publicUrl.origin, authUrl.origin),
   advanced: {
     cookiePrefix: "kiln",
-    useSecureCookies: publicUrl.protocol === "https:",
+    useSecureCookies: authUrl.protocol === "https:",
     defaultCookieAttributes: {
       httpOnly: true,
       sameSite: "lax",

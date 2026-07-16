@@ -79,16 +79,14 @@ services:
       KILN_SUPER_USER_EMAIL: ${KILN_SUPER_USER_EMAIL:-}
       KILN_SUPER_USER_PASSWORD: ${KILN_SUPER_USER_PASSWORD:-}
       KILN_URL: ${KILN_URL:-http://localhost:3000}
-      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-}
+      BETTER_AUTH_SECRETS: ${BETTER_AUTH_SECRETS:?Set BETTER_AUTH_SECRETS in .env}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-}
       BETTER_AUTH_TRUSTED_ORIGINS: ${BETTER_AUTH_TRUSTED_ORIGINS:-}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL:-}
     ports:
       - "3000:3000"
-    volumes:
-      - hearth-data:/data
 
 volumes:
-  hearth-data:
   hearth-mysql:
   relay-data:

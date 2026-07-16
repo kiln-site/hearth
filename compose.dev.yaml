@@ -14,18 +14,10 @@ services:
         corepack enable
         pnpm install --frozen-lockfile --filter web...
         pnpm --filter @workspace/contracts build
-        if [ ! -s /data/better-auth-secret ]; then
-          umask 077
-          head -c 48 /dev/urandom | base64 > /data/better-auth-secret
-        fi
-        chmod 600 /data/better-auth-secret
-        chown 1000:1000 /data/better-auth-secret
-        export BETTER_AUTH_SECRET="$$(cat /data/better-auth-secret)"
         pnpm --filter web db:migrate
         exec pnpm --filter web dev --host 0.0.0.0
     volumes: !override
       - .:/workspace
-      - hearth-data:/data
       - hearth-dev-node-modules:/workspace/node_modules
       - hearth-dev-web-node-modules:/workspace/apps/web/node_modules
       - hearth-dev-contracts-node-modules:/workspace/packages/contracts/node_modules

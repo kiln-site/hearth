@@ -10,6 +10,7 @@
     "build": "vite build && node scripts/normalize-build-assets.mjs",
     "start": "srvx serve --prod --static=../client --entry=dist/server/server.js",
     "start:container": "node scripts/start-container.mjs",
+    "test:keyring": "node --test keyring.test.mjs",
     "preview": "vite preview",
     "lint": "eslint",
     "format": "prettier --write \"**/*.{ts,tsx}\"",

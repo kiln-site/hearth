@@ -1,4 +1,5 @@
 import { createServer } from "node:http"
+import { mkdir } from "node:fs/promises"
 
 import {
   relayConsoleCommandSchema,
@@ -19,6 +20,7 @@ import type { IncomingMessage, ServerResponse } from "node:http"
 import type { RelayConfig } from "./config.js"
 
 const config = loadConfig()
+await mkdir(config.rootDirectory, { recursive: true })
 const docker = new DockerDriver(config)
 const filesystem = new FilesystemDriver(config)
 const lifecycle = new LifecycleDriver(config, docker)

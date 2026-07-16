@@ -1,16 +1,14 @@
-import {
-  createCipheriv,
-  createDecipheriv,
-  createHash,
-  randomBytes,
-  randomUUID,
-} from "node:crypto"
+import { randomUUID } from "node:crypto"
 
 import type { ResultSetHeader, RowDataPacket } from "mysql2/promise"
 
 import { databasePool } from "@/lib/database"
 import { databaseTable } from "@/lib/database-config"
-import { relayKey } from "@/lib/environment"
+import { betterAuthSecrets, relayKey } from "@/lib/environment"
+
+import { decryptWithKeyring, encryptWithKeyring } from "../../keyring.mjs"
+
+const RELAY_CREDENTIAL_PURPOSE = "kiln-relay-credential"
 
 export interface PersistedRelay {
   id: string
@@ -174,7 +172,17 @@ export async function relayHeaders(relay?: {
       [relay.id]
     )
     if (rows[0]?.token_ciphertext) {
-      token = decryptRelayToken(rows[0].token_ciphertext)
+      const storedCiphertext = rows[0].token_ciphertext
+      const decrypted = decryptRelayToken(storedCiphertext)
+      token = decrypted.plaintext
+      if (decrypted.needsRotation) {
+        await databasePool.execute(
+          `UPDATE ${databaseTable("relay")}
+              SET token_ciphertext = ?
+            WHERE id = ? AND token_ciphertext = ?`,
+          [encryptRelayToken(token), relay.id, storedCiphertext]
+        )
+      }
     }
   }
   token ??= relayKey()
@@ -200,41 +208,18 @@ function toPersistedRelay(row: RelayRow): PersistedRelay {
   }
 }
 
-function encryptionKey(): Buffer {
-  const secret = process.env.BETTER_AUTH_SECRET
-  if (!secret)
-    throw new Error("BETTER_AUTH_SECRET is required to protect Relay keys")
-  return createHash("sha256").update(secret).digest()
-}
-
 function encryptRelayToken(token: string): string {
-  const iv = randomBytes(12)
-  const cipher = createCipheriv("aes-256-gcm", encryptionKey(), iv)
-  const ciphertext = Buffer.concat([
-    cipher.update(token, "utf8"),
-    cipher.final(),
-  ])
-  return [
-    "v1",
-    iv.toString("base64url"),
-    cipher.getAuthTag().toString("base64url"),
-    ciphertext.toString("base64url"),
-  ].join(".")
+  return encryptWithKeyring(
+    token,
+    betterAuthSecrets(),
+    RELAY_CREDENTIAL_PURPOSE
+  )
 }
 
-function decryptRelayToken(value: string): string {
-  const [version, encodedIv, encodedTag, encodedCiphertext] = value.split(".")
-  if (version !== "v1" || !encodedIv || !encodedTag || !encodedCiphertext) {
-    throw new Error("Relay key storage is invalid")
-  }
-  const decipher = createDecipheriv(
-    "aes-256-gcm",
-    encryptionKey(),
-    Buffer.from(encodedIv, "base64url")
+function decryptRelayToken(value: string) {
+  return decryptWithKeyring(
+    value,
+    betterAuthSecrets(),
+    RELAY_CREDENTIAL_PURPOSE
   )
-  decipher.setAuthTag(Buffer.from(encodedTag, "base64url"))
-  return Buffer.concat([
-    decipher.update(Buffer.from(encodedCiphertext, "base64url")),
-    decipher.final(),
-  ]).toString("utf8")
 }

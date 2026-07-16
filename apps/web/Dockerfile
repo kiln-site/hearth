@@ -29,10 +29,9 @@ COPY --from=builder --chown=node:node /runtime/node_modules ./node_modules
 COPY --from=builder --chown=node:node /source/apps/web/dist ./dist
 COPY --from=builder --chown=node:node /source/apps/web/migrations ./migrations
 COPY --from=builder --chown=node:node /source/apps/web/scripts ./scripts
+COPY --from=builder --chown=node:node /source/apps/web/keyring.mjs ./keyring.mjs
 COPY --from=builder --chown=node:node /source/apps/web/package.runtime.json ./package.json
-RUN mkdir -p /data && chown node:node /data
 
 USER node
 EXPOSE 3000
-VOLUME ["/data"]
 CMD ["node", "scripts/start-container.mjs"]
