@@ -1,5 +1,7 @@
 import { createServer } from "node:http"
 import { mkdir } from "node:fs/promises"
+import * as Sentry from "@sentry/node"
+import { Effect } from "effect"
 
 import {
   relayConsoleCommandSchema,
@@ -16,6 +18,8 @@ import { DockerDriver } from "./docker.js"
 import { FilesystemDriver, RelayFilesystemError } from "./files.js"
 import { LifecycleDriver } from "./lifecycle.js"
 import { nodeSnapshot } from "./node.js"
+import { RelayOperationError } from "./effect/errors.js"
+import { disposeRelayRuntime, runRelayEffect } from "./effect/runtime.js"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { RelayConfig } from "./config.js"
 
@@ -31,14 +35,26 @@ const server = createServer(async (request, response) => {
   try {
     if (healthCheck(request, response)) return
     if (!authorize(request, response, config)) return
-    await route(request, response)
+    const requestUrl = new URL(request.url ?? "/", "http://relay")
+    await runRelayEffect(
+      `relay.http.${normalizedRoute(requestUrl.pathname)}`,
+      Effect.tryPromise({
+        try: () => route(request, response),
+        catch: (cause) =>
+          RelayOperationError.make({
+            operation: normalizedRoute(requestUrl.pathname),
+            cause,
+          }),
+      })
+    )
   } catch (error) {
-    if (error instanceof RelayFilesystemError) {
-      json(response, 400, { error: error.message, code: error.code })
+    const cause = error instanceof RelayOperationError ? error.cause : error
+    if (cause instanceof RelayFilesystemError) {
+      json(response, 400, { error: cause.message, code: cause.code })
       return
     }
-    const message = error instanceof Error ? error.message : "Unknown error"
-    console.error(error)
+    const message = cause instanceof Error ? cause.message : "Unknown error"
+    console.error(cause)
     json(response, 500, { error: message, code: "internal_error" })
   }
 })
@@ -51,6 +67,30 @@ server.listen(config.port, config.host, () => {
     `Discovering ${config.managedLabel} containers in ${config.rootDirectory}`
   )
 })
+
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.once(signal, () => {
+    server.close(() => {
+      void Promise.all([disposeRelayRuntime(), Sentry.close(2_000)]).finally(
+        () => process.exit(0)
+      )
+    })
+  })
+}
+
+function normalizedRoute(pathname: string): string {
+  if (
+    ["/v1/snapshot", "/v1/bricks", "/v1/networking", "/v1/instances"].includes(
+      pathname
+    )
+  ) {
+    return pathname.slice(1).replaceAll("/", ".")
+  }
+  const match = pathname.match(
+    /^\/v1\/instances\/[^/]+(?:\/(tree|file|actions|console|console-completions|console-stream|latest-log))?$/u
+  )
+  return match?.[1] ? `v1.instances.${match[1]}` : "unknown"
+}
 
 async function route(
   request: IncomingMessage,

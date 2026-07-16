@@ -13,15 +13,19 @@
     "dev": "turbo dev",
     "e2e:docker": "node scripts/e2e-docker.mjs",
     "lint": "turbo lint",
+    "prepare": "./scripts/prepare-effect.sh",
+    "test": "turbo test",
     "format": "turbo format",
     "typecheck": "turbo typecheck"
   },
   "devDependencies": {
+    "@effect/vitest": "4.0.0-beta.98",
     "playwright-core": "1.55.0",
     "prettier": "^3.8.3",
     "prettier-plugin-tailwindcss": "^0.8.0",
     "turbo": "^2.9.18",
-    "typescript": "^6"
+    "typescript": "^6",
+    "vitest": "^4.1.10"
   },
   "packageManager": "pnpm@10.33.4",
   "engines": {

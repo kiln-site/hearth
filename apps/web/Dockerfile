@@ -13,7 +13,7 @@ COPY apps/relay/package.json ./apps/relay/package.json
 COPY apps/web/package.json ./apps/web/package.json
 COPY packages/contracts/package.json ./packages/contracts/package.json
 COPY packages/ui/package.json ./packages/ui/package.json
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --ignore-scripts && pnpm rebuild esbuild
 COPY . .
 RUN pnpm --filter @workspace/contracts build && pnpm --filter web build
 
@@ -33,6 +33,7 @@ COPY --from=builder --chown=node:node /source/apps/web/dist ./dist
 COPY --from=builder --chown=node:node /source/apps/web/migrations ./migrations
 COPY --from=builder --chown=node:node /source/apps/web/scripts ./scripts
 COPY --from=builder --chown=node:node /source/apps/web/keyring.mjs ./keyring.mjs
+COPY --from=builder --chown=node:node /source/apps/web/instrument.server.mjs ./instrument.server.mjs
 COPY --from=builder --chown=node:node /source/apps/web/package.runtime.json ./package.json
 
 USER node

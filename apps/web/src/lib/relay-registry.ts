@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto"
 
 import type { ResultSetHeader, RowDataPacket } from "mysql2/promise"
+import { Effect } from "effect"
 
+import { Database } from "@/effect/database"
+import { CredentialError } from "@/effect/errors"
+import { runAppEffect } from "@/effect/runtime"
 import { databasePool } from "@/lib/database"
 import { databaseTable } from "@/lib/database-config"
 import { betterAuthSecrets, relayKey } from "@/lib/environment"
@@ -37,14 +41,20 @@ interface RelayRow extends RowDataPacket {
 }
 
 export async function listPersistedRelays(): Promise<Array<PersistedRelay>> {
-  const [rows] = await databasePool.query<Array<RelayRow>>(
+  return runAppEffect("relays.list", listPersistedRelaysEffect())
+}
+
+export const listPersistedRelaysEffect = Effect.fn("relays.list")(function* () {
+  const database = yield* Database
+  const rows = yield* database.queryRows<RelayRow>(
+    "relays_list",
     `SELECT id, name, hostname, port, use_tls, enabled, is_primary,
-            last_connected_at, last_error, token_ciphertext
-       FROM ${databaseTable("relay")}
-      ORDER BY is_primary DESC, name ASC, created_at ASC`
+              last_connected_at, last_error, token_ciphertext
+         FROM ${databaseTable("relay")}
+        ORDER BY is_primary DESC, name ASC, created_at ASC`
   )
   return rows.map(toPersistedRelay)
-}
+})
 
 export async function createPersistedRelay(input: {
   name: string
@@ -153,41 +163,65 @@ export async function resolvePrimaryRelayUrl(): Promise<string | null> {
 }
 
 export async function resolvePrimaryRelay(): Promise<PersistedRelay | null> {
-  return (
-    (await listPersistedRelays()).find(
-      (item) => item.isPrimary && item.enabled
-    ) ?? null
-  )
+  return runAppEffect("relays.resolvePrimary", resolvePrimaryRelayEffect())
 }
+
+export const resolvePrimaryRelayEffect = Effect.fn("relays.resolvePrimary")(
+  function* () {
+    return (
+      (yield* listPersistedRelaysEffect()).find(
+        (item) => item.isPrimary && item.enabled
+      ) ?? null
+    )
+  }
+)
 
 export async function relayHeaders(relay?: {
   id: string
 }): Promise<HeadersInit> {
-  let token: string | null = null
-  if (relay) {
-    const [rows] = await databasePool.query<
-      Array<{ token_ciphertext: string | null } & RowDataPacket>
-    >(
-      `SELECT token_ciphertext FROM ${databaseTable("relay")} WHERE id = ? LIMIT 1`,
-      [relay.id]
-    )
-    if (rows[0]?.token_ciphertext) {
-      const storedCiphertext = rows[0].token_ciphertext
-      const decrypted = decryptRelayToken(storedCiphertext)
-      token = decrypted.plaintext
-      if (decrypted.needsRotation) {
-        await databasePool.execute(
-          `UPDATE ${databaseTable("relay")}
+  return runAppEffect("relays.headers", relayHeadersEffect(relay))
+}
+
+export const relayHeadersEffect = Effect.fn("relays.headers")(
+  function* (relay?: { id: string }) {
+    let token: string | null = null
+    if (relay) {
+      const database = yield* Database
+      const rows = yield* database.queryRows<
+        { token_ciphertext: string | null } & RowDataPacket
+      >(
+        "relay_token",
+        `SELECT token_ciphertext FROM ${databaseTable("relay")} WHERE id = ? LIMIT 1`,
+        [relay.id]
+      )
+      if (rows[0]?.token_ciphertext) {
+        const storedCiphertext = rows[0].token_ciphertext
+        const decrypted = yield* Effect.try({
+          try: () => decryptRelayToken(storedCiphertext),
+          catch: (cause) =>
+            CredentialError.make({ operation: "decrypt_relay_token", cause }),
+        })
+        token = decrypted.plaintext
+        if (decrypted.needsRotation) {
+          const ciphertext = yield* Effect.try({
+            try: () => encryptRelayToken(decrypted.plaintext),
+            catch: (cause) =>
+              CredentialError.make({ operation: "encrypt_relay_token", cause }),
+          })
+          yield* database.execute(
+            "rotate_relay_token",
+            `UPDATE ${databaseTable("relay")}
               SET token_ciphertext = ?
             WHERE id = ? AND token_ciphertext = ?`,
-          [encryptRelayToken(token), relay.id, storedCiphertext]
-        )
+            [ciphertext, relay.id, storedCiphertext]
+          )
+        }
       }
     }
+    token ??= relayKey()
+    return token ? { Authorization: `Bearer ${token}` } : new Headers()
   }
-  token ??= relayKey()
-  return token ? { Authorization: `Bearer ${token}` } : {}
-}
+)
 
 function relayUrl(relay: PersistedRelay): string {
   return `${relay.useTls ? "https" : "http"}://${relay.hostname}:${relay.port}`

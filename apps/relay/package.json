@@ -5,14 +5,18 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "dev": "tsx watch src/index.ts",
+    "dev": "NODE_OPTIONS='--import ./instrument.mjs' tsx watch src/index.ts",
     "format": "prettier --write \"src/**/*.ts\"",
     "lint": "eslint src",
-    "start": "node dist/index.js",
+    "start": "node --import ./instrument.mjs dist/index.js",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@workspace/contracts": "workspace:*"
+    "@opentelemetry/core": "2.9.0",
+    "@sentry/node": "^10.66.0",
+    "@workspace/contracts": "workspace:*",
+    "effect": "4.0.0-beta.98"
   },
   "devDependencies": {
     "@tanstack/eslint-config": "0.4.0",

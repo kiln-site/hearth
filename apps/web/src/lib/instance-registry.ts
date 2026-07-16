@@ -1,8 +1,11 @@
 import type { RelayInstance } from "@workspace/contracts"
 import type { RowDataPacket } from "mysql2/promise"
+import { Effect } from "effect"
 
 import { databasePool } from "@/lib/database"
 import { databaseTable } from "@/lib/database-config"
+import { Database } from "@/effect/database"
+import { runAppEffect } from "@/effect/runtime"
 
 interface InstanceNameRow extends RowDataPacket {
   display_name: string
@@ -13,10 +16,21 @@ export async function applyInstanceDisplayNames(
   relayId: string,
   instances: Array<RelayInstance>
 ): Promise<Array<RelayInstance>> {
+  return runAppEffect(
+    "instances.applyDisplayNames",
+    applyInstanceDisplayNamesEffect(relayId, instances)
+  )
+}
+
+export const applyInstanceDisplayNamesEffect = Effect.fn(
+  "instances.applyDisplayNames"
+)(function* (relayId: string, instances: Array<RelayInstance>) {
   if (!instances.length) return instances
 
   const placeholders = instances.map(() => "?").join(", ")
-  const [rows] = await databasePool.query<Array<InstanceNameRow>>(
+  const database = yield* Database
+  const rows = yield* database.queryRows<InstanceNameRow>(
+    "instance_display_names",
     `SELECT instance_id, display_name
        FROM ${databaseTable("instance")}
       WHERE relay_id = ?
@@ -31,7 +45,7 @@ export async function applyInstanceDisplayNames(
     ...instance,
     name: names.get(instance.id) ?? instance.name,
   }))
-}
+})
 
 export async function saveInstanceDisplayName(
   relayId: string,
