@@ -2,6 +2,7 @@ import type { RelayInstance } from "@workspace/contracts"
 import type { RowDataPacket } from "mysql2/promise"
 
 import { databasePool } from "@/lib/database"
+import { databaseTable } from "@/lib/database-config"
 
 interface InstanceNameRow extends RowDataPacket {
   display_name: string
@@ -17,7 +18,7 @@ export async function applyInstanceDisplayNames(
   const placeholders = instances.map(() => "?").join(", ")
   const [rows] = await databasePool.query<Array<InstanceNameRow>>(
     `SELECT instance_id, display_name
-       FROM kiln_instance
+       FROM ${databaseTable("instance")}
       WHERE relay_id = ?
         AND instance_id IN (${placeholders})`,
     [relayId, ...instances.map((instance) => instance.id)]
@@ -39,7 +40,7 @@ export async function saveInstanceDisplayName(
 ): Promise<void> {
   try {
     await databasePool.execute(
-      `INSERT INTO kiln_instance (relay_id, instance_id, display_name)
+      `INSERT INTO ${databaseTable("instance")} (relay_id, instance_id, display_name)
        VALUES (?, ?, ?)
        ON DUPLICATE KEY UPDATE
          display_name = VALUES(display_name),

@@ -1,11 +1,10 @@
 import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router"
 import { TooltipProvider } from "@workspace/ui/components/tooltip"
-import {
-  archivoLatin,
-  jetBrainsMonoLatin,
-} from "@workspace/ui/lib/font-assets"
+import { archivoLatin, jetBrainsMonoLatin } from "@workspace/ui/lib/font-assets"
 
 import appCss from "@workspace/ui/globals.css?url"
+
+import { AppErrorPage, AppNotFoundPage } from "@/components/app-error-page"
 
 export const Route = createRootRoute({
   head: () => ({
@@ -56,12 +55,8 @@ export const Route = createRootRoute({
       },
     ],
   }),
-  notFoundComponent: () => (
-    <main className="container mx-auto p-4 pt-16">
-      <h1>404</h1>
-      <p>The requested page could not be found.</p>
-    </main>
-  ),
+  errorComponent: AppErrorPage,
+  notFoundComponent: AppNotFoundPage,
   shellComponent: RootDocument,
 })
 

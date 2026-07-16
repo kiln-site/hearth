@@ -21,15 +21,19 @@ services:
     image: mysql:8.4
     restart: unless-stopped
     environment:
-      MYSQL_DATABASE: hearth
-      MYSQL_PASSWORD: kiln
+      MYSQL_DATABASE: ${DB_NAME:-hearth}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
       MYSQL_ROOT_PASSWORD: kiln-root
-      MYSQL_USER: kiln
+      MYSQL_USER: ${DB_USERNAME:-kiln}
       TZ: America/New_York
     volumes:
       - hearth-mysql:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-ukiln", "-pkiln"]
+      test:
+        [
+          "CMD-SHELL",
+          'mysqladmin ping -h 127.0.0.1 -u"$${MYSQL_USER}" -p"$${MYSQL_PASSWORD}"',
+        ]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -61,15 +65,22 @@ services:
       relay:
         condition: service_started
     environment:
-      DATABASE_URL: mysql://kiln:kiln@mysql:3306/hearth
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME:-hearth}
+      DB_USERNAME: ${DB_USERNAME:-kiln}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      DB_TABLE_PREFIX: ${DB_TABLE_PREFIX:-}
       KILN_ENVIRONMENT: ${KILN_ENVIRONMENT:-prod}
       KILN_ENABLE_SIGNUPS: ${KILN_ENABLE_SIGNUPS:-false}
       KILN_RELAY_KEY: ${KILN_RELAY_KEY:?Set KILN_RELAY_KEY in .env}
+      KILN_RELAY_NAME: ${KILN_RELAY_NAME:-Local Relay}
+      KILN_RELAY_URL: http://relay:${KILN_RELAY_PORT:-4100}
       KILN_SUPER_USER_EMAIL: ${KILN_SUPER_USER_EMAIL:-}
       KILN_SUPER_USER_PASSWORD: ${KILN_SUPER_USER_PASSWORD:-}
       KILN_URL: ${KILN_URL:-http://localhost:3000}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-}
       BETTER_AUTH_TRUSTED_ORIGINS: ${BETTER_AUTH_TRUSTED_ORIGINS:-}
-      RELAY_URL: http://relay:${KILN_RELAY_PORT:-4100}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL:-}
     ports:

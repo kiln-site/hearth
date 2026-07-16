@@ -1,16 +1,22 @@
 import { createPool } from "mysql2/promise"
+import type { Pool } from "mysql2/promise"
 
-const databaseUrl = process.env.DATABASE_URL?.trim()
-if (!databaseUrl) throw new Error("DATABASE_URL is required")
+import { databaseConnectionConfig } from "@/lib/database-config"
 
-const database = new URL(databaseUrl)
+const database = databaseConnectionConfig()
 
-export const databasePool = createPool({
-  host: database.hostname,
-  port: Number(database.port || 3306),
-  user: decodeURIComponent(database.username),
-  password: decodeURIComponent(database.password),
-  database: database.pathname.replace(/^\//u, ""),
-  timezone: "Z",
-  connectionLimit: 10,
-})
+const globalDatabase = globalThis as typeof globalThis & {
+  kilnDatabasePool?: Pool
+}
+
+export const databasePool =
+  globalDatabase.kilnDatabasePool ??
+  createPool({
+    ...database,
+    timezone: "Z",
+    connectionLimit: 10,
+  })
+
+if (process.env.NODE_ENV !== "production") {
+  globalDatabase.kilnDatabasePool = databasePool
+}

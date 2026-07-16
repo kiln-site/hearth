@@ -24,6 +24,7 @@ import {
   saveInstanceDisplayName,
 } from "@/lib/instance-registry"
 import type { AccessPermission } from "@/lib/permissions"
+import type { AuthenticatedUser } from "@/lib/auth-session"
 import { requireAuthenticatedUser } from "@/server/auth"
 
 const instanceInputSchema = z.object({
@@ -82,24 +83,56 @@ const mclogsResponseSchema = z.object({
   expires: z.number().int(),
 })
 
+const relayWarningIntervalMs = 60_000
+const relayWarningAt = new Map<string, number>()
+
 export const getRelaySnapshot = createServerFn({ method: "POST" }).handler(
   async () => {
     const { relay, user } = await activeRelayAccess()
-    const snapshot = relaySnapshotSchema.parse(
-      await relayRequestRaw(relay, "/v1/snapshot")
-    )
-    const allowed = await allowedInstanceIds(
-      user,
-      relay.id,
-      snapshot.instances.map((instance) => instance.id)
-    )
-    const instances = snapshot.instances.filter((item) => allowed.has(item.id))
-    return {
-      ...snapshot,
-      instances: await applyInstanceDisplayNames(relay.id, instances),
-    }
+    return authorizedRelaySnapshot(relay, user)
   }
 )
+
+export const getRelayConnectionState = createServerFn({
+  method: "GET",
+}).handler(async () => {
+  const user = await requireAuthenticatedUser()
+  const { resolvePrimaryRelay } = await import("@/lib/relay-registry")
+  const relay = await resolvePrimaryRelay()
+
+  if (!relay) {
+    return {
+      status: "unconfigured" as const,
+      message: "No Relay has been configured yet.",
+      relay: null,
+    }
+  }
+
+  const publicRelay = { id: relay.id, name: relay.name }
+  try {
+    return {
+      status: "connected" as const,
+      relay: publicRelay,
+      snapshot: await authorizedRelaySnapshot(relay, user),
+    }
+  } catch (cause) {
+    warnRelayUnavailable(relay.id, cause)
+    return {
+      status: "unreachable" as const,
+      message:
+        "The active Relay is configured, but Hearth cannot reach it right now.",
+      relay: publicRelay,
+    }
+  }
+})
+
+function warnRelayUnavailable(relayId: string, cause: unknown) {
+  const now = Date.now()
+  const lastWarning = relayWarningAt.get(relayId) ?? 0
+  if (now - lastWarning < relayWarningIntervalMs) return
+  relayWarningAt.set(relayId, now)
+  console.warn(`[Kiln Relay] Could not reach active Relay ${relayId}:`, cause)
+}
 
 export const updateInstanceName = createServerFn({ method: "POST" })
   .validator(instanceNameInputSchema)
@@ -334,6 +367,25 @@ async function relayRequestRaw(
 ): Promise<unknown> {
   const response = await relayFetch(relay, path, init)
   return response.json()
+}
+
+async function authorizedRelaySnapshot(
+  relay: RelayEndpoint,
+  user: AuthenticatedUser
+) {
+  const snapshot = relaySnapshotSchema.parse(
+    await relayRequestRaw(relay, "/v1/snapshot")
+  )
+  const allowed = await allowedInstanceIds(
+    user,
+    relay.id,
+    snapshot.instances.map((instance) => instance.id)
+  )
+  const instances = snapshot.instances.filter((item) => allowed.has(item.id))
+  return {
+    ...snapshot,
+    instances: await applyInstanceDisplayNames(relay.id, instances),
+  }
 }
 
 async function relayFetch(

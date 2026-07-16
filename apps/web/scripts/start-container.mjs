@@ -5,8 +5,13 @@ import { resolve } from "node:path"
 
 import mysql from "mysql2/promise"
 
+import {
+  databaseConnectionConfig,
+  databaseTableName,
+  prefixAuthMigrationSql,
+} from "./database-config.mjs"
+
 process.env.NODE_ENV = "production"
-process.env.DATABASE_URL ||= "mysql://kiln:kiln@mysql:3306/hearth"
 process.env.KILN_URL ||= "http://localhost:3000"
 process.env.BETTER_AUTH_SECRET ||= await persistentSecret()
 
@@ -14,12 +19,7 @@ await migrateDatabase()
 
 const server = spawn(
   resolve("node_modules/.bin/srvx"),
-  [
-    "serve",
-    "--prod",
-    "--static=../client",
-    "--entry=dist/server/server.js",
-  ],
+  ["serve", "--prod", "--static=../client", "--entry=dist/server/server.js"],
   { env: process.env, stdio: "inherit" }
 )
 
@@ -44,7 +44,11 @@ async function persistentSecret() {
 
   const secret = randomBytes(48).toString("base64url")
   try {
-    await writeFile(path, `${secret}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 })
+    await writeFile(path, `${secret}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    })
     return secret
   } catch (error) {
     if (error?.code !== "EEXIST") throw error
@@ -55,13 +59,13 @@ async function persistentSecret() {
 }
 
 async function migrateDatabase() {
-  const databaseUrl = process.env.DATABASE_URL
+  const database = databaseConnectionConfig()
   let connection
   let lastError
   for (let attempt = 1; attempt <= 30; attempt += 1) {
     try {
       connection = await mysql.createConnection({
-        uri: databaseUrl,
+        ...database,
         multipleStatements: true,
         timezone: "Z",
       })
@@ -76,14 +80,15 @@ async function migrateDatabase() {
   try {
     const [tables] = await connection.query(
       `SELECT table_name FROM information_schema.tables
-        WHERE table_schema = DATABASE() AND table_name = 'user'`
+        WHERE table_schema = DATABASE() AND table_name = ?`,
+      [databaseTableName("user")]
     )
     if (tables.length === 0) {
       const authSql = await readFile(
         new URL("../migrations/auth.sql", import.meta.url),
         "utf8"
       )
-      await connection.query(authSql)
+      await connection.query(prefixAuthMigrationSql(authSql))
       console.info("Kiln authentication tables created")
     }
   } finally {

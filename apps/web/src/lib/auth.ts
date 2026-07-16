@@ -12,6 +12,7 @@ import { Resend } from "resend"
 
 import { AuthCodeEmail } from "@/emails/auth-code-email"
 import { databasePool } from "@/lib/database"
+import { databaseTable, databaseTableName } from "@/lib/database-config"
 import {
   emailDeliveryConfig,
   kilnPublicUrl,
@@ -33,6 +34,15 @@ export const auth = betterAuth({
   appName: "Kiln",
   baseURL: publicUrl.origin,
   database: databasePool,
+  user: { modelName: databaseTableName("user") },
+  session: {
+    modelName: databaseTableName("session"),
+    expiresIn: 60 * 60 * 24 * 7,
+    updateAge: 60 * 60 * 24,
+    freshAge: 60 * 60,
+  },
+  account: { modelName: databaseTableName("account") },
+  verification: { modelName: databaseTableName("verification") },
   emailAndPassword: {
     enabled: true,
     autoSignIn: false,
@@ -56,12 +66,8 @@ export const auth = betterAuth({
     autoSignInAfterVerification: false,
     expiresIn: 60 * 10,
   },
-  session: {
-    expiresIn: 60 * 60 * 24 * 7,
-    updateAge: 60 * 60 * 24,
-    freshAge: 60 * 60,
-  },
   rateLimit: {
+    modelName: databaseTableName("rateLimit"),
     enabled: true,
     storage: "database",
     window: 60,
@@ -110,7 +116,7 @@ export const auth = betterAuth({
         Array<{ id: string } & RowDataPacket>
       >(
         `SELECT id
-           FROM kiln_invitation
+           FROM ${databaseTable("invitation")}
           WHERE email = ?
             AND accepted_at IS NULL
             AND revoked_at IS NULL
@@ -169,11 +175,13 @@ export const auth = betterAuth({
             { idempotencyKey: `auth-code/${type}/${fingerprint}` }
           )
           .then(({ error }) => {
-            if (error) console.error("Could not send Kiln authentication code", error)
+            if (error)
+              console.error("Could not send Kiln authentication code", error)
           })
       },
     }),
     twoFactor({
+      twoFactorTable: databaseTableName("twoFactor"),
       issuer: "Kiln",
       totpOptions: { digits: 6, period: 30 },
       backupCodeOptions: {
@@ -188,6 +196,9 @@ export const auth = betterAuth({
       rpID: publicUrl.hostname,
       rpName: "Kiln",
       origin: publicUrl.origin,
+      schema: {
+        passkey: { modelName: databaseTableName("passkey") },
+      },
       authenticatorSelection: {
         residentKey: "preferred",
         userVerification: "required",

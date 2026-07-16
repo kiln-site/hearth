@@ -1,6 +1,5 @@
 # Before We Go Live
 
-- [ ] Make the database pool a development-safe singleton across SSR reloads.
 - [ ] Close the database pool explicitly during graceful shutdown.
 - [ ] Ensure database connections are released even if `RELEASE_LOCK()` fails.
 - [ ] Configure the database pool's maximum idle connections and idle timeout.

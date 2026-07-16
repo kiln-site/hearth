@@ -9,6 +9,7 @@ import {
 import type { ResultSetHeader, RowDataPacket } from "mysql2/promise"
 
 import { databasePool } from "@/lib/database"
+import { databaseTable } from "@/lib/database-config"
 import { relayKey } from "@/lib/environment"
 
 export interface PersistedRelay {
@@ -41,7 +42,7 @@ export async function listPersistedRelays(): Promise<Array<PersistedRelay>> {
   const [rows] = await databasePool.query<Array<RelayRow>>(
     `SELECT id, name, hostname, port, use_tls, enabled, is_primary,
             last_connected_at, last_error, token_ciphertext
-       FROM kiln_relay
+       FROM ${databaseTable("relay")}
       ORDER BY is_primary DESC, name ASC, created_at ASC`
   )
   return rows.map(toPersistedRelay)
@@ -51,19 +52,19 @@ export async function createPersistedRelay(input: {
   name: string
   hostname: string
   port: number
-    useTls: boolean
-    token: string
+  useTls: boolean
+  token: string
 }): Promise<PersistedRelay> {
   const id = randomUUID()
   const connection = await databasePool.getConnection()
   try {
     await connection.beginTransaction()
     const [primaryRows] = await connection.query<Array<RowDataPacket>>(
-      "SELECT COUNT(*) AS primary_count FROM kiln_relay WHERE is_primary = TRUE"
+      `SELECT COUNT(*) AS primary_count FROM ${databaseTable("relay")} WHERE is_primary = TRUE`
     )
     const isPrimary = Number(primaryRows[0]?.primary_count ?? 0) === 0
     await connection.execute(
-      `INSERT INTO kiln_relay
+      `INSERT INTO ${databaseTable("relay")}
         (id, name, hostname, port, use_tls, token_ciphertext, enabled, is_primary)
        VALUES (?, ?, ?, ?, ?, ?, TRUE, ?)`,
       [
@@ -94,9 +95,11 @@ export async function makePersistedRelayPrimary(id: string): Promise<void> {
   const connection = await databasePool.getConnection()
   try {
     await connection.beginTransaction()
-    await connection.query("UPDATE kiln_relay SET is_primary = FALSE")
+    await connection.query(
+      `UPDATE ${databaseTable("relay")} SET is_primary = FALSE`
+    )
     const [result] = await connection.execute<ResultSetHeader>(
-      "UPDATE kiln_relay SET is_primary = TRUE, enabled = TRUE WHERE id = ?",
+      `UPDATE ${databaseTable("relay")} SET is_primary = TRUE, enabled = TRUE WHERE id = ?`,
       [id]
     )
     if (result.affectedRows !== 1) throw new Error("Relay not found")
@@ -111,7 +114,7 @@ export async function makePersistedRelayPrimary(id: string): Promise<void> {
 
 export async function deletePersistedRelay(id: string): Promise<void> {
   const [result] = await databasePool.execute<ResultSetHeader>(
-    "DELETE FROM kiln_relay WHERE id = ? AND is_primary = FALSE",
+    `DELETE FROM ${databaseTable("relay")} WHERE id = ? AND is_primary = FALSE`,
     [id]
   )
   if (result.affectedRows !== 1) {
@@ -119,9 +122,7 @@ export async function deletePersistedRelay(id: string): Promise<void> {
   }
 }
 
-export async function checkPersistedRelay(
-  id: string
-): Promise<PersistedRelay> {
+export async function checkPersistedRelay(id: string): Promise<PersistedRelay> {
   const relay = (await listPersistedRelays()).find((item) => item.id === id)
   if (!relay) throw new Error("Relay not found")
 
@@ -138,7 +139,7 @@ export async function checkPersistedRelay(
   }
 
   await databasePool.execute(
-    `UPDATE kiln_relay
+    `UPDATE ${databaseTable("relay")}
         SET last_connected_at = ?, last_error = ?
       WHERE id = ?`,
     [error ? null : new Date(), error, id]
@@ -148,23 +149,30 @@ export async function checkPersistedRelay(
   return checked
 }
 
-export async function resolvePrimaryRelayUrl(): Promise<string> {
+export async function resolvePrimaryRelayUrl(): Promise<string | null> {
   const relay = await resolvePrimaryRelay()
-  return relay ? relayUrl(relay) : process.env.RELAY_URL ?? "http://127.0.0.1:4100"
+  return relay ? relayUrl(relay) : null
 }
 
 export async function resolvePrimaryRelay(): Promise<PersistedRelay | null> {
-  return (await listPersistedRelays()).find(
-    (item) => item.isPrimary && item.enabled
-  ) ?? null
+  return (
+    (await listPersistedRelays()).find(
+      (item) => item.isPrimary && item.enabled
+    ) ?? null
+  )
 }
 
-export async function relayHeaders(relay?: { id: string }): Promise<HeadersInit> {
+export async function relayHeaders(relay?: {
+  id: string
+}): Promise<HeadersInit> {
   let token: string | null = null
   if (relay) {
     const [rows] = await databasePool.query<
       Array<{ token_ciphertext: string | null } & RowDataPacket>
-    >("SELECT token_ciphertext FROM kiln_relay WHERE id = ? LIMIT 1", [relay.id])
+    >(
+      `SELECT token_ciphertext FROM ${databaseTable("relay")} WHERE id = ? LIMIT 1`,
+      [relay.id]
+    )
     if (rows[0]?.token_ciphertext) {
       token = decryptRelayToken(rows[0].token_ciphertext)
     }
@@ -194,14 +202,18 @@ function toPersistedRelay(row: RelayRow): PersistedRelay {
 
 function encryptionKey(): Buffer {
   const secret = process.env.BETTER_AUTH_SECRET
-  if (!secret) throw new Error("BETTER_AUTH_SECRET is required to protect Relay keys")
+  if (!secret)
+    throw new Error("BETTER_AUTH_SECRET is required to protect Relay keys")
   return createHash("sha256").update(secret).digest()
 }
 
 function encryptRelayToken(token: string): string {
   const iv = randomBytes(12)
   const cipher = createCipheriv("aes-256-gcm", encryptionKey(), iv)
-  const ciphertext = Buffer.concat([cipher.update(token, "utf8"), cipher.final()])
+  const ciphertext = Buffer.concat([
+    cipher.update(token, "utf8"),
+    cipher.final(),
+  ])
   return [
     "v1",
     iv.toString("base64url"),

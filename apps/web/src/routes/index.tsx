@@ -4,7 +4,7 @@ import { z } from "zod"
 import { AuthPage } from "@/components/auth-page"
 import { getInvitationPreview } from "@/server/access"
 import { getAuthState } from "@/server/auth"
-import { getRelaySnapshot } from "@/server/relay"
+import { getRelayConnectionState } from "@/server/relay"
 
 export const Route = createFileRoute("/")({
   validateSearch: z.object({
@@ -39,10 +39,21 @@ export const Route = createFileRoute("/")({
     if (search.redirect?.startsWith("/")) {
       throw redirect({ href: search.redirect })
     }
-    const snapshot = await getRelaySnapshot()
+    const connection = await getRelayConnectionState()
+    if (connection.status !== "connected") {
+      if (state.user.isDevelopmentBypass || state.user.role === "admin") {
+        throw redirect({ to: "/settings" })
+      }
+      throw redirect({
+        to: "/$serverId/console",
+        params: { serverId: "unavailable" },
+      })
+    }
     throw redirect({
       to: "/$serverId/console",
-      params: { serverId: snapshot.instances.at(0)?.shortId ?? "unavailable" },
+      params: {
+        serverId: connection.snapshot.instances.at(0)?.shortId ?? "unavailable",
+      },
     })
   },
   component: LoginRoute,

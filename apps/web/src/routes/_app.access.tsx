@@ -2,12 +2,19 @@ import { createFileRoute, redirect } from "@tanstack/react-router"
 
 import { AccessPage } from "@/components/access-page"
 import { getAccessCapabilities, getAccessOverview } from "@/server/access"
-import { getRelaySnapshot } from "@/server/relay"
+import { getRelayConnectionState, getRelaySnapshot } from "@/server/relay"
 
 export const Route = createFileRoute("/_app/access")({
   beforeLoad: async () => {
-    if (!(await getAccessCapabilities()).canManageAccess) {
+    const [capabilities, connection] = await Promise.all([
+      getAccessCapabilities(),
+      getRelayConnectionState(),
+    ])
+    if (!capabilities.canManageAccess) {
       throw redirect({ to: "/" })
+    }
+    if (connection.status !== "connected") {
+      throw redirect({ to: capabilities.isPlatformAdmin ? "/settings" : "/" })
     }
   },
   loader: async () => {

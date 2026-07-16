@@ -2,6 +2,7 @@ import type { RowDataPacket } from "mysql2/promise"
 
 import type { AuthenticatedUser } from "@/lib/auth-session"
 import { databasePool } from "@/lib/database"
+import { databaseTable } from "@/lib/database-config"
 import type { AccessPermission, AccessRole } from "@/lib/permissions"
 import { isAccessRole, roleHasPermission } from "@/lib/permissions"
 
@@ -27,7 +28,7 @@ export async function listUserGrants(
 ): Promise<Array<AccessGrant>> {
   const [rows] = await databasePool.query<Array<GrantRow>>(
     `SELECT id, relay_id, resource_type, resource_id, role
-       FROM kiln_access_grant
+       FROM ${databaseTable("access_grant")}
       WHERE user_id = ?${relayId ? " AND relay_id = ?" : ""}
       ORDER BY created_at ASC`,
     relayId ? [userId, relayId] : [userId]

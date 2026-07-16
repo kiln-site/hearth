@@ -1,6 +1,7 @@
 import * as React from "react"
 import { Link } from "@tanstack/react-router"
 import {
+  ArrowUpRight,
   Check,
   CircleAlert,
   Copy,
@@ -8,8 +9,10 @@ import {
   KeyRound,
   LoaderCircle,
   PlugZap,
+  RadioTower,
   RefreshCw,
   ServerCog,
+  ShieldCheck,
   Trash2,
 } from "lucide-react"
 
@@ -35,6 +38,7 @@ export function AppSettingsPage({
   const [relays, setRelays] = React.useState(initialRelays)
   const [pending, setPending] = React.useState<string | null>(null)
   const [error, setError] = React.useState<string | null>(null)
+  const [notice, setNotice] = React.useState<string | null>(null)
   const [form, setForm] = React.useState({
     name: "",
     hostname: "",
@@ -52,8 +56,9 @@ export function AppSettingsPage({
     event.preventDefault()
     setPending("add")
     setError(null)
+    setNotice(null)
     try {
-      await addRelay({
+      const created = await addRelay({
         data: {
           name: form.name,
           hostname: form.hostname,
@@ -62,6 +67,11 @@ export function AppSettingsPage({
           useTls: form.useTls,
         },
       })
+      setNotice(
+        created.lastError
+          ? `${created.name} was saved, but the first connection check failed.`
+          : `${created.name} is connected and ready.`
+      )
       setForm({
         name: "",
         hostname: "",
@@ -80,11 +90,13 @@ export function AppSettingsPage({
   async function act(id: string, action: "check" | "select" | "remove") {
     setPending(`${action}:${id}`)
     setError(null)
+    setNotice(null)
     try {
       if (action === "check") await checkRelay({ data: { id } })
       if (action === "select") await selectRelay({ data: { id } })
       if (action === "remove") await removeRelay({ data: { id } })
       await refresh()
+      if (action === "check") setNotice("Relay connection check completed.")
       if (action === "select") window.location.assign("/")
     } catch (cause) {
       setError(messageFrom(cause, `Could not ${action} Relay`))
@@ -107,7 +119,7 @@ export function AppSettingsPage({
               Relay connections
             </h1>
             <p className="mt-1 text-xs text-muted-foreground">
-              Relay endpoints are stored in MySQL and survive app restarts.
+              Connect Hearth to one or more independently deployed Relay nodes.
             </p>
           </div>
           <Button variant="outline" size="sm" asChild>
@@ -122,8 +134,42 @@ export function AppSettingsPage({
             <CircleAlert className="mt-0.5 size-4 shrink-0" /> {error}
           </div>
         ) : null}
+        {notice ? (
+          <div className="mt-5 flex items-start gap-2 rounded-lg border border-primary/25 bg-primary/7 px-3 py-2 text-xs text-foreground">
+            <Check className="mt-0.5 size-4 shrink-0 text-primary" /> {notice}
+          </div>
+        ) : null}
 
-        <div className="mt-7 grid gap-5 lg:grid-cols-[1fr_20rem]">
+        {relays.length === 0 ? (
+          <section className="relative mt-7 overflow-hidden rounded-xl border border-primary/20 bg-card/55 p-5 sm:p-6">
+            <div className="absolute inset-y-0 left-0 w-0.5 bg-primary" />
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-4">
+                <div className="grid size-10 shrink-0 place-items-center border border-primary/25 bg-primary/8 text-primary">
+                  <RadioTower className="size-4" />
+                </div>
+                <div>
+                  <p className="font-mono text-[9px] tracking-[0.16em] text-primary uppercase">
+                    First-run infrastructure
+                  </p>
+                  <h2 className="mt-1 font-heading text-lg font-semibold">
+                    Hearth is ready for its first Relay
+                  </h2>
+                  <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">
+                    Relay can run on a different node. Start it with the access
+                    key generated here, then enter an address reachable from
+                    this Hearth container.
+                  </p>
+                </div>
+              </div>
+              <span className="shrink-0 font-mono text-[9px] text-amber-400 uppercase">
+                0 nodes connected
+              </span>
+            </div>
+          </section>
+        ) : null}
+
+        <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_21rem]">
           <section className="overflow-hidden rounded-xl border bg-card/45">
             <div className="flex items-center gap-3 border-b px-4 py-3">
               <ServerCog className="size-4 text-primary" />
@@ -135,6 +181,15 @@ export function AppSettingsPage({
               </div>
             </div>
             <div className="divide-y">
+              {relays.length === 0 ? (
+                <div className="px-4 py-10 text-center">
+                  <ServerCog className="mx-auto size-5 text-muted-foreground/45" />
+                  <p className="mt-3 text-xs font-semibold">No saved Relays</p>
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    Use the enrollment form to add the first node.
+                  </p>
+                </div>
+              ) : null}
               {relays.map((relay) => (
                 <div
                   key={relay.id}
@@ -216,17 +271,18 @@ export function AppSettingsPage({
               <h2 className="text-sm font-semibold">Add a Relay</h2>
             </div>
             <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
-              Generate a one-time enrollment key, start Relay with it, then
-              enter the node endpoint.
+              Generate a shared access key, start Relay with it, then save the
+              node endpoint.
             </p>
             <form className="mt-5 space-y-3" onSubmit={createRelay}>
-              <Field label="Enrollment key">
+              <Field label="Relay access key">
                 <div className="flex gap-1.5">
                   <Input
                     value={form.token}
                     readOnly
-                    placeholder="Generate a key"
+                    placeholder="Generate access key"
                     className="font-mono text-[10px]"
+                    autoComplete="off"
                     required
                   />
                   <Button
@@ -235,8 +291,8 @@ export function AppSettingsPage({
                     variant="outline"
                     title={
                       form.token
-                        ? "Copy enrollment key"
-                        : "Generate enrollment key"
+                        ? "Copy Relay access key"
+                        : "Generate Relay access key"
                     }
                     onClick={() => {
                       if (!form.token) {
@@ -258,7 +314,8 @@ export function AppSettingsPage({
               {form.token ? (
                 <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 font-mono text-[9px] leading-4 text-muted-foreground">
                   Start the Relay image with this value as KILN_RELAY_KEY, then
-                  save its reachable address below.
+                  save its reachable address below. Hearth stores the key
+                  encrypted and never displays it again.
                 </div>
               ) : null}
               <Field label="Name">
@@ -321,10 +378,45 @@ export function AppSettingsPage({
                 Save Relay
               </Button>
             </form>
+
+            <div className="mt-5 space-y-3 border-t pt-4">
+              <RelayHint
+                icon={ArrowUpRight}
+                title="Hearth must reach it"
+                detail="Use DNS or an IP visible from this container. localhost points back to Hearth."
+              />
+              <RelayHint
+                icon={ShieldCheck}
+                title="Protect the route"
+                detail="Use HTTPS or a private network when Relay lives on another machine."
+              />
+            </div>
           </section>
         </div>
       </div>
     </main>
+  )
+}
+
+function RelayHint({
+  icon: Icon,
+  title,
+  detail,
+}: {
+  icon: typeof ArrowUpRight
+  title: string
+  detail: string
+}) {
+  return (
+    <div className="flex gap-2.5">
+      <Icon className="mt-0.5 size-3.5 shrink-0 text-primary" />
+      <span>
+        <span className="block text-[10px] font-semibold">{title}</span>
+        <span className="mt-0.5 block text-[9px] leading-4 text-muted-foreground">
+          {detail}
+        </span>
+      </span>
+    </div>
   )
 }
 

@@ -7,7 +7,6 @@ services:
     environment:
       NODE_ENV: development
       KILN_ENVIRONMENT: dev
-      DATABASE_URL: mysql://kiln:kiln@mysql:3306/hearth
     command:
       - /bin/sh
       - -lc

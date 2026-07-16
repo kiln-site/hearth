@@ -3,10 +3,11 @@ import { z } from "zod"
 
 import { auth, displayNameFromEmail } from "@/lib/auth"
 import { databasePool } from "@/lib/database"
+import { databaseTable, databaseTablePrefix } from "@/lib/database-config"
 import { emailDeliveryConfig, publicSignupEnabled } from "@/lib/environment"
 
 const emailSchema = z.email().transform((value) => value.trim().toLowerCase())
-const FIRST_USER_LOCK = "kiln:first-user"
+const FIRST_USER_LOCK = `${databaseTablePrefix()}:first-user`
 
 interface UserCountRow extends RowDataPacket {
   user_count: number
@@ -49,7 +50,7 @@ export async function installationState(): Promise<{
 }> {
   await ensureConfiguredSuperUser()
   const [rows] = await databasePool.query<Array<UserCountRow>>(
-    "SELECT COUNT(*) AS user_count FROM user"
+    `SELECT COUNT(*) AS user_count FROM ${databaseTable("user")}`
   )
   return {
     emailDeliveryEnabled: emailDeliveryConfig() !== null,
@@ -68,7 +69,8 @@ export async function createInitialAdministrator(input: {
     password: input.password,
     verified: !verificationRequired,
   })
-  if (!created) throw new Error("Kiln has already been set up. Sign in instead.")
+  if (!created)
+    throw new Error("Kiln has already been set up. Sign in instead.")
   if (verificationRequired) await sendEmailVerificationCode(email)
   return { email, verificationRequired }
 }
@@ -93,13 +95,14 @@ export async function replacePendingAccountEmail(input: {
       [FIRST_USER_LOCK]
     )
     locked = Number(lockRows[0]?.acquired ?? 0) === 1
-    if (!locked) throw new Error("Account setup is busy. Try again in a moment.")
+    if (!locked)
+      throw new Error("Account setup is busy. Try again in a moment.")
 
     const [rows] = await connection.query<Array<PendingCredentialRow>>(
       `SELECT auth_user.id, auth_user.email, auth_user.emailVerified,
               auth_user.role, auth_account.password
-         FROM user AS auth_user
-         JOIN account AS auth_account
+         FROM ${databaseTable("user")} AS auth_user
+         JOIN ${databaseTable("account")} AS auth_account
            ON auth_account.userId = auth_user.id
           AND auth_account.providerId = 'credential'
         WHERE auth_user.email = ?
@@ -113,10 +116,10 @@ export async function replacePendingAccountEmail(input: {
     const context = await auth.$context
     const ownsAccount = Boolean(
       pending.password &&
-        (await context.password.verify({
-          password: input.password,
-          hash: pending.password,
-        }))
+      (await context.password.verify({
+        password: input.password,
+        hash: pending.password,
+      }))
     )
     if (!ownsAccount) throw new Error("The account password did not match.")
 
@@ -126,10 +129,11 @@ export async function replacePendingAccountEmail(input: {
     }
 
     const [existingRows] = await connection.query<Array<RowDataPacket>>(
-      "SELECT id FROM user WHERE email = ? LIMIT 1",
+      `SELECT id FROM ${databaseTable("user")} WHERE email = ? LIMIT 1`,
       [nextEmail]
     )
-    if (existingRows.length) throw new Error("That email address is already in use.")
+    if (existingRows.length)
+      throw new Error("That email address is already in use.")
 
     await context.internalAdapter.deleteUser(pending.id)
     await createCredentialUser({
@@ -139,7 +143,8 @@ export async function replacePendingAccountEmail(input: {
       verified: false,
     })
   } finally {
-    if (locked) await connection.query("SELECT RELEASE_LOCK(?)", [FIRST_USER_LOCK])
+    if (locked)
+      await connection.query("SELECT RELEASE_LOCK(?)", [FIRST_USER_LOCK])
     connection.release()
   }
 
@@ -160,17 +165,19 @@ async function createFirstUser(input: {
       [FIRST_USER_LOCK]
     )
     locked = Number(lockRows[0]?.acquired ?? 0) === 1
-    if (!locked) throw new Error("Initial setup is busy. Try again in a moment.")
+    if (!locked)
+      throw new Error("Initial setup is busy. Try again in a moment.")
 
     const [countRows] = await connection.query<Array<UserCountRow>>(
-      "SELECT COUNT(*) AS user_count FROM user"
+      `SELECT COUNT(*) AS user_count FROM ${databaseTable("user")}`
     )
     if (Number(countRows[0]?.user_count ?? 0) > 0) return false
 
     await createCredentialUser({ ...input, role: "admin" })
     return true
   } finally {
-    if (locked) await connection.query("SELECT RELEASE_LOCK(?)", [FIRST_USER_LOCK])
+    if (locked)
+      await connection.query("SELECT RELEASE_LOCK(?)", [FIRST_USER_LOCK])
     connection.release()
   }
 }
@@ -197,7 +204,7 @@ async function createCredentialUser(input: {
       userId: user.id,
     })
     await databasePool.execute<ResultSetHeader>(
-      "UPDATE user SET emailVerified = ?, role = ? WHERE id = ?",
+      `UPDATE ${databaseTable("user")} SET emailVerified = ?, role = ? WHERE id = ?`,
       [input.verified, input.role, user.id]
     )
   } catch (cause) {
@@ -209,7 +216,7 @@ async function createCredentialUser(input: {
 async function signupAllowedForEmail(email: string): Promise<boolean> {
   if (publicSignupEnabled()) return true
   const [rows] = await databasePool.query<Array<RowDataPacket>>(
-    `SELECT id FROM kiln_invitation
+    `SELECT id FROM ${databaseTable("invitation")}
       WHERE email = ? AND accepted_at IS NULL AND revoked_at IS NULL
         AND expires_at > CURRENT_TIMESTAMP(3)
       LIMIT 1`,

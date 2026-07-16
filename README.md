@@ -6,9 +6,11 @@ containers. The interface uses shadcn/ui, Tailwind CSS 4, and `@pierre/trees`.
 
 ## Docker setup
 
-Copy [`.env.example`](./.env.example) to `.env`, then set two values:
+Copy [`.env.hearth.example`](./.env.hearth.example) to `.env` for the provided
+all-in-one Compose stack, then replace at least these values:
 
 ```dotenv
+DB_PASSWORD=replace-with-a-strong-database-password
 KILN_URL=http://localhost:3000
 KILN_RELAY_KEY=replace-with-the-output-of-openssl-rand-base64-48
 ```
@@ -25,10 +27,43 @@ Build the two compact Kiln Java runner images used by official Bricks:
 docker compose --profile images build runner-java21 runner-java25
 ```
 
-The stack contains Hearth, Relay, and MySQL. Hearth creates the database schema,
-generates a Better Auth secret, and persists that secret in its `/data` volume.
-The operator does not need to supply `DATABASE_URL`, `BETTER_AUTH_SECRET`, or
+The stack contains Hearth, Relay, and MySQL. On an empty table set it registers
+the Compose Relay automatically. Hearth creates the database schema, generates
+a Better Auth secret, and persists that secret in its `/data` volume. The
+operator does not need to supply `DATABASE_URL`, `BETTER_AUTH_SECRET`, or
 `BETTER_AUTH_URL` when using the provided Compose file.
+
+For a standalone Hearth image, use
+[`.env.hearth.example`](./.env.hearth.example). `DB_HOST`, `DB_NAME`,
+`DB_USERNAME`, `DB_PASSWORD`, `KILN_URL`, and a stable `BETTER_AUTH_SECRET` are
+required in production; `DB_PORT` defaults to `3306`. `DATABASE_URL` remains a
+compatibility fallback when none of the split `DB_*` connection values are set.
+`KILN_URL` is the canonical browser-facing origin even when Cloudflare,
+Traefik, Caddy, or nginx terminates TLS in front of Hearth. Kiln passes it to
+Better Auth explicitly, so a separate `BETTER_AUTH_URL` is unnecessary.
+
+`DB_TABLE_PREFIX` applies to every Kiln and Better Auth table. It must be a
+lowercase, identifier-safe prefix ending in an underscore, such as
+`kiln432m_`. When omitted, Hearth derives a stable `kiln` + four-character
+prefix from `BETTER_AUTH_SECRET`. Keep either the explicit prefix or the secret
+stable across restarts. Changing the prefix selects a fresh table namespace;
+Kiln does not rename an existing installation's tables automatically.
+
+Hearth can register the first Relay without assuming that it runs on the same
+node. Set the following on the Hearth container before its first database
+migration:
+
+```dotenv
+KILN_RELAY_URL=https://relay.example.com
+KILN_RELAY_NAME=Primary Relay
+KILN_RELAY_KEY=replace-with-the-same-key-used-by-the-relay
+```
+
+`KILN_RELAY_URL` is optional and must be an `http` or `https` origin without a
+path. When the prefixed Relay table is empty, Kiln stores that endpoint and an
+encrypted copy of `KILN_RELAY_KEY` as the primary Relay. Once a Relay exists,
+the database is authoritative: restarting with changed environment values does
+not replace settings managed through the UI.
 
 On an empty database, opening `KILN_URL` starts the first-boot administrator
 flow. Alternatively, these optional values create a verified administrator on
@@ -60,19 +95,20 @@ If either value is absent, six-digit authentication codes and invitation links
 are written to `docker compose logs hearth`. A mail-less first boot can skip
 verification for the initial administrator.
 
-`KILN_URL` is Better Auth's base URL and is always trusted. Kiln also trusts
-`http://localhost:3000`, `https://hearth.kiln.site`, and the local OrbStack
-origin `https://hearth.hearth.orb.local`. Additional trusted origins can be
-supplied as a comma-separated `BETTER_AUTH_TRUSTED_ORIGINS`.
+`KILN_URL` is Better Auth's explicit base URL and is always trusted. Kiln also
+trusts `http://localhost:3000`, `https://hearth.kiln.site`, and the local
+OrbStack origin `https://hearth.hearth.orb.local`. Additional trusted origins
+can be supplied as a comma-separated `BETTER_AUTH_TRUSTED_ORIGINS`.
 `KILN_RELAY_PORT` defaults to `4100`.
 
 The production images are defined in [apps/web/Dockerfile](./apps/web/Dockerfile),
 [apps/relay/Dockerfile](./apps/relay/Dockerfile), and
 [apps/runner/Dockerfile](./apps/runner/Dockerfile). Relay's only application
-settings are `KILN_RELAY_KEY` and `KILN_RELAY_PORT`; it also needs the Docker
-socket and a persistent `/data` volume. The runner is a stripped Java runtime
-on Debian slim; it contains no panel daemon and downloads only the artifact
-declared by its Brick.
+setting required in production is `KILN_RELAY_KEY`; normal and advanced Relay
+options are documented in [`.env.relay.example`](./.env.relay.example). Relay
+also needs the Docker socket and a persistent `/data` volume. The runner is a
+stripped Java runtime on Debian slim; it contains no panel daemon and downloads
+only the artifact declared by its Brick.
 
 ## Authentication and access
 
@@ -169,7 +205,8 @@ pnpm --filter web dev
 ```
 
 The root `.env` is read automatically. For development-only overrides, see
-[`.env.example`](./.env.example).
+[`.env.hearth.example`](./.env.hearth.example) and
+[`.env.relay.example`](./.env.relay.example).
 
 ## Checks
 

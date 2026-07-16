@@ -73,6 +73,8 @@ export function AppSidebar({
   activeSection,
   canManageAccess,
   isPlatformAdmin,
+  relayStatus,
+  relayName,
   onInstanceChange,
   onTabChange,
 }: {
@@ -83,20 +85,14 @@ export function AppSidebar({
   activeSection: GlobalSection
   canManageAccess: boolean
   isPlatformAdmin: boolean
+  relayStatus: "connected" | "unconfigured" | "unreachable"
+  relayName?: string
   onInstanceChange: (id: string) => void
   onTabChange: (tab: InstanceTab) => void
 }) {
   const navigate = useNavigate()
   const { isMobile } = useSidebar()
   const [signingOut, setSigningOut] = React.useState(false)
-  const platformItems = [
-    {
-      title: "Bricks",
-      icon: Boxes,
-      badge: String(instances.length),
-    },
-    { title: "Relays", icon: Server, badge: "1" },
-  ] as const
   return (
     <Sidebar collapsible="icon" className="border-sidebar-border/80">
       <SidebarHeader className="gap-1 px-2 pt-3">
@@ -123,26 +119,49 @@ export function AppSidebar({
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {platformItems.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton
-                    tooltip={{
-                      children: `${item.title} - Coming Soon`,
-                      hidden: false,
-                    }}
-                    type="button"
-                    aria-disabled="true"
-                    tabIndex={-1}
-                    className="text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
-                  >
-                    <item.icon />
-                    <span>{item.title}</span>
-                  </SidebarMenuButton>
-                  <SidebarMenuBadge className="text-sidebar-foreground/25">
-                    {item.badge}
-                  </SidebarMenuBadge>
-                </SidebarMenuItem>
-              ))}
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  tooltip={{ children: "Bricks - Coming Soon", hidden: false }}
+                  type="button"
+                  aria-disabled="true"
+                  tabIndex={-1}
+                  className="text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
+                >
+                  <Boxes />
+                  <span>Bricks</span>
+                </SidebarMenuButton>
+                <SidebarMenuBadge className="text-sidebar-foreground/25">
+                  {instances.length}
+                </SidebarMenuBadge>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  tooltip={
+                    isPlatformAdmin
+                      ? "Relays"
+                      : (relayName ??
+                        "Relay configuration is administrator-only")
+                  }
+                  type="button"
+                  isActive={activeSection === "settings"}
+                  aria-disabled={!isPlatformAdmin}
+                  tabIndex={isPlatformAdmin ? 0 : -1}
+                  className={
+                    isPlatformAdmin
+                      ? "data-active:bg-primary/10 data-active:text-primary"
+                      : "text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
+                  }
+                  onClick={() => {
+                    if (isPlatformAdmin) void navigate({ to: "/settings" })
+                  }}
+                >
+                  <Server />
+                  <span>Relays</span>
+                </SidebarMenuButton>
+                <SidebarMenuBadge className={relayBadgeTone(relayStatus)}>
+                  {relayStatus === "unconfigured" ? "0" : "1"}
+                </SidebarMenuBadge>
+              </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -292,14 +311,10 @@ export function AppSidebar({
           {isPlatformAdmin ? (
             <SidebarMenuItem>
               <SidebarMenuButton
-                tooltip={{
-                  children: "Settings - Coming Soon",
-                  hidden: false,
-                }}
+                tooltip="Settings"
                 type="button"
-                aria-disabled="true"
-                tabIndex={-1}
-                className="text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
+                isActive={activeSection === "settings"}
+                onClick={() => void navigate({ to: "/settings" })}
               >
                 <Settings />
                 <span>Settings</span>
@@ -321,16 +336,14 @@ export function AppSidebar({
                   {user.name}
                 </span>
                 <span className="mt-1 w-full truncate text-[10px] text-sidebar-foreground/60">
-                  {user.isDevelopmentBypass
-                    ? "Development bypass"
-                    : user.email}
+                  {user.isDevelopmentBypass ? "Development bypass" : user.email}
                 </span>
               </span>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
                     type="button"
-                    className="ml-auto grid size-7 shrink-0 place-items-center text-sidebar-foreground/55 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring/45 disabled:pointer-events-none disabled:opacity-45 group-data-[collapsible=icon]:mx-auto"
+                    className="ml-auto grid size-7 shrink-0 place-items-center text-sidebar-foreground/55 transition-colors group-data-[collapsible=icon]:mx-auto hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring/45 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-45"
                     aria-label={signingOut ? "Signing out" : "Sign out"}
                     disabled={signingOut}
                     onClick={() => {
@@ -347,11 +360,7 @@ export function AppSidebar({
                     )}
                   </button>
                 </TooltipTrigger>
-                <TooltipContent
-                  side="right"
-                  align="center"
-                  hidden={isMobile}
-                >
+                <TooltipContent side="right" align="center" hidden={isMobile}>
                   Logout
                 </TooltipContent>
               </Tooltip>
@@ -386,4 +395,12 @@ function statusBorderTone(state: RelayInstance["observedState"]): string {
   }
   if (state === "stopping") return "border-l-amber-400/45"
   return "border-l-muted-foreground/25"
+}
+
+function relayBadgeTone(
+  status: "connected" | "unconfigured" | "unreachable"
+): string {
+  if (status === "connected") return "text-emerald-400"
+  if (status === "unreachable") return "text-amber-400"
+  return "text-sidebar-foreground/35"
 }
