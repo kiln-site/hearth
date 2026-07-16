@@ -5,6 +5,8 @@ import {
   CircleStop,
   Copy,
   EllipsisVertical,
+  FileCode2,
+  FolderTree,
   LoaderCircle,
   OctagonX,
   Play,
@@ -30,6 +32,10 @@ import {
 
 import type { InstanceTab } from "@/components/app-sidebar"
 import { ConsoleWorkspace } from "@/components/console-workspace"
+import {
+  FileTreeLoadingPanel,
+  FileWorkspaceLoadingState,
+} from "@/components/file-tree-loading-panel"
 import { ToolbarSidebarTrigger } from "@/components/global-page-toolbar"
 import { SettingsWorkspace } from "@/components/settings-workspace"
 import { performRelayAction } from "@/server/relay"
@@ -44,11 +50,20 @@ const ResourceHistoryChart = React.lazy(async () => {
   return { default: module.ResourceHistoryChart }
 })
 
+function normalizeFilePath(path?: string) {
+  return path?.replace(/^\/+/, "") ?? ""
+}
+
+function fileNameFromPath(path: string) {
+  return path.split("/").filter(Boolean).at(-1) ?? path
+}
+
 export function InstanceWorkspace({
   instance,
   node,
   activeTab,
   filePath,
+  fileTreePreferences,
   permissions,
   onInstanceUpdate,
 }: {
@@ -56,6 +71,10 @@ export function InstanceWorkspace({
   node: RelayNode
   activeTab: InstanceTab
   filePath?: string
+  fileTreePreferences: {
+    collapsed: boolean
+    width: number | null
+  }
   permissions: {
     consoleWrite: boolean
     filesWrite: boolean
@@ -77,6 +96,7 @@ export function InstanceWorkspace({
   const addressCopyTimer = React.useRef<number | null>(null)
   const idCopyTimer = React.useRef<number | null>(null)
   const isRunning = instance.observedState === "running"
+  const normalizedFilePath = normalizeFilePath(filePath)
   const isStarting = instance.observedState === "starting"
   const isStopping = instance.observedState === "stopping"
   const powerIsOn = isRunning || isStarting
@@ -435,11 +455,44 @@ export function InstanceWorkspace({
           >
             <React.Suspense
               fallback={
-                <div className="grid min-h-0 flex-1 place-items-center bg-card text-xs text-muted-foreground">
-                  <span className="flex items-center gap-2">
-                    <LoaderCircle className="size-4 animate-spin text-primary" />
-                    Opening file workspace
-                  </span>
+                <div className="flex min-h-0 flex-1 bg-card">
+                  <FileTreeLoadingPanel
+                    collapsed={fileTreePreferences.collapsed}
+                    width={fileTreePreferences.width}
+                  />
+                  <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                    <div className="flex h-14 shrink-0 border-b">
+                      {fileTreePreferences.collapsed ? (
+                        <div className="hidden w-12 shrink-0 place-items-center border-r text-primary md:grid">
+                          <FolderTree className="size-[17px]" />
+                        </div>
+                      ) : null}
+                      <div className="flex min-w-0 flex-1 items-center gap-2.5 px-3 md:gap-3">
+                        <FileCode2 className="size-5 shrink-0 text-primary" />
+                        {normalizedFilePath ? (
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-semibold">
+                              {fileNameFromPath(normalizedFilePath)}
+                            </p>
+                            <p className="truncate font-mono text-[10px] text-muted-foreground sm:text-[11px]">
+                              /data/{normalizedFilePath}
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="space-y-1.5">
+                            <div className="h-3 w-24 animate-pulse bg-muted/35" />
+                            <div className="h-2.5 w-40 animate-pulse bg-muted/25" />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="grid min-h-0 flex-1 place-items-center px-6 text-center">
+                      <FileWorkspaceLoadingState
+                        title="Opening file workspace"
+                        description="Preparing the file browser and editor."
+                      />
+                    </div>
+                  </div>
                 </div>
               }
             >
@@ -450,6 +503,8 @@ export function InstanceWorkspace({
                 routeFilePath={filePath}
                 canShare={permissions.shareLogs}
                 canWrite={permissions.filesWrite}
+                initialTreeCollapsed={fileTreePreferences.collapsed}
+                initialTreeWidth={fileTreePreferences.width}
               />
             </React.Suspense>
           </div>

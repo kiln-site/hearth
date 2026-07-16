@@ -19,12 +19,15 @@ import {
   Ellipsis,
   FileCode2,
   FilePlus,
+  FolderTree,
   FolderPlus,
   GitCompareArrows,
+  GripVertical,
   HardDriveDownload,
   LoaderCircle,
   LockKeyhole,
   Network,
+  PanelLeftClose,
   Plus,
   RefreshCw,
   Save,
@@ -51,6 +54,10 @@ import {
 } from "@workspace/ui/components/tooltip"
 import { SyntaxCodeEditor } from "@/components/syntax-code-editor"
 import type { SyntaxCodeEditorHandle } from "@/components/syntax-code-editor"
+import {
+  FileTreeLoadingPanel,
+  FileWorkspaceLoadingState,
+} from "@/components/file-tree-loading-panel"
 import { redactSensitiveText } from "@/lib/redaction"
 import {
   getRelayFile,
@@ -64,7 +71,28 @@ function formatName(path: string) {
 }
 
 const fileEditorHeaderClassName =
-  "flex h-14 shrink-0 items-center gap-2 border-b px-2 sm:px-3 md:h-auto md:min-h-14 md:flex-wrap md:gap-x-3 md:gap-y-2 md:py-2.5"
+  "flex h-14 shrink-0 border-b md:h-auto md:min-h-14"
+const fileEditorHeaderContentClassName =
+  "flex min-w-0 flex-1 items-center gap-2 px-2 sm:px-3 md:flex-wrap md:gap-x-3 md:gap-y-2 md:py-2"
+
+const fileTreeWidthCookieName = "file_tree_width"
+const fileTreeCollapsedCookieName = "file_tree_collapsed"
+const fileTreeCookieMaxAge = 60 * 60 * 24 * 7
+const fileTreeMinWidth = 224
+const fileTreeMaxWidth = 480
+
+function clampFileTreeWidth(width: number, workspaceWidth: number) {
+  const responsiveMaximum = Math.floor(workspaceWidth * 0.45)
+  const maximum = Math.max(
+    fileTreeMinWidth,
+    Math.min(fileTreeMaxWidth, responsiveMaximum)
+  )
+  return Math.min(maximum, Math.max(fileTreeMinWidth, Math.round(width)))
+}
+
+function defaultFileTreeWidth() {
+  return window.innerWidth >= 1280 ? 304 : 280
+}
 
 function parentDirectoryPaths(path: string) {
   const parts = path.split("/").filter(Boolean)
@@ -89,6 +117,80 @@ async function copyToClipboard(value: string) {
   }
 }
 
+function FileTreeRevealButton({ onClick }: { onClick: () => void }) {
+  return (
+    <div
+      className="hidden shrink-0 self-stretch border-r md:flex"
+      style={{ width: "var(--file-editor-gutter-width, 3rem)" }}
+    >
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className="grid size-full place-items-center text-primary transition-colors outline-none hover:bg-accent/45 hover:text-primary focus-visible:bg-accent/55 focus-visible:ring-1 focus-visible:ring-ring/60 focus-visible:ring-inset"
+            aria-label="Open file tree"
+            onClick={onClick}
+          >
+            <FolderTree className="size-[17px]" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right" sideOffset={7}>
+          Open File Tree
+        </TooltipContent>
+      </Tooltip>
+    </div>
+  )
+}
+
+function FilePathCopyButton({ path }: { path: string }) {
+  const [copyState, setCopyState] = React.useState<"idle" | "copied">("idle")
+  const resetTimer = React.useRef<number | null>(null)
+  const fullFilePath = `/data/${path.replace(/^\/+/, "")}`
+
+  React.useEffect(() => {
+    setCopyState("idle")
+    if (resetTimer.current) window.clearTimeout(resetTimer.current)
+  }, [path])
+
+  React.useEffect(
+    () => () => {
+      if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    },
+    []
+  )
+
+  async function handleCopy() {
+    await copyToClipboard(fullFilePath)
+    setCopyState("copied")
+    if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    resetTimer.current = window.setTimeout(() => setCopyState("idle"), 1800)
+  }
+
+  return (
+    <EditorTooltip
+      content={copyState === "copied" ? "File Path Copied" : "Copy File Path"}
+    >
+      <button
+        type="button"
+        className="group/path flex max-w-full items-center gap-1 font-mono text-[10px] text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/50 focus-visible:outline-none sm:text-[11px]"
+        aria-label={
+          copyState === "copied"
+            ? `Copied ${fullFilePath}`
+            : `Copy ${fullFilePath}`
+        }
+        onClick={handleCopy}
+      >
+        <span className="truncate">{fullFilePath}</span>
+        {copyState === "copied" ? (
+          <Check className="size-3.5 shrink-0 text-primary" />
+        ) : (
+          <Copy className="size-3.5 shrink-0 opacity-65 transition-opacity group-hover/path:opacity-100" />
+        )}
+      </button>
+    </EditorTooltip>
+  )
+}
+
 function Editor({
   file,
   instance,
@@ -97,6 +199,8 @@ function Editor({
   canShare,
   canWrite,
   onSave,
+  treeCollapsed,
+  onTreeExpand,
 }: {
   file: RelayFileContent
   instance: RelayInstance
@@ -105,6 +209,8 @@ function Editor({
   canShare: boolean
   canWrite: boolean
   onSave: (content: string) => Promise<void>
+  treeCollapsed: boolean
+  onTreeExpand: () => void
 }) {
   const [value, setValue] = React.useState(file.content)
   const [savedValue, setSavedValue] = React.useState(file.content)
@@ -114,9 +220,6 @@ function Editor({
     "idle" | "uploading" | "copied" | "error"
   >("idle")
   const [copyState, setCopyState] = React.useState<"idle" | "copied">("idle")
-  const [pathCopyState, setPathCopyState] = React.useState<"idle" | "copied">(
-    "idle"
-  )
   const [redactSensitive] = React.useState(true)
   const [moreOpen, setMoreOpen] = React.useState(false)
   const [searchOpen, setSearchOpen] = React.useState(false)
@@ -127,7 +230,7 @@ function Editor({
   const searchInputRef = React.useRef<HTMLInputElement>(null)
   const resetShareTimer = React.useRef<number | null>(null)
   const resetCopyTimer = React.useRef<number | null>(null)
-  const resetPathCopyTimer = React.useRef<number | null>(null)
+  const sectionRef = React.useRef<HTMLElement>(null)
 
   React.useEffect(() => {
     setValue(file.content)
@@ -135,26 +238,44 @@ function Editor({
     setSaveError(null)
     setShareState("idle")
     setCopyState("idle")
-    setPathCopyState("idle")
     setReviewChanges(true)
     if (resetShareTimer.current) window.clearTimeout(resetShareTimer.current)
     if (resetCopyTimer.current) window.clearTimeout(resetCopyTimer.current)
-    if (resetPathCopyTimer.current)
-      window.clearTimeout(resetPathCopyTimer.current)
   }, [file])
 
   React.useEffect(
     () => () => {
       if (resetShareTimer.current) window.clearTimeout(resetShareTimer.current)
       if (resetCopyTimer.current) window.clearTimeout(resetCopyTimer.current)
-      if (resetPathCopyTimer.current)
-        window.clearTimeout(resetPathCopyTimer.current)
     },
     []
   )
 
+  React.useLayoutEffect(() => {
+    const section = sectionRef.current
+    const gutters = section?.querySelector<HTMLElement>(".cm-gutters")
+    if (!section || !gutters) return
+    const sectionElement = section
+    const gutterElement = gutters
+
+    function syncGutterWidth() {
+      const nextWidth = `${gutterElement.getBoundingClientRect().width}px`
+      if (
+        sectionElement.style.getPropertyValue("--file-editor-gutter-width") ===
+        nextWidth
+      ) {
+        return
+      }
+      sectionElement.style.setProperty("--file-editor-gutter-width", nextWidth)
+    }
+
+    syncGutterWidth()
+    const observer = new ResizeObserver(syncGutterWidth)
+    observer.observe(gutterElement)
+    return () => observer.disconnect()
+  }, [file.path])
+
   const dirty = value !== savedValue
-  const fullFilePath = `/data/${file.path}`
   async function handleSave() {
     setSaving(true)
     setSaveError(null)
@@ -198,291 +319,268 @@ function Editor({
     resetCopyTimer.current = window.setTimeout(() => setCopyState("idle"), 1800)
   }
 
-  async function handlePathCopy() {
-    await copyToClipboard(fullFilePath)
-    setPathCopyState("copied")
-    if (resetPathCopyTimer.current)
-      window.clearTimeout(resetPathCopyTimer.current)
-    resetPathCopyTimer.current = window.setTimeout(
-      () => setPathCopyState("idle"),
-      1800
-    )
-  }
-
   return (
-    <section className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-card">
+    <section
+      ref={sectionRef}
+      className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-card"
+    >
       <Popover open={searchOpen} onOpenChange={setSearchOpen}>
         <PopoverAnchor asChild>
           <div className={fileEditorHeaderClassName} data-file-toolbar>
-            <div className="flex min-w-0 flex-1 items-center gap-2.5 md:gap-3">
-              <FileCode2 className="size-5 shrink-0 text-primary" />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold">
-                  {formatName(file.path)}
-                </p>
-                <EditorTooltip
-                  content={
-                    pathCopyState === "copied"
-                      ? "File Path Copied"
-                      : "Copy File Path"
-                  }
-                >
-                  <button
-                    type="button"
-                    className="group/path flex max-w-full items-center gap-1 font-mono text-[10px] text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/50 focus-visible:outline-none sm:text-[11px]"
-                    aria-label={
-                      pathCopyState === "copied"
-                        ? `Copied ${fullFilePath}`
-                        : `Copy ${fullFilePath}`
-                    }
-                    onClick={handlePathCopy}
-                  >
-                    <span className="truncate">{fullFilePath}</span>
-                    {pathCopyState === "copied" ? (
-                      <Check className="size-3.5 shrink-0 text-primary" />
-                    ) : (
-                      <Copy className="size-3.5 shrink-0 opacity-65 transition-opacity group-hover/path:opacity-100" />
-                    )}
-                  </button>
-                </EditorTooltip>
-              </div>
-              {file.encoding === "gzip" ? (
-                <span className="hidden border border-primary/20 bg-primary/8 px-1.5 py-0.5 font-mono text-[8px] tracking-wider text-primary sm:inline">
-                  GZIP · READ ONLY
-                </span>
-              ) : null}
-            </div>
-
-            <div
-              className="ml-auto hidden max-w-full min-w-0 flex-wrap items-center justify-end gap-1 md:flex"
-              data-file-editor-actions
-            >
-              {canShare ? (
-                <EditorTooltip
-                  content={
-                    shareState === "uploading"
-                      ? "Uploading to mclo.gs"
-                      : shareState === "copied"
-                        ? "Link Copied"
-                        : shareState === "error"
-                          ? "Retry mclo.gs Upload"
-                          : "Upload to mclo.gs"
-                  }
-                >
-                  <Button
-                    variant={
-                      shareState === "copied"
-                        ? "secondary"
-                        : shareState === "error"
-                          ? "destructive"
-                          : "ghost"
-                    }
-                    size="default"
-                    className="h-8 shrink-0 gap-1.5 px-2.5 text-xs shadow-none"
-                    aria-label={`Upload ${formatName(file.path)} to mclo.gs and copy link`}
-                    disabled={shareState === "uploading" || loading}
-                    onClick={handleShare}
-                  >
-                    {shareState === "uploading" ? (
-                      <LoaderCircle className="size-[17px] animate-spin" />
-                    ) : shareState === "copied" ? (
-                      <Check className="size-[17px]" />
-                    ) : shareState === "error" ? (
-                      <TriangleAlert className="size-[17px]" />
-                    ) : (
-                      <Share2 className="size-[17px]" />
-                    )}
-                    <span>
-                      {shareState === "uploading"
-                        ? "Uploading"
-                        : shareState === "copied"
-                          ? "Link copied"
-                          : shareState === "error"
-                            ? "Try again"
-                            : "mclo.gs"}
-                    </span>
-                  </Button>
-                </EditorTooltip>
-              ) : null}
-              <EditorTooltip
-                content={searchOpen ? "Hide Search in File" : "Search in File"}
-              >
-                <Button
-                  variant={searchOpen ? "secondary" : "ghost"}
-                  size="icon"
-                  aria-label={searchOpen ? "Close file search" : "Search file"}
-                  aria-pressed={searchOpen}
-                  aria-keyshortcuts="Control+F Meta+F"
-                  disabled={loading}
-                  onClick={() => setSearchOpen((current) => !current)}
-                >
-                  <Search className="size-[17px]" />
-                </Button>
-              </EditorTooltip>
-              <EditorTooltip
-                content={wrapLines ? "Disable Line Wrap" : "Enable Line Wrap"}
-              >
-                <Button
-                  variant={wrapLines ? "secondary" : "ghost"}
-                  size="icon"
-                  aria-label={
-                    wrapLines ? "Disable line wrap" : "Enable line wrap"
-                  }
-                  aria-pressed={wrapLines}
-                  onClick={() => setWrapLines((current) => !current)}
-                >
-                  <WrapText className="size-[17px]" />
-                </Button>
-              </EditorTooltip>
-              <EditorTooltip
-                content={
-                  copyState === "copied"
-                    ? "File Contents Copied"
-                    : "Copy File Contents"
-                }
-              >
-                <Button
-                  variant={copyState === "copied" ? "secondary" : "ghost"}
-                  size="icon"
-                  aria-label={
-                    copyState === "copied"
-                      ? "File Contents Copied"
-                      : "Copy File Contents"
-                  }
-                  onClick={handleCopy}
-                >
-                  {copyState === "copied" ? (
-                    <Check className="size-[17px]" />
-                  ) : (
-                    <Copy className="size-[17px]" />
-                  )}
-                </Button>
-              </EditorTooltip>
-              <EditorTooltip
-                content={
-                  dirty
-                    ? reviewChanges
-                      ? "Hide Changes"
-                      : "Highlight Changes"
-                    : "No Changes"
-                }
-              >
-                <Button
-                  variant={reviewChanges ? "secondary" : "ghost"}
-                  size="icon"
-                  aria-label={
-                    reviewChanges ? "Hide Changes" : "Highlight Changes"
-                  }
-                  aria-pressed={reviewChanges}
-                  disabled={!dirty || loading || file.readOnly}
-                  onClick={() => setReviewChanges((current) => !current)}
-                >
-                  <GitCompareArrows className="size-[17px]" />
-                </Button>
-              </EditorTooltip>
-              <EditorSaveButton
-                dirty={dirty}
-                file={file}
-                loading={loading}
-                saving={saving}
-                onSave={handleSave}
-              />
-            </div>
-
-            <div className="ml-auto flex shrink-0 items-center gap-1 md:hidden">
-              <EditorSaveButton
-                dirty={dirty}
-                file={file}
-                loading={loading}
-                saving={saving}
-                onSave={handleSave}
-              />
-              <Popover open={moreOpen} onOpenChange={setMoreOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant={moreOpen ? "secondary" : "ghost"}
-                    size="icon"
-                    className="shadow-none"
-                    aria-label="More file actions"
-                    aria-expanded={moreOpen}
-                  >
-                    <Ellipsis className="size-[18px]" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent
-                  align="end"
-                  side="bottom"
-                  sideOffset={7}
-                  collisionPadding={8}
-                  className="w-[min(18rem,calc(100vw-1rem))] p-1.5"
-                >
-                  <p className="px-2 pt-1 pb-1.5 font-mono text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
-                    File actions
+            {treeCollapsed ? (
+              <FileTreeRevealButton onClick={onTreeExpand} />
+            ) : null}
+            <div className={fileEditorHeaderContentClassName}>
+              <div className="flex min-w-0 flex-1 items-center gap-2.5 md:gap-3">
+                <FileCode2 className="size-5 shrink-0 text-primary" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold">
+                    {formatName(file.path)}
                   </p>
-                  {canShare ? (
-                    <MobileFileAction
-                      icon={
-                        shareState === "uploading" ? (
-                          <LoaderCircle className="animate-spin" />
-                        ) : shareState === "copied" ? (
-                          <Check />
-                        ) : shareState === "error" ? (
-                          <TriangleAlert />
-                        ) : (
-                          <Share2 />
-                        )
+                  <FilePathCopyButton path={file.path} />
+                </div>
+                {file.encoding === "gzip" ? (
+                  <span className="hidden border border-primary/20 bg-primary/8 px-1.5 py-0.5 font-mono text-[8px] tracking-wider text-primary sm:inline">
+                    GZIP · READ ONLY
+                  </span>
+                ) : null}
+              </div>
+
+              <div
+                className="ml-auto hidden max-w-full min-w-0 flex-wrap items-center justify-end gap-1 md:flex"
+                data-file-editor-actions
+              >
+                {canShare ? (
+                  <EditorTooltip
+                    content={
+                      shareState === "uploading"
+                        ? "Uploading to mclo.gs"
+                        : shareState === "copied"
+                          ? "Link Copied"
+                          : shareState === "error"
+                            ? "Retry mclo.gs Upload"
+                            : "Upload to mclo.gs"
+                    }
+                  >
+                    <Button
+                      variant={
+                        shareState === "copied"
+                          ? "secondary"
+                          : shareState === "error"
+                            ? "destructive"
+                            : "ghost"
                       }
-                      label={
-                        shareState === "uploading"
+                      size="default"
+                      className="h-8 shrink-0 gap-1.5 px-2.5 text-xs shadow-none"
+                      aria-label={`Upload ${formatName(file.path)} to mclo.gs and copy link`}
+                      disabled={shareState === "uploading" || loading}
+                      onClick={handleShare}
+                    >
+                      {shareState === "uploading" ? (
+                        <LoaderCircle className="size-[17px] animate-spin" />
+                      ) : shareState === "copied" ? (
+                        <Check className="size-[17px]" />
+                      ) : shareState === "error" ? (
+                        <TriangleAlert className="size-[17px]" />
+                      ) : (
+                        <Share2 className="size-[17px]" />
+                      )}
+                      <span>
+                        {shareState === "uploading"
                           ? "Uploading"
                           : shareState === "copied"
                             ? "Link copied"
                             : shareState === "error"
-                              ? "Try mclo.gs again"
-                              : "Upload to mclo.gs"
-                      }
-                      detail="Copies a shareable link"
-                      disabled={shareState === "uploading" || loading}
-                      onClick={() => void handleShare()}
-                    />
-                  ) : null}
-                  <MobileFileAction
-                    icon={<Search />}
-                    label="Find in file"
-                    detail="Search this document"
-                    disabled={loading}
-                    onClick={() => {
-                      setMoreOpen(false)
-                      window.setTimeout(() => setSearchOpen(true), 0)
-                    }}
-                  />
-                  <MobileFileAction
-                    active={wrapLines}
-                    icon={<WrapText />}
-                    label="Wrap long lines"
-                    detail="Fit text to the editor"
-                    onClick={() => setWrapLines((current) => !current)}
-                  />
-                  <MobileFileAction
-                    icon={copyState === "copied" ? <Check /> : <Copy />}
-                    label={
-                      copyState === "copied"
-                        ? "Contents copied"
-                        : "Copy contents"
+                              ? "Try again"
+                              : "mclo.gs"}
+                      </span>
+                    </Button>
+                  </EditorTooltip>
+                ) : null}
+                <EditorTooltip
+                  content={
+                    searchOpen ? "Hide Search in File" : "Search in File"
+                  }
+                >
+                  <Button
+                    variant={searchOpen ? "secondary" : "ghost"}
+                    size="icon"
+                    aria-label={
+                      searchOpen ? "Close file search" : "Search file"
                     }
-                    detail="Redacts IP addresses"
-                    onClick={() => void handleCopy()}
-                  />
-                  <MobileFileAction
-                    active={dirty && reviewChanges}
-                    icon={<GitCompareArrows />}
-                    label="Review changes"
-                    detail="Compare with the saved file"
+                    aria-pressed={searchOpen}
+                    aria-keyshortcuts="Control+F Meta+F"
+                    disabled={loading}
+                    onClick={() => setSearchOpen((current) => !current)}
+                  >
+                    <Search className="size-[17px]" />
+                  </Button>
+                </EditorTooltip>
+                <EditorTooltip
+                  content={wrapLines ? "Disable Line Wrap" : "Enable Line Wrap"}
+                >
+                  <Button
+                    variant={wrapLines ? "secondary" : "ghost"}
+                    size="icon"
+                    aria-label={
+                      wrapLines ? "Disable line wrap" : "Enable line wrap"
+                    }
+                    aria-pressed={wrapLines}
+                    onClick={() => setWrapLines((current) => !current)}
+                  >
+                    <WrapText className="size-[17px]" />
+                  </Button>
+                </EditorTooltip>
+                <EditorTooltip
+                  content={
+                    copyState === "copied"
+                      ? "File Contents Copied"
+                      : "Copy File Contents"
+                  }
+                >
+                  <Button
+                    variant={copyState === "copied" ? "secondary" : "ghost"}
+                    size="icon"
+                    aria-label={
+                      copyState === "copied"
+                        ? "File Contents Copied"
+                        : "Copy File Contents"
+                    }
+                    onClick={handleCopy}
+                  >
+                    {copyState === "copied" ? (
+                      <Check className="size-[17px]" />
+                    ) : (
+                      <Copy className="size-[17px]" />
+                    )}
+                  </Button>
+                </EditorTooltip>
+                <EditorTooltip
+                  content={
+                    dirty
+                      ? reviewChanges
+                        ? "Hide Changes"
+                        : "Highlight Changes"
+                      : "No Changes"
+                  }
+                >
+                  <Button
+                    variant={reviewChanges ? "secondary" : "ghost"}
+                    size="icon"
+                    aria-label={
+                      reviewChanges ? "Hide Changes" : "Highlight Changes"
+                    }
+                    aria-pressed={reviewChanges}
                     disabled={!dirty || loading || file.readOnly}
                     onClick={() => setReviewChanges((current) => !current)}
-                  />
-                </PopoverContent>
-              </Popover>
+                  >
+                    <GitCompareArrows className="size-[17px]" />
+                  </Button>
+                </EditorTooltip>
+                <EditorSaveButton
+                  dirty={dirty}
+                  file={file}
+                  loading={loading}
+                  saving={saving}
+                  onSave={handleSave}
+                />
+              </div>
+
+              <div className="ml-auto flex shrink-0 items-center gap-1 md:hidden">
+                <EditorSaveButton
+                  dirty={dirty}
+                  file={file}
+                  loading={loading}
+                  saving={saving}
+                  onSave={handleSave}
+                />
+                <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant={moreOpen ? "secondary" : "ghost"}
+                      size="icon"
+                      className="shadow-none"
+                      aria-label="More file actions"
+                      aria-expanded={moreOpen}
+                    >
+                      <Ellipsis className="size-[18px]" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent
+                    align="end"
+                    side="bottom"
+                    sideOffset={7}
+                    collisionPadding={8}
+                    className="w-[min(18rem,calc(100vw-1rem))] p-1.5"
+                  >
+                    <p className="px-2 pt-1 pb-1.5 font-mono text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
+                      File actions
+                    </p>
+                    {canShare ? (
+                      <MobileFileAction
+                        icon={
+                          shareState === "uploading" ? (
+                            <LoaderCircle className="animate-spin" />
+                          ) : shareState === "copied" ? (
+                            <Check />
+                          ) : shareState === "error" ? (
+                            <TriangleAlert />
+                          ) : (
+                            <Share2 />
+                          )
+                        }
+                        label={
+                          shareState === "uploading"
+                            ? "Uploading"
+                            : shareState === "copied"
+                              ? "Link copied"
+                              : shareState === "error"
+                                ? "Try mclo.gs again"
+                                : "Upload to mclo.gs"
+                        }
+                        detail="Copies a shareable link"
+                        disabled={shareState === "uploading" || loading}
+                        onClick={() => void handleShare()}
+                      />
+                    ) : null}
+                    <MobileFileAction
+                      icon={<Search />}
+                      label="Find in file"
+                      detail="Search this document"
+                      disabled={loading}
+                      onClick={() => {
+                        setMoreOpen(false)
+                        window.setTimeout(() => setSearchOpen(true), 0)
+                      }}
+                    />
+                    <MobileFileAction
+                      active={wrapLines}
+                      icon={<WrapText />}
+                      label="Wrap long lines"
+                      detail="Fit text to the editor"
+                      onClick={() => setWrapLines((current) => !current)}
+                    />
+                    <MobileFileAction
+                      icon={copyState === "copied" ? <Check /> : <Copy />}
+                      label={
+                        copyState === "copied"
+                          ? "Contents copied"
+                          : "Copy contents"
+                      }
+                      detail="Redacts IP addresses"
+                      onClick={() => void handleCopy()}
+                    />
+                    <MobileFileAction
+                      active={dirty && reviewChanges}
+                      icon={<GitCompareArrows />}
+                      label="Review changes"
+                      detail="Compare with the saved file"
+                      disabled={!dirty || loading || file.readOnly}
+                      onClick={() => setReviewChanges((current) => !current)}
+                    />
+                  </PopoverContent>
+                </Popover>
+              </div>
             </div>
           </div>
         </PopoverAnchor>
@@ -730,6 +828,9 @@ function FileTreePanel({
   onRefresh,
   onMobileOpenChange,
   onFileSelected,
+  collapsed,
+  onCollapsedChange,
+  initialWidth,
 }: {
   instance: RelayInstance
   tree: RelayFileTree
@@ -740,6 +841,9 @@ function FileTreePanel({
   onRefresh: () => void
   onMobileOpenChange: (open: boolean) => void
   onFileSelected: () => void
+  collapsed: boolean
+  onCollapsedChange: (collapsed: boolean) => void
+  initialWidth: number | null
 }) {
   const initialPath =
     selectedPath && tree.paths.includes(selectedPath) ? selectedPath : undefined
@@ -766,6 +870,154 @@ function FileTreePanel({
   const search = useFileTreeSearch(model)
   const selection = useFileTreeSelection(model)
   const searchInputRef = React.useRef<HTMLInputElement>(null)
+  const panelRef = React.useRef<HTMLElement>(null)
+  const resizeHandleRef = React.useRef<HTMLDivElement>(null)
+  const resizeFrame = React.useRef<number | null>(null)
+  const pendingWidth = React.useRef<number | null>(null)
+  const currentWidth = React.useRef(initialWidth ?? 304)
+  const resizeSession = React.useRef<{
+    pointerId: number
+    startX: number
+    startWidth: number
+  } | null>(null)
+  const previousDocumentStyles = React.useRef({
+    userSelect: "",
+  })
+
+  function workspaceWidth() {
+    return (
+      panelRef.current?.parentElement?.getBoundingClientRect().width ??
+      window.innerWidth
+    )
+  }
+
+  function applyFileTreeWidth(width: number) {
+    const nextWidth = clampFileTreeWidth(width, workspaceWidth())
+    currentWidth.current = nextWidth
+    panelRef.current?.style.setProperty("--file-tree-width", `${nextWidth}px`)
+    const handle = resizeHandleRef.current
+    if (handle) {
+      handle.setAttribute("aria-valuenow", String(nextWidth))
+      handle.setAttribute(
+        "aria-valuemax",
+        String(clampFileTreeWidth(fileTreeMaxWidth, workspaceWidth()))
+      )
+    }
+    return nextWidth
+  }
+
+  function persistFileTreeWidth(width: number) {
+    document.cookie = `${fileTreeWidthCookieName}=${width}; path=/; max-age=${fileTreeCookieMaxAge}; SameSite=Lax`
+  }
+
+  function scheduleFileTreeWidth(width: number) {
+    pendingWidth.current = width
+    if (resizeFrame.current !== null) return
+    resizeFrame.current = window.requestAnimationFrame(() => {
+      resizeFrame.current = null
+      const nextWidth = pendingWidth.current
+      pendingWidth.current = null
+      if (nextWidth !== null) applyFileTreeWidth(nextWidth)
+    })
+  }
+
+  function restoreDocumentAfterResize() {
+    document.documentElement.style.userSelect =
+      previousDocumentStyles.current.userSelect
+  }
+
+  function finishResize(pointerId?: number) {
+    if (
+      pointerId !== undefined &&
+      resizeSession.current?.pointerId !== pointerId
+    ) {
+      return
+    }
+    if (resizeFrame.current !== null) {
+      window.cancelAnimationFrame(resizeFrame.current)
+      resizeFrame.current = null
+    }
+    if (pendingWidth.current !== null) {
+      applyFileTreeWidth(pendingWidth.current)
+      pendingWidth.current = null
+    }
+    resizeSession.current = null
+    panelRef.current?.removeAttribute("data-resizing")
+    resizeHandleRef.current?.removeAttribute("data-resizing")
+    restoreDocumentAfterResize()
+    persistFileTreeWidth(currentWidth.current)
+  }
+
+  React.useLayoutEffect(() => {
+    applyFileTreeWidth(initialWidth ?? defaultFileTreeWidth())
+  }, [initialWidth])
+
+  React.useLayoutEffect(() => {
+    if (!collapsed) applyFileTreeWidth(currentWidth.current)
+  }, [collapsed])
+
+  React.useEffect(
+    () => () => {
+      if (resizeFrame.current !== null) {
+        window.cancelAnimationFrame(resizeFrame.current)
+      }
+      if (resizeSession.current) restoreDocumentAfterResize()
+    },
+    []
+  )
+
+  function handleResizePointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return
+    event.preventDefault()
+    const panel = panelRef.current
+    if (!panel) return
+    resizeSession.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: panel.getBoundingClientRect().width,
+    }
+    previousDocumentStyles.current = {
+      userSelect: document.documentElement.style.userSelect,
+    }
+    document.documentElement.style.userSelect = "none"
+    panel.dataset.resizing = "true"
+    event.currentTarget.dataset.resizing = "true"
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId)
+    } catch {
+      // Pointer capture is progressive enhancement; pointer events still work.
+    }
+  }
+
+  function handleResizePointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    const session = resizeSession.current
+    if (!session || session.pointerId !== event.pointerId) return
+    scheduleFileTreeWidth(session.startWidth + event.clientX - session.startX)
+  }
+
+  function handleResizePointerEnd(event: React.PointerEvent<HTMLDivElement>) {
+    if (resizeSession.current?.pointerId !== event.pointerId) return
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId)
+      }
+    } catch {
+      // The pointer may already have been released by the browser.
+    }
+    finishResize(event.pointerId)
+  }
+
+  function handleResizeKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    const step = event.shiftKey ? 32 : 16
+    let nextWidth: number | null = null
+    if (event.key === "ArrowLeft") nextWidth = currentWidth.current - step
+    if (event.key === "ArrowRight") nextWidth = currentWidth.current + step
+    if (event.key === "Home") nextWidth = fileTreeMinWidth
+    if (event.key === "End") nextWidth = fileTreeMaxWidth
+    if (nextWidth === null) return
+    event.preventDefault()
+    persistFileTreeWidth(applyFileTreeWidth(nextWidth))
+  }
 
   React.useEffect(() => {
     const selected = selection.at(-1)
@@ -776,20 +1028,33 @@ function FileTreePanel({
 
   return (
     <aside
+      ref={panelRef}
+      id={`file-tree-${instance.shortId}`}
+      data-file-tree-panel
       data-mobile-file-drawer
       data-state={mobileOpen ? "open" : "closed"}
-      className={`absolute inset-x-0 bottom-0 z-30 flex w-full shrink-0 flex-col overflow-hidden border-t bg-card shadow-[0_-18px_45px_rgba(0,0,0,0.35)] transition-[height] duration-200 ease-out md:static md:z-auto md:h-auto md:min-h-0 md:w-[17.5rem] md:border-t-0 md:border-r md:shadow-none md:transition-none xl:w-[19rem] ${mobileOpen ? "h-full" : "h-11"}`}
+      data-collapsed={collapsed}
+      className={`absolute inset-x-0 bottom-0 z-30 flex w-full shrink-0 flex-col overflow-hidden border-t bg-card shadow-[0_-18px_45px_rgba(0,0,0,0.35)] transition-[height] duration-200 ease-out md:relative md:inset-auto md:z-auto md:h-auto md:min-h-0 md:border-t-0 md:shadow-none md:transition-none ${collapsed ? "md:!w-0 md:!max-w-0 md:!min-w-0 md:overflow-hidden" : "md:w-[var(--file-tree-width)] md:max-w-[45%] md:min-w-56 md:overflow-visible md:[--file-tree-width:17.5rem] xl:max-w-[30rem] xl:[--file-tree-width:19rem]"} ${mobileOpen ? "h-full" : "h-11"}`}
+      style={
+        initialWidth
+          ? ({
+              "--file-tree-width": `${initialWidth}px`,
+            } as React.CSSProperties)
+          : undefined
+      }
     >
-      <div className="order-2 flex h-11 shrink-0 items-center border-t bg-card px-1.5 md:order-1 md:h-10 md:border-t-0 md:border-b md:px-2">
+      <div
+        className={`order-2 flex h-11 shrink-0 items-center overflow-hidden border-t bg-card px-1.5 md:order-1 md:h-14 md:w-[var(--file-tree-width)] md:border-t-0 md:border-b md:px-2 ${collapsed ? "md:invisible" : ""}`}
+      >
         <label className="flex h-full min-w-0 flex-1 items-center">
-          <Search className="ml-1 size-4 shrink-0 text-muted-foreground" />
+          <Search className="ml-1 size-5 shrink-0 text-foreground/90" />
           <input
             ref={searchInputRef}
             type="search"
             value={search.value}
             placeholder="Search files…"
             aria-label="Search instance files"
-            className="h-full min-w-0 flex-1 bg-transparent px-2 font-mono text-[11px] text-foreground outline-none placeholder:text-muted-foreground/70"
+            className="h-full min-w-0 flex-1 bg-transparent px-2 text-sm text-foreground outline-none placeholder:text-muted-foreground/70"
             onChange={(event) => {
               const value = event.target.value
               if (value) search.setValue(value)
@@ -816,7 +1081,7 @@ function FileTreePanel({
               <TooltipTrigger asChild>
                 <PopoverTrigger asChild>
                   <Button variant="ghost" size="icon-sm" aria-label="New">
-                    <Plus />
+                    <Plus className="size-[17px]" />
                   </Button>
                 </PopoverTrigger>
               </TooltipTrigger>
@@ -849,7 +1114,7 @@ function FileTreePanel({
                     aria-label="Refreshing files"
                     disabled
                   >
-                    <RefreshCw className="animate-spin" />
+                    <RefreshCw className="size-[17px] animate-spin" />
                   </Button>
                 </span>
               ) : (
@@ -859,7 +1124,7 @@ function FileTreePanel({
                   aria-label="Refresh files"
                   onClick={onRefresh}
                 >
-                  <RefreshCw />
+                  <RefreshCw className="size-[17px]" />
                 </Button>
               )}
             </TooltipTrigger>
@@ -867,10 +1132,27 @@ function FileTreePanel({
               {refreshing ? "Refreshing Files" : "Refresh Files"}
             </TooltipContent>
           </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="hidden md:inline-flex"
+                aria-label="Collapse file tree"
+                aria-controls={`file-tree-${instance.shortId}`}
+                onClick={() => onCollapsedChange(true)}
+              >
+                <PanelLeftClose className="size-[17px]" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>
+              Collapse File Tree
+            </TooltipContent>
+          </Tooltip>
         </div>
       </div>
       <div
-        className={`order-1 min-h-0 flex-1 bg-card px-1 py-1.5 md:order-2 md:block ${mobileOpen ? "block" : "hidden"}`}
+        className={`order-1 min-h-0 flex-1 overflow-hidden bg-card px-1 py-1.5 md:order-2 md:block md:w-[var(--file-tree-width)] md:shrink-0 ${mobileOpen ? "block" : "hidden"} ${collapsed ? "md:invisible" : ""}`}
       >
         <FileTree
           model={model}
@@ -912,6 +1194,35 @@ function FileTreePanel({
           )}
         />
       </div>
+
+      <div
+        ref={resizeHandleRef}
+        role="separator"
+        tabIndex={0}
+        aria-label="Resize file tree"
+        aria-orientation="vertical"
+        aria-valuemin={fileTreeMinWidth}
+        aria-valuemax={fileTreeMaxWidth}
+        aria-valuenow={currentWidth.current}
+        className={`${collapsed ? "md:hidden" : "md:flex"} group absolute inset-y-0 -right-1 z-40 hidden w-2.5 cursor-col-resize touch-none items-center justify-center outline-none`}
+        onPointerDown={handleResizePointerDown}
+        onPointerMove={handleResizePointerMove}
+        onPointerUp={handleResizePointerEnd}
+        onPointerCancel={handleResizePointerEnd}
+        onLostPointerCapture={() => {
+          if (resizeSession.current) finishResize()
+        }}
+        onDoubleClick={(event) => {
+          event.preventDefault()
+          persistFileTreeWidth(applyFileTreeWidth(defaultFileTreeWidth()))
+        }}
+        onKeyDown={handleResizeKeyDown}
+      >
+        <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border/80 transition-colors group-hover:bg-primary/55 group-focus-visible:bg-primary/75 group-data-[resizing=true]:bg-primary" />
+        <span className="relative grid h-9 w-2.5 place-items-center overflow-hidden border border-primary/35 bg-background text-primary opacity-0 shadow-[0_0_14px_color-mix(in_oklch,var(--primary),transparent_70%)] transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 group-data-[resizing=true]:opacity-100">
+          <GripVertical className="size-2" />
+        </span>
+      </div>
     </aside>
   )
 }
@@ -942,14 +1253,20 @@ function FileActionPreview({
 
 function UnavailablePreview({
   path,
+  pathIsCopyable,
   loading,
   message,
   canShare,
+  treeCollapsed,
+  onTreeExpand,
 }: {
   path: string
+  pathIsCopyable: boolean
   loading: boolean
   message: string | null
   canShare: boolean
+  treeCollapsed: boolean
+  onTreeExpand: () => void
 }) {
   return (
     <section
@@ -957,54 +1274,62 @@ function UnavailablePreview({
       aria-busy={loading}
     >
       <div className={fileEditorHeaderClassName} data-file-toolbar>
-        <div className="flex min-w-0 flex-1 items-center gap-2.5 md:gap-3">
-          <FileCode2 className="size-5 shrink-0 text-primary" />
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold">{formatName(path)}</p>
-            <p className="truncate font-mono text-[10px] text-muted-foreground sm:text-[11px]">
-              /data/{path}
-            </p>
+        {treeCollapsed ? <FileTreeRevealButton onClick={onTreeExpand} /> : null}
+        <div className={fileEditorHeaderContentClassName}>
+          <div className="flex min-w-0 flex-1 items-center gap-2.5 md:gap-3">
+            <FileCode2 className="size-5 shrink-0 text-primary" />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold">
+                {formatName(path)}
+              </p>
+              {pathIsCopyable ? (
+                <FilePathCopyButton path={path} />
+              ) : (
+                <p className="truncate font-mono text-[10px] text-muted-foreground sm:text-[11px]">
+                  /data/{path}
+                </p>
+              )}
+            </div>
           </div>
-        </div>
 
-        <div
-          className="ml-auto hidden max-w-full min-w-0 flex-wrap items-center justify-end gap-1 md:flex"
-          aria-hidden="true"
-        >
-          {canShare ? (
-            <span className="h-8 w-[5.5rem] animate-pulse bg-muted/35" />
-          ) : null}
-          {Array.from({ length: 5 }, (_, index) => (
-            <span key={index} className="size-8 animate-pulse bg-muted/35" />
-          ))}
-        </div>
+          <div
+            className="ml-auto hidden max-w-full min-w-0 flex-wrap items-center justify-end gap-1 md:flex"
+            aria-hidden="true"
+          >
+            {canShare ? (
+              <span className="h-8 w-[5.5rem] animate-pulse bg-muted/35" />
+            ) : null}
+            {Array.from({ length: 5 }, (_, index) => (
+              <span key={index} className="size-8 animate-pulse bg-muted/35" />
+            ))}
+          </div>
 
-        <div
-          className="ml-auto flex shrink-0 items-center gap-1 md:hidden"
-          aria-hidden="true"
-        >
-          <span className="size-8 animate-pulse bg-muted/35" />
-          <span className="size-8 animate-pulse bg-muted/35" />
+          <div
+            className="ml-auto flex shrink-0 items-center gap-1 md:hidden"
+            aria-hidden="true"
+          >
+            <span className="size-8 animate-pulse bg-muted/35" />
+            <span className="size-8 animate-pulse bg-muted/35" />
+          </div>
         </div>
       </div>
       <div className="grid flex-1 place-items-center px-6 text-center">
-        <div className="max-w-xs">
-          <div className="mx-auto mb-4 grid size-11 place-items-center rounded-xl border bg-muted/20 text-muted-foreground">
-            {loading ? (
-              <LoaderCircle className="size-5 animate-spin text-primary" />
-            ) : (
+        {loading ? (
+          <FileWorkspaceLoadingState
+            title="Reading from Relay"
+            description="Checking the file and preparing a safe text preview."
+          />
+        ) : (
+          <div className="max-w-xs">
+            <div className="mx-auto mb-4 grid size-11 place-items-center rounded-xl border bg-muted/20 text-muted-foreground">
               <HardDriveDownload className="size-5" />
-            )}
+            </div>
+            <p className="text-sm font-semibold">Preview unavailable</p>
+            <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+              {message || "This file cannot be displayed as text."}
+            </p>
           </div>
-          <p className="text-sm font-semibold">
-            {loading ? "Reading from Relay" : "Preview unavailable"}
-          </p>
-          <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-            {loading
-              ? "Checking the file and preparing a safe text preview."
-              : message || "This file cannot be displayed as text."}
-          </p>
-        </div>
+        )}
       </div>
     </section>
   )
@@ -1016,31 +1341,48 @@ export function FileWorkspace({
   routeFilePath,
   canShare,
   canWrite,
+  initialTreeCollapsed,
+  initialTreeWidth,
 }: {
   instance: RelayInstance
   active: boolean
   routeFilePath?: string
   canShare: boolean
   canWrite: boolean
+  initialTreeCollapsed: boolean
+  initialTreeWidth: number | null
 }) {
   const navigate = useNavigate()
   const normalizedRoutePath = routeFilePath?.replace(/^\/+/, "") ?? ""
   const initialRoutePath = React.useRef(normalizedRoutePath)
   const [tree, setTree] = React.useState<RelayFileTree | null>(null)
   const [file, setFile] = React.useState<RelayFileContent | null>(null)
-  const [selectedPath, setSelectedPath] = React.useState("")
+  const [selectedPath, setSelectedPath] = React.useState(normalizedRoutePath)
   const [mobileTreeOpen, setMobileTreeOpen] = React.useState(true)
   const [loadingFile, setLoadingFile] = React.useState(true)
   const [refreshing, setRefreshing] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  const [treeCollapsed, setTreeCollapsed] = React.useState(initialTreeCollapsed)
   const fileRequest = React.useRef(0)
   const requestedPath = React.useRef("")
+
+  const handleTreeCollapsedChange = React.useCallback(
+    (nextCollapsed: boolean) => {
+      setTreeCollapsed(nextCollapsed)
+      document.cookie = `${fileTreeCollapsedCookieName}=${nextCollapsed}; path=/; max-age=${fileTreeCookieMaxAge}; SameSite=Lax`
+    },
+    []
+  )
+  const handleTreeExpand = React.useCallback(
+    () => handleTreeCollapsedChange(false),
+    [handleTreeCollapsedChange]
+  )
 
   React.useEffect(() => {
     const request = ++fileRequest.current
     setTree(null)
     setFile(null)
-    setSelectedPath("")
+    setSelectedPath(initialRoutePath.current)
     setMobileTreeOpen(true)
     setLoadingFile(true)
     setError(null)
@@ -1223,22 +1565,36 @@ export function FileWorkspace({
           onRefresh={handleRefresh}
           onMobileOpenChange={setMobileTreeOpen}
           onFileSelected={closeMobileTree}
+          collapsed={treeCollapsed}
+          onCollapsedChange={handleTreeCollapsedChange}
+          initialWidth={initialTreeWidth}
         />
-      ) : null}
+      ) : (
+        <FileTreeLoadingPanel
+          collapsed={treeCollapsed}
+          width={initialTreeWidth}
+        />
+      )}
       <div className="flex min-h-0 min-w-0 flex-1 pb-11 md:pb-0">
         {!tree || !file ? (
           <UnavailablePreview
-            path={selectedPath || instance.name}
+            path={selectedPath || normalizedRoutePath || instance.name}
+            pathIsCopyable={Boolean(selectedPath || normalizedRoutePath)}
             loading={loadingFile}
             message={error}
             canShare={canShare}
+            treeCollapsed={treeCollapsed}
+            onTreeExpand={handleTreeExpand}
           />
         ) : selectedPath !== file.path ? (
           <UnavailablePreview
             path={selectedPath}
+            pathIsCopyable
             loading={loadingFile}
             message={error}
             canShare={canShare}
+            treeCollapsed={treeCollapsed}
+            onTreeExpand={handleTreeExpand}
           />
         ) : (
           <Editor
@@ -1250,6 +1606,8 @@ export function FileWorkspace({
             loading={loadingFile}
             error={error}
             onSave={handleSave}
+            treeCollapsed={treeCollapsed}
+            onTreeExpand={handleTreeExpand}
           />
         )}
       </div>

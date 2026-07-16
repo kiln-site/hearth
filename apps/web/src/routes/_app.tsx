@@ -231,6 +231,10 @@ function AppLayout() {
                 node={snapshot.node}
                 activeTab={activeTab}
                 filePath={activeTab === "files" ? filePath : undefined}
+                fileTreePreferences={{
+                  collapsed: uiPreferences.fileTreeCollapsed,
+                  width: uiPreferences.fileTreeWidth,
+                }}
                 permissions={{
                   consoleWrite: can("instance.console.write"),
                   filesWrite: can("instance.files.write"),
