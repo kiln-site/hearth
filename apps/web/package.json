@@ -8,7 +8,7 @@
     "db:migrate": "node --env-file=../../.env ./node_modules/auth/dist/index.mjs migrate --config ./src/lib/auth.ts --yes && node --env-file=../../.env ./scripts/migrate-app.mjs",
     "dev": "node --env-file=../../.env ./node_modules/vite/bin/vite.js dev --port 3000",
     "build": "vite build && node scripts/normalize-build-assets.mjs",
-    "start": "srvx serve --prod --static=../client --entry=dist/server/server.js",
+    "start": "node scripts/serve.mjs",
     "start:container": "node scripts/start-container.mjs",
     "test:keyring": "node --test keyring.test.mjs",
     "preview": "vite preview",

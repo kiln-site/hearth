@@ -13,8 +13,9 @@ export const databasePool =
   globalDatabase.kilnDatabasePool ??
   createPool({
     ...database,
-    timezone: "Z",
+    connectTimeout: 2_000,
     connectionLimit: 10,
+    timezone: "Z",
   })
 
 if (process.env.NODE_ENV !== "production") {

@@ -19,6 +19,7 @@ import { Route as FilesRouteImport } from './routes/files'
 import { Route as ConsoleRouteImport } from './routes/console'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiHealthRouteImport } from './routes/api.health'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as AppSecurityRouteImport } from './routes/_app.security'
 import { Route as AppBricksRouteImport } from './routes/_app.bricks'
@@ -77,6 +78,11 @@ const AppRoute = AppRouteImport.update({
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiHealthRoute = ApiHealthRouteImport.update({
+  id: '/api/health',
+  path: '/api/health',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppSettingsRoute = AppSettingsRouteImport.update({
@@ -144,6 +150,7 @@ export interface FileRoutesByFullPath {
   '/bricks': typeof AppBricksRoute
   '/security': typeof AppSecurityRoute
   '/settings': typeof AppSettingsRoute
+  '/api/health': typeof ApiHealthRoute
   '/$serverId/console': typeof AppServerIdConsoleRoute
   '/$serverId/files': typeof AppServerIdFilesRouteWithChildren
   '/$serverId/info': typeof AppServerIdInfoRoute
@@ -165,6 +172,7 @@ export interface FileRoutesByTo {
   '/bricks': typeof AppBricksRoute
   '/security': typeof AppSecurityRoute
   '/settings': typeof AppSettingsRoute
+  '/api/health': typeof ApiHealthRoute
   '/$serverId/console': typeof AppServerIdConsoleRoute
   '/$serverId/files': typeof AppServerIdFilesRouteWithChildren
   '/$serverId/info': typeof AppServerIdInfoRoute
@@ -188,6 +196,7 @@ export interface FileRoutesById {
   '/_app/bricks': typeof AppBricksRoute
   '/_app/security': typeof AppSecurityRoute
   '/_app/settings': typeof AppSettingsRoute
+  '/api/health': typeof ApiHealthRoute
   '/_app/$serverId/console': typeof AppServerIdConsoleRoute
   '/_app/$serverId/files': typeof AppServerIdFilesRouteWithChildren
   '/_app/$serverId/info': typeof AppServerIdInfoRoute
@@ -211,6 +220,7 @@ export interface FileRouteTypes {
     | '/bricks'
     | '/security'
     | '/settings'
+    | '/api/health'
     | '/$serverId/console'
     | '/$serverId/files'
     | '/$serverId/info'
@@ -232,6 +242,7 @@ export interface FileRouteTypes {
     | '/bricks'
     | '/security'
     | '/settings'
+    | '/api/health'
     | '/$serverId/console'
     | '/$serverId/files'
     | '/$serverId/info'
@@ -254,6 +265,7 @@ export interface FileRouteTypes {
     | '/_app/bricks'
     | '/_app/security'
     | '/_app/settings'
+    | '/api/health'
     | '/_app/$serverId/console'
     | '/_app/$serverId/files'
     | '/_app/$serverId/info'
@@ -273,6 +285,7 @@ export interface RootRouteChildren {
   ResetPasswordRoute: typeof ResetPasswordRoute
   TermsRoute: typeof TermsRoute
   TwoFactorRoute: typeof TwoFactorRoute
+  ApiHealthRoute: typeof ApiHealthRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiConsoleInstanceIdRoute: typeof ApiConsoleInstanceIdRoute
 }
@@ -347,6 +360,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/health': {
+      id: '/api/health'
+      path: '/api/health'
+      fullPath: '/api/health'
+      preLoaderRoute: typeof ApiHealthRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/settings': {
@@ -466,6 +486,7 @@ const rootRouteChildren: RootRouteChildren = {
   ResetPasswordRoute: ResetPasswordRoute,
   TermsRoute: TermsRoute,
   TwoFactorRoute: TwoFactorRoute,
+  ApiHealthRoute: ApiHealthRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiConsoleInstanceIdRoute: ApiConsoleInstanceIdRoute,
 }

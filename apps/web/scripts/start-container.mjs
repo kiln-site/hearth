@@ -18,11 +18,10 @@ parseSecretKeyring(process.env.BETTER_AUTH_SECRETS)
 
 await migrateDatabase()
 
-const server = spawn(
-  resolve("node_modules/.bin/srvx"),
-  ["serve", "--prod", "--static=../client", "--entry=dist/server/server.js"],
-  { env: process.env, stdio: "inherit" }
-)
+const server = spawn(process.execPath, [resolve("scripts/serve.mjs")], {
+  env: process.env,
+  stdio: "inherit",
+})
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => server.kill(signal))
