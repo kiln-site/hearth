@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto"
-
 export interface DatabaseConnectionConfig {
   database: string
   host: string
@@ -61,23 +59,7 @@ export function databaseConnectionConfig(): DatabaseConnectionConfig {
 
 export function databaseTablePrefix(): string {
   const configured = process.env.DB_TABLE_PREFIX?.trim()
-  if (configured) return validateTablePrefix(configured)
-
-  const secret = process.env.BETTER_AUTH_SECRET?.trim()
-  if (!secret) {
-    throw new Error(
-      "BETTER_AUTH_SECRET is required to generate a stable DB_TABLE_PREFIX"
-    )
-  }
-  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
-  const digest = createHash("sha256")
-    .update(`kiln-table-prefix:${secret}`)
-    .digest()
-  let suffix = ""
-  for (let index = 0; index < 4; index += 1) {
-    suffix += alphabet[digest[index] % alphabet.length]
-  }
-  return `kiln${suffix}_`
+  return validateTablePrefix(configured || "kiln_")
 }
 
 export function databaseTableName(baseName: string): string {
