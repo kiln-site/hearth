@@ -1,14 +1,17 @@
 import * as Sentry from "@sentry/tanstackstart-react"
 import { createFileRoute } from "@tanstack/react-router"
 
+import { matchesVerificationToken } from "@/observability/verification-token"
+
 export const Route = createFileRoute("/api/sentry-check")({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const token = process.env.KILN_SENTRY_VERIFICATION_TOKEN?.trim()
         if (
-          !token ||
-          request.headers.get("authorization") !== `Bearer ${token}`
+          !matchesVerificationToken(
+            request.headers.get("authorization"),
+            process.env.KILN_SENTRY_VERIFICATION_TOKEN
+          )
         ) {
           return new Response(null, { status: 404 })
         }

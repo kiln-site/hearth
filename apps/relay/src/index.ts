@@ -53,6 +53,9 @@ const server = createServer(async (request, response) => {
       json(response, 400, { error: cause.message, code: cause.code })
       return
     }
+    Sentry.captureException(cause, {
+      tags: { "kiln.operation": normalizedRequestOperation(request.url) },
+    })
     const message = cause instanceof Error ? cause.message : "Unknown error"
     console.error(cause)
     json(response, 500, { error: message, code: "internal_error" })
@@ -90,6 +93,10 @@ function normalizedRoute(pathname: string): string {
     /^\/v1\/instances\/[^/]+(?:\/(tree|file|actions|console|console-completions|console-stream|latest-log))?$/u
   )
   return match?.[1] ? `v1.instances.${match[1]}` : "unknown"
+}
+
+function normalizedRequestOperation(url: string | undefined): string {
+  return normalizedRoute(new URL(url ?? "/", "http://relay").pathname)
 }
 
 async function route(

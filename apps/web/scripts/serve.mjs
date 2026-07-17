@@ -8,7 +8,8 @@ const HEALTH_PATH = "/api/health"
 const SERVER_FN_PATH = "/_serverFn/"
 const QUIET_REQUEST_PURPOSE_HEADER = "x-kiln-request-purpose"
 const RELAY_POLL_PURPOSE = "relay-poll"
-const app = (await import("../dist/server/server.js")).default
+const appModule = await import("../dist/server/server.js")
+const app = appModule.default
 const logRequest = log()
 
 if (!app || typeof app.fetch !== "function") {
@@ -27,7 +28,7 @@ const server = serve({
       }
     )
   },
-  gracefulShutdown: true,
+  gracefulShutdown: false,
   hostname: process.env.HOST || "0.0.0.0",
   middleware: [
     logUnlessSuccessfulQuietRequest,
@@ -40,6 +41,30 @@ const server = serve({
 })
 
 await server.ready()
+
+let shuttingDown = false
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.once(signal, () => {
+    if (shuttingDown) return
+    shuttingDown = true
+    void shutdown(signal)
+  })
+}
+
+async function shutdown(signal) {
+  const forceExit = setTimeout(() => process.exit(1), 10_000)
+  forceExit.unref()
+  try {
+    await server.close()
+    await appModule.shutdownHearth?.()
+    process.exit(0)
+  } catch (error) {
+    console.error(`Failed to shut Hearth down after ${signal}`, error)
+    process.exit(1)
+  } finally {
+    clearTimeout(forceExit)
+  }
+}
 
 async function logUnlessSuccessfulQuietRequest(request, next) {
   const pathname = new URL(request.url).pathname

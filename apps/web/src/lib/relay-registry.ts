@@ -178,7 +178,7 @@ export const resolvePrimaryRelayEffect = Effect.fn("relays.resolvePrimary")(
 
 export async function relayHeaders(relay?: {
   id: string
-}): Promise<HeadersInit> {
+}): Promise<Record<string, string>> {
   return runAppEffect("relays.headers", relayHeadersEffect(relay))
 }
 
@@ -219,7 +219,10 @@ export const relayHeadersEffect = Effect.fn("relays.headers")(
       }
     }
     token ??= relayKey()
-    return token ? { Authorization: `Bearer ${token}` } : new Headers()
+    const headers: Record<string, string> = token
+      ? { Authorization: `Bearer ${token}` }
+      : {}
+    return headers
   }
 )
 

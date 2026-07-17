@@ -443,7 +443,7 @@ const relayFetchEffect = Effect.fn("relay.fetch")(function* (
       RelayUnavailableError.make({
         message: timeout.aborted
           ? "Relay request timed out after 10s"
-          : "Could not reach Relay",
+          : `Could not reach Relay: ${errorMessage(cause)}`,
         cause,
       }),
   })
@@ -506,6 +506,10 @@ function normalizedRelayRoute(path: string): string {
   return path
     .split("?", 1)[0]
     .replace(/^\/v1\/instances\/[^/]+/u, "/v1/instances/:id")
+}
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : "unknown network error"
 }
 
 function relayUrl(relay: { hostname: string; port: number; useTls: boolean }) {

@@ -12,6 +12,7 @@ const repositoryRoot = resolve(import.meta.dirname, "../..")
 
 const config = defineConfig(({ command }) => {
   const buildCommit = command === "serve" ? "" : resolveBuildCommit()
+  const sentryAuthToken = process.env.SENTRY_AUTH_TOKEN
 
   return {
     define: {
@@ -30,15 +31,16 @@ const config = defineConfig(({ command }) => {
       devtools(),
       tailwindcss(),
       tanstackStart(),
-      sentryTanstackStart({
-        org: "quartzdev",
-        project: "javascript-tanstackstart-react",
-        authToken: process.env.SENTRY_AUTH_TOKEN,
-        sourcemaps: {
-          disable: process.env.SENTRY_AUTH_TOKEN ? false : "disable-upload",
-        },
-        tunnelRoute: "/monitoring",
-      }),
+      ...(sentryAuthToken
+        ? [
+            sentryTanstackStart({
+              org: "quartzdev",
+              project: "javascript-tanstackstart-react",
+              authToken: sentryAuthToken,
+              telemetry: false,
+            }),
+          ]
+        : []),
       viteReact(),
     ],
   }

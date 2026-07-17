@@ -1,23 +1,54 @@
 import * as Sentry from "@sentry/tanstackstart-react"
 
-const dsn =
-  process.env.SENTRY_DSN ||
-  "https://9516d942af12672a1ff5aa7f181f7217@o4511745768226816.ingest.us.sentry.io/4511745775501312"
+const dsn = process.env.SENTRY_DSN?.trim()
 
-Sentry.init({
-  dsn,
-  environment:
-    process.env.SENTRY_ENVIRONMENT ||
-    process.env.KILN_ENVIRONMENT ||
-    "production",
-  release:
-    process.env.SENTRY_RELEASE ||
-    process.env.KILN_BUILD_SHA ||
-    process.env.SOURCE_COMMIT,
-  sendDefaultPii: false,
-  dataCollection: {
-    userInfo: false,
-    httpBodies: [],
-  },
-  tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE || 1),
-})
+if (dsn) {
+  Sentry.init({
+    dsn,
+    environment:
+      process.env.SENTRY_ENVIRONMENT ||
+      process.env.KILN_ENVIRONMENT ||
+      "production",
+    release:
+      process.env.SENTRY_RELEASE ||
+      process.env.KILN_BUILD_SHA ||
+      process.env.SOURCE_COMMIT,
+    sendDefaultPii: false,
+    dataCollection: {
+      userInfo: false,
+      httpBodies: [],
+    },
+    tracesSampleRate: parseSampleRate(
+      process.env.SENTRY_TRACES_SAMPLE_RATE,
+      process.env.NODE_ENV === "production" ? 0.1 : 1
+    ),
+    beforeSend(event, hint) {
+      return isExpectedAppError(hint.originalException) ? null : event
+    },
+    initialScope: {
+      tags: { "kiln.service": "hearth-server" },
+    },
+  })
+}
+
+function parseSampleRate(value, fallback) {
+  if (!value?.trim()) return fallback
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1
+    ? parsed
+    : fallback
+}
+
+function isExpectedAppError(value) {
+  if (!value || typeof value !== "object") return false
+  if (
+    [
+      "AuthenticationError",
+      "PermissionDeniedError",
+      "ResourceNotFoundError",
+    ].includes(value._tag)
+  ) {
+    return true
+  }
+  return value._tag === "RelayResponseError" && value.status < 500
+}

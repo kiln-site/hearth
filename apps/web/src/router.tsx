@@ -11,7 +11,7 @@ export function getRouter() {
     defaultPreloadStaleTime: 0,
   })
 
-  if (!router.isServer) {
+  if (!router.isServer && Sentry.isInitialized()) {
     Sentry.addIntegration(
       Sentry.tanstackRouterBrowserTracingIntegration(router)
     )

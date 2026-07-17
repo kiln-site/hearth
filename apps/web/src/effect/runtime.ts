@@ -1,5 +1,6 @@
 import * as Sentry from "@sentry/tanstackstart-react"
-import { Effect, ManagedRuntime } from "effect"
+import { ManagedRuntime } from "effect"
+import type { Effect } from "effect"
 
 import type { Database } from "./database"
 import { DatabaseLive } from "./database"
@@ -11,17 +12,7 @@ export function runAppEffect<TResult, TError>(
   effect: Effect.Effect<TResult, TError, Database>
 ): Promise<TResult> {
   return Sentry.startSpan({ name, op: "kiln.effect" }, () =>
-    runtime.runPromise(
-      effect.pipe(
-        Effect.tapError((error) =>
-          Effect.sync(() => {
-            Sentry.captureException(error, {
-              tags: { "kiln.effect": name },
-            })
-          })
-        )
-      )
-    )
+    runtime.runPromise(effect)
   )
 }
 
