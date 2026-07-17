@@ -662,7 +662,7 @@ interface ResourceItem {
 }
 
 function useInstanceUptime(instance: RelayInstance): string | null {
-  const [now, setNow] = React.useState(() => Date.now())
+  const [now, setNow] = React.useState<number | null>(null)
   const startedAt = instance.startedAt ? Date.parse(instance.startedAt) : NaN
   const running = instance.observedState === "running"
 
@@ -674,7 +674,7 @@ function useInstanceUptime(instance: RelayInstance): string | null {
     return () => window.clearInterval(interval)
   }, [instance.id, running, startedAt])
 
-  if (!running || !Number.isFinite(startedAt)) return null
+  if (!running || !Number.isFinite(startedAt) || now === null) return null
   return formatUptime(Math.max(0, Math.floor((now - startedAt) / 1_000)))
 }
 
