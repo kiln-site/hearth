@@ -35,6 +35,7 @@ jobs:
           - ember-java17
           - ember-java21
           - ember-java25
+          - ember-palworld
         architecture: ${{ fromJSON(github.event_name == 'pull_request' && '["amd64"]' || '["amd64", "arm64"]') }}
         include:
           - architecture: amd64
@@ -95,6 +96,17 @@ jobs:
             version_suffix: -java25
             build_args: JAVA_VERSION=25
             cache_scope: ember-java25
+          - component: ember-palworld
+            name: Ember · Palworld
+            image: ghcr.io/kiln-site/ember
+            file: apps/ember-palworld/Dockerfile
+            channel: palworld
+            version_suffix: -palworld
+            build_args: ""
+            cache_scope: ember-palworld
+        exclude:
+          - component: ember-palworld
+            architecture: arm64
 
     steps:
       - name: Check out repository
@@ -174,6 +186,7 @@ jobs:
           - ember-java17
           - ember-java21
           - ember-java25
+          - ember-palworld
         include:
           - component: hearth
             name: Hearth
@@ -211,6 +224,13 @@ jobs:
             channel: java25
             version_suffix: -java25
             cache_scope: ember-java25
+          - component: ember-palworld
+            name: Ember · Palworld
+            image: ghcr.io/kiln-site/ember
+            channel: palworld
+            version_suffix: -palworld
+            cache_scope: ember-palworld
+            architecture_count: 1
 
     steps:
       - name: Set up Docker Buildx
@@ -258,7 +278,7 @@ jobs:
           for digest_file in /tmp/digests/*; do
             sources+=("$IMAGE@sha256:$(basename "$digest_file")")
           done
-          test "${#sources[@]}" -eq 2
+          test "${#sources[@]}" -eq "${{ matrix.architecture_count || 2 }}"
 
           docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
           docker buildx imagetools inspect "${tags[0]}"

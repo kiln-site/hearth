@@ -28,7 +28,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Validate Ember entrypoint
-        run: bash -n apps/ember/ember.sh
+        run: bash -n apps/ember/ember.sh apps/ember-palworld/ember.sh
 
       - name: Typecheck
         run: pnpm typecheck

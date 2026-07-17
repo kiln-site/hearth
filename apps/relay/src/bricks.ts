@@ -43,6 +43,17 @@ export const BRICKS: ReadonlyArray<Brick> = [
     defaultMemory: "1G",
     javaVersion: "21",
   },
+  {
+    id: "palworld",
+    name: "Palworld",
+    description:
+      "Native Linux dedicated server installed and updated through SteamCMD.",
+    image: "ghcr.io/kiln-site/ember:palworld",
+    proxy: false,
+    defaultVersion: "latest",
+    defaultMemory: "16G",
+    javaVersion: "SteamCMD",
+  },
 ]
 
 export function brick(id: BrickId): Brick {

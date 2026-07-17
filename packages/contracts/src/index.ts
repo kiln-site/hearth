@@ -11,7 +11,13 @@ export const relayObservedStateSchema = z.enum([
 
 export const relayDesiredStateSchema = z.enum(["stopped", "running"])
 
-export const brickIdSchema = z.enum(["paper", "folia", "fabric", "velocity"])
+export const brickIdSchema = z.enum([
+  "paper",
+  "folia",
+  "fabric",
+  "velocity",
+  "palworld",
+])
 
 export const brickSchema = z.object({
   id: brickIdSchema,

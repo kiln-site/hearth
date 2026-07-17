@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto"
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { chown, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
 import { brick } from "./bricks.js"
@@ -15,8 +15,6 @@ import type { DockerDriver } from "./docker.js"
 
 const NETWORK_NAME = "kiln-minecraft"
 const OWNED_LABEL = "kiln.relay.owned=true"
-const EMBER_IMAGE = "ghcr.io/kiln-site/ember"
-
 interface BackendRoute {
   hostname: string
   implementation: BrickId
@@ -73,26 +71,55 @@ export class LifecycleDriver {
     ) {
       throw new Error("This Relay already has a Velocity entrypoint")
     }
+    if (
+      input.brickId === "palworld" &&
+      existing.some(
+        (instance) => instance.managedByRelay && instance.brickId === "palworld"
+      )
+    ) {
+      throw new Error("This Relay already has a Palworld server on UDP 8211")
+    }
+    if (input.brickId === "palworld" && input.version !== "latest") {
+      throw new Error("Palworld currently supports the latest Steam build only")
+    }
+    if (input.brickId === "palworld" && process.arch !== "x64") {
+      throw new Error("Palworld's dedicated server requires an amd64 Relay")
+    }
 
     const id = randomBytes(32).toString("hex").slice(0, 40)
     const shortId = id.slice(0, 8)
     const containerName = `kiln-${shortId}`
-    const javaVersion = javaVersionFor(input.brickId, input.version)
-    const image = `${EMBER_IMAGE}:java${javaVersion}`
+    const javaVersion =
+      input.brickId === "palworld"
+        ? definition.javaVersion
+        : javaVersionFor(input.brickId, input.version)
+    const image =
+      input.brickId === "palworld"
+        ? definition.image
+        : `ghcr.io/kiln-site/ember:java${javaVersion}`
     const memoryLimit = containerMemoryLimit(input.memory)
     const directory = join(this.#config.rootDirectory, id)
     const hostDirectory = join(await this.#hostDataDirectory(), "instances", id)
     const networking = await this.networking()
-    const hostname = definition.proxy
-      ? `velocity.${networking?.domain ?? this.#config.connectDomain}`
-      : `${input.version}.${input.brickId}.${networking?.domain ?? this.#config.connectDomain}`
-    const connectPort = definition.proxy
-      ? (networking?.proxyPort ?? this.#config.connectPort)
-      : this.#config.connectPort
+    const hostname =
+      input.brickId === "palworld"
+        ? `palworld.${networking?.domain ?? this.#config.connectDomain}`
+        : definition.proxy
+          ? `velocity.${networking?.domain ?? this.#config.connectDomain}`
+          : `${input.version}.${input.brickId}.${networking?.domain ?? this.#config.connectDomain}`
+    const connectPort =
+      input.brickId === "palworld"
+        ? 8211
+        : definition.proxy
+          ? (networking?.proxyPort ?? this.#config.connectPort)
+          : this.#config.connectPort
     const connectAddress =
       connectPort === 25_565 ? hostname : `${hostname}:${connectPort}`
 
     await mkdir(directory, { recursive: true })
+    if (input.brickId === "palworld") {
+      await chown(directory, 1000, 1000)
+    }
     await this.#ensureNetwork()
     if (networking?.enabled) await this.#ensureInfrastructure(networking, false)
     try {
@@ -154,6 +181,8 @@ export class LifecycleDriver {
       "--label",
       `kiln.instance.java=${javaVersion}`,
       "--label",
+      `kiln.instance.game=${input.brickId === "palworld" ? "Palworld" : "Minecraft"}`,
+      "--label",
       `kiln.instance.hostname=${connectAddress}`,
       "--label",
       `kiln.instance.directory=${id}`,
@@ -163,15 +192,22 @@ export class LifecycleDriver {
       `KILN_IMPLEMENTATION=${input.brickId}`,
       "--env",
       `KILN_VERSION=${input.version}`,
-      "--env",
-      `KILN_ARTIFACT_URL=${artifactUrl(input.brickId, input.version)}`,
-      "--env",
-      `KILN_ARTIFACT_FILE=${artifactFile(input.brickId)}`,
-      "--env",
-      "MIN_RAM=512M",
-      "--env",
-      `MAX_RAM=${input.memory}`,
     ]
+
+    if (input.brickId === "palworld") {
+      arguments_.push("--publish", "8211:8211/udp")
+    } else {
+      arguments_.push(
+        "--env",
+        `KILN_ARTIFACT_URL=${artifactUrl(input.brickId, input.version)}`,
+        "--env",
+        `KILN_ARTIFACT_FILE=${artifactFile(input.brickId)}`,
+        "--env",
+        "MIN_RAM=512M",
+        "--env",
+        `MAX_RAM=${input.memory}`
+      )
+    }
 
     if (definition.proxy) {
       arguments_.push(
@@ -188,7 +224,7 @@ export class LifecycleDriver {
       if (input.start) {
         await command("docker", ["start", containerName], { timeout: 120_000 })
       }
-      if (!definition.proxy)
+      if (!definition.proxy && input.brickId !== "palworld")
         await this.#refreshVelocityConfigurations(networking)
     } catch (error) {
       await command("docker", ["rm", "--force", containerName]).catch(
@@ -226,7 +262,9 @@ export class LifecycleDriver {
         force: true,
       })
     }
-    await this.#refreshVelocityConfigurations(await this.networking())
+    if (instance.brickId !== "palworld") {
+      await this.#refreshVelocityConfigurations(await this.networking())
+    }
   }
 
   async #ensureNetwork(): Promise<void> {
@@ -381,6 +419,7 @@ export class LifecycleDriver {
         (instance) =>
           instance.managedByRelay &&
           instance.brickId !== "velocity" &&
+          instance.brickId !== "palworld" &&
           Boolean(instance.brickId)
       )
       .map((instance) => ({

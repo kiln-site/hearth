@@ -153,8 +153,8 @@ export function BricksPage() {
                   Fire a new Brick.
                 </h1>
                 <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-                  Reproducible Minecraft runtimes, provisioned and owned by
-                  Relay. No Compose service or per-instance daemon required.
+                  Reproducible game runtimes, provisioned and owned by Relay. No
+                  Compose service or per-instance daemon required.
                 </p>
               </div>
               <div className="flex gap-5 border-l border-border/70 pl-5 text-[10px] text-muted-foreground">
@@ -207,9 +207,15 @@ export function BricksPage() {
                       {brick.description}
                     </p>
                     <div className="mt-4 flex items-center gap-2 font-mono text-[9px] text-muted-foreground/75">
-                      <span>JAVA {brick.javaVersion}</span>
+                      <span>{brickRuntime(brick)}</span>
                       <span className="text-border">/</span>
                       <span>{brick.defaultMemory}</span>
+                      {brick.id === "palworld" ? (
+                        <>
+                          <span className="text-border">/</span>
+                          <span>UDP 8211</span>
+                        </>
+                      ) : null}
                       <ChevronRight
                         className={`ml-auto size-3.5 transition-transform ${active ? "translate-x-0 text-primary" : "-translate-x-1 opacity-0 group-hover:translate-x-0 group-hover:opacity-100"}`}
                       />
@@ -285,6 +291,18 @@ export function BricksPage() {
                 Relay creates the volume, labels, network attachment, and
                 container.
               </p>
+              {selected?.id === "palworld" ? (
+                <div className="mt-4 rounded-lg border border-primary/20 bg-primary/[0.06] px-3 py-2.5">
+                  <p className="font-mono text-[9px] tracking-[0.12em] text-primary uppercase">
+                    Native Linux · AMD64 only
+                  </p>
+                  <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
+                    Tracks the latest Steam build, listens on UDP 8211, and
+                    needs at least 16 GB RAM. One Palworld server can run per
+                    Relay.
+                  </p>
+                </div>
+              ) : null}
               <form className="mt-5 space-y-3.5" onSubmit={deploy}>
                 <Field label="Relay">
                   <select
@@ -330,10 +348,13 @@ export function BricksPage() {
                         }))
                       }
                       placeholder="1.21.11"
+                      readOnly={selected?.id === "palworld"}
                       required
                     />
                   </Field>
-                  <Field label="Max heap">
+                  <Field
+                    label={selected?.id === "palworld" ? "Memory" : "Max heap"}
+                  >
                     <Input
                       value={form.memory}
                       onChange={(event) =>
@@ -382,7 +403,10 @@ export function BricksPage() {
                 </Button>
               </form>
               <div className="mt-4 grid grid-cols-3 gap-2 border-t border-border/60 pt-4 text-center">
-                <TinyStat icon={Cpu} label="1 JVM" />
+                <TinyStat
+                  icon={Cpu}
+                  label={selected?.id === "palworld" ? "1 process" : "1 JVM"}
+                />
                 <TinyStat icon={Gauge} label="No sidecar" />
                 <TinyStat icon={Server} label="1 volume" />
               </div>
@@ -394,8 +418,8 @@ export function BricksPage() {
                 <h2 className="text-sm font-semibold">Tailnet routing</h2>
               </div>
               <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
-                Relay owns CoreDNS, PicoLimbo, and the private Minecraft
-                network.
+                Relay owns node DNS, private game networking, and the Minecraft
+                entrypoint.
               </p>
               <form className="mt-4 space-y-3" onSubmit={saveNetworking}>
                 <label className="flex items-center justify-between text-xs">
@@ -501,4 +525,8 @@ function TinyStat({ icon: Icon, label }: { icon: typeof Cpu; label: string }) {
 
 function messageFrom(cause: unknown, fallback: string): string {
   return cause instanceof Error ? cause.message : fallback
+}
+
+function brickRuntime(brick: Brick): string {
+  return brick.id === "palworld" ? "STEAMCMD" : `JAVA ${brick.javaVersion}`
 }
