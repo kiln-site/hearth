@@ -12,7 +12,7 @@ import {
   useParams,
   useRouterState,
 } from "@tanstack/react-router"
-import type { RelayInstance, RelaySnapshot } from "@workspace/contracts"
+import type { RelayInstance } from "@workspace/contracts"
 import { Cable, CircleAlert, RefreshCw, Settings } from "lucide-react"
 import {
   SidebarInset,
@@ -23,14 +23,10 @@ import { Button } from "@workspace/ui/components/button"
 
 import { AppSidebar } from "@/components/app-sidebar"
 import type { GlobalSection, InstanceTab } from "@/components/app-sidebar"
-import { InstanceWorkspace } from "@/components/instance-workspace"
 import { PanelFooter } from "@/components/panel-footer"
 import { getAuthState } from "@/server/auth"
-import type { AccessPermission } from "@/lib/permissions"
-import { roleHasPermission } from "@/lib/permissions"
 import {
   accessCapabilitiesQueryOptions,
-  queryKeys,
   relayConnectionQueryOptions,
   relaySnapshotQueryOptions,
   uiPreferencesQueryOptions,
@@ -39,7 +35,6 @@ import type { RelayConnection } from "@/lib/query-options"
 
 const tabRoutes = {
   console: "/$serverId/console",
-  files: "/$serverId/files",
   info: "/$serverId/info",
 } as const
 
@@ -88,7 +83,7 @@ function AppLayout() {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
-  const { serverId, _splat: filePath } = useParams({ strict: false })
+  const { serverId } = useParams({ strict: false })
   const [selectedInstanceId, setSelectedInstanceId] = React.useState<
     string | null
   >(null)
@@ -109,14 +104,6 @@ function AppLayout() {
       : pathname.endsWith("/info")
         ? "info"
         : "console"
-  const previousTabWasFiles = React.useRef(activeTab === "files")
-  const openFileTreeOnEntry =
-    activeTab === "files" && !previousTabWasFiles.current
-
-  React.useLayoutEffect(() => {
-    previousTabWasFiles.current = activeTab === "files"
-  }, [activeTab])
-
   const instances = snapshot?.instances ?? []
   const routeInstance = findInstance(instances, serverId)
   const rememberedInstance = findInstance(instances, selectedInstanceId)
@@ -127,6 +114,30 @@ function AppLayout() {
     setSelectedInstanceId(next.id)
     window.localStorage.setItem(selectedInstanceStorageKey, next.id)
   }, [])
+  const navigateToInstanceTab = React.useCallback(
+    (tab: InstanceTab, nextServerId: string, replace = false) => {
+      if (tab === "files") {
+        return navigate({
+          to: "/$serverId/files/$",
+          params: { serverId: nextServerId, _splat: "" },
+          replace,
+        })
+      }
+      if (tab === "info") {
+        return navigate({
+          to: tabRoutes.info,
+          params: { serverId: nextServerId },
+          replace,
+        })
+      }
+      return navigate({
+        to: tabRoutes.console,
+        params: { serverId: nextServerId },
+        replace,
+      })
+    },
+    [navigate]
+  )
 
   React.useEffect(() => {
     if (serverId) return
@@ -144,38 +155,8 @@ function AppLayout() {
 
   React.useEffect(() => {
     if (!activeTab || !instance || instance.shortId === serverId) return
-    void navigate({
-      to: tabRoutes[activeTab],
-      params: { serverId: instance.shortId },
-      replace: true,
-    })
-  }, [activeTab, instance, navigate, serverId])
-
-  function updateInstance(updated: RelayInstance) {
-    queryClient.setQueryData<RelaySnapshot>(
-      queryKeys.relay.snapshot,
-      (current) =>
-        current
-          ? {
-              ...current,
-              instances: current.instances.map((item) =>
-                item.id === updated.id ? updated : item
-              ),
-            }
-          : current
-    )
-  }
-
-  function can(permission: AccessPermission): boolean {
-    return (
-      capabilities.isPlatformAdmin ||
-      capabilities.grants.some(
-        (grant) =>
-          roleHasPermission(grant.role, permission) &&
-          (grant.resourceType === "relay" || grant.resourceId === instance?.id)
-      )
-    )
-  }
+    void navigateToInstanceTab(activeTab, instance.shortId, true)
+  }, [activeTab, instance, navigateToInstanceTab, serverId])
 
   return (
     <SidebarProvider defaultOpen={uiPreferences.sidebarOpen}>
@@ -195,17 +176,11 @@ function AppLayout() {
         onInstanceChange={(shortId) => {
           const nextInstance = findInstance(instances, shortId)
           if (nextInstance) rememberInstance(nextInstance)
-          void navigate({
-            to: tabRoutes[activeTab ?? "console"],
-            params: { serverId: shortId },
-          })
+          void navigateToInstanceTab(activeTab ?? "console", shortId)
         }}
         onTabChange={(tab) => {
           if (!instance) return
-          void navigate({
-            to: tabRoutes[tab],
-            params: { serverId: instance.shortId },
-          })
+          void navigateToInstanceTab(tab, instance.shortId)
         }}
       />
       <SidebarInset className="h-svh min-w-0 overflow-hidden">
@@ -225,28 +200,7 @@ function AppLayout() {
           ) : !snapshot ? (
             <div className="min-h-0 flex-1 bg-background" />
           ) : instance && activeTab ? (
-            <>
-              <InstanceWorkspace
-                instance={instance}
-                node={snapshot.node}
-                activeTab={activeTab}
-                filePath={activeTab === "files" ? filePath : undefined}
-                openFileTreeOnEntry={openFileTreeOnEntry}
-                fileTreePreferences={{
-                  collapsed: uiPreferences.fileTreeCollapsed,
-                  width: uiPreferences.fileTreeWidth,
-                }}
-                permissions={{
-                  consoleWrite: can("instance.console.write"),
-                  filesWrite: can("instance.files.write"),
-                  power: can("instance.power"),
-                  settings: can("instance.settings"),
-                  shareLogs: can("instance.logs.share"),
-                }}
-                onInstanceUpdate={updateInstance}
-              />
-              <Outlet />
-            </>
+            <Outlet />
           ) : (
             <EmptyServerState canProvision={capabilities.isPlatformAdmin} />
           )}

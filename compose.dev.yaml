@@ -35,6 +35,8 @@ services:
       timeout: 3s
       start_period: 10s
       retries: 6
+    labels:
+      dev.orbstack.http-port: "3000"
     volumes: !override
       - .:/workspace
       - hearth-dev-node-modules:/workspace/node_modules

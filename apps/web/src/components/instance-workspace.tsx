@@ -6,8 +6,6 @@ import {
   CircleStop,
   Copy,
   EllipsisVertical,
-  FileCode2,
-  FolderTree,
   LoaderCircle,
   OctagonX,
   Play,
@@ -31,60 +29,64 @@ import {
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
 
-import type { InstanceTab } from "@/components/app-sidebar"
-import { ConsoleWorkspace } from "@/components/console-workspace"
-import {
-  FileTreeLoadingPanel,
-  FileWorkspaceLoadingState,
-} from "@/components/file-tree-loading-panel"
 import { ToolbarSidebarTrigger } from "@/components/global-page-toolbar"
-import { SettingsWorkspace } from "@/components/settings-workspace"
 import { performRelayAction } from "@/server/relay"
-
-const FileWorkspace = React.lazy(async () => {
-  const module = await import("@/components/file-workspace")
-  return { default: module.FileWorkspace }
-})
 
 const ResourceHistoryChart = React.lazy(async () => {
   const module = await import("@/components/resource-history-chart")
   return { default: module.ResourceHistoryChart }
 })
 
-function normalizeFilePath(path?: string) {
-  return path?.replace(/^\/+/, "") ?? ""
+export interface InstanceWorkspacePermissions {
+  consoleWrite: boolean
+  filesWrite: boolean
+  power: boolean
+  settings: boolean
+  shareLogs: boolean
 }
 
-function fileNameFromPath(path: string) {
-  return path.split("/").filter(Boolean).at(-1) ?? path
-}
-
-export function InstanceWorkspace({
-  instance,
-  node,
-  activeTab,
-  filePath,
-  openFileTreeOnEntry,
-  fileTreePreferences,
-  permissions,
-  onInstanceUpdate,
-}: {
-  instance: RelayInstance
-  node: RelayNode
-  activeTab: InstanceTab
-  filePath?: string
-  openFileTreeOnEntry: boolean
+interface InstanceWorkspaceContextValue {
   fileTreePreferences: {
     collapsed: boolean
     width: number | null
   }
-  permissions: {
-    consoleWrite: boolean
-    filesWrite: boolean
-    power: boolean
-    settings: boolean
-    shareLogs: boolean
+  instance: RelayInstance
+  node: RelayNode
+  onInstanceUpdate: (instance: RelayInstance) => void
+  permissions: InstanceWorkspacePermissions
+}
+
+const InstanceWorkspaceContext =
+  React.createContext<InstanceWorkspaceContextValue | null>(null)
+
+export function useInstanceWorkspace() {
+  const context = React.useContext(InstanceWorkspaceContext)
+  if (!context) {
+    throw new Error(
+      "useInstanceWorkspace must be used within InstanceWorkspace"
+    )
   }
+  return context
+}
+
+export function InstanceWorkspace({
+  children,
+  instance,
+  node,
+  title,
+  fileTreePreferences,
+  permissions,
+  onInstanceUpdate,
+}: {
+  children: React.ReactNode
+  instance: RelayInstance
+  node: RelayNode
+  title: "Console" | "Files" | "Info"
+  fileTreePreferences: {
+    collapsed: boolean
+    width: number | null
+  }
+  permissions: InstanceWorkspacePermissions
   onInstanceUpdate: (instance: RelayInstance) => void
 }) {
   const relayActionMutation = useMutation({ mutationFn: performRelayAction })
@@ -94,33 +96,14 @@ export function InstanceWorkspace({
   const [confirmKill, setConfirmKill] = React.useState(false)
   const [idCopied, setIdCopied] = React.useState(false)
   const [addressCopied, setAddressCopied] = React.useState(false)
-  const [retainedFilesFor, setRetainedFilesFor] = React.useState<string | null>(
-    activeTab === "files" ? instance.id : null
-  )
   const addressCopyTimer = React.useRef<number | null>(null)
   const idCopyTimer = React.useRef<number | null>(null)
   const isRunning = instance.observedState === "running"
-  const normalizedFilePath = normalizeFilePath(filePath)
   const isStarting = instance.observedState === "starting"
   const isStopping = instance.observedState === "stopping"
   const powerIsOn = isRunning || isStarting
   const startUnavailable = powerIsOn || isStopping || action !== null
   const stopUnavailable = !powerIsOn || isStopping || action !== null
-  const title =
-    activeTab === "console"
-      ? "Console"
-      : activeTab === "files"
-        ? "Files"
-        : "Info"
-  const hasFileWorkspace =
-    activeTab === "files" || retainedFilesFor === instance.id
-  const fileTreeCollapsed =
-    fileTreePreferences.collapsed && !openFileTreeOnEntry
-
-  React.useEffect(() => {
-    if (activeTab === "files") setRetainedFilesFor(instance.id)
-  }, [activeTab, instance.id])
-
   React.useEffect(
     () => () => {
       if (addressCopyTimer.current) {
@@ -440,94 +423,17 @@ export function InstanceWorkspace({
         data-slot="instance-workspace-surface"
         className="relative mx-2 mt-2 flex min-h-0 flex-1 overflow-hidden border border-border/80 bg-card/30"
       >
-        <div
-          aria-hidden={activeTab !== "console"}
-          inert={activeTab !== "console"}
-          className={`absolute inset-0 flex ${activeTab === "console" ? "opacity-100" : "pointer-events-none opacity-0"}`}
+        <InstanceWorkspaceContext.Provider
+          value={{
+            fileTreePreferences,
+            instance,
+            node,
+            onInstanceUpdate,
+            permissions,
+          }}
         >
-          <ConsoleWorkspace
-            key={instance.id}
-            instance={instance}
-            active={activeTab === "console"}
-            canShare={permissions.shareLogs}
-            canWrite={permissions.consoleWrite}
-          />
-        </div>
-        {hasFileWorkspace ? (
-          <div
-            aria-hidden={activeTab !== "files"}
-            inert={activeTab !== "files"}
-            className={`absolute inset-0 flex ${activeTab === "files" ? "opacity-100" : "pointer-events-none opacity-0"}`}
-          >
-            <React.Suspense
-              fallback={
-                <div className="flex min-h-0 flex-1 bg-card">
-                  <FileTreeLoadingPanel
-                    collapsed={fileTreeCollapsed}
-                    width={fileTreePreferences.width}
-                  />
-                  <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                    <div className="flex h-14 shrink-0 border-b">
-                      {fileTreeCollapsed ? (
-                        <div className="hidden w-12 shrink-0 place-items-center border-r text-primary md:grid">
-                          <FolderTree className="size-[17px]" />
-                        </div>
-                      ) : null}
-                      <div className="flex min-w-0 flex-1 items-center gap-2.5 px-3 md:gap-3">
-                        <FileCode2 className="size-5 shrink-0 text-primary" />
-                        {normalizedFilePath ? (
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-semibold">
-                              {fileNameFromPath(normalizedFilePath)}
-                            </p>
-                            <p className="truncate font-mono text-[10px] text-muted-foreground sm:text-[11px]">
-                              /data/{normalizedFilePath}
-                            </p>
-                          </div>
-                        ) : (
-                          <div className="space-y-1.5">
-                            <div className="h-3 w-24 animate-pulse bg-muted/35" />
-                            <div className="h-2.5 w-40 animate-pulse bg-muted/25" />
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    <div className="grid min-h-0 flex-1 place-items-center px-6 text-center">
-                      <FileWorkspaceLoadingState
-                        title="Opening file workspace"
-                        description="Preparing the file browser and editor."
-                      />
-                    </div>
-                  </div>
-                </div>
-              }
-            >
-              <FileWorkspace
-                key={instance.id}
-                instance={instance}
-                active={activeTab === "files"}
-                routeFilePath={filePath}
-                canShare={permissions.shareLogs}
-                canWrite={permissions.filesWrite}
-                openTreeOnEntry={openFileTreeOnEntry}
-                initialTreeCollapsed={fileTreePreferences.collapsed}
-                initialTreeWidth={fileTreePreferences.width}
-              />
-            </React.Suspense>
-          </div>
-        ) : null}
-        <div
-          aria-hidden={activeTab !== "info"}
-          inert={activeTab !== "info"}
-          className={`absolute inset-0 flex ${activeTab === "info" ? "opacity-100" : "pointer-events-none opacity-0"}`}
-        >
-          <SettingsWorkspace
-            instance={instance}
-            node={node}
-            canRename={permissions.settings}
-            onInstanceUpdate={onInstanceUpdate}
-          />
-        </div>
+          {children}
+        </InstanceWorkspaceContext.Provider>
       </div>
     </div>
   )
