@@ -20,6 +20,7 @@ import { LifecycleDriver } from "./lifecycle.js"
 import { nodeSnapshot } from "./node.js"
 import { RelayOperationError } from "./effect/errors.js"
 import { disposeRelayRuntime, runRelayEffect } from "./effect/runtime.js"
+import { closeRelayServer } from "./shutdown.js"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { RelayConfig } from "./config.js"
 
@@ -29,6 +30,7 @@ const docker = new DockerDriver(config)
 const filesystem = new FilesystemDriver(config)
 const lifecycle = new LifecycleDriver(config, docker)
 const activeConsoleStreams = new Map<string, number>()
+const activeConsoleStreamControllers = new Set<AbortController>()
 const MAX_CONSOLE_STREAMS_PER_INSTANCE = 6
 
 const server = createServer(async (request, response) => {
@@ -71,14 +73,31 @@ server.listen(config.port, config.host, () => {
   )
 })
 
+let shutdownStarted = false
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
-    server.close(() => {
-      void Promise.all([disposeRelayRuntime(), Sentry.close(2_000)]).finally(
-        () => process.exit(0)
-      )
-    })
+    if (shutdownStarted) return
+    shutdownStarted = true
+    void shutdownRelay(signal)
   })
+}
+
+async function shutdownRelay(signal: NodeJS.Signals): Promise<void> {
+  console.log(`Received ${signal}; shutting down relay`)
+  const result = await closeRelayServer(server, activeConsoleStreamControllers)
+  if (result === "forced") {
+    console.warn("Relay shutdown deadline reached; closed active connections")
+  }
+  const cleanup = await Promise.allSettled([
+    disposeRelayRuntime(),
+    Sentry.close(2_000),
+  ])
+  for (const outcome of cleanup) {
+    if (outcome.status === "rejected") {
+      console.error("Relay shutdown cleanup failed", outcome.reason)
+    }
+  }
+  process.exit(0)
 }
 
 function normalizedRoute(pathname: string): string {
@@ -225,6 +244,7 @@ async function route(
     }
     activeConsoleStreams.set(instance.id, activeStreams + 1)
     const controller = new AbortController()
+    activeConsoleStreamControllers.add(controller)
     const close = () => controller.abort()
     response.once("close", close)
     response.once("error", close)
@@ -257,6 +277,7 @@ async function route(
       if (heartbeat) clearInterval(heartbeat)
       response.off("close", close)
       response.off("error", close)
+      activeConsoleStreamControllers.delete(controller)
       const remaining = (activeConsoleStreams.get(instance.id) ?? 1) - 1
       if (remaining > 0) activeConsoleStreams.set(instance.id, remaining)
       else activeConsoleStreams.delete(instance.id)

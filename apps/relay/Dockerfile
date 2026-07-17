@@ -13,7 +13,7 @@ COPY packages/ui/package.json ./packages/ui/package.json
 RUN pnpm install --frozen-lockfile --ignore-scripts && pnpm rebuild esbuild
 COPY . .
 RUN pnpm --filter @workspace/contracts build && pnpm --filter relay build
-RUN pnpm --filter relay deploy --prod --legacy /output
+RUN npm_config_ignore_scripts=true pnpm --filter relay deploy --prod --legacy /output
 
 FROM node:24-alpine AS runtime
 

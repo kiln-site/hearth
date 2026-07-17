@@ -21,7 +21,8 @@ COPY packages/contracts/package.json ./packages/contracts/package.json
 COPY packages/ui/package.json ./packages/ui/package.json
 RUN pnpm install --frozen-lockfile --ignore-scripts && pnpm rebuild esbuild
 COPY . .
-RUN pnpm --filter @workspace/contracts build && pnpm --filter web build
+RUN --mount=type=secret,id=SENTRY_AUTH_TOKEN,env=SENTRY_AUTH_TOKEN \
+  pnpm --filter @workspace/contracts build && pnpm --filter web build
 
 WORKDIR /runtime
 COPY apps/web/package.runtime.json ./package.json

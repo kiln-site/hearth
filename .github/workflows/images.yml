@@ -29,7 +29,11 @@ jobs:
             file: apps/web/Dockerfile
             channel: latest
             version_suffix: ""
-            build_args: SOURCE_COMMIT=${{ github.sha }}
+            build_args: |
+              SOURCE_COMMIT=${{ github.sha }}
+              VITE_SENTRY_DSN=${{ vars.VITE_SENTRY_DSN }}
+              VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE=${{ vars.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE || '0.1' }}
+              VITE_SENTRY_TRACES_SAMPLE_RATE=${{ vars.VITE_SENTRY_TRACES_SAMPLE_RATE || '0.1' }}
             cache_scope: hearth
           - name: Relay
             image: ghcr.io/kiln-site/relay
@@ -102,6 +106,8 @@ jobs:
           context: .
           file: ${{ matrix.file }}
           build-args: ${{ matrix.build_args }}
+          secrets: |
+            SENTRY_AUTH_TOKEN=${{ matrix.name == 'Hearth' && secrets.SENTRY_AUTH_TOKEN || '' }}
           platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.metadata.outputs.tags }}
