@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url"
 
+import { Cause, Effect } from "effect"
 import { serve } from "srvx/node"
 import { log } from "srvx/log"
 import { serveStatic } from "srvx/static"
@@ -42,6 +43,13 @@ const server = serve({
 
 await server.ready()
 
+const shutdownHearth = Effect.fn("hearth.shutdown")(function* () {
+  yield* Effect.tryPromise(() => server.close())
+  yield* Effect.tryPromise(async () => {
+    await appModule.shutdownHearth?.()
+  })
+})
+
 let shuttingDown = false
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.once(signal, () => {
@@ -51,19 +59,21 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   })
 }
 
-async function shutdown(signal) {
-  const forceExit = setTimeout(() => process.exit(1), 10_000)
-  forceExit.unref()
-  try {
-    await server.close()
-    await appModule.shutdownHearth?.()
-    process.exit(0)
-  } catch (error) {
-    console.error(`Failed to shut Hearth down after ${signal}`, error)
-    process.exit(1)
-  } finally {
-    clearTimeout(forceExit)
-  }
+function shutdown(signal) {
+  const exitCode = shutdownHearth().pipe(
+    Effect.timeout("10 seconds"),
+    Effect.matchCause({
+      onFailure(cause) {
+        console.error(
+          `Failed to shut Hearth down after ${signal}`,
+          Cause.squash(cause)
+        )
+        return 1
+      },
+      onSuccess: () => 0,
+    })
+  )
+  void Effect.runPromise(exitCode).then((code) => process.exit(code))
 }
 
 async function logUnlessSuccessfulQuietRequest(request, next) {

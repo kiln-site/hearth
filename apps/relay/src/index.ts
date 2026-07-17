@@ -20,6 +20,7 @@ import { LifecycleDriver } from "./lifecycle.js"
 import { nodeSnapshot } from "./node.js"
 import { RelayOperationError } from "./effect/errors.js"
 import { disposeRelayRuntime, runRelayEffect } from "./effect/runtime.js"
+import { normalizedRoute } from "./route-label.js"
 import { closeRelayServer } from "./shutdown.js"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { RelayConfig } from "./config.js"
@@ -98,20 +99,6 @@ async function shutdownRelay(signal: NodeJS.Signals): Promise<void> {
     }
   }
   process.exit(0)
-}
-
-function normalizedRoute(pathname: string): string {
-  if (
-    ["/v1/snapshot", "/v1/bricks", "/v1/networking", "/v1/instances"].includes(
-      pathname
-    )
-  ) {
-    return pathname.slice(1).replaceAll("/", ".")
-  }
-  const match = pathname.match(
-    /^\/v1\/instances\/[^/]+(?:\/(tree|file|actions|console|console-completions|console-stream|latest-log))?$/u
-  )
-  return match?.[1] ? `v1.instances.${match[1]}` : "unknown"
 }
 
 function normalizedRequestOperation(url: string | undefined): string {
