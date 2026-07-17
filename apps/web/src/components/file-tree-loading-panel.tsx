@@ -40,7 +40,7 @@ export function FileTreeLoadingPanel({
 
   return (
     <div
-      className="hidden w-[var(--file-tree-width)] max-w-[45%] min-w-56 shrink-0 border-r border-border/80 bg-card md:block md:[--file-tree-width:17.5rem] xl:max-w-[30rem] xl:[--file-tree-width:19rem]"
+      className="hidden h-full min-h-0 w-[var(--file-tree-width)] max-w-[45%] min-w-56 shrink-0 flex-col border-r border-border/80 bg-card md:flex md:[--file-tree-width:17.5rem] xl:max-w-[30rem] xl:[--file-tree-width:19rem]"
       style={
         width
           ? ({ "--file-tree-width": `${width}px` } as React.CSSProperties)
@@ -49,9 +49,9 @@ export function FileTreeLoadingPanel({
       data-file-tree-loading-panel
       aria-hidden="true"
     >
-      <div className="h-14 border-b" />
-      <div className="space-y-2 px-3 py-3">
-        {Array.from({ length: 8 }, (_, index) => (
+      <div className="h-14 shrink-0 border-b" />
+      <div className="min-h-0 flex-1 space-y-2 overflow-hidden px-3 py-3">
+        {Array.from({ length: 48 }, (_, index) => (
           <div
             key={index}
             className="h-4 animate-pulse bg-muted/25"

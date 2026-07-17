@@ -229,6 +229,7 @@ function FileToolbarIdentity({
 
 function Editor({
   file,
+  displayPath,
   instance,
   loading,
   error,
@@ -239,6 +240,7 @@ function Editor({
   onTreeExpand,
 }: {
   file: RelayFileContent
+  displayPath: string
   instance: RelayInstance
   loading: boolean
   error: string | null
@@ -269,12 +271,16 @@ function Editor({
   const resetCopyTimer = React.useRef<number | null>(null)
   const sectionRef = React.useRef<HTMLElement>(null)
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     setValue(file.content)
     setSavedValue(file.content)
     setSaveError(null)
     setShareState("idle")
     setCopyState("idle")
+    setDesktopActionsOpen(false)
+    setMobileActionsOpen(false)
+    setSearchOpen(false)
+    setSearchQuery("")
     setReviewChanges(true)
     if (resetShareTimer.current) window.clearTimeout(resetShareTimer.current)
     if (resetCopyTimer.current) window.clearTimeout(resetCopyTimer.current)
@@ -369,7 +375,7 @@ function Editor({
             ) : null}
             <div className={fileEditorHeaderContentClassName}>
               <FileToolbarIdentity
-                path={file.path}
+                path={displayPath}
                 readOnly={file.encoding === "gzip"}
               />
 
@@ -398,7 +404,7 @@ function Editor({
                             : "ghost"
                       }
                       size="default"
-                      className="h-8 shrink-0 gap-1.5 px-2.5 text-xs shadow-none"
+                      className="h-8 shrink-0 gap-1.5 px-2.5 text-xs shadow-none disabled:opacity-100"
                       aria-label={`Upload ${formatName(file.path)} to mclo.gs and copy link`}
                       disabled={shareState === "uploading" || loading}
                       onClick={handleShare}
@@ -432,6 +438,7 @@ function Editor({
                   <Button
                     variant={searchOpen ? "secondary" : "ghost"}
                     size="icon"
+                    className="disabled:opacity-100"
                     aria-label={
                       searchOpen ? "Close file search" : "Search file"
                     }
@@ -715,7 +722,6 @@ function Editor({
       <div className="editor-grid relative min-h-[360px] min-w-0 flex-1 overflow-hidden">
         <SyntaxCodeEditor
           ref={editorRef}
-          key={file.path}
           ariaLabel={`Edit ${formatName(file.path)}`}
           value={value}
           originalValue={savedValue}
@@ -731,7 +737,7 @@ function Editor({
           wrapLines={wrapLines}
         />
         {loading ? (
-          <div className="absolute inset-0 z-20 grid place-items-center bg-card/75 backdrop-blur-[2px]">
+          <div className="absolute inset-y-0 right-0 left-[var(--file-editor-gutter-width,3rem)] z-20 grid place-items-center bg-card/75 backdrop-blur-[2px]">
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <LoaderCircle className="size-4 animate-spin text-primary" />
               Reading from Relay
@@ -1426,13 +1432,22 @@ function UnavailablePreview({
           </div>
         </div>
       </div>
-      <div className="grid flex-1 place-items-center px-6 text-center">
-        {loading ? (
-          <FileWorkspaceLoadingState
-            title="Reading from Relay"
-            description="Checking the file and preparing a safe text preview."
+      {loading ? (
+        <div className="flex min-h-0 flex-1">
+          <div
+            className="w-[var(--file-editor-gutter-width,3rem)] shrink-0 border-r border-border/80 bg-muted/10"
+            data-file-editor-loading-rail
+            aria-hidden="true"
           />
-        ) : (
+          <div className="grid min-w-0 flex-1 place-items-center px-6 text-center">
+            <FileWorkspaceLoadingState
+              title="Reading from Relay"
+              description="Checking the file and preparing a safe text preview."
+            />
+          </div>
+        </div>
+      ) : (
+        <div className="grid flex-1 place-items-center px-6 text-center">
           <div className="max-w-xs">
             <div className="mx-auto mb-4 grid size-11 place-items-center rounded-xl border bg-muted/20 text-muted-foreground">
               <HardDriveDownload className="size-5" />
@@ -1442,8 +1457,8 @@ function UnavailablePreview({
               {message || "This file cannot be displayed as text."}
             </p>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </section>
   )
 }
@@ -1738,7 +1753,7 @@ export function FileWorkspace({
             treeCollapsed={displayedTreeCollapsed}
             onTreeExpand={handleTreeExpand}
           />
-        ) : selectedPath !== file.path ? (
+        ) : selectedPath !== file.path && !loadingFile ? (
           <UnavailablePreview
             path={selectedPath}
             pathIsCopyable
@@ -1750,12 +1765,12 @@ export function FileWorkspace({
           />
         ) : (
           <Editor
-            key={file.path}
             canShare={canShare}
             canWrite={canWrite}
             file={file}
+            displayPath={selectedPath || file.path}
             instance={instance}
-            loading={loadingFile}
+            loading={loadingFile || selectedPath !== file.path}
             error={error}
             onSave={handleSave}
             treeCollapsed={displayedTreeCollapsed}

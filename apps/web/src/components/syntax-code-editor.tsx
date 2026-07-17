@@ -320,6 +320,22 @@ function languageForPath(path: string): Extension {
   return []
 }
 
+function contentAttributesFor(ariaLabel: string): Extension {
+  return EditorView.contentAttributes.of({
+    "aria-label": ariaLabel,
+    autocapitalize: "off",
+    autocomplete: "off",
+    spellcheck: "false",
+  })
+}
+
+function editabilityFor(readOnly: boolean, disabled: boolean): Extension {
+  return [
+    EditorState.readOnly.of(readOnly),
+    EditorView.editable.of(!readOnly && !disabled),
+  ]
+}
+
 export type SyntaxCodeEditorHandle = {
   findNext: () => boolean
   findPrevious: () => boolean
@@ -369,8 +385,14 @@ export const SyntaxCodeEditor = React.forwardRef<
   const initialValue = React.useRef(value)
   const initialOriginalValue = React.useRef(originalValue)
   const initialShowChanges = React.useRef(showChanges)
+  const initialAriaLabel = React.useRef(ariaLabel)
+  const initialDisabled = React.useRef(disabled)
+  const initialPath = React.useRef(path)
+  const initialReadOnly = React.useRef(readOnly)
   const syncing = React.useRef(false)
+  const contentAttributes = React.useRef(new Compartment())
   const editability = React.useRef(new Compartment())
+  const languageMode = React.useRef(new Compartment())
   const mergeReview = React.useRef(new Compartment())
   const redaction = React.useRef(new Compartment())
   const wrapping = React.useRef(new Compartment())
@@ -391,7 +413,7 @@ export const SyntaxCodeEditor = React.forwardRef<
     []
   )
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     if (!host.current) return
 
     const nextView = new EditorView({
@@ -417,19 +439,15 @@ export const SyntaxCodeEditor = React.forwardRef<
           highlightActiveLine(),
           highlightActiveLineGutter(),
           bracketMatching(),
-          languageForPath(path),
+          languageMode.current.of(languageForPath(initialPath.current)),
           syntaxHighlighting(kilnHighlightStyle),
           kilnEditorTheme,
-          EditorView.contentAttributes.of({
-            "aria-label": ariaLabel,
-            autocapitalize: "off",
-            autocomplete: "off",
-            spellcheck: "false",
-          }),
-          editability.current.of([
-            EditorState.readOnly.of(readOnly),
-            EditorView.editable.of(!readOnly && !disabled),
-          ]),
+          contentAttributes.current.of(
+            contentAttributesFor(initialAriaLabel.current)
+          ),
+          editability.current.of(
+            editabilityFor(initialReadOnly.current, initialDisabled.current)
+          ),
           mergeReview.current.of(
             initialShowChanges.current
               ? createMergeReview(initialOriginalValue.current)
@@ -456,9 +474,21 @@ export const SyntaxCodeEditor = React.forwardRef<
       nextView.destroy()
       view.current = null
     }
+  }, [])
+
+  React.useLayoutEffect(() => {
+    const editor = view.current
+    if (!editor) return
+    editor.dispatch({
+      effects: [
+        contentAttributes.current.reconfigure(contentAttributesFor(ariaLabel)),
+        editability.current.reconfigure(editabilityFor(readOnly, disabled)),
+        languageMode.current.reconfigure(languageForPath(path)),
+      ],
+    })
   }, [ariaLabel, disabled, path, readOnly])
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     const editor = view.current
     if (!editor) return
     const currentValue = editor.state.doc.toString()
@@ -470,7 +500,7 @@ export const SyntaxCodeEditor = React.forwardRef<
     syncing.current = false
   }, [value])
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     view.current?.dispatch({
       effects: redaction.current.reconfigure(
         redactSensitive ? redactSensitiveExtension : []
@@ -478,7 +508,7 @@ export const SyntaxCodeEditor = React.forwardRef<
     })
   }, [redactSensitive])
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     view.current?.dispatch({
       effects: wrapping.current.reconfigure(
         wrapLines ? EditorView.lineWrapping : []
@@ -486,7 +516,7 @@ export const SyntaxCodeEditor = React.forwardRef<
     })
   }, [wrapLines])
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     const editor = view.current
     if (!editor) return
 
@@ -497,7 +527,7 @@ export const SyntaxCodeEditor = React.forwardRef<
     })
   }, [showChanges])
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     const editor = view.current
     if (!editor || !showChanges) return
 
@@ -514,14 +544,14 @@ export const SyntaxCodeEditor = React.forwardRef<
     })
   }, [originalValue, showChanges])
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     const editor = view.current
     if (!editor || searchPanelOpen(editor.state) === searchOpen) return
     if (searchOpen) openSearchPanel(editor)
     else closeSearchPanel(editor)
   }, [searchOpen])
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     view.current?.dispatch({
       effects: setSearchQuery.of(new SearchQuery({ search: searchQuery })),
     })
@@ -530,11 +560,7 @@ export const SyntaxCodeEditor = React.forwardRef<
   return (
     <div
       ref={host}
-      className={
-        disabled
-          ? "kiln-code-editor h-full max-w-full min-w-0 overflow-hidden opacity-40"
-          : "kiln-code-editor h-full max-w-full min-w-0 overflow-hidden"
-      }
+      className="kiln-code-editor h-full max-w-full min-w-0 overflow-hidden"
       data-syntax-language={path.split(".").at(-1)?.toLowerCase() ?? "text"}
     />
   )
