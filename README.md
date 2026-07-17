@@ -1,7 +1,7 @@
 # Kiln Hearth
 
-Hearth is the TanStack Start control plane for [Kiln](./VISION.md). Relay is the
-small privileged service that discovers and operates labeled Minecraft
+Hearth is the TanStack Start control plane for [Kiln](./notes/VISION.md). Relay
+is the small privileged service that discovers and operates labeled Minecraft
 containers. The interface uses shadcn/ui, Tailwind CSS 4, and `@pierre/trees`.
 
 ## Docker setup
@@ -261,5 +261,5 @@ apps/relay/          Relay node API and Docker/filesystem drivers
 apps/web/            TanStack Start control-plane application
 packages/contracts/  Shared Zod wire contracts
 packages/ui/         Shared shadcn/ui design system and theme
-VISION.md            Product and architecture direction
+notes/               Project planning and architecture notes
 ```

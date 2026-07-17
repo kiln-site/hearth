@@ -6,7 +6,6 @@
 - [ ] Add a finite database request queue and acquisition/request timeouts.
 - [ ] Add metrics for pool usage, queued requests, query latency, and MySQL connection errors.
 - [ ] Replace per-tab relay snapshot polling with one cached snapshot per Relay and broadcast updates through SSE or WebSockets.
-- [x] Stop snapshot polling while a browser tab is hidden.
 - [ ] Cache Relay metadata and tokens instead of querying them on every snapshot request.
 - [ ] Cache authorization data with appropriate invalidation.
 - [ ] Fan out one console stream per instance to multiple viewers instead of attaching once per viewer.
