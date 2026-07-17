@@ -17,10 +17,10 @@
     "@opentelemetry/core": "2.9.0",
     "@sentry/node": "^10.66.0",
     "@workspace/contracts": "workspace:*",
-    "effect": "4.0.0-beta.98"
+    "effect": "4.0.0-beta.99"
   },
   "devDependencies": {
-    "@effect/vitest": "4.0.0-beta.98",
+    "@effect/vitest": "4.0.0-beta.99",
     "@tanstack/eslint-config": "0.4.0",
     "@types/node": "^22",
     "eslint": "^9",

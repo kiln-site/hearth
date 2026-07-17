@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks"
 
 const baseUrl = process.env.BENCHMARK_URL ?? "http://127.0.0.1:3000"
-const cookie = process.env.BENCHMARK_COOKIE ?? "kiln-dev-auth-bypass=enabled"
+const cookie = benchmarkCookie(baseUrl)
 const concurrency = positiveInteger("BENCHMARK_CONCURRENCY", 5)
 const requestsPerPath = positiveInteger("BENCHMARK_REQUESTS", 30)
 const warmupsPerPath = positiveInteger("BENCHMARK_WARMUPS", 3)
@@ -28,15 +28,13 @@ for (const path of paths) {
   results.push(summarize(path, durations))
 }
 
-console.table(
-  results.map(({ path, ...summary }) => ({ path, ...summary }))
-)
+console.table(results.map(({ path, ...summary }) => ({ path, ...summary })))
 console.log(JSON.stringify({ baseUrl, concurrency, requestsPerPath, results }))
 
 async function request(path) {
   const startedAt = performance.now()
   const response = await fetch(new URL(path, baseUrl), {
-    headers: { Cookie: cookie },
+    headers: cookie ? { Cookie: cookie } : undefined,
     redirect: "manual",
   })
   await response.arrayBuffer()
@@ -44,6 +42,22 @@ async function request(path) {
     throw new Error(`${path} returned HTTP ${response.status}`)
   }
   return performance.now() - startedAt
+}
+
+function benchmarkCookie(url) {
+  if (process.env.BENCHMARK_COOKIE !== undefined) {
+    return process.env.BENCHMARK_COOKIE
+  }
+
+  const hostname = new URL(url).hostname
+  if (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "::1"
+  ) {
+    return "kiln-dev-auth-bypass=enabled"
+  }
+  return ""
 }
 
 async function runConcurrent(tasks, limit) {
@@ -75,7 +89,9 @@ function summarize(path, durations) {
 }
 
 function percentile(sorted, value) {
-  return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * value) - 1)]
+  return sorted[
+    Math.min(sorted.length - 1, Math.ceil(sorted.length * value) - 1)
+  ]
 }
 
 function positiveInteger(name, fallback) {
