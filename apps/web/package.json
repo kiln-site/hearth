@@ -25,6 +25,7 @@
     "@codemirror/search": "^6.7.1",
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.6",
+    "@effect/platform-node": "4.0.0-beta.99",
     "@lezer/highlight": "^1.2.3",
     "@opentelemetry/api": "1.9.0",
     "@opentelemetry/core": "2.9.0",
@@ -40,7 +41,8 @@
     "@workspace/ui": "workspace:*",
     "better-auth": "^1.6.23",
     "codemirror": "^6.0.2",
-    "effect": "4.0.0-beta.98",
+    "effect": "4.0.0-beta.99",
+    "ioredis": "^5.11.1",
     "lucide-react": "^1.24.0",
     "mysql2": "^3.22.6",
     "react": "^19.2.6",
@@ -52,7 +54,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@effect/vitest": "4.0.0-beta.98",
+    "@effect/vitest": "4.0.0-beta.99",
     "@tailwindcss/vite": "^4",
     "@tanstack/devtools-vite": "latest",
     "@tanstack/eslint-config": "0.4.0",

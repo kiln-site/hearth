@@ -12,6 +12,18 @@ export class DatabaseError extends Schema.TaggedErrorClass<DatabaseError>()(
   }
 }
 
+export class CacheError extends Schema.TaggedErrorClass<CacheError>()(
+  "CacheError",
+  {
+    operation: Schema.String,
+    cause: Schema.Defect(),
+  }
+) {
+  override get message() {
+    return `Cache operation ${this.operation} failed`
+  }
+}
+
 export class CredentialError extends Schema.TaggedErrorClass<CredentialError>()(
   "CredentialError",
   {
@@ -45,6 +57,7 @@ export class RelayResponseError extends Schema.TaggedErrorClass<RelayResponseErr
   {
     message: Schema.String,
     status: Schema.Number,
+    cause: Schema.optional(Schema.Defect()),
   }
 ) {}
 
@@ -72,6 +85,7 @@ export class ExternalServiceError extends Schema.TaggedErrorClass<ExternalServic
 
 export type AppError =
   | AuthenticationError
+  | CacheError
   | CredentialError
   | DatabaseError
   | ExternalServiceError

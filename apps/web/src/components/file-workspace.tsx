@@ -71,7 +71,7 @@ import {
   relayFileQueryOptions,
   relayTreeQueryOptions,
 } from "@/lib/query-options"
-import { saveRelayFile, uploadToMclogs } from "@/server/relay"
+import { getRelayTree, saveRelayFile, uploadToMclogs } from "@/server/relay"
 
 function formatName(path: string) {
   return path.split("/").filter(Boolean).at(-1) ?? path
@@ -1522,6 +1522,13 @@ export function FileWorkspace({
   }
   const file = retainedFile.current
   const saveFileMutation = useMutation({ mutationFn: saveRelayFile })
+  const refreshTreeMutation = useMutation({
+    mutationFn: () =>
+      getRelayTree({ data: { instanceId: instance.id, fresh: true } }),
+    onSuccess: (nextTree) => {
+      queryClient.setQueryData(queryKeys.relay.tree(instance.id), nextTree)
+    },
+  })
   const loadingFile =
     treeQuery.isPending ||
     (selectedPathIsReadable &&
@@ -1530,6 +1537,7 @@ export function FileWorkspace({
   const error =
     navigationError ??
     queryErrorMessage(treeQuery.error, "Could not load files") ??
+    queryErrorMessage(refreshTreeMutation.error, "Could not refresh files") ??
     queryErrorMessage(fileQuery.error, "Could not read file")
   const selectedFileUnavailable =
     selectedPathIsReadable && fileQuery.isError && file?.path !== selectedPath
@@ -1688,9 +1696,9 @@ export function FileWorkspace({
     tree,
   ])
 
-  async function handleRefresh() {
+  function handleRefresh() {
     setNavigationError(null)
-    await treeQuery.refetch()
+    refreshTreeMutation.mutate()
   }
 
   async function handleSave(content: string) {
@@ -1717,7 +1725,7 @@ export function FileWorkspace({
           instance={instance}
           tree={tree}
           selectedPath={selectedPath}
-          refreshing={treeQuery.isFetching && !treeQuery.isPending}
+          refreshing={refreshTreeMutation.isPending}
           mobileOpen={mobileTreeOpen}
           onPathChange={handlePathChange}
           onRefresh={handleRefresh}

@@ -14,7 +14,15 @@ import {
   saveInstanceDisplayName,
 } from "@/lib/instance-registry"
 import type { PersistedRelay } from "@/lib/relay-registry"
-import { listPersistedRelays, relayHeaders } from "@/lib/relay-registry"
+import { listPersistedRelays } from "@/lib/relay-registry"
+import { runAppEffect } from "@/effect/runtime"
+import {
+  cachedRelayJsonEffect,
+  invalidateRelayCache,
+  relayCachePolicy,
+  relayJsonEffect,
+  writeRelayCache,
+} from "@/lib/relay-client"
 import { requireAuthenticatedUser } from "@/server/auth"
 
 const relayIdSchema = z.object({ relayId: z.uuid() })
@@ -41,14 +49,32 @@ export const getBrickStudio = createServerFn({ method: "GET" }).handler(
         networking: null,
       }
     const [catalog, snapshot, networking] = await Promise.all([
-      requestRelay(relay, "/v1/bricks").then((value) =>
-        relayCatalogSchema.parse(value)
+      runAppEffect(
+        "relay.bricks",
+        cachedRelayJsonEffect({
+          decode: relayCatalogSchema.parse,
+          path: "/v1/bricks",
+          policy: relayCachePolicy.brickCatalog(relay.id),
+          relay,
+        })
       ),
-      requestRelay(relay, "/v1/snapshot").then((value) =>
-        relaySnapshotSchema.parse(value)
+      runAppEffect(
+        "relay.snapshot",
+        cachedRelayJsonEffect({
+          decode: relaySnapshotSchema.parse,
+          path: "/v1/snapshot",
+          policy: relayCachePolicy.snapshot(relay.id),
+          relay,
+        })
       ),
-      requestRelay(relay, "/v1/networking").then((value) =>
-        z.union([relayNetworkingSchema, z.null()]).parse(value)
+      runAppEffect(
+        "relay.networking",
+        cachedRelayJsonEffect({
+          decode: z.union([relayNetworkingSchema, z.null()]).parse,
+          path: "/v1/networking",
+          policy: relayCachePolicy.networking(relay.id),
+          relay,
+        })
       ),
     ])
     return {
@@ -82,6 +108,10 @@ export const createBrickInstance = createServerFn({ method: "POST" })
       )
     )
     await saveInstanceDisplayName(relay.id, instance.id, data.name)
+    await runAppEffect(
+      "relay.snapshot.invalidate",
+      invalidateRelayCache(relayCachePolicy.snapshot(relay.id))
+    )
     return relayInstanceSchema.parse({ ...instance, name: data.name })
   })
 
@@ -94,7 +124,7 @@ export const configureBrickNetworking = createServerFn({ method: "POST" })
     }
     const relay = await requiredRelay(data.relayId)
     const input = relayNetworkingSchema.parse(data)
-    return relayNetworkingSchema.parse(
+    const networking = relayNetworkingSchema.parse(
       await requestRelay(
         relay,
         "/v1/networking",
@@ -105,6 +135,11 @@ export const configureBrickNetworking = createServerFn({ method: "POST" })
         240_000
       )
     )
+    await runAppEffect(
+      "relay.networking.cache",
+      writeRelayCache(relayCachePolicy.networking(relay.id), networking)
+    )
+    return networking
   })
 
 async function requiredRelay(id: string): Promise<PersistedRelay> {
@@ -119,33 +154,8 @@ async function requestRelay(
   init?: RequestInit,
   timeout = 15_000
 ): Promise<unknown> {
-  let response: Response
-  try {
-    response = await fetch(
-      `${relay.useTls ? "https" : "http"}://${relay.hostname}:${relay.port}${path}`,
-      {
-        ...init,
-        headers: {
-          Accept: "application/json",
-          ...(init?.body ? { "Content-Type": "application/json" } : {}),
-          ...(await relayHeaders(relay)),
-          ...init?.headers,
-        },
-        signal: AbortSignal.timeout(timeout),
-      }
-    )
-  } catch (cause) {
-    throw new Error(
-      cause instanceof Error
-        ? `Could not reach Relay: ${cause.message}`
-        : "Could not reach Relay"
-    )
-  }
-  const body = (await response.json().catch(() => null)) as {
-    error?: string
-  } | null
-  if (!response.ok) {
-    throw new Error(body?.error ?? `Relay returned HTTP ${response.status}`)
-  }
-  return body
+  return runAppEffect(
+    "relay.json",
+    relayJsonEffect(relay, path, (input) => input, init, timeout)
+  )
 }

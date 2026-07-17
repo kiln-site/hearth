@@ -35,6 +35,29 @@ services:
       args:
         JAVA_VERSION: "25"
 
+  cache:
+    image: ${KILN_CACHE_IMAGE:-valkey/valkey:9.1.0-alpine}
+    restart: unless-stopped
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        if command -v valkey-server >/dev/null; then
+          exec valkey-server --save "" --appendonly no
+        fi
+        exec redis-server --save "" --appendonly no
+    tmpfs:
+      - /data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "if command -v valkey-cli >/dev/null; then valkey-cli ping; else redis-cli ping; fi | grep -q PONG",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
   mysql:
     image: mysql:8.4
     restart: unless-stopped
@@ -88,6 +111,8 @@ services:
         VITE_SENTRY_TRACES_SAMPLE_RATE: ${VITE_SENTRY_TRACES_SAMPLE_RATE:-0.1}
     restart: unless-stopped
     depends_on:
+      cache:
+        condition: service_healthy
       mysql:
         condition: service_healthy
       relay:
@@ -100,6 +125,8 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
       DB_TABLE_PREFIX: ${DB_TABLE_PREFIX:-}
       KILN_ENVIRONMENT: ${KILN_ENVIRONMENT:-prod}
+      KILN_CACHE_URL: ${KILN_CACHE_URL:-redis://cache:6379}
+      KILN_CACHE_NAMESPACE: ${KILN_CACHE_NAMESPACE:-}
       KILN_ENABLE_SIGNUPS: ${KILN_ENABLE_SIGNUPS:-false}
       KILN_RELAY_KEY: ${KILN_RELAY_KEY:?Set KILN_RELAY_KEY in .env}
       KILN_RELAY_NAME: ${KILN_RELAY_NAME:-Local Relay}
