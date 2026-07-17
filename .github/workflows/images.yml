@@ -22,7 +22,7 @@ jobs:
 
   image:
     name: ${{ matrix.name }}${{ matrix.architecture == 'arm64' && ' · arm64' || '' }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.architecture == 'arm64' && 'blacksmith-4vcpu-ubuntu-2404-arm' || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -37,12 +37,6 @@ jobs:
           - ember-java25
         architecture: ${{ fromJSON(github.event_name == 'pull_request' && '["amd64"]' || '["amd64", "arm64"]') }}
         include:
-          - architecture: amd64
-            runner: blacksmith-4vcpu-ubuntu-2404
-            platform: linux/amd64
-          - architecture: arm64
-            runner: blacksmith-4vcpu-ubuntu-2404-arm
-            platform: linux/arm64
           - component: hearth
             name: Hearth
             image: ghcr.io/kiln-site/hearth
@@ -97,8 +91,6 @@ jobs:
             cache_scope: ember-java25
           - component: ember-palworld
             architecture: amd64
-            runner: blacksmith-4vcpu-ubuntu-2404
-            platform: linux/amd64
             name: Ember · Palworld
             image: ghcr.io/kiln-site/ember
             file: apps/ember-palworld/Dockerfile
@@ -142,7 +134,7 @@ jobs:
           build-args: ${{ matrix.build_args }}
           secrets: |
             SENTRY_AUTH_TOKEN=${{ matrix.component == 'hearth' && matrix.architecture == 'amd64' && secrets.SENTRY_AUTH_TOKEN || '' }}
-          platforms: ${{ matrix.platform }}
+          platforms: linux/${{ matrix.architecture }}
           outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', matrix.image) || '' }}
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.cache_scope }}-${{ matrix.architecture }}
