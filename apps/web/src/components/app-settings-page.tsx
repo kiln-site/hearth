@@ -1,4 +1,9 @@
 import * as React from "react"
+import {
+  useMutation,
+  useQueryClient,
+  useSuspenseQuery,
+} from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import {
   ArrowUpRight,
@@ -20,22 +25,16 @@ import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
 
 import { GlobalPageToolbar } from "@/components/global-page-toolbar"
-import {
-  addRelay,
-  checkRelay,
-  getRelays,
-  removeRelay,
-  selectRelay,
-} from "@/server/relays"
+import { queryKeys, relaysQueryOptions } from "@/lib/query-options"
+import { addRelay, checkRelay, removeRelay, selectRelay } from "@/server/relays"
 
-type Relay = Awaited<ReturnType<typeof getRelays>>[number]
-
-export function AppSettingsPage({
-  initialRelays,
-}: {
-  initialRelays: Array<Relay>
-}) {
-  const [relays, setRelays] = React.useState(initialRelays)
+export function AppSettingsPage() {
+  const queryClient = useQueryClient()
+  const { data: relays } = useSuspenseQuery(relaysQueryOptions())
+  const addRelayMutation = useMutation({ mutationFn: addRelay })
+  const checkRelayMutation = useMutation({ mutationFn: checkRelay })
+  const removeRelayMutation = useMutation({ mutationFn: removeRelay })
+  const selectRelayMutation = useMutation({ mutationFn: selectRelay })
   const [pending, setPending] = React.useState<string | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [notice, setNotice] = React.useState<string | null>(null)
@@ -48,8 +47,14 @@ export function AppSettingsPage({
   })
   const [copied, setCopied] = React.useState(false)
 
-  async function refresh() {
-    setRelays(await getRelays())
+  async function refreshRelayState() {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.relays }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.relay.connection }),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.access.capabilities,
+      }),
+    ])
   }
 
   async function createRelay(event: React.FormEvent<HTMLFormElement>) {
@@ -58,7 +63,7 @@ export function AppSettingsPage({
     setError(null)
     setNotice(null)
     try {
-      const created = await addRelay({
+      const created = await addRelayMutation.mutateAsync({
         data: {
           name: form.name,
           hostname: form.hostname,
@@ -79,7 +84,7 @@ export function AppSettingsPage({
         token: "",
         useTls: false,
       })
-      await refresh()
+      await refreshRelayState()
     } catch (cause) {
       setError(messageFrom(cause, "Could not save Relay"))
     } finally {
@@ -92,10 +97,13 @@ export function AppSettingsPage({
     setError(null)
     setNotice(null)
     try {
-      if (action === "check") await checkRelay({ data: { id } })
-      if (action === "select") await selectRelay({ data: { id } })
-      if (action === "remove") await removeRelay({ data: { id } })
-      await refresh()
+      if (action === "check")
+        await checkRelayMutation.mutateAsync({ data: { id } })
+      if (action === "select")
+        await selectRelayMutation.mutateAsync({ data: { id } })
+      if (action === "remove")
+        await removeRelayMutation.mutateAsync({ data: { id } })
+      await refreshRelayState()
       if (action === "check") setNotice("Relay connection check completed.")
       if (action === "select") window.location.assign("/")
     } catch (cause) {

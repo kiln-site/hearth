@@ -1,5 +1,10 @@
 import * as React from "react"
 import {
+  useQuery,
+  useQueryClient,
+  useSuspenseQuery,
+} from "@tanstack/react-query"
+import {
   Outlet,
   createFileRoute,
   redirect,
@@ -20,12 +25,17 @@ import { AppSidebar } from "@/components/app-sidebar"
 import type { GlobalSection, InstanceTab } from "@/components/app-sidebar"
 import { InstanceWorkspace } from "@/components/instance-workspace"
 import { PanelFooter } from "@/components/panel-footer"
-import { getRelayConnectionState } from "@/server/relay"
 import { getAuthState } from "@/server/auth"
-import { getAccessCapabilities } from "@/server/access"
-import { getUiPreferences } from "@/server/preferences"
 import type { AccessPermission } from "@/lib/permissions"
 import { roleHasPermission } from "@/lib/permissions"
+import {
+  accessCapabilitiesQueryOptions,
+  queryKeys,
+  relayConnectionQueryOptions,
+  relaySnapshotQueryOptions,
+  uiPreferencesQueryOptions,
+} from "@/lib/query-options"
+import type { RelayConnection } from "@/lib/query-options"
 
 const tabRoutes = {
   console: "/$serverId/console",
@@ -34,10 +44,6 @@ const tabRoutes = {
 } as const
 
 const selectedInstanceStorageKey = "kiln:selected-instance-id"
-const connectedRelayPollDelayMs = 5_000
-const disconnectedRelayPollDelayMs = 15_000
-const relayPollHeaders = { "x-kiln-request-purpose": "relay-poll" }
-type RelayConnection = Awaited<ReturnType<typeof getRelayConnectionState>>
 
 export const Route = createFileRoute("/_app")({
   staleTime: Infinity,
@@ -51,34 +57,38 @@ export const Route = createFileRoute("/_app")({
     }
     return { user }
   },
-  loader: async () => {
-    const [connection, capabilities, uiPreferences] = await Promise.all([
-      getRelayConnectionState(),
-      getAccessCapabilities(),
-      getUiPreferences(),
+  loader: async ({ context }) => {
+    await Promise.all([
+      context.queryClient.ensureQueryData(
+        relayConnectionQueryOptions(context.queryClient)
+      ),
+      context.queryClient.ensureQueryData(accessCapabilitiesQueryOptions()),
+      context.queryClient.ensureQueryData(uiPreferencesQueryOptions()),
     ])
-    return { capabilities, connection, uiPreferences }
   },
   component: AppLayout,
 })
 
 function AppLayout() {
-  const {
-    capabilities,
-    connection: initialConnection,
-    uiPreferences,
-  } = Route.useLoaderData()
+  const queryClient = useQueryClient()
+  const connectionQuery = useSuspenseQuery(
+    relayConnectionQueryOptions(queryClient)
+  )
+  const { data: capabilities } = useSuspenseQuery(
+    accessCapabilitiesQueryOptions()
+  )
+  const { data: uiPreferences } = useSuspenseQuery(uiPreferencesQueryOptions())
+  const { data: snapshot } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    enabled: connectionQuery.data.status === "connected",
+  })
+  const connection = connectionQuery.data
   const { user } = Route.useRouteContext()
   const navigate = useNavigate()
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
   const { serverId, _splat: filePath } = useParams({ strict: false })
-  const [connection, setConnection] =
-    React.useState<RelayConnection>(initialConnection)
-  const [snapshot, setSnapshot] = React.useState<RelaySnapshot | null>(
-    initialConnection.status === "connected" ? initialConnection.snapshot : null
-  )
   const [selectedInstanceId, setSelectedInstanceId] = React.useState<
     string | null
   >(null)
@@ -106,83 +116,6 @@ function AppLayout() {
   React.useLayoutEffect(() => {
     previousTabWasFiles.current = activeTab === "files"
   }, [activeTab])
-
-  const refreshConnection = React.useCallback(async () => {
-    const next = await getRelayConnectionState()
-    setConnection(next)
-    if (next.status === "connected") setSnapshot(next.snapshot)
-  }, [])
-
-  React.useEffect(() => {
-    const lifecycle = new AbortController()
-    let timer: number | null = null
-    let polling = false
-    let pollDelay =
-      initialConnection.status === "connected"
-        ? connectedRelayPollDelayMs
-        : disconnectedRelayPollDelayMs
-
-    function commitConnection(next: RelayConnection) {
-      if (lifecycle.signal.aborted) return
-      pollDelay =
-        next.status === "connected"
-          ? connectedRelayPollDelayMs
-          : disconnectedRelayPollDelayMs
-      setConnection(next)
-      if (next.status === "connected") setSnapshot(next.snapshot)
-    }
-
-    function clearPollTimer() {
-      if (timer !== null) window.clearTimeout(timer)
-      timer = null
-    }
-
-    function scheduleNextPoll() {
-      if (
-        lifecycle.signal.aborted ||
-        document.visibilityState !== "visible"
-      )
-        return
-      clearPollTimer()
-      timer = window.setTimeout(() => void poll(), pollDelay)
-    }
-
-    async function poll() {
-      if (
-        lifecycle.signal.aborted ||
-        polling ||
-        document.visibilityState !== "visible"
-      )
-        return
-      polling = true
-      try {
-        commitConnection(
-          await getRelayConnectionState({
-            headers: relayPollHeaders,
-            signal: lifecycle.signal,
-          })
-        )
-      } catch {
-        // A transport failure to Hearth itself is retried on the next tick.
-      } finally {
-        polling = false
-        scheduleNextPoll()
-      }
-    }
-
-    function handleVisibilityChange() {
-      clearPollTimer()
-      if (document.visibilityState === "visible") void poll()
-    }
-
-    scheduleNextPoll()
-    document.addEventListener("visibilitychange", handleVisibilityChange)
-    return () => {
-      lifecycle.abort()
-      clearPollTimer()
-      document.removeEventListener("visibilitychange", handleVisibilityChange)
-    }
-  }, [])
 
   const instances = snapshot?.instances ?? []
   const routeInstance = findInstance(instances, serverId)
@@ -219,15 +152,17 @@ function AppLayout() {
   }, [activeTab, instance, navigate, serverId])
 
   function updateInstance(updated: RelayInstance) {
-    setSnapshot((current) =>
-      current
-        ? {
-            ...current,
-            instances: current.instances.map((item) =>
-              item.id === updated.id ? updated : item
-            ),
-          }
-        : current
+    queryClient.setQueryData<RelaySnapshot>(
+      queryKeys.relay.snapshot,
+      (current) =>
+        current
+          ? {
+              ...current,
+              instances: current.instances.map((item) =>
+                item.id === updated.id ? updated : item
+              ),
+            }
+          : current
     )
   }
 
@@ -284,7 +219,7 @@ function AppLayout() {
             <RelayUnavailableState
               connection={connection}
               canConfigure={capabilities.isPlatformAdmin}
-              onRetry={() => void refreshConnection()}
+              onRetry={() => void connectionQuery.refetch()}
               onConfigure={() => void navigate({ to: "/settings" })}
             />
           ) : !snapshot ? (

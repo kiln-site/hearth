@@ -1,4 +1,9 @@
 import * as React from "react"
+import {
+  useMutation,
+  useQueryClient,
+  useSuspenseQuery,
+} from "@tanstack/react-query"
 import type { RelayInstance } from "@workspace/contracts"
 import {
   Check,
@@ -18,24 +23,23 @@ import { Input } from "@workspace/ui/components/input"
 import { GlobalPageToolbar } from "@/components/global-page-toolbar"
 import type { AccessRole } from "@/lib/permissions"
 import { accessRoleDetails, accessRoles } from "@/lib/permissions"
+import { accessOverviewQueryOptions, queryKeys } from "@/lib/query-options"
 import {
   createAccessInvitation,
-  getAccessOverview,
   removeAccessGrant,
   revokeAccessInvitation,
   updateAccessGrant,
 } from "@/server/access"
 
-type Overview = Awaited<ReturnType<typeof getAccessOverview>>
-
-export function AccessPage({
-  initialOverview,
-  instances,
-}: {
-  initialOverview: Overview
-  instances: Array<RelayInstance>
-}) {
-  const [overview, setOverview] = React.useState(initialOverview)
+export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
+  const queryClient = useQueryClient()
+  const { data: overview } = useSuspenseQuery(accessOverviewQueryOptions())
+  const inviteMutation = useMutation({ mutationFn: createAccessInvitation })
+  const updateGrantMutation = useMutation({ mutationFn: updateAccessGrant })
+  const removeGrantMutation = useMutation({ mutationFn: removeAccessGrant })
+  const revokeInvitationMutation = useMutation({
+    mutationFn: revokeAccessInvitation,
+  })
   const [pending, setPending] = React.useState<string | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [message, setMessage] = React.useState<string | null>(null)
@@ -49,8 +53,10 @@ export function AccessPage({
     ? accessRoles
     : accessRoles.filter((role) => role !== "owner")
 
-  async function refresh() {
-    setOverview(await getAccessOverview())
+  async function refreshOverview() {
+    await queryClient.invalidateQueries({
+      queryKey: queryKeys.access.overview,
+    })
   }
 
   async function invite(event: React.FormEvent<HTMLFormElement>) {
@@ -61,7 +67,7 @@ export function AccessPage({
     setInviteLink(null)
     const instance = instances.find((item) => item.id === form.resource)
     try {
-      const result = await createAccessInvitation({
+      const result = await inviteMutation.mutateAsync({
         data: {
           email: form.email,
           instanceId: instance?.id ?? null,
@@ -76,7 +82,7 @@ export function AccessPage({
       )
       setInviteLink(result.inviteUrl)
       setForm((value) => ({ ...value, email: "" }))
-      await refresh()
+      await refreshOverview()
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Could not send invitation"
@@ -90,8 +96,8 @@ export function AccessPage({
     setPending(`grant:${id}`)
     setError(null)
     try {
-      await updateAccessGrant({ data: { id, role } })
-      await refresh()
+      await updateGrantMutation.mutateAsync({ data: { id, role } })
+      await refreshOverview()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not update role")
     } finally {
@@ -103,8 +109,8 @@ export function AccessPage({
     setPending(`grant:${id}`)
     setError(null)
     try {
-      await removeAccessGrant({ data: { id } })
-      await refresh()
+      await removeGrantMutation.mutateAsync({ data: { id } })
+      await refreshOverview()
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Could not remove access"
@@ -118,8 +124,8 @@ export function AccessPage({
     setPending(`invite:${id}`)
     setError(null)
     try {
-      await revokeAccessInvitation({ data: { id } })
-      await refresh()
+      await revokeInvitationMutation.mutateAsync({ data: { id } })
+      await refreshOverview()
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Could not revoke invitation"

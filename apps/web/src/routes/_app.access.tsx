@@ -1,16 +1,23 @@
+import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, redirect } from "@tanstack/react-router"
 
 import { AccessPage } from "@/components/access-page"
 import { pageTitle } from "@/lib/page-title"
-import { getAccessCapabilities, getAccessOverview } from "@/server/access"
-import { getRelayConnectionState, getRelaySnapshot } from "@/server/relay"
+import {
+  accessCapabilitiesQueryOptions,
+  accessOverviewQueryOptions,
+  relayConnectionQueryOptions,
+  relaySnapshotQueryOptions,
+} from "@/lib/query-options"
 
 export const Route = createFileRoute("/_app/access")({
   head: () => ({ meta: [{ title: pageTitle("Access") }] }),
-  beforeLoad: async () => {
+  beforeLoad: async ({ context }) => {
     const [capabilities, connection] = await Promise.all([
-      getAccessCapabilities(),
-      getRelayConnectionState(),
+      context.queryClient.ensureQueryData(accessCapabilitiesQueryOptions()),
+      context.queryClient.ensureQueryData(
+        relayConnectionQueryOptions(context.queryClient)
+      ),
     ])
     if (!capabilities.canManageAccess) {
       throw redirect({ to: "/" })
@@ -19,19 +26,16 @@ export const Route = createFileRoute("/_app/access")({
       throw redirect({ to: capabilities.isPlatformAdmin ? "/settings" : "/" })
     }
   },
-  loader: async () => {
-    const [overview, snapshot] = await Promise.all([
-      getAccessOverview(),
-      getRelaySnapshot(),
+  loader: async ({ context }) => {
+    await Promise.all([
+      context.queryClient.ensureQueryData(accessOverviewQueryOptions()),
+      context.queryClient.ensureQueryData(relaySnapshotQueryOptions()),
     ])
-    return { overview, snapshot }
   },
   component: AccessRoute,
 })
 
 function AccessRoute() {
-  const { overview, snapshot } = Route.useLoaderData()
-  return (
-    <AccessPage initialOverview={overview} instances={snapshot.instances} />
-  )
+  const { data: snapshot } = useSuspenseQuery(relaySnapshotQueryOptions())
+  return <AccessPage instances={snapshot.instances} />
 }
