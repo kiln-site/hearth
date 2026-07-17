@@ -1537,6 +1537,7 @@ export function FileWorkspace({
   const error =
     navigationError ??
     queryErrorMessage(treeQuery.error, "Could not load files") ??
+    queryErrorMessage(refreshTreeMutation.error, "Could not refresh files") ??
     queryErrorMessage(fileQuery.error, "Could not read file")
   const selectedFileUnavailable =
     selectedPathIsReadable && fileQuery.isError && file?.path !== selectedPath
@@ -1695,9 +1696,9 @@ export function FileWorkspace({
     tree,
   ])
 
-  async function handleRefresh() {
+  function handleRefresh() {
     setNavigationError(null)
-    await refreshTreeMutation.mutateAsync()
+    refreshTreeMutation.mutate()
   }
 
   async function handleSave(content: string) {
