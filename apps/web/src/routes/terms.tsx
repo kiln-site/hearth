@@ -1,8 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router"
 
 import { LegalList, LegalPage, LegalSection } from "@/components/legal-page"
+import { pageTitle } from "@/lib/page-title"
 
-export const Route = createFileRoute("/terms")({ component: TermsRoute })
+export const Route = createFileRoute("/terms")({
+  head: () => ({ meta: [{ title: pageTitle("Terms of Use") }] }),
+  component: TermsRoute,
+})
 
 function TermsRoute() {
   return (

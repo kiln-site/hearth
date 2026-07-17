@@ -2,11 +2,13 @@ import { createFileRoute, redirect } from "@tanstack/react-router"
 import { z } from "zod"
 
 import { AuthPage } from "@/components/auth-page"
+import { pageTitle } from "@/lib/page-title"
 import { getInvitationPreview } from "@/server/access"
 import { getAuthState } from "@/server/auth"
 import { getRelayConnectionState } from "@/server/relay"
 
 export const Route = createFileRoute("/")({
+  head: () => ({ meta: [{ title: pageTitle("Sign In") }] }),
   validateSearch: z.object({
     email: z.string().optional(),
     forgot: z.union([z.literal(true), z.literal("true")]).optional(),

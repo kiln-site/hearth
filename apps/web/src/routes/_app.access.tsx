@@ -1,10 +1,12 @@
 import { createFileRoute, redirect } from "@tanstack/react-router"
 
 import { AccessPage } from "@/components/access-page"
+import { pageTitle } from "@/lib/page-title"
 import { getAccessCapabilities, getAccessOverview } from "@/server/access"
 import { getRelayConnectionState, getRelaySnapshot } from "@/server/relay"
 
 export const Route = createFileRoute("/_app/access")({
+  head: () => ({ meta: [{ title: pageTitle("Access") }] }),
   beforeLoad: async () => {
     const [capabilities, connection] = await Promise.all([
       getAccessCapabilities(),

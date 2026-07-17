@@ -1,8 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router"
 
 import { LegalList, LegalPage, LegalSection } from "@/components/legal-page"
+import { pageTitle } from "@/lib/page-title"
 
-export const Route = createFileRoute("/privacy")({ component: PrivacyRoute })
+export const Route = createFileRoute("/privacy")({
+  head: () => ({ meta: [{ title: pageTitle("Privacy Policy") }] }),
+  component: PrivacyRoute,
+})
 
 function PrivacyRoute() {
   return (
