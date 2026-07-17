@@ -192,6 +192,41 @@ function FilePathCopyButton({ path }: { path: string }) {
   )
 }
 
+function FileToolbarIdentity({
+  path,
+  pathIsCopyable = true,
+  readOnly = false,
+}: {
+  path: string
+  pathIsCopyable?: boolean
+  readOnly?: boolean
+}) {
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-2.5 md:gap-3">
+      <FileCode2 className="size-5 shrink-0 text-primary" />
+      <div className="min-w-0 flex-1">
+        <div className="mb-1 flex min-w-0 items-center gap-2.5">
+          <p className="min-w-0 truncate text-sm font-semibold">
+            {formatName(path)}
+          </p>
+          {readOnly ? (
+            <span className="hidden shrink-0 border border-primary/20 bg-primary/8 px-2 py-0.5 font-mono text-[9px] tracking-wider text-primary sm:inline-flex">
+              READ ONLY
+            </span>
+          ) : null}
+        </div>
+        {pathIsCopyable ? (
+          <FilePathCopyButton path={path} />
+        ) : (
+          <p className="truncate font-mono text-[10px] text-muted-foreground sm:text-[11px]">
+            /data/{path}
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function Editor({
   file,
   instance,
@@ -333,22 +368,10 @@ function Editor({
               <FileTreeRevealButton onClick={onTreeExpand} />
             ) : null}
             <div className={fileEditorHeaderContentClassName}>
-              <div className="flex min-w-0 flex-1 items-center gap-2.5 md:gap-3">
-                <FileCode2 className="size-5 shrink-0 text-primary" />
-                <div className="min-w-0 flex-1">
-                  <div className="mb-1 flex min-w-0 items-center gap-2.5">
-                    <p className="min-w-0 truncate text-sm font-semibold">
-                      {formatName(file.path)}
-                    </p>
-                    {file.encoding === "gzip" ? (
-                      <span className="hidden shrink-0 border border-primary/20 bg-primary/8 px-2 py-0.5 font-mono text-[9px] tracking-wider text-primary sm:inline-flex">
-                        READ ONLY
-                      </span>
-                    ) : null}
-                  </div>
-                  <FilePathCopyButton path={file.path} />
-                </div>
-              </div>
+              <FileToolbarIdentity
+                path={file.path}
+                readOnly={file.encoding === "gzip"}
+              />
 
               <div
                 className="ml-auto hidden max-w-full min-w-0 flex-wrap items-center justify-end gap-1 md:flex"
@@ -1380,21 +1403,7 @@ function UnavailablePreview({
       <div className={fileEditorHeaderClassName} data-file-toolbar>
         {treeCollapsed ? <FileTreeRevealButton onClick={onTreeExpand} /> : null}
         <div className={fileEditorHeaderContentClassName}>
-          <div className="flex min-w-0 flex-1 items-center gap-2.5 md:gap-3">
-            <FileCode2 className="size-5 shrink-0 text-primary" />
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold">
-                {formatName(path)}
-              </p>
-              {pathIsCopyable ? (
-                <FilePathCopyButton path={path} />
-              ) : (
-                <p className="truncate font-mono text-[10px] text-muted-foreground sm:text-[11px]">
-                  /data/{path}
-                </p>
-              )}
-            </div>
-          </div>
+          <FileToolbarIdentity path={path} pathIsCopyable={pathIsCopyable} />
 
           <div
             className="ml-auto hidden max-w-full min-w-0 flex-wrap items-center justify-end gap-1 md:flex"
