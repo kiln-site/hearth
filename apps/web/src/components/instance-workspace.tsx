@@ -104,6 +104,16 @@ export function InstanceWorkspace({
   const powerIsOn = isRunning || isStarting
   const startUnavailable = powerIsOn || isStopping || action !== null
   const stopUnavailable = !powerIsOn || isStopping || action !== null
+  const contextValue = React.useMemo(
+    () => ({
+      fileTreePreferences,
+      instance,
+      node,
+      onInstanceUpdate,
+      permissions,
+    }),
+    [fileTreePreferences, instance, node, onInstanceUpdate, permissions]
+  )
   React.useEffect(
     () => () => {
       if (addressCopyTimer.current) {
@@ -423,15 +433,7 @@ export function InstanceWorkspace({
         data-slot="instance-workspace-surface"
         className="relative mx-2 mt-2 flex min-h-0 flex-1 overflow-hidden border border-border/80 bg-card/30"
       >
-        <InstanceWorkspaceContext.Provider
-          value={{
-            fileTreePreferences,
-            instance,
-            node,
-            onInstanceUpdate,
-            permissions,
-          }}
-        >
+        <InstanceWorkspaceContext.Provider value={contextValue}>
           {children}
         </InstanceWorkspaceContext.Provider>
       </div>

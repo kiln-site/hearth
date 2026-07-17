@@ -26,6 +26,7 @@ import { Route as AppSecurityRouteImport } from './routes/_app.security'
 import { Route as AppBricksRouteImport } from './routes/_app.bricks'
 import { Route as AppAccessRouteImport } from './routes/_app.access'
 import { Route as AppServerIdRouteImport } from './routes/_app.$serverId'
+import { Route as AppServerIdIndexRouteImport } from './routes/_app.$serverId.index'
 import { Route as ApiConsoleInstanceIdRouteImport } from './routes/api.console.$instanceId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api.auth.$'
 import { Route as AppServerIdInfoRouteImport } from './routes/_app.$serverId.info'
@@ -117,6 +118,11 @@ const AppServerIdRoute = AppServerIdRouteImport.update({
   path: '/$serverId',
   getParentRoute: () => AppRoute,
 } as any)
+const AppServerIdIndexRoute = AppServerIdIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppServerIdRoute,
+} as any)
 const ApiConsoleInstanceIdRoute = ApiConsoleInstanceIdRouteImport.update({
   id: '/api/console/$instanceId',
   path: '/api/console/$instanceId',
@@ -170,6 +176,7 @@ export interface FileRoutesByFullPath {
   '/$serverId/info': typeof AppServerIdInfoRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/console/$instanceId': typeof ApiConsoleInstanceIdRoute
+  '/$serverId/': typeof AppServerIdIndexRoute
   '/$serverId/files/$': typeof AppServerIdFilesSplatRoute
 }
 export interface FileRoutesByTo {
@@ -182,7 +189,6 @@ export interface FileRoutesByTo {
   '/reset-password': typeof ResetPasswordRoute
   '/terms': typeof TermsRoute
   '/two-factor': typeof TwoFactorRoute
-  '/$serverId': typeof AppServerIdRouteWithChildren
   '/access': typeof AppAccessRoute
   '/bricks': typeof AppBricksRoute
   '/security': typeof AppSecurityRoute
@@ -194,6 +200,7 @@ export interface FileRoutesByTo {
   '/$serverId/info': typeof AppServerIdInfoRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/console/$instanceId': typeof ApiConsoleInstanceIdRoute
+  '/$serverId': typeof AppServerIdIndexRoute
   '/$serverId/files/$': typeof AppServerIdFilesSplatRoute
 }
 export interface FileRoutesById {
@@ -220,6 +227,7 @@ export interface FileRoutesById {
   '/_app/$serverId/info': typeof AppServerIdInfoRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/console/$instanceId': typeof ApiConsoleInstanceIdRoute
+  '/_app/$serverId/': typeof AppServerIdIndexRoute
   '/_app/$serverId/files/$': typeof AppServerIdFilesSplatRoute
 }
 export interface FileRouteTypes {
@@ -246,6 +254,7 @@ export interface FileRouteTypes {
     | '/$serverId/info'
     | '/api/auth/$'
     | '/api/console/$instanceId'
+    | '/$serverId/'
     | '/$serverId/files/$'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -258,7 +267,6 @@ export interface FileRouteTypes {
     | '/reset-password'
     | '/terms'
     | '/two-factor'
-    | '/$serverId'
     | '/access'
     | '/bricks'
     | '/security'
@@ -270,6 +278,7 @@ export interface FileRouteTypes {
     | '/$serverId/info'
     | '/api/auth/$'
     | '/api/console/$instanceId'
+    | '/$serverId'
     | '/$serverId/files/$'
   id:
     | '__root__'
@@ -295,6 +304,7 @@ export interface FileRouteTypes {
     | '/_app/$serverId/info'
     | '/api/auth/$'
     | '/api/console/$instanceId'
+    | '/_app/$serverId/'
     | '/_app/$serverId/files/$'
   fileRoutesById: FileRoutesById
 }
@@ -436,6 +446,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppServerIdRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/$serverId/': {
+      id: '/_app/$serverId/'
+      path: '/'
+      fullPath: '/$serverId/'
+      preLoaderRoute: typeof AppServerIdIndexRouteImport
+      parentRoute: typeof AppServerIdRoute
+    }
     '/api/console/$instanceId': {
       id: '/api/console/$instanceId'
       path: '/api/console/$instanceId'
@@ -496,12 +513,14 @@ interface AppServerIdRouteChildren {
   AppServerIdConsoleRoute: typeof AppServerIdConsoleRoute
   AppServerIdFilesRoute: typeof AppServerIdFilesRouteWithChildren
   AppServerIdInfoRoute: typeof AppServerIdInfoRoute
+  AppServerIdIndexRoute: typeof AppServerIdIndexRoute
 }
 
 const AppServerIdRouteChildren: AppServerIdRouteChildren = {
   AppServerIdConsoleRoute: AppServerIdConsoleRoute,
   AppServerIdFilesRoute: AppServerIdFilesRouteWithChildren,
   AppServerIdInfoRoute: AppServerIdInfoRoute,
+  AppServerIdIndexRoute: AppServerIdIndexRoute,
 }
 
 const AppServerIdRouteWithChildren = AppServerIdRoute._addFileChildren(

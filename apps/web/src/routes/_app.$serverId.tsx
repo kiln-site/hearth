@@ -1,3 +1,4 @@
+import * as React from "react"
 import {
   useQuery,
   useQueryClient,
@@ -33,9 +34,7 @@ function InstanceRouteLayout() {
   )
   const { data: uiPreferences } = useSuspenseQuery(uiPreferencesQueryOptions())
   const instance = findInstance(snapshot?.instances ?? [], serverId)
-
-  if (!snapshot || !instance) return null
-  const instanceId = instance.id
+  const instanceId = instance?.id
 
   const activeTab: InstanceTab = /\/files(?:\/|$)/.test(pathname)
     ? "files"
@@ -49,48 +48,57 @@ function InstanceRouteLayout() {
         ? "Files"
         : "Info"
 
-  function updateInstance(updated: RelayInstance) {
-    queryClient.setQueryData<RelaySnapshot>(
-      queryKeys.relay.snapshot,
-      (current) =>
-        current
-          ? {
-              ...current,
-              instances: current.instances.map((item) =>
-                item.id === updated.id ? updated : item
-              ),
-            }
-          : current
-    )
-  }
-
-  function can(permission: AccessPermission): boolean {
-    return (
+  const updateInstance = React.useCallback(
+    (updated: RelayInstance) => {
+      queryClient.setQueryData<RelaySnapshot>(
+        queryKeys.relay.snapshot,
+        (current) =>
+          current
+            ? {
+                ...current,
+                instances: current.instances.map((item) =>
+                  item.id === updated.id ? updated : item
+                ),
+              }
+            : current
+      )
+    },
+    [queryClient]
+  )
+  const fileTreePreferences = React.useMemo(
+    () => ({
+      collapsed: uiPreferences.fileTreeCollapsed,
+      width: uiPreferences.fileTreeWidth,
+    }),
+    [uiPreferences.fileTreeCollapsed, uiPreferences.fileTreeWidth]
+  )
+  const permissions = React.useMemo(() => {
+    const can = (permission: AccessPermission): boolean =>
       capabilities.isPlatformAdmin ||
       capabilities.grants.some(
         (grant) =>
           roleHasPermission(grant.role, permission) &&
           (grant.resourceType === "relay" || grant.resourceId === instanceId)
       )
-    )
-  }
+
+    return {
+      consoleWrite: can("instance.console.write"),
+      filesWrite: can("instance.files.write"),
+      power: can("instance.power"),
+      settings: can("instance.settings"),
+      shareLogs: can("instance.logs.share"),
+    }
+  }, [capabilities.grants, capabilities.isPlatformAdmin, instanceId])
+
+  if (!snapshot || !instance) return null
 
   return (
     <InstanceWorkspace
       instance={instance}
       node={snapshot.node}
       title={title}
-      fileTreePreferences={{
-        collapsed: uiPreferences.fileTreeCollapsed,
-        width: uiPreferences.fileTreeWidth,
-      }}
-      permissions={{
-        consoleWrite: can("instance.console.write"),
-        filesWrite: can("instance.files.write"),
-        power: can("instance.power"),
-        settings: can("instance.settings"),
-        shareLogs: can("instance.logs.share"),
-      }}
+      fileTreePreferences={fileTreePreferences}
+      permissions={permissions}
       onInstanceUpdate={updateInstance}
     >
       <Outlet />
