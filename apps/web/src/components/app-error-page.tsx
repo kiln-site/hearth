@@ -1,3 +1,5 @@
+import * as React from "react"
+import * as Sentry from "@sentry/tanstackstart-react"
 import type { ErrorComponentProps } from "@tanstack/react-router"
 import { ArrowLeft, RefreshCw, TriangleAlert } from "lucide-react"
 
@@ -5,7 +7,15 @@ import { Button } from "@workspace/ui/components/button"
 
 import { HearthMark } from "@/components/hearth-mark"
 
+const reportedErrors = new WeakSet<Error>()
+
 export function AppErrorPage({ error, reset }: ErrorComponentProps) {
+  React.useEffect(() => {
+    if (reportedErrors.has(error)) return
+    reportedErrors.add(error)
+    Sentry.captureException(error)
+  }, [error])
+
   return (
     <StatusPage
       code="500"

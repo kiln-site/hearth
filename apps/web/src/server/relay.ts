@@ -1,4 +1,6 @@
 import { createServerFn } from "@tanstack/react-start"
+import * as Sentry from "@sentry/tanstackstart-react"
+import { Effect } from "effect"
 import {
   relayConsoleCommandResultSchema,
   relayConsoleCommandSchema,
@@ -26,6 +28,17 @@ import {
 import type { AccessPermission } from "@/lib/permissions"
 import type { AuthenticatedUser } from "@/lib/auth-session"
 import { requireAuthenticatedUser } from "@/server/auth"
+import {
+  AuthenticationError,
+  RelayResponseError,
+  RelayUnavailableError,
+  ResourceNotFoundError,
+} from "@/effect/errors"
+import { runAppEffect } from "@/effect/runtime"
+import {
+  relayHeadersEffect,
+  resolvePrimaryRelayEffect,
+} from "@/lib/relay-registry"
 
 const instanceInputSchema = z.object({
   instanceId: z.string().min(1),
@@ -393,41 +406,66 @@ async function relayFetch(
   path: string,
   init?: RequestInit
 ): Promise<Response> {
-  const { relayHeaders } = await import("@/lib/relay-registry")
+  return runAppEffect("relay.fetch", relayFetchEffect(relay, path, init))
+}
+
+const relayFetchEffect = Effect.fn("relay.fetch")(function* (
+  relay: RelayEndpoint,
+  path: string,
+  init?: RequestInit
+) {
   const timeout = AbortSignal.timeout(10_000)
   const signal = init?.signal
     ? AbortSignal.any([init.signal, timeout])
     : timeout
-  let response: Response
-  try {
-    response = await fetch(`${relayUrl(relay).replace(/\/$/u, "")}${path}`, {
-      ...init,
-      headers: {
-        Accept: "application/json",
-        ...(init?.body ? { "Content-Type": "application/json" } : {}),
-        ...(await relayHeaders(relay)),
-        ...init?.headers,
-      },
-      signal,
-    })
-  } catch (cause) {
-    if (timeout.aborted) throw new Error("Relay request timed out after 10s")
-    throw new Error(
-      cause instanceof Error
-        ? `Could not reach Relay: ${cause.message}`
-        : "Could not reach Relay"
-    )
-  }
+  const headers = yield* relayHeadersEffect(relay)
+  const response = yield* Effect.tryPromise({
+    try: () =>
+      Sentry.startSpan(
+        {
+          name: `${init?.method ?? "GET"} ${normalizedRelayRoute(path)}`,
+          op: "http.client.relay",
+          attributes: { "relay.id": relay.id },
+        },
+        () =>
+          fetch(`${relayUrl(relay).replace(/\/$/u, "")}${path}`, {
+            ...init,
+            headers: {
+              Accept: "application/json",
+              ...(init?.body ? { "Content-Type": "application/json" } : {}),
+              ...headers,
+              ...init?.headers,
+            },
+            signal,
+          })
+      ),
+    catch: (cause) =>
+      RelayUnavailableError.make({
+        message: timeout.aborted
+          ? "Relay request timed out after 10s"
+          : `Could not reach Relay: ${errorMessage(cause)}`,
+        cause,
+      }),
+  })
 
   if (!response.ok) {
-    const problem = (await response.json().catch(() => null)) as {
-      error?: string
-    } | null
-    throw new Error(problem?.error ?? `Relay returned HTTP ${response.status}`)
+    const problem = yield* Effect.promise(() =>
+      response.json().catch(() => null)
+    )
+    const parsed = z
+      .object({ error: z.string().optional() })
+      .nullable()
+      .safeParse(problem)
+    return yield* RelayResponseError.make({
+      message:
+        (parsed.success ? parsed.data?.error : undefined) ??
+        `Relay returned HTTP ${response.status}`,
+      status: response.status,
+    })
   }
 
   return response
-}
+})
 
 async function authorize(permission: AccessPermission, instanceId?: string) {
   const { relay, user } = await activeRelayAccess()
@@ -440,11 +478,33 @@ async function authorize(permission: AccessPermission, instanceId?: string) {
 }
 
 async function activeRelayAccess() {
-  const user = await requireAuthenticatedUser()
-  const { resolvePrimaryRelay } = await import("@/lib/relay-registry")
-  const relay = await resolvePrimaryRelay()
-  if (!relay) throw new Error("No active Relay is configured")
+  return runAppEffect("relay.activeAccess", activeRelayAccessEffect())
+}
+
+const activeRelayAccessEffect = Effect.fn("relay.activeAccess")(function* () {
+  const user = yield* Effect.tryPromise({
+    try: requireAuthenticatedUser,
+    catch: (cause) =>
+      AuthenticationError.make({ message: "Authentication required", cause }),
+  })
+  const relay = yield* resolvePrimaryRelayEffect()
+  if (!relay) {
+    return yield* ResourceNotFoundError.make({
+      resource: "relay",
+      message: "No active Relay is configured",
+    })
+  }
   return { relay, user }
+})
+
+function normalizedRelayRoute(path: string): string {
+  return path
+    .split("?", 1)[0]
+    .replace(/^\/v1\/instances\/[^/]+/u, "/v1/instances/:id")
+}
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : "unknown network error"
 }
 
 function relayUrl(relay: { hostname: string; port: number; useTls: boolean }) {

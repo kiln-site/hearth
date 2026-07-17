@@ -22,3 +22,6 @@ coverage/
 
 # typescript
 *.tsbuildinfo
+
+# Effect source used by the local Effect development skill
+.repos/effect

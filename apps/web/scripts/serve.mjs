@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url"
 
+import { Cause, Effect } from "effect"
 import { serve } from "srvx/node"
 import { log } from "srvx/log"
 import { serveStatic } from "srvx/static"
@@ -8,7 +9,8 @@ const HEALTH_PATH = "/api/health"
 const SERVER_FN_PATH = "/_serverFn/"
 const QUIET_REQUEST_PURPOSE_HEADER = "x-kiln-request-purpose"
 const RELAY_POLL_PURPOSE = "relay-poll"
-const app = (await import("../dist/server/server.js")).default
+const appModule = await import("../dist/server/server.js")
+const app = appModule.default
 const logRequest = log()
 
 if (!app || typeof app.fetch !== "function") {
@@ -27,7 +29,7 @@ const server = serve({
       }
     )
   },
-  gracefulShutdown: true,
+  gracefulShutdown: false,
   hostname: process.env.HOST || "0.0.0.0",
   middleware: [
     logUnlessSuccessfulQuietRequest,
@@ -40,6 +42,39 @@ const server = serve({
 })
 
 await server.ready()
+
+const shutdownHearth = Effect.fn("hearth.shutdown")(function* () {
+  yield* Effect.tryPromise(() => server.close())
+  yield* Effect.tryPromise(async () => {
+    await appModule.shutdownHearth?.()
+  })
+})
+
+let shuttingDown = false
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.once(signal, () => {
+    if (shuttingDown) return
+    shuttingDown = true
+    void shutdown(signal)
+  })
+}
+
+function shutdown(signal) {
+  const exitCode = shutdownHearth().pipe(
+    Effect.timeout("10 seconds"),
+    Effect.matchCause({
+      onFailure(cause) {
+        console.error(
+          `Failed to shut Hearth down after ${signal}`,
+          Cause.squash(cause)
+        )
+        return 1
+      },
+      onSuccess: () => 0,
+    })
+  )
+  void Effect.runPromise(exitCode).then((code) => process.exit(code))
+}
 
 async function logUnlessSuccessfulQuietRequest(request, next) {
   const pathname = new URL(request.url).pathname

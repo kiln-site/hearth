@@ -19,6 +19,7 @@ import { Route as FilesRouteImport } from './routes/files'
 import { Route as ConsoleRouteImport } from './routes/console'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiSentryCheckRouteImport } from './routes/api.sentry-check'
 import { Route as ApiHealthRouteImport } from './routes/api.health'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as AppSecurityRouteImport } from './routes/_app.security'
@@ -78,6 +79,11 @@ const AppRoute = AppRouteImport.update({
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiSentryCheckRoute = ApiSentryCheckRouteImport.update({
+  id: '/api/sentry-check',
+  path: '/api/sentry-check',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiHealthRoute = ApiHealthRouteImport.update({
@@ -151,6 +157,7 @@ export interface FileRoutesByFullPath {
   '/security': typeof AppSecurityRoute
   '/settings': typeof AppSettingsRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/sentry-check': typeof ApiSentryCheckRoute
   '/$serverId/console': typeof AppServerIdConsoleRoute
   '/$serverId/files': typeof AppServerIdFilesRouteWithChildren
   '/$serverId/info': typeof AppServerIdInfoRoute
@@ -173,6 +180,7 @@ export interface FileRoutesByTo {
   '/security': typeof AppSecurityRoute
   '/settings': typeof AppSettingsRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/sentry-check': typeof ApiSentryCheckRoute
   '/$serverId/console': typeof AppServerIdConsoleRoute
   '/$serverId/files': typeof AppServerIdFilesRouteWithChildren
   '/$serverId/info': typeof AppServerIdInfoRoute
@@ -197,6 +205,7 @@ export interface FileRoutesById {
   '/_app/security': typeof AppSecurityRoute
   '/_app/settings': typeof AppSettingsRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/sentry-check': typeof ApiSentryCheckRoute
   '/_app/$serverId/console': typeof AppServerIdConsoleRoute
   '/_app/$serverId/files': typeof AppServerIdFilesRouteWithChildren
   '/_app/$serverId/info': typeof AppServerIdInfoRoute
@@ -221,6 +230,7 @@ export interface FileRouteTypes {
     | '/security'
     | '/settings'
     | '/api/health'
+    | '/api/sentry-check'
     | '/$serverId/console'
     | '/$serverId/files'
     | '/$serverId/info'
@@ -243,6 +253,7 @@ export interface FileRouteTypes {
     | '/security'
     | '/settings'
     | '/api/health'
+    | '/api/sentry-check'
     | '/$serverId/console'
     | '/$serverId/files'
     | '/$serverId/info'
@@ -266,6 +277,7 @@ export interface FileRouteTypes {
     | '/_app/security'
     | '/_app/settings'
     | '/api/health'
+    | '/api/sentry-check'
     | '/_app/$serverId/console'
     | '/_app/$serverId/files'
     | '/_app/$serverId/info'
@@ -286,6 +298,7 @@ export interface RootRouteChildren {
   TermsRoute: typeof TermsRoute
   TwoFactorRoute: typeof TwoFactorRoute
   ApiHealthRoute: typeof ApiHealthRoute
+  ApiSentryCheckRoute: typeof ApiSentryCheckRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiConsoleInstanceIdRoute: typeof ApiConsoleInstanceIdRoute
 }
@@ -360,6 +373,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/sentry-check': {
+      id: '/api/sentry-check'
+      path: '/api/sentry-check'
+      fullPath: '/api/sentry-check'
+      preLoaderRoute: typeof ApiSentryCheckRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/health': {
@@ -487,6 +507,7 @@ const rootRouteChildren: RootRouteChildren = {
   TermsRoute: TermsRoute,
   TwoFactorRoute: TwoFactorRoute,
   ApiHealthRoute: ApiHealthRoute,
+  ApiSentryCheckRoute: ApiSentryCheckRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiConsoleInstanceIdRoute: ApiConsoleInstanceIdRoute,
 }
@@ -495,10 +516,11 @@ export const routeTree = rootRouteImport
   ._addFileTypes<FileRouteTypes>()
 
 import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
+import type { startInstance } from './start.ts'
 declare module '@tanstack/react-start' {
   interface Register {
     ssr: true
     router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
   }
 }

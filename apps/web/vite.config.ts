@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
 import { defineConfig } from "vite"
+import { sentryTanstackStart } from "@sentry/tanstackstart-react/vite"
 import { devtools } from "@tanstack/devtools-vite"
 import { tanstackStart } from "@tanstack/react-start/plugin/vite"
 import viteReact from "@vitejs/plugin-react"
@@ -11,6 +12,7 @@ const repositoryRoot = resolve(import.meta.dirname, "../..")
 
 const config = defineConfig(({ command }) => {
   const buildCommit = command === "serve" ? "" : resolveBuildCommit()
+  const sentryAuthToken = process.env.SENTRY_AUTH_TOKEN
 
   return {
     define: {
@@ -25,7 +27,22 @@ const config = defineConfig(({ command }) => {
       forwardConsole: false,
       host: "0.0.0.0",
     },
-    plugins: [devtools(), tailwindcss(), tanstackStart(), viteReact()],
+    plugins: [
+      devtools(),
+      tailwindcss(),
+      tanstackStart(),
+      ...(sentryAuthToken
+        ? [
+            sentryTanstackStart({
+              org: "quartzdev",
+              project: "javascript-tanstackstart-react",
+              authToken: sentryAuthToken,
+              telemetry: false,
+            }),
+          ]
+        : []),
+      viteReact(),
+    ],
   }
 })
 
@@ -44,12 +61,18 @@ function resolveBuildCommit(): string {
   if (configured) return configured
 
   try {
-    const head = readFileSync(resolve(repositoryRoot, ".git/HEAD"), "utf8").trim()
+    const head = readFileSync(
+      resolve(repositoryRoot, ".git/HEAD"),
+      "utf8"
+    ).trim()
     if (!head.startsWith("ref: ")) return head
 
     const reference = head.slice(5)
     try {
-      return readFileSync(resolve(repositoryRoot, `.git/${reference}`), "utf8").trim()
+      return readFileSync(
+        resolve(repositoryRoot, `.git/${reference}`),
+        "utf8"
+      ).trim()
     } catch {
       const packedReferences = readFileSync(
         resolve(repositoryRoot, ".git/packed-refs"),

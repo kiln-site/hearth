@@ -1,10 +1,16 @@
 FROM node:24-alpine AS builder
 
 ARG SOURCE_COMMIT
+ARG VITE_SENTRY_DSN
+ARG VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE=0.1
+ARG VITE_SENTRY_TRACES_SAMPLE_RATE=0.1
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 ENV SOURCE_COMMIT=$SOURCE_COMMIT
+ENV VITE_SENTRY_DSN=$VITE_SENTRY_DSN
+ENV VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE=$VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE
+ENV VITE_SENTRY_TRACES_SAMPLE_RATE=$VITE_SENTRY_TRACES_SAMPLE_RATE
 RUN corepack enable
 WORKDIR /source
 
@@ -13,9 +19,10 @@ COPY apps/relay/package.json ./apps/relay/package.json
 COPY apps/web/package.json ./apps/web/package.json
 COPY packages/contracts/package.json ./packages/contracts/package.json
 COPY packages/ui/package.json ./packages/ui/package.json
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --ignore-scripts && pnpm rebuild esbuild
 COPY . .
-RUN pnpm --filter @workspace/contracts build && pnpm --filter web build
+RUN --mount=type=secret,id=SENTRY_AUTH_TOKEN,env=SENTRY_AUTH_TOKEN \
+  pnpm --filter @workspace/contracts build && pnpm --filter web build
 
 WORKDIR /runtime
 COPY apps/web/package.runtime.json ./package.json
@@ -33,6 +40,7 @@ COPY --from=builder --chown=node:node /source/apps/web/dist ./dist
 COPY --from=builder --chown=node:node /source/apps/web/migrations ./migrations
 COPY --from=builder --chown=node:node /source/apps/web/scripts ./scripts
 COPY --from=builder --chown=node:node /source/apps/web/keyring.mjs ./keyring.mjs
+COPY --from=builder --chown=node:node /source/apps/web/instrument.server.mjs ./instrument.server.mjs
 COPY --from=builder --chown=node:node /source/apps/web/package.runtime.json ./package.json
 
 USER node

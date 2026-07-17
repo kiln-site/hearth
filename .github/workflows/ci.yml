@@ -1,16 +1,11 @@
 name: Code checks
 
 on:
-  push:
-  pull_request:
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: code-checks-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   code:

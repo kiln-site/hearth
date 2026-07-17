@@ -6,11 +6,12 @@
   "scripts": {
     "db:generate": "node --env-file=../../.env ./node_modules/auth/dist/index.mjs generate --config ./src/lib/auth.ts --output ./migrations/auth.sql --yes",
     "db:migrate": "node --env-file=../../.env ./node_modules/auth/dist/index.mjs migrate --config ./src/lib/auth.ts --yes && node --env-file=../../.env ./scripts/migrate-app.mjs",
-    "dev": "node --env-file=../../.env ./node_modules/vite/bin/vite.js dev --port 3000",
+    "dev": "node --env-file=../../.env --import ./instrument.server.mjs ./node_modules/vite/bin/vite.js dev --port 3000",
     "build": "vite build && node scripts/normalize-build-assets.mjs",
-    "start": "node scripts/serve.mjs",
+    "start": "node --import ./instrument.server.mjs scripts/serve.mjs",
     "start:container": "node scripts/start-container.mjs",
     "test:keyring": "node --test keyring.test.mjs",
+    "test": "vitest run",
     "preview": "vite preview",
     "lint": "eslint",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
@@ -25,8 +26,11 @@
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.6",
     "@lezer/highlight": "^1.2.3",
+    "@opentelemetry/api": "1.9.0",
+    "@opentelemetry/core": "2.9.0",
     "@pierre/trees": "1.0.0-beta.5",
     "@react-email/components": "^1.0.12",
+    "@sentry/tanstackstart-react": "^10.66.0",
     "@tanstack/react-router": "latest",
     "@tanstack/react-start": "latest",
     "@tanstack/react-virtual": "^3.14.6",
@@ -34,6 +38,7 @@
     "@workspace/ui": "workspace:*",
     "better-auth": "^1.6.23",
     "codemirror": "^6.0.2",
+    "effect": "4.0.0-beta.98",
     "lucide-react": "^1.24.0",
     "mysql2": "^3.22.6",
     "react": "^19.2.6",
@@ -45,6 +50,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@effect/vitest": "4.0.0-beta.98",
     "@tailwindcss/vite": "^4",
     "@tanstack/devtools-vite": "latest",
     "@tanstack/eslint-config": "0.4.0",
@@ -56,6 +62,7 @@
     "eslint": "^9",
     "tailwindcss": "^4",
     "typescript": "^6",
-    "vite": "^8"
+    "vite": "^8",
+    "vitest": "4.1.10"
   }
 }

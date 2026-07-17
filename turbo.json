@@ -4,8 +4,19 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
+      "env": [
+        "VITE_SENTRY_DSN",
+        "VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE",
+        "VITE_SENTRY_TRACES_SAMPLE_RATE"
+      ],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
-      "outputs": [".output/**", "dist/**"]
+      "outputs": [".output/**", "dist/**"],
+      "passThroughEnv": [
+        "GITHUB_SHA",
+        "KILN_BUILD_SHA",
+        "SENTRY_AUTH_TOKEN",
+        "SOURCE_COMMIT"
+      ]
     },
     "lint": {
       "dependsOn": ["^lint"]
@@ -15,6 +26,10 @@
     },
     "typecheck": {
       "dependsOn": ["^build", "^typecheck"]
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": ["coverage/**"]
     },
     "dev": {
       "cache": false,

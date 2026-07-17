@@ -1,5 +1,7 @@
 import { createServer } from "node:http"
 import { mkdir } from "node:fs/promises"
+import * as Sentry from "@sentry/node"
+import { Effect } from "effect"
 
 import {
   relayConsoleCommandSchema,
@@ -16,6 +18,10 @@ import { DockerDriver } from "./docker.js"
 import { FilesystemDriver, RelayFilesystemError } from "./files.js"
 import { LifecycleDriver } from "./lifecycle.js"
 import { nodeSnapshot } from "./node.js"
+import { RelayOperationError } from "./effect/errors.js"
+import { disposeRelayRuntime, runRelayEffect } from "./effect/runtime.js"
+import { normalizedRoute } from "./route-label.js"
+import { closeRelayServer } from "./shutdown.js"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { RelayConfig } from "./config.js"
 
@@ -25,20 +31,36 @@ const docker = new DockerDriver(config)
 const filesystem = new FilesystemDriver(config)
 const lifecycle = new LifecycleDriver(config, docker)
 const activeConsoleStreams = new Map<string, number>()
+const activeConsoleStreamControllers = new Set<AbortController>()
 const MAX_CONSOLE_STREAMS_PER_INSTANCE = 6
 
 const server = createServer(async (request, response) => {
   try {
     if (healthCheck(request, response)) return
     if (!authorize(request, response, config)) return
-    await route(request, response)
+    const requestUrl = new URL(request.url ?? "/", "http://relay")
+    await runRelayEffect(
+      `relay.http.${normalizedRoute(requestUrl.pathname)}`,
+      Effect.tryPromise({
+        try: () => route(request, response),
+        catch: (cause) =>
+          RelayOperationError.make({
+            operation: normalizedRoute(requestUrl.pathname),
+            cause,
+          }),
+      })
+    )
   } catch (error) {
-    if (error instanceof RelayFilesystemError) {
-      json(response, 400, { error: error.message, code: error.code })
+    const cause = error instanceof RelayOperationError ? error.cause : error
+    if (cause instanceof RelayFilesystemError) {
+      json(response, 400, { error: cause.message, code: cause.code })
       return
     }
-    const message = error instanceof Error ? error.message : "Unknown error"
-    console.error(error)
+    Sentry.captureException(cause, {
+      tags: { "kiln.operation": normalizedRequestOperation(request.url) },
+    })
+    const message = cause instanceof Error ? cause.message : "Unknown error"
+    console.error(cause)
     json(response, 500, { error: message, code: "internal_error" })
   }
 })
@@ -51,6 +73,37 @@ server.listen(config.port, config.host, () => {
     `Discovering ${config.managedLabel} containers in ${config.rootDirectory}`
   )
 })
+
+let shutdownStarted = false
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.once(signal, () => {
+    if (shutdownStarted) return
+    shutdownStarted = true
+    void shutdownRelay(signal)
+  })
+}
+
+async function shutdownRelay(signal: NodeJS.Signals): Promise<void> {
+  console.log(`Received ${signal}; shutting down relay`)
+  const result = await closeRelayServer(server, activeConsoleStreamControllers)
+  if (result === "forced") {
+    console.warn("Relay shutdown deadline reached; closed active connections")
+  }
+  const cleanup = await Promise.allSettled([
+    disposeRelayRuntime(),
+    Sentry.close(2_000),
+  ])
+  for (const outcome of cleanup) {
+    if (outcome.status === "rejected") {
+      console.error("Relay shutdown cleanup failed", outcome.reason)
+    }
+  }
+  process.exit(0)
+}
+
+function normalizedRequestOperation(url: string | undefined): string {
+  return normalizedRoute(new URL(url ?? "/", "http://relay").pathname)
+}
 
 async function route(
   request: IncomingMessage,
@@ -178,6 +231,7 @@ async function route(
     }
     activeConsoleStreams.set(instance.id, activeStreams + 1)
     const controller = new AbortController()
+    activeConsoleStreamControllers.add(controller)
     const close = () => controller.abort()
     response.once("close", close)
     response.once("error", close)
@@ -210,6 +264,7 @@ async function route(
       if (heartbeat) clearInterval(heartbeat)
       response.off("close", close)
       response.off("error", close)
+      activeConsoleStreamControllers.delete(controller)
       const remaining = (activeConsoleStreams.get(instance.id) ?? 1) - 1
       if (remaining > 0) activeConsoleStreams.set(instance.id, remaining)
       else activeConsoleStreams.delete(instance.id)
