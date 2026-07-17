@@ -44,7 +44,7 @@ const server = serve({
 await server.ready()
 
 const shutdownHearth = Effect.fn("hearth.shutdown")(function* () {
-  yield* Effect.tryPromise(() => server.close())
+  yield* Effect.tryPromise(() => server.close(true))
   yield* Effect.tryPromise(async () => {
     await appModule.shutdownHearth?.()
   })

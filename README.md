@@ -43,10 +43,13 @@ Build the compact Kiln Ember images used by official Bricks:
 docker compose --profile images build ember-java11 ember-java17 ember-java21 ember-java25
 ```
 
-The stack contains Hearth, Relay, and MySQL. On an empty table set it registers
-the Compose Relay automatically. Hearth creates the database schema and keeps
-all panel state in MySQL. `BETTER_AUTH_SECRETS` is required and supplied to the
-container from the environment; Hearth does not require a persistent volume.
+The stack contains Hearth, Relay, MySQL, and a disposable Valkey cache. On an
+empty table set it registers the Compose Relay automatically. Hearth creates
+the database schema and keeps all panel state in MySQL. Valkey only holds
+short-lived Relay responses, so it does not need a persistent volume and an
+outage falls back to the Relay. `BETTER_AUTH_SECRETS` is required and supplied
+to the container from the environment; Hearth does not require a persistent
+volume.
 
 For a standalone Hearth image, use
 [`.env.hearth.example`](./.env.hearth.example). `DB_HOST`, `DB_NAME`,
@@ -56,6 +59,14 @@ canonical browser-facing origin even when Cloudflare, Traefik, Caddy, or nginx
 terminates TLS in front of Hearth. `BETTER_AUTH_URL` defaults to `KILN_URL` and
 can be set explicitly when Better Auth needs a different externally visible
 base URL.
+
+Standalone Hearth deployments can optionally set `KILN_CACHE_URL` to a
+Redis-protocol endpoint such as `redis://cache:6379` or a TLS-enabled
+`rediss://` URL. The bundled Compose stack supplies this automatically. Hearth
+caches only brief Relay snapshots, file trees, Brick catalogs, and networking
+state; authentication, authorization, credentials, files, and console data
+are never cached. `KILN_CACHE_NAMESPACE` is optional and otherwise derived
+from the database connection so installations sharing a cache remain isolated.
 
 `BETTER_AUTH_SECRETS` is an ordered, versioned keyring shared by Better Auth and
 Hearth's encrypted Relay credentials. The first entry encrypts new data and

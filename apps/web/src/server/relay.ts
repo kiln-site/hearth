@@ -1,5 +1,4 @@
 import { createServerFn } from "@tanstack/react-start"
-import * as Sentry from "@sentry/tanstackstart-react"
 import { Effect } from "effect"
 import {
   relayConsoleCommandResultSchema,
@@ -28,20 +27,24 @@ import {
 import type { AccessPermission } from "@/lib/permissions"
 import type { AuthenticatedUser } from "@/lib/auth-session"
 import { requireAuthenticatedUser } from "@/server/auth"
-import {
-  AuthenticationError,
-  RelayResponseError,
-  RelayUnavailableError,
-  ResourceNotFoundError,
-} from "@/effect/errors"
+import { AuthenticationError, ResourceNotFoundError } from "@/effect/errors"
 import { runAppEffect } from "@/effect/runtime"
 import {
-  relayHeadersEffect,
-  resolvePrimaryRelayEffect,
-} from "@/lib/relay-registry"
+  cachedRelayJsonEffect,
+  invalidateRelayCache,
+  relayCachePolicy,
+  relayFetchEffect,
+  relayJsonEffect,
+} from "@/lib/relay-client"
+import type { RelayEndpoint } from "@/lib/relay-client"
+import { resolvePrimaryRelayEffect } from "@/lib/relay-registry"
 
 const instanceInputSchema = z.object({
   instanceId: z.string().min(1),
+})
+
+const treeInputSchema = instanceInputSchema.extend({
+  fresh: z.boolean().optional(),
 })
 
 const instanceNameInputSchema = instanceInputSchema.extend({
@@ -170,17 +173,26 @@ export const updateInstanceName = createServerFn({ method: "POST" })
   })
 
 export const getRelayTree = createServerFn({ method: "GET" })
-  .validator(instanceInputSchema)
-  .handler(async ({ data }) =>
-    relayFileTreeSchema.parse(
-      await relayRequest(
-        `/v1/instances/${encodeURIComponent(data.instanceId)}/tree`,
-        undefined,
-        "instance.files.read",
-        data.instanceId
-      )
+  .validator(treeInputSchema)
+  .handler(async ({ data }) => {
+    const { relay, user } = await activeRelayAccess()
+    await requireRelayPermission({
+      user,
+      relayId: relay.id,
+      permission: "instance.files.read",
+      instanceId: data.instanceId,
+    })
+    return runAppEffect(
+      "relay.tree",
+      cachedRelayJsonEffect({
+        bypass: data.fresh,
+        decode: relayFileTreeSchema.parse,
+        path: `/v1/instances/${encodeURIComponent(data.instanceId)}/tree`,
+        policy: relayCachePolicy.tree(relay.id, data.instanceId),
+        relay,
+      })
     )
-  )
+  })
 
 export const getRelayFile = createServerFn({ method: "GET" })
   .validator(fileInputSchema)
@@ -226,6 +238,10 @@ export const performRelayAction = createServerFn({ method: "POST" })
       { method: "POST", body: JSON.stringify({ action }) }
     )
     const instance = relayInstanceSchema.parse(await response.json())
+    await runAppEffect(
+      "relay.snapshot.invalidate",
+      invalidateRelayCache(relayCachePolicy.snapshot(relay.id))
+    )
     const [displayInstance] = await applyInstanceDisplayNames(relay.id, [
       instance,
     ])
@@ -378,16 +394,24 @@ async function relayRequestRaw(
   path: string,
   init?: RequestInit
 ): Promise<unknown> {
-  const response = await relayFetch(relay, path, init)
-  return response.json()
+  return runAppEffect(
+    "relay.json",
+    relayJsonEffect(relay, path, (input) => input, init)
+  )
 }
 
 async function authorizedRelaySnapshot(
   relay: RelayEndpoint,
   user: AuthenticatedUser
 ) {
-  const snapshot = relaySnapshotSchema.parse(
-    await relayRequestRaw(relay, "/v1/snapshot")
+  const snapshot = await runAppEffect(
+    "relay.snapshot",
+    cachedRelayJsonEffect({
+      decode: relaySnapshotSchema.parse,
+      path: "/v1/snapshot",
+      policy: relayCachePolicy.snapshot(relay.id),
+      relay,
+    })
   )
   const allowed = await allowedInstanceIds(
     user,
@@ -408,64 +432,6 @@ async function relayFetch(
 ): Promise<Response> {
   return runAppEffect("relay.fetch", relayFetchEffect(relay, path, init))
 }
-
-const relayFetchEffect = Effect.fn("relay.fetch")(function* (
-  relay: RelayEndpoint,
-  path: string,
-  init?: RequestInit
-) {
-  const timeout = AbortSignal.timeout(10_000)
-  const signal = init?.signal
-    ? AbortSignal.any([init.signal, timeout])
-    : timeout
-  const headers = yield* relayHeadersEffect(relay)
-  const response = yield* Effect.tryPromise({
-    try: () =>
-      Sentry.startSpan(
-        {
-          name: `${init?.method ?? "GET"} ${normalizedRelayRoute(path)}`,
-          op: "http.client.relay",
-          attributes: { "relay.id": relay.id },
-        },
-        () =>
-          fetch(`${relayUrl(relay).replace(/\/$/u, "")}${path}`, {
-            ...init,
-            headers: {
-              Accept: "application/json",
-              ...(init?.body ? { "Content-Type": "application/json" } : {}),
-              ...headers,
-              ...init?.headers,
-            },
-            signal,
-          })
-      ),
-    catch: (cause) =>
-      RelayUnavailableError.make({
-        message: timeout.aborted
-          ? "Relay request timed out after 10s"
-          : `Could not reach Relay: ${errorMessage(cause)}`,
-        cause,
-      }),
-  })
-
-  if (!response.ok) {
-    const problem = yield* Effect.promise(() =>
-      response.json().catch(() => null)
-    )
-    const parsed = z
-      .object({ error: z.string().optional() })
-      .nullable()
-      .safeParse(problem)
-    return yield* RelayResponseError.make({
-      message:
-        (parsed.success ? parsed.data?.error : undefined) ??
-        `Relay returned HTTP ${response.status}`,
-      status: response.status,
-    })
-  }
-
-  return response
-})
 
 async function authorize(permission: AccessPermission, instanceId?: string) {
   const { relay, user } = await activeRelayAccess()
@@ -496,27 +462,6 @@ const activeRelayAccessEffect = Effect.fn("relay.activeAccess")(function* () {
   }
   return { relay, user }
 })
-
-function normalizedRelayRoute(path: string): string {
-  return path
-    .split("?", 1)[0]
-    .replace(/^\/v1\/instances\/[^/]+/u, "/v1/instances/:id")
-}
-
-function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : "unknown network error"
-}
-
-function relayUrl(relay: { hostname: string; port: number; useTls: boolean }) {
-  return `${relay.useTls ? "https" : "http"}://${relay.hostname}:${relay.port}`
-}
-
-type RelayEndpoint = {
-  hostname: string
-  id: string
-  port: number
-  useTls: boolean
-}
 
 function redactSensitiveText(value: string): string {
   return value
