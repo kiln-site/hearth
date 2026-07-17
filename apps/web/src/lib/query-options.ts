@@ -35,8 +35,6 @@ export const queryKeys = {
     connection: ["relay", "connection"] as const,
     file: (instanceId: string, path: string) =>
       ["relay", "instances", instanceId, "files", "content", path] as const,
-    files: (instanceId: string) =>
-      ["relay", "instances", instanceId, "files"] as const,
     snapshot: ["relay", "snapshot"] as const,
     tree: (instanceId: string) =>
       ["relay", "instances", instanceId, "files", "tree"] as const,
@@ -53,6 +51,9 @@ export function relayConnectionQueryOptions(queryClient: QueryClient) {
         headers: relayPollHeaders,
       })
       if (connection.status === "connected") {
+        // Each router owns one QueryClient per SSR request or browser session.
+        // Prime that same client from the connection's canonical snapshot so
+        // snapshot consumers do not make a second Relay request.
         queryClient.setQueryData(queryKeys.relay.snapshot, connection.snapshot)
       }
       return connection

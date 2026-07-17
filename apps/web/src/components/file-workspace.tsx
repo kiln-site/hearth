@@ -1581,6 +1581,8 @@ export function FileWorkspace({
           await queryClient
             .ensureQueryData(relayFileQueryOptions(instance.id, path))
             .catch(() => undefined)
+          // Keep the file-data and route commits separate. Combining them can
+          // make the editor toolbar's composed Radix refs update recursively.
           await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
           if (pendingRoutePath.current !== path) return
           await navigate({
