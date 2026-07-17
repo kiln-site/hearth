@@ -1,4 +1,5 @@
 import * as React from "react"
+import { useMutation } from "@tanstack/react-query"
 import type { RelayInstance, RelayNode } from "@workspace/contracts"
 import {
   Check,
@@ -86,6 +87,7 @@ export function InstanceWorkspace({
   }
   onInstanceUpdate: (instance: RelayInstance) => void
 }) {
+  const relayActionMutation = useMutation({ mutationFn: performRelayAction })
   const [action, setAction] = React.useState<string | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [serverActionsOpen, setServerActionsOpen] = React.useState(false)
@@ -153,7 +155,7 @@ export function InstanceWorkspace({
     setError(null)
     try {
       onInstanceUpdate(
-        await performRelayAction({
+        await relayActionMutation.mutateAsync({
           data: { instanceId: instance.id, action: nextAction },
         })
       )

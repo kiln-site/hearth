@@ -1,4 +1,9 @@
 import * as React from "react"
+import {
+  useMutation,
+  useQueryClient,
+  useSuspenseQuery,
+} from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import {
   Boxes,
@@ -26,6 +31,7 @@ import { Input } from "@workspace/ui/components/input"
 import { GlobalPageToolbar } from "@/components/global-page-toolbar"
 import { ServerTypeIcon } from "@/components/server-type-icon"
 import type { PersistedRelay } from "@/lib/relay-registry"
+import { brickStudioQueryOptions, queryKeys } from "@/lib/query-options"
 import { configureBrickNetworking, createBrickInstance } from "@/server/bricks"
 
 type Studio = {
@@ -36,10 +42,17 @@ type Studio = {
   networking: RelayNetworking | null
 }
 
-export function BricksPage({ initialStudio }: { initialStudio: Studio }) {
-  const [studio, setStudio] = React.useState(initialStudio)
+export function BricksPage() {
+  const queryClient = useQueryClient()
+  const { data: studio } = useSuspenseQuery(brickStudioQueryOptions())
+  const createInstanceMutation = useMutation({
+    mutationFn: createBrickInstance,
+  })
+  const configureNetworkingMutation = useMutation({
+    mutationFn: configureBrickNetworking,
+  })
   const [selected, setSelected] = React.useState<Brick | null>(
-    initialStudio.bricks.at(0) ?? null
+    studio.bricks.at(0) ?? null
   )
   const [pending, setPending] = React.useState<"deploy" | "network" | null>(
     null
@@ -49,16 +62,16 @@ export function BricksPage({ initialStudio }: { initialStudio: Studio }) {
   const [form, setForm] = React.useState({
     memory: selected?.defaultMemory ?? "2G",
     name: selected ? `${selected.name} ${selected.defaultVersion}` : "",
-    relayId: initialStudio.relayId ?? "",
+    relayId: studio.relayId ?? "",
     start: true,
     version: selected?.defaultVersion ?? "",
   })
   const [networking, setNetworking] = React.useState({
-    enabled: initialStudio.networking?.enabled ?? false,
-    domain: initialStudio.networking?.domain ?? "test",
-    address: initialStudio.networking?.address ?? "",
-    dnsPort: String(initialStudio.networking?.dnsPort ?? 53),
-    proxyPort: String(initialStudio.networking?.proxyPort ?? 25_565),
+    enabled: studio.networking?.enabled ?? false,
+    domain: studio.networking?.domain ?? "test",
+    address: studio.networking?.address ?? "",
+    dnsPort: String(studio.networking?.dnsPort ?? 53),
+    proxyPort: String(studio.networking?.proxyPort ?? 25_565),
   })
 
   function chooseBrick(brick: Brick) {
@@ -78,7 +91,7 @@ export function BricksPage({ initialStudio }: { initialStudio: Studio }) {
     setPending("deploy")
     setError(null)
     try {
-      const instance = await createBrickInstance({
+      const instance = await createInstanceMutation.mutateAsync({
         data: {
           brickId: selected.id,
           memory: form.memory,
@@ -101,7 +114,7 @@ export function BricksPage({ initialStudio }: { initialStudio: Studio }) {
     setNetworkSaved(false)
     setError(null)
     try {
-      const saved = await configureBrickNetworking({
+      const saved = await configureNetworkingMutation.mutateAsync({
         data: {
           relayId: form.relayId,
           enabled: networking.enabled,
@@ -111,7 +124,9 @@ export function BricksPage({ initialStudio }: { initialStudio: Studio }) {
           proxyPort: Number(networking.proxyPort),
         },
       })
-      setStudio((current) => ({ ...current, networking: saved }))
+      queryClient.setQueryData<Studio>(queryKeys.bricks, (current) =>
+        current ? { ...current, networking: saved } : current
+      )
       setNetworkSaved(true)
       window.setTimeout(() => setNetworkSaved(false), 2_000)
     } catch (cause) {

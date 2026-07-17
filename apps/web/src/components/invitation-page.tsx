@@ -1,4 +1,5 @@
 import * as React from "react"
+import { useMutation } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import {
   ArrowRight,
@@ -32,6 +33,9 @@ export function InvitationPage({
   token: string
   user: AuthenticatedUser | null
 }) {
+  const acceptInvitationMutation = useMutation({
+    mutationFn: acceptAccessInvitation,
+  })
   const [pending, setPending] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [accepted, setAccepted] = React.useState(false)
@@ -41,7 +45,7 @@ export function InvitationPage({
     setPending(true)
     setError(null)
     try {
-      await acceptAccessInvitation({ data: { token } })
+      await acceptInvitationMutation.mutateAsync({ data: { token } })
       setAccepted(true)
       window.setTimeout(() => window.location.assign("/"), 700)
     } catch (cause) {

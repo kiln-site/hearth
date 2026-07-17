@@ -1,12 +1,17 @@
-import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router"
+import {
+  HeadContent,
+  Scripts,
+  createRootRouteWithContext,
+} from "@tanstack/react-router"
 import { TooltipProvider } from "@workspace/ui/components/tooltip"
 import { archivoLatin, jetBrainsMonoLatin } from "@workspace/ui/lib/font-assets"
 
 import appCss from "@workspace/ui/globals.css?url"
 
 import { AppErrorPage, AppNotFoundPage } from "@/components/app-error-page"
+import type { AppRouterContext } from "@/lib/query-client"
 
-export const Route = createRootRoute({
+export const Route = createRootRouteWithContext<AppRouterContext>()({
   head: () => ({
     meta: [
       {

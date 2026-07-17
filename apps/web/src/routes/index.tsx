@@ -3,9 +3,9 @@ import { z } from "zod"
 
 import { AuthPage } from "@/components/auth-page"
 import { pageTitle } from "@/lib/page-title"
+import { relayConnectionQueryOptions } from "@/lib/query-options"
 import { getInvitationPreview } from "@/server/access"
 import { getAuthState } from "@/server/auth"
-import { getRelayConnectionState } from "@/server/relay"
 
 export const Route = createFileRoute("/")({
   head: () => ({ meta: [{ title: pageTitle("Sign In") }] }),
@@ -16,7 +16,7 @@ export const Route = createFileRoute("/")({
     signup: z.union([z.literal(true), z.literal("true")]).optional(),
     verified: z.union([z.literal(true), z.literal("true")]).optional(),
   }),
-  beforeLoad: async ({ search }) => {
+  beforeLoad: async ({ context, search }) => {
     const state = await getAuthState()
     if (!state.user) {
       let invitationSignup = false
@@ -41,7 +41,9 @@ export const Route = createFileRoute("/")({
     if (search.redirect?.startsWith("/")) {
       throw redirect({ href: search.redirect })
     }
-    const connection = await getRelayConnectionState()
+    const connection = await context.queryClient.ensureQueryData(
+      relayConnectionQueryOptions(context.queryClient)
+    )
     if (connection.status !== "connected") {
       if (state.user.isDevelopmentBypass || state.user.role === "admin") {
         throw redirect({ to: "/settings" })

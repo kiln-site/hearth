@@ -1,4 +1,5 @@
 import * as React from "react"
+import { useMutation } from "@tanstack/react-query"
 import type { RelayInstance, RelayNode } from "@workspace/contracts"
 import {
   Box,
@@ -32,6 +33,7 @@ export function SettingsWorkspace({
   canRename: boolean
   onInstanceUpdate: (instance: RelayInstance) => void
 }) {
+  const updateNameMutation = useMutation({ mutationFn: updateInstanceName })
   const [copied, setCopied] = React.useState(false)
   const [name, setName] = React.useState(instance.name)
   const [namePending, setNamePending] = React.useState(false)
@@ -59,7 +61,7 @@ export function SettingsWorkspace({
     setNameSaved(false)
     setNameError(null)
     try {
-      const updated = await updateInstanceName({
+      const updated = await updateNameMutation.mutateAsync({
         data: { instanceId: instance.id, name: nextName },
       })
       onInstanceUpdate(updated)
