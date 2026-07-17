@@ -35,7 +35,6 @@ jobs:
           - ember-java17
           - ember-java21
           - ember-java25
-          - ember-palworld
         architecture: ${{ fromJSON(github.event_name == 'pull_request' && '["amd64"]' || '["amd64", "arm64"]') }}
         include:
           - architecture: amd64
@@ -97,6 +96,9 @@ jobs:
             build_args: JAVA_VERSION=25
             cache_scope: ember-java25
           - component: ember-palworld
+            architecture: amd64
+            runner: blacksmith-4vcpu-ubuntu-2404
+            platform: linux/amd64
             name: Ember · Palworld
             image: ghcr.io/kiln-site/ember
             file: apps/ember-palworld/Dockerfile
@@ -104,9 +106,6 @@ jobs:
             version_suffix: -palworld
             build_args: ""
             cache_scope: ember-palworld
-        exclude:
-          - component: ember-palworld
-            architecture: arm64
 
     steps:
       - name: Check out repository
