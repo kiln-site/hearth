@@ -12,12 +12,14 @@ services:
     environment:
       NODE_ENV: development
       KILN_ENVIRONMENT: dev
+      KILN_SENTRY_VERIFICATION_TOKEN: ${KILN_SENTRY_VERIFICATION_TOKEN:-}
     command:
       - /bin/sh
       - -lc
       - |
         corepack enable
-        pnpm install --frozen-lockfile --filter web...
+        pnpm install --frozen-lockfile --ignore-scripts --filter web...
+        pnpm rebuild esbuild
         pnpm --filter @workspace/contracts build
         pnpm --filter web db:migrate
         exec pnpm --filter web dev --host 0.0.0.0
