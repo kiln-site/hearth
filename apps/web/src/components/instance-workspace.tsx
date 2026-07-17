@@ -443,7 +443,7 @@ export function InstanceWorkspace({
         <div
           aria-hidden={activeTab !== "console"}
           inert={activeTab !== "console"}
-          className={`absolute inset-0 flex ${activeTab === "console" ? "visible" : "pointer-events-none invisible"}`}
+          className={`absolute inset-0 flex ${activeTab === "console" ? "opacity-100" : "pointer-events-none opacity-0"}`}
         >
           <ConsoleWorkspace
             key={instance.id}
@@ -457,7 +457,7 @@ export function InstanceWorkspace({
           <div
             aria-hidden={activeTab !== "files"}
             inert={activeTab !== "files"}
-            className={`absolute inset-0 flex ${activeTab === "files" ? "visible" : "pointer-events-none invisible"}`}
+            className={`absolute inset-0 flex ${activeTab === "files" ? "opacity-100" : "pointer-events-none opacity-0"}`}
           >
             <React.Suspense
               fallback={
@@ -519,7 +519,7 @@ export function InstanceWorkspace({
         <div
           aria-hidden={activeTab !== "info"}
           inert={activeTab !== "info"}
-          className={`absolute inset-0 flex ${activeTab === "info" ? "visible" : "pointer-events-none invisible"}`}
+          className={`absolute inset-0 flex ${activeTab === "info" ? "opacity-100" : "pointer-events-none opacity-0"}`}
         >
           <SettingsWorkspace
             instance={instance}
