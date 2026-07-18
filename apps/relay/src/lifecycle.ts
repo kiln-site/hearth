@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto"
 import { chown, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
-import { brick } from "./bricks.js"
+import { BRICKS, brick } from "./bricks.js"
 import { command } from "./command.js"
 import type {
   BrickId,
@@ -15,6 +15,7 @@ import type { DockerDriver } from "./docker.js"
 
 const NETWORK_NAME = "kiln-minecraft"
 const OWNED_LABEL = "kiln.relay.owned=true"
+const DNS_BRICK_PATTERN = BRICKS.map(({ id }) => id).join("|")
 interface BackendRoute {
   hostname: string
   implementation: BrickId
@@ -293,7 +294,7 @@ export class LifecycleDriver {
     ])
     await writeFile(
       join(coreDns, "Corefile"),
-      `${networking.domain}:${networking.dnsPort} {\n    errors\n    template IN A {\n        match "^([a-z0-9-]+[.])*(paper|fabric|folia|velocity)[.]${escapeRegex(networking.domain)}[.]$"\n        answer "{{ .Name }} 60 IN A {$KILN_NODE_ADDRESS}"\n    }\n    template IN AAAA {\n        match "^([a-z0-9-]+[.])*(paper|fabric|folia|velocity)[.]${escapeRegex(networking.domain)}[.]$"\n        rcode NOERROR\n    }\n}\n`
+      `${networking.domain}:${networking.dnsPort} {\n    errors\n    template IN A {\n        match "^([a-z0-9-]+[.])*(${DNS_BRICK_PATTERN})[.]${escapeRegex(networking.domain)}[.]$"\n        answer "{{ .Name }} 60 IN A {$KILN_NODE_ADDRESS}"\n    }\n    template IN AAAA {\n        match "^([a-z0-9-]+[.])*(${DNS_BRICK_PATTERN})[.]${escapeRegex(networking.domain)}[.]$"\n        rcode NOERROR\n    }\n}\n`
     )
     await writeFile(
       join(limbo, "server.toml"),
