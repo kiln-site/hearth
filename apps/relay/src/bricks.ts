@@ -13,6 +13,7 @@ import {
 } from "@workspace/contracts"
 
 import { BrickRecipeError } from "./effect/errors.js"
+import type { IncomingMessage } from "node:http"
 import type { LookupFunction } from "node:net"
 import type {
   Brick,
@@ -532,7 +533,7 @@ function readHttpsDocument(
           [301, 302, 303, 307, 308].includes(status) &&
           response.headers.location
         ) {
-          response.resume()
+          discardResponse(response)
           if (redirects >= MAX_REDIRECTS) {
             rejectDocument(
               recipeError(
@@ -563,7 +564,7 @@ function readHttpsDocument(
           return
         }
         if (status < 200 || status >= 300) {
-          response.resume()
+          discardResponse(response)
           rejectDocument(
             recipeError(
               "recipe_fetch_failed",
@@ -575,7 +576,7 @@ function readHttpsDocument(
         }
         const declaredLength = Number(response.headers["content-length"] ?? 0)
         if (declaredLength > MAX_DOCUMENT_BYTES) {
-          response.resume()
+          discardResponse(response)
           rejectDocument(
             recipeError(
               "document_too_large",
@@ -585,30 +586,10 @@ function readHttpsDocument(
           )
           return
         }
-        let content = ""
-        let bytes = 0
-        let settled = false
-        response.setEncoding("utf8")
-        response.on("data", (chunk: string) => {
-          if (settled) return
-          bytes += Buffer.byteLength(chunk)
-          if (bytes > MAX_DOCUMENT_BYTES) {
-            settled = true
-            response.destroy()
-            rejectDocument(
-              recipeError(
-                "document_too_large",
-                originalSource.href,
-                "Brick document exceeds 1 MiB"
-              )
-            )
-            return
-          }
-          content += chunk
-        })
-        response.on("end", () => {
-          if (!settled) resolveDocument(content)
-        })
+        readResponseDocument(response, originalSource.href).then(
+          resolveDocument,
+          rejectDocument
+        )
       }
     )
     request.on("error", (cause: Error) => {
@@ -623,6 +604,66 @@ function readHttpsDocument(
             : cause.message
         )
       )
+    })
+  })
+}
+
+function discardResponse(response: IncomingMessage): void {
+  response.on("error", () => undefined)
+  response.resume()
+}
+
+export function readResponseDocument(
+  response: IncomingMessage,
+  source: string
+): Promise<string> {
+  return new Promise((resolveDocument, rejectDocument) => {
+    let content = ""
+    let bytes = 0
+    let settled = false
+
+    const rejectResponse = (cause: Error): void => {
+      if (settled) return
+      settled = true
+      response.destroy()
+      rejectDocument(recipeError("recipe_fetch_failed", source, cause.message))
+    }
+
+    response.setEncoding("utf8")
+    response.on("data", (chunk: string) => {
+      if (settled) return
+      bytes += Buffer.byteLength(chunk)
+      if (bytes > MAX_DOCUMENT_BYTES) {
+        settled = true
+        response.destroy()
+        rejectDocument(
+          recipeError(
+            "document_too_large",
+            source,
+            "Brick document exceeds 1 MiB"
+          )
+        )
+        return
+      }
+      content += chunk
+    })
+    response.once("error", rejectResponse)
+    response.once("aborted", () => {
+      rejectResponse(
+        new Error("Brick source response was interrupted before completion")
+      )
+    })
+    response.once("close", () => {
+      if (!response.complete) {
+        rejectResponse(
+          new Error("Brick source response closed before completion")
+        )
+      }
+    })
+    response.once("end", () => {
+      if (settled) return
+      settled = true
+      resolveDocument(content)
     })
   })
 }

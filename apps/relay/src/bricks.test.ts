@@ -1,3 +1,6 @@
+import { IncomingMessage } from "node:http"
+import { Socket } from "node:net"
+
 import { describe, expect, it } from "vitest"
 import { brickRecipeSchema } from "@workspace/contracts"
 
@@ -5,6 +8,7 @@ import { BrickRecipeError } from "./effect/errors.js"
 import {
   interpolateTemplate,
   isPublicRecipeAddress,
+  readResponseDocument,
   resolveBrick,
 } from "./bricks.js"
 import type { BrickRecipe } from "@workspace/contracts"
@@ -113,5 +117,21 @@ describe("Brick recipes", () => {
     expect(isPublicRecipeAddress("169.254.169.254")).toBe(false)
     expect(isPublicRecipeAddress("::1")).toBe(false)
     expect(isPublicRecipeAddress("::ffff:7f00:1")).toBe(false)
+  })
+
+  it("turns response stream errors into typed recipe failures", async () => {
+    const response = new IncomingMessage(new Socket())
+    const document = readResponseDocument(
+      response,
+      "https://example.com/recipe.yml"
+    )
+
+    response.emit("error", new Error("socket reset during response"))
+
+    await expect(document).rejects.toMatchObject({
+      code: "recipe_fetch_failed",
+      source: "https://example.com/recipe.yml",
+      reason: "socket reset during response",
+    })
   })
 })

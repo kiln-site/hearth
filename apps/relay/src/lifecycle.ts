@@ -15,7 +15,7 @@ import type { DockerDriver } from "./docker.js"
 
 const NETWORK_NAME = "kiln-minecraft"
 const OWNED_LABEL = "kiln.relay.owned=true"
-interface BackendRoute {
+export interface BackendRoute {
   hostname: string
   implementation: string
   name: string
@@ -499,31 +499,39 @@ export class LifecycleDriver {
     routes: Array<BackendRoute>
   ): Promise<void> {
     const domain = networking?.domain ?? this.#config.connectDomain
-    const byImplementation = new Map<string, Array<string>>()
-    for (const route of routes) {
-      const current = byImplementation.get(route.implementation) ?? []
-      current.push(route.name)
-      byImplementation.set(route.implementation, current)
-    }
     const servers = [
       ...routes.map((route) => `"${route.name}" = "${route.target}"`),
       '"limbo" = "limbo:25565"',
     ].join("\n")
-    const forcedHosts = [
-      ...routes.map(
-        (route) => `"${route.hostname}" = ["${route.name}", "limbo"]`
-      ),
-      ...Array.from(
-        byImplementation,
-        ([implementation, names]) =>
-          `"${implementation}.${domain}" = [${names.map((name) => `"${name}"`).join(", ")}, "limbo"]`
-      ),
-    ].join("\n")
+    const forcedHosts = velocityForcedHosts(domain, routes)
     await writeFile(
       join(directory, "velocity.toml"),
       `config-version = "2.8"\nbind = "0.0.0.0:25565"\nmotd = "<#f97316>Kiln managed network"\nshow-max-players = 500\nonline-mode = true\nforce-key-authentication = true\nplayer-info-forwarding-mode = "none"\nannounce-forge = false\nping-passthrough = "DISABLED"\nenable-player-address-logging = true\n\n[servers]\n${servers}\ntry = ["limbo"]\n\n[forced-hosts]\n${forcedHosts}\n\n[advanced]\ncompression-threshold = 256\ncompression-level = -1\nlogin-ratelimit = 3000\nconnection-timeout = 5000\nread-timeout = 30000\n\n[query]\nenabled = false\nport = 25565\nmap = "Kiln"\nshow-plugins = false\n`
     )
   }
+}
+
+export function velocityForcedHosts(
+  domain: string,
+  routes: ReadonlyArray<BackendRoute>
+): string {
+  const byHostname = new Map<string, Array<string>>()
+  const addRoute = (hostname: string, name: string): void => {
+    const names = byHostname.get(hostname) ?? []
+    if (!names.includes(name)) names.push(name)
+    byHostname.set(hostname, names)
+  }
+
+  for (const route of routes) {
+    addRoute(route.hostname, route.name)
+    addRoute(`${route.implementation}.${domain}`, route.name)
+  }
+
+  return Array.from(
+    byHostname,
+    ([hostname, names]) =>
+      `"${hostname}" = [${names.map((name) => `"${name}"`).join(", ")}, "limbo"]`
+  ).join("\n")
 }
 
 function escapeRegex(value: string): string {
