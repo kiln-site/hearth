@@ -1,8 +1,10 @@
 import * as React from "react"
+import { indentLess, indentMore } from "@codemirror/commands"
 import {
   HighlightStyle,
   StreamLanguage,
   bracketMatching,
+  indentUnit,
   syntaxHighlighting,
 } from "@codemirror/language"
 import { json } from "@codemirror/legacy-modes/mode/javascript"
@@ -34,7 +36,7 @@ import {
   Prec,
   Text,
 } from "@codemirror/state"
-import type { Extension } from "@codemirror/state"
+import type { Extension, StateCommand } from "@codemirror/state"
 import {
   Decoration,
   EditorView,
@@ -52,6 +54,66 @@ import { minimalSetup } from "codemirror"
 
 import { findSensitiveTextRedactions } from "@/lib/redaction"
 import { fileLanguageForPath } from "@/lib/file-language"
+
+const defaultIndentUnit = "  "
+const indentationScanLimit = 64 * 1024
+const indentationLineLimit = 256
+
+function greatestCommonDivisor(left: number, right: number) {
+  while (right !== 0) {
+    const remainder = left % right
+    left = right
+    right = remainder
+  }
+  return left
+}
+
+function indentationWidthFor(value: string) {
+  const sample = value.slice(0, indentationScanLimit)
+  const lines = sample.split(/\r?\n/, indentationLineLimit)
+  let commonIndent = 0
+
+  for (const line of lines) {
+    const whitespace = /^[ \t]+(?=\S)/.exec(line)?.[0]
+    if (!whitespace) continue
+
+    let columns = 0
+    for (const character of whitespace) {
+      columns = character === "\t" ? columns + (4 - (columns % 4)) : columns + 1
+    }
+    commonIndent = greatestCommonDivisor(commonIndent, columns)
+  }
+
+  const spaces =
+    commonIndent === 0
+      ? defaultIndentUnit.length
+      : commonIndent >= 4 && commonIndent % 4 === 0
+        ? 4
+        : 2
+  return spaces
+}
+
+const insertIndentAtCursor: StateCommand = ({ state, dispatch }) => {
+  if (state.selection.ranges.some((range) => !range.empty)) {
+    return indentMore({ state, dispatch })
+  }
+
+  dispatch(
+    state.update(state.replaceSelection(state.facet(indentUnit)), {
+      scrollIntoView: true,
+      userEvent: "input",
+    })
+  )
+  return true
+}
+
+function indentationFor(value: string): Extension {
+  const spaces = indentationWidthFor(value)
+  return [
+    indentUnit.of(" ".repeat(spaces)),
+    keymap.of([{ key: "Tab", run: insertIndentAtCursor, shift: indentLess }]),
+  ]
+}
 
 const kilnHighlightStyle = HighlightStyle.define([
   { tag: tags.comment, color: "oklch(0.59 0.018 72)", fontStyle: "italic" },
@@ -428,6 +490,7 @@ export const SyntaxCodeEditor = React.forwardRef<
   const syncing = React.useRef(false)
   const contentAttributes = React.useRef(new Compartment())
   const editability = React.useRef(new Compartment())
+  const indentation = React.useRef(new Compartment())
   const languageMode = React.useRef(new Compartment())
   const mergeReview = React.useRef(new Compartment())
   const redaction = React.useRef(new Compartment())
@@ -484,6 +547,7 @@ export const SyntaxCodeEditor = React.forwardRef<
           editability.current.of(
             editabilityFor(initialReadOnly.current, initialDisabled.current)
           ),
+          indentation.current.of(indentationFor(initialValue.current)),
           mergeReview.current.of(
             initialShowChanges.current
               ? createMergeReview(initialOriginalValue.current)
@@ -535,6 +599,16 @@ export const SyntaxCodeEditor = React.forwardRef<
     })
     syncing.current = false
   }, [value])
+
+  React.useLayoutEffect(() => {
+    const editor = view.current
+    if (!editor || disabled) return
+    editor.dispatch({
+      effects: indentation.current.reconfigure(
+        indentationFor(editor.state.doc.sliceString(0, indentationScanLimit))
+      ),
+    })
+  }, [disabled, path])
 
   React.useLayoutEffect(() => {
     view.current?.dispatch({
