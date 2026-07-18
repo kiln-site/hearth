@@ -102,7 +102,7 @@ export class LifecycleDriver {
       ? String(resolved.values.version)
       : "custom"
     const image = definition.runtime.image
-    const memoryLimit = containerMemoryLimit(resolved.memory)
+    const memoryLimit = resolved.memory
     const directory = join(this.#config.rootDirectory, id)
     const hostDirectory = join(await this.#hostDataDirectory(), "instances", id)
     const networking = await this.networking()
@@ -254,6 +254,8 @@ export class LifecycleDriver {
       if (input.start) {
         await command("docker", ["start", containerName], { timeout: 120_000 })
       }
+      if (networking?.enabled)
+        await this.#refreshCoreDnsConfiguration(networking)
       if (definition.network.mode === "minecraft-backend")
         await this.#refreshVelocityConfigurations(networking)
     } catch (error) {
@@ -292,9 +294,11 @@ export class LifecycleDriver {
         force: true,
       })
     }
-    if (instance.brickNetworkMode === "minecraft-backend") {
-      await this.#refreshVelocityConfigurations(await this.networking())
-    }
+    const networking = await this.networking()
+    if (networking?.enabled)
+      await this.#refreshCoreDnsConfiguration(networking)
+    if (instance.brickNetworkMode === "minecraft-backend")
+      await this.#refreshVelocityConfigurations(networking)
   }
 
   async #ensureNetwork(): Promise<void> {
@@ -321,9 +325,10 @@ export class LifecycleDriver {
       mkdir(coreDns, { recursive: true }),
       mkdir(limbo, { recursive: true }),
     ])
+    const instances = await this.#docker.inspectInstances()
     await writeFile(
       join(coreDns, "Corefile"),
-      `${networking.domain}:${networking.dnsPort} {\n    errors\n    template IN A {\n        match "^([a-z0-9-]+[.])*${escapeRegex(networking.domain)}[.]$"\n        answer "{{ .Name }} 60 IN A {$KILN_NODE_ADDRESS}"\n    }\n    template IN AAAA {\n        match "^([a-z0-9-]+[.])*${escapeRegex(networking.domain)}[.]$"\n        rcode NOERROR\n    }\n}\n`
+      coreDnsConfiguration(networking, this.#dnsHostnames(instances, networking))
     )
     await writeFile(
       join(limbo, "server.toml"),
@@ -368,6 +373,32 @@ export class LifecycleDriver {
         command("docker", ["rm", "--force", name]).catch(() => undefined)
       )
     )
+  }
+
+  async #refreshCoreDnsConfiguration(
+    networking: RelayNetworking
+  ): Promise<void> {
+    const instances = await this.#docker.inspectInstances()
+    await writeFile(
+      join(this.#config.dataDirectory, "infrastructure", "coredns", "Corefile"),
+      coreDnsConfiguration(networking, this.#dnsHostnames(instances, networking))
+    )
+    await command("docker", ["restart", "kiln-coredns"], { timeout: 90_000 })
+  }
+
+  #dnsHostnames(
+    instances: Array<RelayInstance>,
+    networking: RelayNetworking
+  ): Array<string> {
+    const routes = this.#backendRoutes(instances)
+    return [
+      ...instances
+        .filter((instance) => instance.managedByRelay)
+        .map((instance) => instance.connectAddress.split(":")[0] ?? ""),
+      ...routes.map(
+        (route) => `${route.implementation}.${networking.domain}`
+      ),
+    ]
   }
 
   async #replaceContainer(
@@ -499,21 +530,27 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")
 }
 
-function containerMemoryLimit(heap: string): string {
-  const match = heap.match(/^(\d+)([bkmgt])$/iu)
-  if (!match) return heap
-  const value = Number(match[1])
-  const unit = match[2].toUpperCase()
-  const heapMiB =
-    unit === "B"
-      ? Math.ceil(value / (1024 * 1024))
-      : unit === "K"
-        ? Math.ceil(value / 1024)
-        : unit === "G"
-          ? value * 1024
-          : unit === "T"
-            ? value * 1024 * 1024
-            : value
-  const nativeHeadroomMiB = Math.max(512, Math.ceil(heapMiB * 0.25))
-  return `${heapMiB + nativeHeadroomMiB}M`
+export function coreDnsHostnamePattern(
+  domain: string,
+  hostnames: ReadonlyArray<string>
+): string {
+  const suffix = `.${domain}`
+  const names = Array.from(
+    new Set(
+      hostnames
+        .map((hostname) => hostname.toLowerCase().replace(/\.$/u, ""))
+        .filter((hostname) => hostname.endsWith(suffix))
+    )
+  ).sort()
+  return names.length === 0
+    ? "^$"
+    : `(?i)^(?:${names.map(escapeRegex).join("|")})[.]$`
+}
+
+export function coreDnsConfiguration(
+  networking: RelayNetworking,
+  hostnames: ReadonlyArray<string>
+): string {
+  const pattern = coreDnsHostnamePattern(networking.domain, hostnames)
+  return `${networking.domain}:${networking.dnsPort} {\n    errors\n    template IN A {\n        match "${pattern}"\n        answer "{{ .Name }} 60 IN A {$KILN_NODE_ADDRESS}"\n    }\n    template IN AAAA {\n        match "${pattern}"\n        rcode NOERROR\n    }\n}\n`
 }

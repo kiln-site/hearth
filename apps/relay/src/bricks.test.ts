@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest"
 import { brickRecipeSchema } from "@workspace/contracts"
 
 import { BrickRecipeError } from "./effect/errors.js"
-import { interpolateTemplate, resolveBrick } from "./bricks.js"
+import {
+  interpolateTemplate,
+  isPublicRecipeAddress,
+  resolveBrick,
+} from "./bricks.js"
 import type { BrickRecipe } from "@workspace/contracts"
 
 const recipe: BrickRecipe = brickRecipeSchema.parse({
@@ -99,5 +103,15 @@ describe("Brick recipes", () => {
     expect(() =>
       interpolateTemplate("{{ variables.version.toString() }}", recipe, {})
     ).toThrow(/Unsupported template expression/u)
+  })
+
+  it("blocks private and reserved recipe network addresses", () => {
+    expect(isPublicRecipeAddress("8.8.8.8")).toBe(true)
+    expect(isPublicRecipeAddress("2606:4700:4700::1111")).toBe(true)
+    expect(isPublicRecipeAddress("127.0.0.1")).toBe(false)
+    expect(isPublicRecipeAddress("10.42.0.1")).toBe(false)
+    expect(isPublicRecipeAddress("169.254.169.254")).toBe(false)
+    expect(isPublicRecipeAddress("::1")).toBe(false)
+    expect(isPublicRecipeAddress("::ffff:7f00:1")).toBe(false)
   })
 })

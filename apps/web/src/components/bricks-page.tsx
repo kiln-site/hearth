@@ -34,6 +34,7 @@ import { Input } from "@workspace/ui/components/input"
 
 import { GlobalPageToolbar } from "@/components/global-page-toolbar"
 import { ServerTypeIcon } from "@/components/server-type-icon"
+import { updateBrickVariable } from "@/lib/brick-variables"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import { brickStudioQueryOptions, queryKeys } from "@/lib/query-options"
 import {
@@ -396,10 +397,9 @@ export function BricksPage() {
                           definition={definition}
                           value={variables[name]}
                           onChange={(value) =>
-                            setVariables((current) => ({
-                              ...current,
-                              [name]: value,
-                            }))
+                            setVariables((current) =>
+                              updateBrickVariable(current, name, value)
+                            )
                           }
                         />
                       )
@@ -562,7 +562,7 @@ function VariableField({
   name: string
   definition: BrickVariable
   value: BrickVariableValue | undefined
-  onChange: (value: BrickVariableValue) => void
+  onChange: (value: BrickVariableValue | undefined) => void
 }) {
   if (definition.type === "boolean") {
     return (
@@ -595,6 +595,10 @@ function VariableField({
         <select
           value={value === undefined ? "" : String(value)}
           onChange={(event) => {
+            if (event.target.value === "" && !definition.required) {
+              onChange(undefined)
+              return
+            }
             const option = definition.options?.find(
               (candidate) => String(candidate) === event.target.value
             )
@@ -623,7 +627,11 @@ function VariableField({
           onChange={(event) => {
             const next = event.target.value
             onChange(
-              definition.type === "number" && next !== "" ? Number(next) : next
+              definition.type === "number"
+                ? next === ""
+                  ? undefined
+                  : Number(next)
+                : next
             )
           }}
           pattern={definition.rules?.pattern}

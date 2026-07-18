@@ -77,6 +77,11 @@ try {
   await page.getByRole("heading", { name: "Fire a new Brick." }).waitFor()
 
   await page.getByRole("button", { name: /Folia/u }).click()
+  await page
+    .getByLabel("Custom HTTPS recipe")
+    .fill("https://127.0.0.1/private-recipe.yml")
+  await page.getByRole("button", { name: "Load recipe" }).click()
+  await page.getByText(/private or reserved network address/u).waitFor()
   await page.getByLabel("Custom HTTPS recipe").fill(paperRecipe)
   await page.getByRole("button", { name: "Load recipe" }).click()
   await page.getByRole("heading", { name: "Deploy Paper" }).waitFor()
@@ -117,7 +122,16 @@ try {
     inspected.Config.Labels["kiln.brick.network-mode"],
     "minecraft-backend"
   )
-  assert.equal(inspected.Config.Env.includes("MAX_RAM=2G"), true)
+  assert.equal(
+    inspected.Config.Env.includes("KILN_JAVA_MAX_RAM_PERCENTAGE=75.0"),
+    true
+  )
+  assert.equal(
+    inspected.Config.Env.some((value) => value.startsWith("MAX_RAM=")),
+    false
+  )
+  assert.equal(inspected.HostConfig.Memory, 2 * 1024 * 1024 * 1024)
+  assert.equal(inspected.HostConfig.MemoryReservation, 2 * 1024 * 1024 * 1024)
   assert.equal(inspected.HostConfig.ReadonlyRootfs, true)
   assert.deepEqual(inspected.HostConfig.CapDrop, ["ALL"])
 

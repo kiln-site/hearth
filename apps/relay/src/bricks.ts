@@ -1,4 +1,7 @@
+import { lookup } from "node:dns"
 import { readFile } from "node:fs/promises"
+import { get } from "node:https"
+import { BlockList, isIP } from "node:net"
 import { dirname, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -10,6 +13,7 @@ import {
 } from "@workspace/contracts"
 
 import { BrickRecipeError } from "./effect/errors.js"
+import type { LookupFunction } from "node:net"
 import type {
   Brick,
   BrickCatalogDocument,
@@ -21,6 +25,84 @@ import type {
 
 const MAX_DOCUMENT_BYTES = 1024 * 1024
 const CACHE_TTL_MS = 5 * 60_000
+const MAX_REDIRECTS = 5
+const BLOCKED_RECIPE_ADDRESSES = new BlockList()
+const BLOCKED_IPV4_SUBNETS: ReadonlyArray<readonly [string, number]> = [
+  ["0.0.0.0", 8],
+  ["10.0.0.0", 8],
+  ["100.64.0.0", 10],
+  ["127.0.0.0", 8],
+  ["169.254.0.0", 16],
+  ["172.16.0.0", 12],
+  ["192.0.0.0", 24],
+  ["192.0.2.0", 24],
+  ["192.168.0.0", 16],
+  ["198.18.0.0", 15],
+  ["198.51.100.0", 24],
+  ["203.0.113.0", 24],
+  ["224.0.0.0", 4],
+  ["240.0.0.0", 4],
+]
+const BLOCKED_IPV6_SUBNETS: ReadonlyArray<readonly [string, number]> = [
+  ["::", 96],
+  ["64:ff9b:1::", 48],
+  ["100::", 64],
+  ["2001:10::", 28],
+  ["2001:db8::", 32],
+  ["2002::", 16],
+  ["fc00::", 7],
+  ["fe80::", 10],
+  ["fec0::", 10],
+  ["ff00::", 8],
+]
+
+for (const [network, prefix] of BLOCKED_IPV4_SUBNETS) {
+  BLOCKED_RECIPE_ADDRESSES.addSubnet(network, prefix, "ipv4")
+}
+for (const [network, prefix] of BLOCKED_IPV6_SUBNETS) {
+  BLOCKED_RECIPE_ADDRESSES.addSubnet(network, prefix, "ipv6")
+}
+
+class BlockedRecipeAddressError extends Error implements NodeJS.ErrnoException {
+  readonly code = "EACCES"
+
+  constructor(readonly address: string) {
+    super(`Recipe source resolves to blocked address ${address}`)
+  }
+}
+
+const secureLookup: LookupFunction = (hostname, options, callback) => {
+  lookup(
+    hostname,
+    {
+      all: true,
+      family: options.family,
+      hints: options.hints,
+      order: options.order ?? "verbatim",
+    },
+    (error, addresses) => {
+      if (error) {
+        callback(error, "")
+        return
+      }
+      const blocked = addresses.find(
+        ({ address }) => !isPublicRecipeAddress(address)
+      )
+      if (blocked) {
+        callback(new BlockedRecipeAddressError(blocked.address), "")
+        return
+      }
+      const selected = addresses.at(0)
+      if (!selected) {
+        callback(new Error("Recipe source did not resolve to an address"), "")
+        return
+      }
+      if (options.all) callback(null, addresses)
+      else callback(null, selected.address, selected.family)
+    }
+  )
+}
+
 interface CachedCatalog {
   expiresAt: number
   value: RelayCatalog
@@ -408,50 +490,150 @@ async function readDocument(
       "Brick documents must use HTTPS"
     )
   }
-  let response: Response
-  try {
-    response = await fetch(source, {
-      headers: { Accept: "application/yaml, text/yaml, application/json" },
-      signal: AbortSignal.timeout(15_000),
+  return readHttpsDocument(source, source, 0)
+}
+
+function readHttpsDocument(
+  source: URL,
+  originalSource: URL,
+  redirects: number
+): Promise<string> {
+  if (source.protocol !== "https:") {
+    return Promise.reject(
+      recipeError(
+        "insecure_recipe_redirect",
+        originalSource.href,
+        "Brick source redirected away from HTTPS"
+      )
+    )
+  }
+  const literal = source.hostname.replace(/^\[|\]$/gu, "")
+  if (isIP(literal) !== 0 && !isPublicRecipeAddress(literal)) {
+    return Promise.reject(
+      recipeError(
+        "blocked_recipe_address",
+        originalSource.href,
+        "Brick source resolves to a private or reserved network address"
+      )
+    )
+  }
+
+  return new Promise((resolveDocument, rejectDocument) => {
+    const request = get(
+      source,
+      {
+        headers: { Accept: "application/yaml, text/yaml, application/json" },
+        lookup: secureLookup,
+        signal: AbortSignal.timeout(15_000),
+      },
+      (response) => {
+        const status = response.statusCode ?? 0
+        if (
+          [301, 302, 303, 307, 308].includes(status) &&
+          response.headers.location
+        ) {
+          response.resume()
+          if (redirects >= MAX_REDIRECTS) {
+            rejectDocument(
+              recipeError(
+                "too_many_recipe_redirects",
+                originalSource.href,
+                `Brick source exceeded ${MAX_REDIRECTS} redirects`
+              )
+            )
+            return
+          }
+          let redirected: URL
+          try {
+            redirected = new URL(response.headers.location, source)
+          } catch {
+            rejectDocument(
+              recipeError(
+                "invalid_recipe_redirect",
+                originalSource.href,
+                "Brick source returned an invalid redirect URL"
+              )
+            )
+            return
+          }
+          readHttpsDocument(redirected, originalSource, redirects + 1).then(
+            resolveDocument,
+            rejectDocument
+          )
+          return
+        }
+        if (status < 200 || status >= 300) {
+          response.resume()
+          rejectDocument(
+            recipeError(
+              "recipe_fetch_failed",
+              originalSource.href,
+              `Brick source returned HTTP ${status}`
+            )
+          )
+          return
+        }
+        const declaredLength = Number(response.headers["content-length"] ?? 0)
+        if (declaredLength > MAX_DOCUMENT_BYTES) {
+          response.resume()
+          rejectDocument(
+            recipeError(
+              "document_too_large",
+              originalSource.href,
+              "Brick document exceeds 1 MiB"
+            )
+          )
+          return
+        }
+        let content = ""
+        let bytes = 0
+        let settled = false
+        response.setEncoding("utf8")
+        response.on("data", (chunk: string) => {
+          if (settled) return
+          bytes += Buffer.byteLength(chunk)
+          if (bytes > MAX_DOCUMENT_BYTES) {
+            settled = true
+            response.destroy()
+            rejectDocument(
+              recipeError(
+                "document_too_large",
+                originalSource.href,
+                "Brick document exceeds 1 MiB"
+              )
+            )
+            return
+          }
+          content += chunk
+        })
+        response.on("end", () => {
+          if (!settled) resolveDocument(content)
+        })
+      }
+    )
+    request.on("error", (cause: Error) => {
+      rejectDocument(
+        recipeError(
+          cause instanceof BlockedRecipeAddressError
+            ? "blocked_recipe_address"
+            : "recipe_fetch_failed",
+          originalSource.href,
+          cause instanceof BlockedRecipeAddressError
+            ? "Brick source resolves to a private or reserved network address"
+            : cause.message
+        )
+      )
     })
-  } catch (cause) {
-    throw recipeError(
-      "recipe_fetch_failed",
-      source.href,
-      cause instanceof Error ? cause.message : "Could not fetch Brick source"
-    )
-  }
-  if (new URL(response.url).protocol !== "https:") {
-    throw recipeError(
-      "insecure_recipe_redirect",
-      source.href,
-      "Brick source redirected away from HTTPS"
-    )
-  }
-  if (!response.ok) {
-    throw recipeError(
-      "recipe_fetch_failed",
-      source.href,
-      `Brick source returned HTTP ${response.status}`
-    )
-  }
-  const declaredLength = Number(response.headers.get("content-length") ?? 0)
-  if (declaredLength > MAX_DOCUMENT_BYTES) {
-    throw recipeError(
-      "document_too_large",
-      source.href,
-      "Brick document exceeds 1 MiB"
-    )
-  }
-  const content = await response.text()
-  if (Buffer.byteLength(content) > MAX_DOCUMENT_BYTES) {
-    throw recipeError(
-      "document_too_large",
-      source.href,
-      "Brick document exceeds 1 MiB"
-    )
-  }
-  return content
+  })
+}
+
+export function isPublicRecipeAddress(address: string): boolean {
+  const family = isIP(address)
+  if (family === 0) return false
+  return !BLOCKED_RECIPE_ADDRESSES.check(
+    address,
+    family === 4 ? "ipv4" : "ipv6"
+  )
 }
 
 function validateLocalSource(source: URL, configuredCatalog: URL): void {
