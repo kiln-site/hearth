@@ -31,10 +31,6 @@ jobs:
         component:
           - hearth
           - relay
-          - ember-java11
-          - ember-java17
-          - ember-java21
-          - ember-java25
         architecture: ${{ fromJSON(github.event_name == 'pull_request' && '["amd64"]' || '["amd64", "arm64"]') }}
         include:
           - component: hearth
@@ -57,48 +53,6 @@ jobs:
             version_suffix: ""
             build_args: ""
             cache_scope: relay
-          - component: ember-java11
-            name: Ember · Java 11
-            image: ghcr.io/kiln-site/ember
-            file: apps/ember/Dockerfile
-            channel: java11
-            version_suffix: -java11
-            build_args: JAVA_VERSION=11
-            cache_scope: ember-java11
-          - component: ember-java17
-            name: Ember · Java 17
-            image: ghcr.io/kiln-site/ember
-            file: apps/ember/Dockerfile
-            channel: java17
-            version_suffix: -java17
-            build_args: JAVA_VERSION=17
-            cache_scope: ember-java17
-          - component: ember-java21
-            name: Ember · Java 21
-            image: ghcr.io/kiln-site/ember
-            file: apps/ember/Dockerfile
-            channel: java21
-            version_suffix: -java21
-            build_args: JAVA_VERSION=21
-            cache_scope: ember-java21
-          - component: ember-java25
-            name: Ember · Java 25
-            image: ghcr.io/kiln-site/ember
-            file: apps/ember/Dockerfile
-            channel: java25
-            version_suffix: -java25
-            build_args: JAVA_VERSION=25
-            cache_scope: ember-java25
-          - component: ember-palworld
-            architecture: amd64
-            name: Ember · Palworld
-            image: ghcr.io/kiln-site/ember
-            file: apps/ember-palworld/Dockerfile
-            channel: palworld
-            version_suffix: -palworld
-            build_args: ""
-            cache_scope: ember-palworld
-
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -173,11 +127,6 @@ jobs:
         component:
           - hearth
           - relay
-          - ember-java11
-          - ember-java17
-          - ember-java21
-          - ember-java25
-          - ember-palworld
         include:
           - component: hearth
             name: Hearth
@@ -191,38 +140,6 @@ jobs:
             channel: latest
             version_suffix: ""
             cache_scope: relay
-          - component: ember-java11
-            name: Ember · Java 11
-            image: ghcr.io/kiln-site/ember
-            channel: java11
-            version_suffix: -java11
-            cache_scope: ember-java11
-          - component: ember-java17
-            name: Ember · Java 17
-            image: ghcr.io/kiln-site/ember
-            channel: java17
-            version_suffix: -java17
-            cache_scope: ember-java17
-          - component: ember-java21
-            name: Ember · Java 21
-            image: ghcr.io/kiln-site/ember
-            channel: java21
-            version_suffix: -java21
-            cache_scope: ember-java21
-          - component: ember-java25
-            name: Ember · Java 25
-            image: ghcr.io/kiln-site/ember
-            channel: java25
-            version_suffix: -java25
-            cache_scope: ember-java25
-          - component: ember-palworld
-            name: Ember · Palworld
-            image: ghcr.io/kiln-site/ember
-            channel: palworld
-            version_suffix: -palworld
-            cache_scope: ember-palworld
-            architecture_count: 1
-
     steps:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0

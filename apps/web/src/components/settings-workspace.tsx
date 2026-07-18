@@ -182,11 +182,7 @@ export function SettingsWorkspace({
             <MetaRow
               icon={Cpu}
               label="Runtime"
-              value={
-                instance.game === "Palworld"
-                  ? instance.javaVersion
-                  : `Java ${instance.javaVersion}`
-              }
+              value={instance.javaVersion}
               mono
             />
           </div>

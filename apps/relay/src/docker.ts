@@ -842,9 +842,13 @@ export class DockerDriver {
   }
 
   #instanceConfig(container: DockerInspect): RelayInstanceConfig {
+    const labels = container.Config.Labels ?? {}
+    const configuredMount = labels["kiln.instance.mount"]
     const serverMount = container.Mounts.find(
       (mount) =>
-        (mount.Destination === "/server" || mount.Destination === "/data") &&
+        (mount.Destination === configuredMount ||
+          mount.Destination === "/server" ||
+          mount.Destination === "/data") &&
         mount.RW
     )
     if (!serverMount) {
@@ -852,7 +856,6 @@ export class DockerDriver {
     }
 
     const directory = resolve(serverMount.Source)
-    const labels = container.Config.Labels ?? {}
     const owned = labels["kiln.relay.owned"] === "true"
     const ownedDirectory = labels["kiln.instance.directory"]
     const usesOwnedDirectory = Boolean(
@@ -881,13 +884,17 @@ export class DockerDriver {
     const parsed = name.match(/^([a-z][a-z0-9-]*)-(\d.*)$/u)
     const brickId = labels["kiln.brick.id"]
     const validBrickId =
-      brickId === "paper" ||
-      brickId === "folia" ||
-      brickId === "fabric" ||
-      brickId === "palworld" ||
-      brickId === "velocity"
+      brickId && /^[a-z0-9][a-z0-9.-]{0,63}$/u.test(brickId)
         ? brickId
         : undefined
+    const brickNetworkMode = labels["kiln.brick.network-mode"]
+    const validNetworkMode =
+      brickNetworkMode === "direct" ||
+      brickNetworkMode === "minecraft-backend" ||
+      brickNetworkMode === "minecraft-proxy"
+        ? brickNetworkMode
+        : undefined
+    const primaryPort = Number(labels["kiln.brick.primary-port"])
     const implementation = titleCase(validBrickId ?? parsed?.[1] ?? name)
     const version =
       labels["kiln.instance.version"] ??
@@ -913,7 +920,16 @@ export class DockerDriver {
       : `${implementation.toLowerCase()}.${this.#config.connectDomain}`
 
     return {
+      brickFormat: labels["kiln.brick.format"],
       brickId: validBrickId,
+      brickNetworkMode: validNetworkMode,
+      brickPrimaryPort:
+        Number.isInteger(primaryPort) &&
+        primaryPort >= 1 &&
+        primaryPort <= 65_535
+          ? primaryPort
+          : undefined,
+      brickSource: labels["kiln.brick.source"],
       connectAddress:
         labels["kiln.instance.hostname"] ??
         (this.#config.connectPort === 25_565

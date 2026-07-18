@@ -11,15 +11,19 @@ import {
   ChevronRight,
   CircleAlert,
   Cpu,
+  FileCode2,
   Gauge,
   LoaderCircle,
   Network,
+  PackagePlus,
   Plus,
   RadioTower,
   Server,
 } from "lucide-react"
 import type {
   Brick,
+  BrickVariable,
+  BrickVariableValue,
   RelayInstance,
   RelayNetworking,
 } from "@workspace/contracts"
@@ -32,7 +36,11 @@ import { GlobalPageToolbar } from "@/components/global-page-toolbar"
 import { ServerTypeIcon } from "@/components/server-type-icon"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import { brickStudioQueryOptions, queryKeys } from "@/lib/query-options"
-import { configureBrickNetworking, createBrickInstance } from "@/server/bricks"
+import {
+  configureBrickNetworking,
+  createBrickInstance,
+  loadBrickRecipe,
+} from "@/server/bricks"
 
 type Studio = {
   relays: Array<PersistedRelay>
@@ -51,20 +59,23 @@ export function BricksPage() {
   const configureNetworkingMutation = useMutation({
     mutationFn: configureBrickNetworking,
   })
+  const loadRecipeMutation = useMutation({ mutationFn: loadBrickRecipe })
   const [selected, setSelected] = React.useState<Brick | null>(
     studio.bricks.at(0) ?? null
   )
-  const [pending, setPending] = React.useState<"deploy" | "network" | null>(
-    null
-  )
+  const [pending, setPending] = React.useState<
+    "deploy" | "network" | "recipe" | null
+  >(null)
   const [error, setError] = React.useState<string | null>(null)
   const [networkSaved, setNetworkSaved] = React.useState(false)
+  const [customSource, setCustomSource] = React.useState("")
+  const [variables, setVariables] = React.useState<
+    Record<string, BrickVariableValue>
+  >(selected ? defaultVariables(selected) : {})
   const [form, setForm] = React.useState({
-    memory: selected?.defaultMemory ?? "2G",
-    name: selected ? `${selected.name} ${selected.defaultVersion}` : "",
+    name: selected ? defaultInstanceName(selected) : "",
     relayId: studio.relayId ?? "",
     start: true,
-    version: selected?.defaultVersion ?? "",
   })
   const [networking, setNetworking] = React.useState({
     enabled: studio.networking?.enabled ?? false,
@@ -76,13 +87,28 @@ export function BricksPage() {
 
   function chooseBrick(brick: Brick) {
     setSelected(brick)
+    setVariables(defaultVariables(brick))
     setForm((current) => ({
       ...current,
-      memory: brick.defaultMemory,
-      name: `${brick.name} ${brick.defaultVersion}`,
-      version: brick.defaultVersion,
+      name: defaultInstanceName(brick),
     }))
     setError(null)
+  }
+
+  async function loadCustomRecipe(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setPending("recipe")
+    setError(null)
+    try {
+      const loaded = await loadRecipeMutation.mutateAsync({
+        data: { relayId: form.relayId, source: customSource },
+      })
+      chooseBrick(loaded)
+    } catch (cause) {
+      setError(messageFrom(cause, "Could not load Brick recipe"))
+    } finally {
+      setPending(null)
+    }
   }
 
   async function deploy(event: React.FormEvent<HTMLFormElement>) {
@@ -93,12 +119,11 @@ export function BricksPage() {
     try {
       const instance = await createInstanceMutation.mutateAsync({
         data: {
-          brickId: selected.id,
-          memory: form.memory,
           name: form.name,
+          recipe: selected.source,
           relayId: form.relayId,
           start: form.start,
-          version: form.version,
+          variables,
         },
       })
       window.location.assign(`/${instance.shortId}/console`)
@@ -153,8 +178,8 @@ export function BricksPage() {
                   Fire a new Brick.
                 </h1>
                 <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-                  Reproducible game runtimes, provisioned and owned by Relay. No
-                  Compose service or per-instance daemon required.
+                  Versioned recipes pair reusable Embers with deployment-time
+                  configuration. Relay can run any v1 recipe without an update.
                 </p>
               </div>
               <div className="flex gap-5 border-l border-border/70 pl-5 text-[10px] text-muted-foreground">
@@ -175,12 +200,43 @@ export function BricksPage() {
               </div>
             ) : null}
 
+            <form
+              onSubmit={loadCustomRecipe}
+              className="mt-7 flex flex-col gap-2 rounded-2xl border border-dashed border-primary/25 bg-primary/[0.035] p-3 sm:flex-row sm:items-end"
+            >
+              <Field label="Custom HTTPS recipe">
+                <Input
+                  type="url"
+                  value={customSource}
+                  onChange={(event) => setCustomSource(event.target.value)}
+                  placeholder="https://example.com/my-brick.yml"
+                  className="sm:min-w-96"
+                  required
+                />
+              </Field>
+              <Button
+                type="submit"
+                variant="outline"
+                disabled={pending !== null || !form.relayId}
+              >
+                {pending === "recipe" ? (
+                  <LoaderCircle className="animate-spin" />
+                ) : (
+                  <PackagePlus />
+                )}
+                Load recipe
+              </Button>
+              <p className="pb-1 text-[9px] leading-4 text-muted-foreground sm:ml-auto sm:max-w-48">
+                Recipes select executable images. Load only sources you trust.
+              </p>
+            </form>
+
             <div className="mt-8 grid gap-3 sm:grid-cols-2">
               {studio.bricks.map((brick, index) => {
-                const active = selected?.id === brick.id
+                const active = selected?.source === brick.source
                 return (
                   <button
-                    key={brick.id}
+                    key={brick.source}
                     type="button"
                     onClick={() => chooseBrick(brick)}
                     className={`group relative min-h-44 overflow-hidden rounded-2xl border p-5 text-left transition-[color,background-color,border-color,box-shadow,transform] duration-200 outline-none focus-visible:border-ring/70 focus-visible:ring-2 focus-visible:ring-ring/35 ${
@@ -196,26 +252,22 @@ export function BricksPage() {
                       className={`grid size-10 place-items-center rounded-xl border ${active ? "border-primary/30 bg-primary/12 text-primary" : "border-border bg-background/70 text-muted-foreground"}`}
                     >
                       <ServerTypeIcon
-                        implementation={brick.id}
+                        implementation={brick.metadata.id}
                         className="size-5"
                       />
                     </div>
                     <h2 className="mt-5 font-heading text-xl font-semibold tracking-[-0.035em]">
-                      {brick.name}
+                      {brick.metadata.name}
                     </h2>
                     <p className="mt-1.5 max-w-sm text-[11px] leading-5 text-muted-foreground">
-                      {brick.description}
+                      {brick.metadata.description}
                     </p>
                     <div className="mt-4 flex items-center gap-2 font-mono text-[9px] text-muted-foreground/75">
                       <span>{brickRuntime(brick)}</span>
                       <span className="text-border">/</span>
-                      <span>{brick.defaultMemory}</span>
-                      {brick.id === "palworld" ? (
-                        <>
-                          <span className="text-border">/</span>
-                          <span>UDP 8211</span>
-                        </>
-                      ) : null}
+                      <span>{defaultMemory(brick)}</span>
+                      <span className="text-border">/</span>
+                      <span>{primaryPort(brick)}</span>
                       <ChevronRight
                         className={`ml-auto size-3.5 transition-transform ${active ? "translate-x-0 text-primary" : "-translate-x-1 opacity-0 group-hover:translate-x-0 group-hover:opacity-100"}`}
                       />
@@ -284,22 +336,20 @@ export function BricksPage() {
               <div className="flex items-center gap-2">
                 <Plus className="size-4 text-primary" />
                 <h2 className="text-sm font-semibold">
-                  Deploy {selected?.name ?? "Brick"}
+                  Deploy {selected?.metadata.name ?? "Brick"}
                 </h2>
               </div>
               <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
                 Relay creates the volume, labels, network attachment, and
                 container.
               </p>
-              {selected?.id === "palworld" ? (
+              {selected ? (
                 <div className="mt-4 rounded-lg border border-primary/20 bg-primary/[0.06] px-3 py-2.5">
-                  <p className="font-mono text-[9px] tracking-[0.12em] text-primary uppercase">
-                    Native Linux · AMD64 only
+                  <p className="flex items-center gap-1.5 font-mono text-[9px] tracking-[0.12em] text-primary uppercase">
+                    <FileCode2 className="size-3" /> {selected.format}
                   </p>
-                  <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
-                    Tracks the latest Steam build, listens on UDP 8211, and
-                    needs at least 16 GB RAM. One Palworld server can run per
-                    Relay.
+                  <p className="mt-1 truncate text-[10px] text-muted-foreground">
+                    {selected.metadata.author} · {selected.runtime.image}
                   </p>
                 </div>
               ) : null}
@@ -337,38 +387,24 @@ export function BricksPage() {
                     required
                   />
                 </Field>
-                <div className="grid grid-cols-2 gap-2.5">
-                  <Field label="Version">
-                    <Input
-                      value={form.version}
-                      onChange={(event) =>
-                        setForm((value) => ({
-                          ...value,
-                          version: event.target.value,
-                        }))
-                      }
-                      placeholder="1.21.11"
-                      readOnly={selected?.id === "palworld"}
-                      required
-                    />
-                  </Field>
-                  <Field
-                    label={selected?.id === "palworld" ? "Memory" : "Max heap"}
-                  >
-                    <Input
-                      value={form.memory}
-                      onChange={(event) =>
-                        setForm((value) => ({
-                          ...value,
-                          memory: event.target.value.toUpperCase(),
-                        }))
-                      }
-                      pattern="[0-9]+[MG]"
-                      placeholder="2G"
-                      required
-                    />
-                  </Field>
-                </div>
+                {selected
+                  ? Object.entries(selected.variables).map(
+                      ([name, definition]) => (
+                        <VariableField
+                          key={name}
+                          name={name}
+                          definition={definition}
+                          value={variables[name]}
+                          onChange={(value) =>
+                            setVariables((current) => ({
+                              ...current,
+                              [name]: value,
+                            }))
+                          }
+                        />
+                      )
+                    )
+                  : null}
                 <label className="flex cursor-pointer items-center justify-between rounded-lg border border-border/75 bg-background/45 px-3 py-2.5 text-xs">
                   <span>
                     <span className="block font-medium">
@@ -405,10 +441,13 @@ export function BricksPage() {
               <div className="mt-4 grid grid-cols-3 gap-2 border-t border-border/60 pt-4 text-center">
                 <TinyStat
                   icon={Cpu}
-                  label={selected?.id === "palworld" ? "1 process" : "1 JVM"}
+                  label={selected?.runtime.name ?? "1 process"}
                 />
                 <TinyStat icon={Gauge} label="No sidecar" />
-                <TinyStat icon={Server} label="1 volume" />
+                <TinyStat
+                  icon={Server}
+                  label={selected?.network.mode ?? "1 volume"}
+                />
               </div>
             </section>
 
@@ -514,6 +553,94 @@ function Metric({ value, label }: { value: string; label: string }) {
   )
 }
 
+function VariableField({
+  name,
+  definition,
+  value,
+  onChange,
+}: {
+  name: string
+  definition: BrickVariable
+  value: BrickVariableValue | undefined
+  onChange: (value: BrickVariableValue) => void
+}) {
+  if (definition.type === "boolean") {
+    return (
+      <label className="flex cursor-pointer items-center justify-between rounded-lg border border-border/75 bg-background/45 px-3 py-2.5 text-xs">
+        <span>
+          <span className="block font-medium">{definition.label}</span>
+          <span className="mt-0.5 block text-[9px] leading-4 text-muted-foreground">
+            {definition.description}
+          </span>
+        </span>
+        <input
+          type="checkbox"
+          checked={value === true}
+          onChange={(event) => onChange(event.target.checked)}
+          className="accent-primary"
+        />
+      </label>
+    )
+  }
+
+  return (
+    <label className="block space-y-1.5 text-[10px] font-medium text-muted-foreground">
+      <span className="flex items-center justify-between gap-2">
+        <span>{definition.label}</span>
+        <span className="font-mono text-[8px] text-muted-foreground/55">
+          {name}
+        </span>
+      </span>
+      {definition.options ? (
+        <select
+          value={value === undefined ? "" : String(value)}
+          onChange={(event) => {
+            const option = definition.options?.find(
+              (candidate) => String(candidate) === event.target.value
+            )
+            if (option !== undefined) onChange(option)
+          }}
+          className="h-10 w-full rounded-md border border-input bg-background px-3 text-xs outline-none focus:border-ring"
+          required={definition.required}
+        >
+          {!definition.required ? <option value="">Not set</option> : null}
+          {definition.options.map((option) => (
+            <option key={String(option)} value={String(option)}>
+              {String(option)}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <Input
+          type={
+            definition.sensitive
+              ? "password"
+              : definition.type === "number"
+                ? "number"
+                : "text"
+          }
+          value={value === undefined ? "" : String(value)}
+          onChange={(event) => {
+            const next = event.target.value
+            onChange(
+              definition.type === "number" && next !== "" ? Number(next) : next
+            )
+          }}
+          pattern={definition.rules?.pattern}
+          min={definition.rules?.min}
+          max={definition.rules?.max}
+          minLength={definition.rules?.minLength}
+          maxLength={definition.rules?.maxLength}
+          required={definition.required}
+        />
+      )}
+      <span className="block text-[9px] leading-4 font-normal">
+        {definition.description}
+      </span>
+    </label>
+  )
+}
+
 function TinyStat({ icon: Icon, label }: { icon: typeof Cpu; label: string }) {
   return (
     <span className="text-[9px] text-muted-foreground">
@@ -528,5 +655,36 @@ function messageFrom(cause: unknown, fallback: string): string {
 }
 
 function brickRuntime(brick: Brick): string {
-  return brick.id === "palworld" ? "STEAMCMD" : `JAVA ${brick.javaVersion}`
+  return brick.runtime.name.toUpperCase()
+}
+
+function defaultVariables(brick: Brick): Record<string, BrickVariableValue> {
+  return Object.fromEntries(
+    Object.entries(brick.variables).flatMap(([name, definition]) =>
+      definition.default === undefined ? [] : [[name, definition.default]]
+    )
+  )
+}
+
+function defaultInstanceName(brick: Brick): string {
+  const version = Object.hasOwn(brick.variables, "version")
+    ? brick.variables.version.default
+    : undefined
+  return `${brick.metadata.name}${version === undefined ? "" : ` ${String(version)}`}`
+}
+
+function defaultMemory(brick: Brick): string {
+  const memory = Object.hasOwn(brick.variables, "memory")
+    ? brick.variables.memory.default
+    : undefined
+  return memory === undefined ? brick.runtime.resources.memory : String(memory)
+}
+
+function primaryPort(brick: Brick): string {
+  const port = brick.network.ports.find(
+    (candidate) => candidate.name === brick.network.primaryPort
+  )
+  return port
+    ? `${port.protocol.toUpperCase()} ${port.host ?? port.container}`
+    : "NO PORT"
 }
