@@ -165,9 +165,6 @@ const kilnEditorTheme = EditorView.theme(
       background: "transparent",
       borderBottomColor: "transparent",
     },
-    "&.cm-merge-b .cm-activeLine .cm-deletedText": {
-      display: "none",
-    },
     ".cm-deletedChunk": {
       margin: "0",
       paddingLeft: "60px",

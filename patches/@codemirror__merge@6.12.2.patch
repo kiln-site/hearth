@@ -1,0 +1,248 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index f3f9998639e0b29d8c6bfce1ff2f7914731b3b85..409b2f04a52dc030e4131d146ce863839c4946cb 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -776,7 +776,8 @@ const decorateChunks = view.ViewPlugin.fromClass(class {
+         ({ deco: this.deco, gutter: this.gutter } = getChunkDeco(view));
+     }
+     update(update) {
+-        if (update.docChanged || update.viewportChanged || chunksChanged(update.startState, update.state) ||
++        if (update.docChanged || update.selectionSet && activeLineChanged(update.startState, update.state) ||
++            update.viewportChanged || chunksChanged(update.startState, update.state) ||
+             configChanged(update.startState, update.state))
+             ({ deco: this.deco, gutter: this.gutter } = getChunkDeco(update.view));
+     }
+@@ -790,6 +791,9 @@ const changeGutter = state.Prec.low(view.gutter({
+ function chunksChanged(s1, s2) {
+     return s1.field(ChunkField, false) != s2.field(ChunkField, false);
+ }
++function activeLineChanged(s1, s2) {
++    return s1.doc.lineAt(s1.selection.main.head).from != s2.doc.lineAt(s2.selection.main.head).from;
++}
+ function configChanged(s1, s2) {
+     return s1.facet(mergeConfig) != s2.facet(mergeConfig);
+ }
+@@ -1536,6 +1540,7 @@ function getOriginalDoc(state) {
+     return state.field(originalDoc);
+ }
+ const DeletionWidgets = new WeakMap;
++const HiddenDeletionWidgets = new WeakMap;
+ class DeletionWidget extends view.WidgetType {
+     constructor(buildDOM) {
+         super();
+@@ -1546,7 +1551,8 @@ class DeletionWidget extends view.WidgetType {
+     toDOM(view) { return this.dom || (this.dom = this.buildDOM(view)); }
+ }
+ function deletionWidget(state, chunk, hideContent) {
+-    let known = DeletionWidgets.get(chunk.changes);
++    let cache = hideContent ? HiddenDeletionWidgets : DeletionWidgets;
++    let known = cache.get(chunk.changes);
+     if (known)
+         return known;
+     let buildDOM = (view) => {
+@@ -1644,7 +1650,7 @@ function deletionWidget(state, chunk, hideContent) {
+         side: -1,
+         widget: new DeletionWidget(buildDOM)
+     });
+-    DeletionWidgets.set(chunk.changes, deco);
++    cache.set(chunk.changes, deco);
+     return deco;
+ }
+ /**
+@@ -1690,8 +1696,10 @@ function rejectChunk(view, pos) {
+ }
+ function buildDeletedChunks(state$1) {
+     let builder = new state.RangeSetBuilder();
++    let activeLine = state$1.doc.lineAt(state$1.selection.main.head);
+     for (let ch of state$1.field(ChunkField)) {
+-        let hide = state$1.facet(mergeConfig).overrideChunk && chunkCanDisplayInline(state$1, ch);
++        let active = ch.fromB <= activeLine.to && ch.endB >= activeLine.from;
++        let hide = active || state$1.facet(mergeConfig).overrideChunk && chunkCanDisplayInline(state$1, ch);
+         builder.add(ch.fromB, ch.fromB, deletionWidget(state$1, ch, !!hide));
+     }
+     return builder.finish();
+@@ -1699,7 +1707,9 @@ function buildDeletedChunks(state$1) {
+ const deletedChunks = state.StateField.define({
+     create: state => buildDeletedChunks(state),
+     update(deco, tr) {
+-        return tr.state.field(ChunkField, false) != tr.startState.field(ChunkField, false) ? buildDeletedChunks(tr.state) : deco;
++        return tr.selection && activeLineChanged(tr.startState, tr.state) ||
++            tr.state.field(ChunkField, false) != tr.startState.field(ChunkField, false)
++            ? buildDeletedChunks(tr.state) : deco;
+     },
+     provide: f => view.EditorView.decorations.from(f)
+ });
+@@ -1712,10 +1722,25 @@ function chunkCanDisplayInline(state, chunk) {
+     let a = state.field(originalDoc), b = state.doc;
+     let linesA = a.lineAt(chunk.endA).number - a.lineAt(chunk.fromA).number + 1;
+     let linesB = b.lineAt(chunk.endB).number - b.lineAt(chunk.fromB).number + 1;
++    let changes = chunk.changes;
++    // Keep a modified line inline when Enter inserts an empty line directly
++    // after it. The regular presentable diff groups the character edit and
++    // line break into one replacement, which makes the unified view render a
++    // full deleted/inserted line pair. Re-diffing the small, line-balanced
++    // portion preserves the character-level change while the new blank line
++    // remains marked as inserted.
++    if (linesB == linesA + 1) {
++        let textB = b.sliceString(chunk.fromB, chunk.endB);
++        if (textB.endsWith("\n")) {
++            let textA = a.sliceString(chunk.fromA, chunk.endA);
++            changes = presentableDiff(textA, textB.slice(0, -1), { scanLimit: 500, timeout: 50 });
++            linesB--;
++        }
++    }
+     abort: if (linesA == linesB && linesA < 10) {
+         let deco = [], deleteCount = 0;
+         let bA = chunk.fromA, bB = chunk.fromB;
+-        for (let ch of chunk.changes) {
++        for (let ch of changes) {
+             if (ch.fromA < ch.toA) {
+                 deleteCount += ch.toA - ch.fromA;
+                 let deleted = a.sliceString(bA + ch.fromA, bA + ch.toA);
+@@ -1757,13 +1782,18 @@ function overrideChunkInline(state, chunk, builder, gutterBuilder) {
+     let inline = chunkCanDisplayInline(state, chunk), i = 0;
+     if (!inline)
+         return false;
++    let activeLine = state.doc.lineAt(state.selection.main.head);
+     for (let line = state.doc.lineAt(chunk.fromB);;) {
+-        if (gutterBuilder)
+-            gutterBuilder.add(line.from, line.from, inlineChangedLineGutterMarker);
+-        builder.add(line.from, line.from, inlineChangedLine);
++        let active = line.from == activeLine.from;
++        if (!active) {
++            if (gutterBuilder)
++                gutterBuilder.add(line.from, line.from, inlineChangedLineGutterMarker);
++            builder.add(line.from, line.from, inlineChangedLine);
++        }
+         while (i < inline.length && inline[i].to <= line.to) {
+             let r = inline[i++];
+-            builder.add(r.from, r.to, r.value);
++            if (!active)
++                builder.add(r.from, r.to, r.value);
+         }
+         if (line.to >= chunk.endB)
+             break;
+diff --git a/dist/index.js b/dist/index.js
+index 8322cf9b1d463a8e6b4b0ccb4e36069e2de53bda..02bf91e6c9a06fd8b4f7ca03a9a162d37917a17c 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -774,7 +774,8 @@ const decorateChunks = /*@__PURE__*/ViewPlugin.fromClass(class {
+         ({ deco: this.deco, gutter: this.gutter } = getChunkDeco(view));
+     }
+     update(update) {
+-        if (update.docChanged || update.viewportChanged || chunksChanged(update.startState, update.state) ||
++        if (update.docChanged || update.selectionSet && activeLineChanged(update.startState, update.state) ||
++            update.viewportChanged || chunksChanged(update.startState, update.state) ||
+             configChanged(update.startState, update.state))
+             ({ deco: this.deco, gutter: this.gutter } = getChunkDeco(update.view));
+     }
+@@ -788,6 +789,9 @@ const changeGutter = /*@__PURE__*/Prec.low(/*@__PURE__*/gutter({
+ function chunksChanged(s1, s2) {
+     return s1.field(ChunkField, false) != s2.field(ChunkField, false);
+ }
++function activeLineChanged(s1, s2) {
++    return s1.doc.lineAt(s1.selection.main.head).from != s2.doc.lineAt(s2.selection.main.head).from;
++}
+ function configChanged(s1, s2) {
+     return s1.facet(mergeConfig) != s2.facet(mergeConfig);
+ }
+@@ -1534,6 +1538,7 @@ function getOriginalDoc(state) {
+     return state.field(originalDoc);
+ }
+ const DeletionWidgets = /*@__PURE__*/new WeakMap;
++const HiddenDeletionWidgets = /*@__PURE__*/new WeakMap;
+ class DeletionWidget extends WidgetType {
+     constructor(buildDOM) {
+         super();
+@@ -1544,7 +1549,8 @@ class DeletionWidget extends WidgetType {
+     toDOM(view) { return this.dom || (this.dom = this.buildDOM(view)); }
+ }
+ function deletionWidget(state, chunk, hideContent) {
+-    let known = DeletionWidgets.get(chunk.changes);
++    let cache = hideContent ? HiddenDeletionWidgets : DeletionWidgets;
++    let known = cache.get(chunk.changes);
+     if (known)
+         return known;
+     let buildDOM = (view) => {
+@@ -1642,7 +1648,7 @@ function deletionWidget(state, chunk, hideContent) {
+         side: -1,
+         widget: new DeletionWidget(buildDOM)
+     });
+-    DeletionWidgets.set(chunk.changes, deco);
++    cache.set(chunk.changes, deco);
+     return deco;
+ }
+ /**
+@@ -1688,8 +1694,10 @@ function rejectChunk(view, pos) {
+ }
+ function buildDeletedChunks(state) {
+     let builder = new RangeSetBuilder();
++    let activeLine = state.doc.lineAt(state.selection.main.head);
+     for (let ch of state.field(ChunkField)) {
+-        let hide = state.facet(mergeConfig).overrideChunk && chunkCanDisplayInline(state, ch);
++        let active = ch.fromB <= activeLine.to && ch.endB >= activeLine.from;
++        let hide = active || state.facet(mergeConfig).overrideChunk && chunkCanDisplayInline(state, ch);
+         builder.add(ch.fromB, ch.fromB, deletionWidget(state, ch, !!hide));
+     }
+     return builder.finish();
+@@ -1697,7 +1705,9 @@ function buildDeletedChunks(state) {
+ const deletedChunks = /*@__PURE__*/StateField.define({
+     create: state => buildDeletedChunks(state),
+     update(deco, tr) {
+-        return tr.state.field(ChunkField, false) != tr.startState.field(ChunkField, false) ? buildDeletedChunks(tr.state) : deco;
++        return tr.selection && activeLineChanged(tr.startState, tr.state) ||
++            tr.state.field(ChunkField, false) != tr.startState.field(ChunkField, false)
++            ? buildDeletedChunks(tr.state) : deco;
+     },
+     provide: f => EditorView.decorations.from(f)
+ });
+@@ -1710,10 +1720,25 @@ function chunkCanDisplayInline(state, chunk) {
+     let a = state.field(originalDoc), b = state.doc;
+     let linesA = a.lineAt(chunk.endA).number - a.lineAt(chunk.fromA).number + 1;
+     let linesB = b.lineAt(chunk.endB).number - b.lineAt(chunk.fromB).number + 1;
++    let changes = chunk.changes;
++    // Keep a modified line inline when Enter inserts an empty line directly
++    // after it. The regular presentable diff groups the character edit and
++    // line break into one replacement, which makes the unified view render a
++    // full deleted/inserted line pair. Re-diffing the small, line-balanced
++    // portion preserves the character-level change while the new blank line
++    // remains marked as inserted.
++    if (linesB == linesA + 1) {
++        let textB = b.sliceString(chunk.fromB, chunk.endB);
++        if (textB.endsWith("\n")) {
++            let textA = a.sliceString(chunk.fromA, chunk.endA);
++            changes = presentableDiff(textA, textB.slice(0, -1), { scanLimit: 500, timeout: 50 });
++            linesB--;
++        }
++    }
+     abort: if (linesA == linesB && linesA < 10) {
+         let deco = [], deleteCount = 0;
+         let bA = chunk.fromA, bB = chunk.fromB;
+-        for (let ch of chunk.changes) {
++        for (let ch of changes) {
+             if (ch.fromA < ch.toA) {
+                 deleteCount += ch.toA - ch.fromA;
+                 let deleted = a.sliceString(bA + ch.fromA, bA + ch.toA);
+@@ -1755,13 +1780,18 @@ function overrideChunkInline(state, chunk, builder, gutterBuilder) {
+     let inline = chunkCanDisplayInline(state, chunk), i = 0;
+     if (!inline)
+         return false;
++    let activeLine = state.doc.lineAt(state.selection.main.head);
+     for (let line = state.doc.lineAt(chunk.fromB);;) {
+-        if (gutterBuilder)
+-            gutterBuilder.add(line.from, line.from, inlineChangedLineGutterMarker);
+-        builder.add(line.from, line.from, inlineChangedLine);
++        let active = line.from == activeLine.from;
++        if (!active) {
++            if (gutterBuilder)
++                gutterBuilder.add(line.from, line.from, inlineChangedLineGutterMarker);
++            builder.add(line.from, line.from, inlineChangedLine);
++        }
+         while (i < inline.length && inline[i].to <= line.to) {
+             let r = inline[i++];
+-            builder.add(r.from, r.to, r.value);
++            if (!active)
++                builder.add(r.from, r.to, r.value);
+         }
+         if (line.to >= chunk.endB)
+             break;

@@ -11,3 +11,6 @@ allowBuilds:
   lightningcss: true
   msw: false
   unrs-resolver: true
+
+patchedDependencies:
+  "@codemirror/merge@6.12.2": patches/@codemirror__merge@6.12.2.patch

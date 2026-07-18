@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: false
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@codemirror/merge@6.12.2':
+    hash: 805fe528f11a7cd690977b0fa7de7bf0c333292113623f87b59d75e7ef1546a8
+    path: patches/@codemirror__merge@6.12.2.patch
+
 importers:
 
   .:
@@ -80,7 +85,7 @@ importers:
         version: 6.5.3
       '@codemirror/merge':
         specifier: ^6.12.2
-        version: 6.12.2
+        version: 6.12.2(patch_hash=805fe528f11a7cd690977b0fa7de7bf0c333292113623f87b59d75e7ef1546a8)
       '@codemirror/search':
         specifier: ^6.7.1
         version: 6.7.1
@@ -6216,7 +6221,7 @@ snapshots:
       '@codemirror/view': 6.43.6
       crelt: 1.0.7
 
-  '@codemirror/merge@6.12.2':
+  '@codemirror/merge@6.12.2(patch_hash=805fe528f11a7cd690977b0fa7de7bf0c333292113623f87b59d75e7ef1546a8)':
     dependencies:
       '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.1
