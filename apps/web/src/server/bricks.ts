@@ -1,5 +1,7 @@
 import { createServerFn } from "@tanstack/react-start"
 import {
+  brickSchema,
+  brickSourceSchema,
   relayCatalogSchema,
   relayCreateInstanceSchema,
   relayInstanceSchema,
@@ -31,6 +33,7 @@ const createInputSchema = relayCreateInstanceSchema.extend({
   name: z.string().trim().min(1).max(120),
 })
 const networkingInputSchema = relayNetworkingSchema.extend(relayIdSchema.shape)
+const recipeInputSchema = relayIdSchema.extend({ source: brickSourceSchema })
 
 export const getBrickStudio = createServerFn({ method: "GET" }).handler(
   async () => {
@@ -113,6 +116,22 @@ export const createBrickInstance = createServerFn({ method: "POST" })
       invalidateRelayCache(relayCachePolicy.snapshot(relay.id))
     )
     return relayInstanceSchema.parse({ ...instance, name: data.name })
+  })
+
+export const loadBrickRecipe = createServerFn({ method: "POST" })
+  .validator(recipeInputSchema)
+  .handler(async ({ data }) => {
+    const user = await requireAuthenticatedUser()
+    if (!isPlatformAdmin(user)) {
+      throw new Error("Platform administrator access required")
+    }
+    const relay = await requiredRelay(data.relayId)
+    return brickSchema.parse(
+      await requestRelay(
+        relay,
+        `/v1/bricks/recipe?source=${encodeURIComponent(data.source)}`
+      )
+    )
   })
 
 export const configureBrickNetworking = createServerFn({ method: "POST" })

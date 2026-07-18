@@ -31,18 +31,16 @@ Registry:
 ```text
 ghcr.io/kiln-site/hearth:latest
 ghcr.io/kiln-site/relay:latest
-ghcr.io/kiln-site/ember:java11
-ghcr.io/kiln-site/ember:java17
-ghcr.io/kiln-site/ember:java21
-ghcr.io/kiln-site/ember:java25
-ghcr.io/kiln-site/ember:palworld (amd64 only)
+ghcr.io/kiln-site/bricks-java:11
+ghcr.io/kiln-site/bricks-java:17
+ghcr.io/kiln-site/bricks-java:21
+ghcr.io/kiln-site/bricks-java:25
+ghcr.io/kiln-site/bricks-steamcmd:latest (amd64 only)
 ```
 
-Build the compact Kiln Ember images used by official Bricks:
-
-```bash
-docker compose --profile images build ember-java11 ember-java17 ember-java21 ember-java25 ember-palworld
-```
+Ember sources, official recipes, their versioned schemas, and image publishing
+live in the separate [kiln-site/bricks](https://github.com/kiln-site/bricks)
+repository.
 
 The stack contains Hearth, Relay, MySQL, and a disposable Valkey cache. On an
 empty table set it registers the Compose Relay automatically. Hearth creates
@@ -149,13 +147,11 @@ verification for the initial administrator.
 origin `https://hearth.hearth.orb.local`. Additional trusted origins can be
 supplied as a comma-separated `BETTER_AUTH_TRUSTED_ORIGINS`.
 
-The production images are defined in [apps/web/Dockerfile](./apps/web/Dockerfile),
-[apps/relay/Dockerfile](./apps/relay/Dockerfile), and
-[apps/ember/Dockerfile](./apps/ember/Dockerfile). Relay requires
+The production images are defined in [apps/web/Dockerfile](./apps/web/Dockerfile)
+and [apps/relay/Dockerfile](./apps/relay/Dockerfile). Relay requires
 `KILN_RELAY_KEY`; `KILN_RELAY_PORT` is optional and defaults to `4100`. It also
-requires the Docker socket plus a persistent `/data` volume. Ember is a
-stripped Java runtime on Debian slim; it contains no panel daemon and downloads
-only the artifact declared by its Brick.
+requires the Docker socket plus a persistent `/data` volume.
+`KILN_BRICKS_CATALOG_URL` selects the official or operator-maintained catalog.
 
 Relay serves an unauthenticated `GET /health` liveness check that does not
 query Docker or require an Ember connection. The Relay image uses it for its
@@ -188,10 +184,12 @@ and can be revoked before acceptance.
 
 ## Bricks and Relay lifecycle
 
-Hearth's **Bricks** screen asks a selected Relay to create the server. The
-official catalog currently includes Paper, Folia, Fabric, Velocity, and
-Palworld. A Brick is a small declarative runtime definition—not a Compose
-fragment and not a long-running per-instance agent.
+Hearth's **Bricks** screen asks a selected Relay to create the server from a
+`kiln.brick/v1` YAML recipe. The official external catalog currently includes
+Paper, Folia, Fabric, Velocity, and Palworld; administrators can load any trusted
+HTTPS recipe directly. Recipes declare the OCI image, per-deployment variables,
+environment, resources, storage mount, ports, architecture constraints, and
+routing mode. New v1 Bricks require no Relay update.
 
 Relay creates one isolated container and one persistent data directory for
 every Brick. Containers use a read-only root filesystem, a writable `/server`
@@ -206,6 +204,8 @@ labels:
   kiln.relay.owned: "true"
   kiln.server.id: "40-character-hexadecimal-id"
   kiln.brick.id: "paper"
+  kiln.brick.format: "kiln.brick/v1"
+  kiln.brick.source: "https://example.com/paper.yml"
 ```
 
 Relay uses the first eight ID characters in Hearth URLs and rejects short-ID
@@ -219,12 +219,12 @@ the private Minecraft network, and a single Velocity entrypoint. Point
 Tailscale split DNS at the node, then names such as `1.21.11.paper.test` resolve
 to its Tailnet address. Port `25565` is omitted from displayed connection names.
 
-Minecraft Ember images use Eclipse Temurin and `jlink`, then copy the minimal
-Java runtime into Debian slim with only certificates, `curl`, and `tini`. The
-Palworld Ember is an amd64-only SteamCMD runtime that installs app `2394010`,
-tracks its latest Linux build, and publishes UDP `8211`. Server files,
-settings, and saves live in the same persistent instance directory; no `itzg`
-image or Pterodactyl/Pelican daemon is involved.
+Official Java Embers use Eclipse Temurin and `jlink`; the generic amd64
+SteamCMD Ember installs the app and executable declared by its recipe. Custom
+recipes may reference any OCI image. Relay still enforces its storage root,
+read-only root filesystem, dropped capabilities, `no-new-privileges`, PID and
+memory limits, and isolated network, and never exposes host-path or privileged
+container controls through the recipe format.
 
 ## Development
 

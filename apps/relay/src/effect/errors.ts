@@ -20,3 +20,16 @@ export class RelayOperationError extends Schema.TaggedErrorClass<RelayOperationE
     return `Relay operation ${this.operation} failed`
   }
 }
+
+export class BrickRecipeError extends Schema.TaggedErrorClass<BrickRecipeError>()(
+  "BrickRecipeError",
+  {
+    code: Schema.String,
+    source: Schema.String,
+    reason: Schema.String,
+  }
+) {
+  override get message() {
+    return `${this.reason} (${this.source})`
+  }
+}

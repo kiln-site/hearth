@@ -1,48 +1,4 @@
 services:
-  ember-java11:
-    image: ghcr.io/kiln-site/ember:java11
-    profiles: ["images"]
-    build:
-      context: .
-      dockerfile: apps/ember/Dockerfile
-      args:
-        JAVA_VERSION: "11"
-
-  ember-java17:
-    image: ghcr.io/kiln-site/ember:java17
-    profiles: ["images"]
-    build:
-      context: .
-      dockerfile: apps/ember/Dockerfile
-      args:
-        JAVA_VERSION: "17"
-
-  ember-java21:
-    image: ghcr.io/kiln-site/ember:java21
-    profiles: ["images"]
-    build:
-      context: .
-      dockerfile: apps/ember/Dockerfile
-      args:
-        JAVA_VERSION: "21"
-
-  ember-java25:
-    image: ghcr.io/kiln-site/ember:java25
-    profiles: ["images"]
-    build:
-      context: .
-      dockerfile: apps/ember/Dockerfile
-      args:
-        JAVA_VERSION: "25"
-
-  ember-palworld:
-    image: ghcr.io/kiln-site/ember:palworld
-    platform: linux/amd64
-    profiles: ["images"]
-    build:
-      context: .
-      dockerfile: apps/ember-palworld/Dockerfile
-
   cache:
     image: ${CACHE_IMAGE:-valkey/valkey:9.1.0-alpine}
     restart: unless-stopped
@@ -98,6 +54,7 @@ services:
     environment:
       KILN_RELAY_KEY: ${KILN_RELAY_KEY:?Set KILN_RELAY_KEY in .env}
       KILN_RELAY_PORT: ${KILN_RELAY_PORT:-4100}
+      KILN_BRICKS_CATALOG_URL: ${KILN_BRICKS_CATALOG_URL:-https://raw.githubusercontent.com/kiln-site/bricks/main/catalog.yml}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}
       SENTRY_RELEASE: ${SENTRY_RELEASE:-}

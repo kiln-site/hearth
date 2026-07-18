@@ -1,5 +1,9 @@
 export interface RelayInstanceConfig {
-  brickId?: "fabric" | "folia" | "paper" | "palworld" | "velocity"
+  brickFormat?: string
+  brickId?: string
+  brickNetworkMode?: "direct" | "minecraft-backend" | "minecraft-proxy"
+  brickPrimaryPort?: number
+  brickSource?: string
   connectAddress: string
   directory: string
   game: string
@@ -14,6 +18,7 @@ export interface RelayInstanceConfig {
 }
 
 export interface RelayConfig {
+  brickCatalogUrl: string
   composeFile: string
   connectDomain: string
   connectPort: number
@@ -33,6 +38,9 @@ export interface RelayConfig {
 
 export function loadConfig(): RelayConfig {
   return {
+    brickCatalogUrl:
+      process.env.KILN_BRICKS_CATALOG_URL?.trim() ||
+      "https://raw.githubusercontent.com/kiln-site/bricks/main/catalog.yml",
     composeFile: "/data/instances/compose.yaml",
     connectDomain: "test",
     connectPort: 25_565,

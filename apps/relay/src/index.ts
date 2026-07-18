@@ -12,13 +12,13 @@ import {
   relaySaveFileInputSchema,
 } from "@workspace/contracts"
 
-import { BRICKS } from "./bricks.js"
+import { BrickCatalog } from "./bricks.js"
 import { loadConfig } from "./config.js"
 import { DockerDriver } from "./docker.js"
 import { FilesystemDriver, RelayFilesystemError } from "./files.js"
 import { LifecycleDriver } from "./lifecycle.js"
 import { nodeSnapshot } from "./node.js"
-import { RelayOperationError } from "./effect/errors.js"
+import { BrickRecipeError, RelayOperationError } from "./effect/errors.js"
 import { disposeRelayRuntime, runRelayEffect } from "./effect/runtime.js"
 import { normalizedRoute } from "./route-label.js"
 import { closeRelayServer } from "./shutdown.js"
@@ -27,9 +27,10 @@ import type { RelayConfig } from "./config.js"
 
 const config = loadConfig()
 await mkdir(config.rootDirectory, { recursive: true })
+const bricks = new BrickCatalog(config.brickCatalogUrl)
 const docker = new DockerDriver(config)
 const filesystem = new FilesystemDriver(config)
-const lifecycle = new LifecycleDriver(config, docker)
+const lifecycle = new LifecycleDriver(config, docker, bricks)
 const activeConsoleStreams = new Map<string, number>()
 const activeConsoleStreamControllers = new Set<AbortController>()
 const MAX_CONSOLE_STREAMS_PER_INSTANCE = 6
@@ -53,6 +54,10 @@ const server = createServer(async (request, response) => {
   } catch (error) {
     const cause = error instanceof RelayOperationError ? error.cause : error
     if (cause instanceof RelayFilesystemError) {
+      json(response, 400, { error: cause.message, code: cause.code })
+      return
+    }
+    if (cause instanceof BrickRecipeError) {
       json(response, 400, { error: cause.message, code: cause.code })
       return
     }
@@ -122,7 +127,20 @@ async function route(
   }
 
   if (method === "GET" && url.pathname === "/v1/bricks") {
-    json(response, 200, { bricks: BRICKS })
+    json(response, 200, await bricks.catalog())
+    return
+  }
+
+  if (method === "GET" && url.pathname === "/v1/bricks/recipe") {
+    const source = url.searchParams.get("source")
+    if (!source) {
+      json(response, 400, {
+        error: "Recipe source is required",
+        code: "missing_recipe_source",
+      })
+      return
+    }
+    json(response, 200, { ...(await bricks.recipe(source)), source })
     return
   }
 
