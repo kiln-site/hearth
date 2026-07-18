@@ -61,13 +61,15 @@ terminates TLS in front of Hearth. `BETTER_AUTH_URL` defaults to `KILN_URL` and
 can be set explicitly when Better Auth needs a different externally visible
 base URL.
 
-Standalone Hearth deployments can optionally set `KILN_CACHE_URL` to a
-Redis-protocol endpoint such as `redis://cache:6379` or a TLS-enabled
-`rediss://` URL. The bundled Compose stack supplies this automatically. Hearth
-caches only brief Relay snapshots, file trees, Brick catalogs, and networking
-state; authentication, authorization, credentials, files, and console data
-are never cached. `KILN_CACHE_NAMESPACE` is optional and otherwise derived
-from the database connection so installations sharing a cache remain isolated.
+Standalone Hearth deployments can optionally set `CACHE_HOST` to a Valkey or
+Redis hostname. `CACHE_PORT` defaults to `6379`, `CACHE_DATABASE` defaults to
+`0`, and `CACHE_TLS` defaults to `false`; `CACHE_USERNAME` and `CACHE_PASSWORD`
+configure authentication when required. The bundled Compose stack supplies the
+host and port automatically. Hearth caches only
+brief Relay snapshots, file trees, Brick catalogs, and networking state;
+authentication, authorization, credentials, files, and console data are never
+cached. Hearth derives an installation-specific namespace from the database
+connection so installations sharing a cache remain isolated.
 
 `BETTER_AUTH_SECRETS` is an ordered, versioned keyring shared by Better Auth and
 Hearth's encrypted Relay credentials. The first entry encrypts new data and

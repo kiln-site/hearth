@@ -6,47 +6,52 @@ import {
 } from "./database-config"
 
 export interface CacheConnectionConfig {
+  database: number
+  host: string
   namespace: string
-  url: URL
+  password: string | undefined
+  port: number
+  tls: boolean
+  username: string | undefined
 }
 
 export function cacheConnectionConfig(): CacheConnectionConfig | null {
-  const configured = process.env.KILN_CACHE_URL?.trim()
-  if (!configured) return null
-
-  let url: URL
-  try {
-    url = new URL(configured)
-  } catch {
-    throw new Error("KILN_CACHE_URL must be an absolute redis or rediss URL")
-  }
-  if (url.protocol !== "redis:" && url.protocol !== "rediss:") {
-    throw new Error("KILN_CACHE_URL must use redis or rediss")
-  }
-  if (!url.hostname) {
-    throw new Error("KILN_CACHE_URL must include a hostname")
-  }
-  if (url.search || url.hash) {
-    throw new Error("KILN_CACHE_URL must not contain a query or fragment")
-  }
-  if (url.pathname !== "" && url.pathname !== "/") {
-    const database = url.pathname.slice(1)
-    if (!/^\d+$/u.test(database) || Number(database) > 15) {
-      throw new Error("KILN_CACHE_URL database must be between 0 and 15")
-    }
-  }
-
-  const namespace = process.env.KILN_CACHE_NAMESPACE?.trim()
-  if (namespace && !/^[A-Za-z0-9:_-]{1,80}$/u.test(namespace)) {
-    throw new Error(
-      "KILN_CACHE_NAMESPACE must contain only letters, numbers, colons, underscores, or hyphens"
-    )
-  }
+  const host = process.env.CACHE_HOST?.trim()
+  if (!host) return null
 
   return {
-    namespace: namespace || defaultCacheNamespace(),
-    url,
+    database: cacheDatabase(process.env.CACHE_DATABASE),
+    host,
+    namespace: defaultCacheNamespace(),
+    password: process.env.CACHE_PASSWORD || undefined,
+    port: cachePort(process.env.CACHE_PORT),
+    tls: cacheTls(process.env.CACHE_TLS),
+    username: process.env.CACHE_USERNAME?.trim() || undefined,
   }
+}
+
+function cachePort(value: string | undefined): number {
+  const port = Number(value?.trim() || 6379)
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("CACHE_PORT must be a valid TCP port")
+  }
+  return port
+}
+
+function cacheDatabase(value: string | undefined): number {
+  const database = Number(value?.trim() || 0)
+  if (!Number.isInteger(database) || database < 0 || database > 15) {
+    throw new Error("CACHE_DATABASE must be between 0 and 15")
+  }
+  return database
+}
+
+function cacheTls(value: string | undefined): boolean {
+  const configured = value?.trim()
+  if (!configured) return false
+  if (/^(?:1|true|yes|on)$/iu.test(configured)) return true
+  if (/^(?:0|false|no|off)$/iu.test(configured)) return false
+  throw new Error("CACHE_TLS must be true or false")
 }
 
 function defaultCacheNamespace(): string {

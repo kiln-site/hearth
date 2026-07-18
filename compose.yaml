@@ -44,7 +44,7 @@ services:
       dockerfile: apps/ember-palworld/Dockerfile
 
   cache:
-    image: ${KILN_CACHE_IMAGE:-valkey/valkey:9.1.0-alpine}
+    image: ${CACHE_IMAGE:-valkey/valkey:9.1.0-alpine}
     restart: unless-stopped
     command:
       - /bin/sh
@@ -127,14 +127,18 @@ services:
         condition: service_started
     environment:
       DB_HOST: mysql
-      DB_PORT: 3306
+      DB_PORT: ${DB_PORT:-3306}
       DB_NAME: ${DB_NAME:-hearth}
       DB_USERNAME: ${DB_USERNAME:-kiln}
       DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
       DB_TABLE_PREFIX: ${DB_TABLE_PREFIX:-}
       KILN_ENVIRONMENT: ${KILN_ENVIRONMENT:-prod}
-      KILN_CACHE_URL: ${KILN_CACHE_URL:-redis://cache:6379}
-      KILN_CACHE_NAMESPACE: ${KILN_CACHE_NAMESPACE:-}
+      CACHE_HOST: ${CACHE_HOST:-cache}
+      CACHE_PORT: ${CACHE_PORT:-6379}
+      CACHE_USERNAME: ${CACHE_USERNAME:-}
+      CACHE_PASSWORD: ${CACHE_PASSWORD:-}
+      CACHE_DATABASE: ${CACHE_DATABASE:-0}
+      CACHE_TLS: ${CACHE_TLS:-false}
       KILN_ENABLE_SIGNUPS: ${KILN_ENABLE_SIGNUPS:-false}
       KILN_RELAY_KEY: ${KILN_RELAY_KEY:?Set KILN_RELAY_KEY in .env}
       KILN_RELAY_NAME: ${KILN_RELAY_NAME:-Local Relay}

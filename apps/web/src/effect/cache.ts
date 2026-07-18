@@ -42,7 +42,7 @@ export const AppCacheLive = configuredCache
 function makeRedisCacheLayer(
   config: CacheConnectionConfig
 ): Layer.Layer<AppCache> {
-  const RedisClientLive = NodeRedis.layer(redisOptions(config.url))
+  const RedisClientLive = NodeRedis.layer(redisOptions(config))
   const CacheRedis = Layer.effect(AppCache)(
     Effect.gen(function* () {
       const redis = yield* NodeRedis.NodeRedis
@@ -126,15 +126,14 @@ function makeRedisCacheLayer(
   return Layer.provide(CacheRedis, RedisClientLive)
 }
 
-function redisOptions(url: URL): RedisOptions {
-  const database = url.pathname.length > 1 ? Number(url.pathname.slice(1)) : 0
+function redisOptions(config: CacheConnectionConfig): RedisOptions {
   return {
-    host: url.hostname,
-    port: Number(url.port || 6379),
-    username: url.username ? decodeURIComponent(url.username) : undefined,
-    password: url.password ? decodeURIComponent(url.password) : undefined,
-    db: database,
-    tls: url.protocol === "rediss:" ? { servername: url.hostname } : undefined,
+    host: config.host,
+    port: config.port,
+    username: config.username,
+    password: config.password,
+    db: config.database,
+    tls: config.tls ? { servername: config.host } : undefined,
     commandTimeout: 750,
     connectTimeout: 750,
     maxRetriesPerRequest: 1,
