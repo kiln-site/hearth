@@ -175,14 +175,18 @@ export function SettingsWorkspace({
             />
             <MetaRow
               icon={Tags}
-              label="Minecraft"
+              label={instance.game}
               value={instance.version}
               mono
             />
             <MetaRow
               icon={Cpu}
-              label="Java"
-              value={`Java ${instance.javaVersion}`}
+              label="Runtime"
+              value={
+                instance.game === "Palworld"
+                  ? instance.javaVersion
+                  : `Java ${instance.javaVersion}`
+              }
               mono
             />
           </div>
@@ -193,7 +197,9 @@ export function SettingsWorkspace({
               <h3 className="text-sm font-semibold">Connect</h3>
             </div>
             <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-              Routed through Velocity and the existing CoreDNS wildcard.
+              {instance.game === "Palworld"
+                ? "Direct UDP endpoint on the Relay node."
+                : "Routed through Velocity and the existing CoreDNS wildcard."}
             </p>
             <button
               type="button"

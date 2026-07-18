@@ -84,6 +84,21 @@ export function ServerTypeIcon({
     )
   }
 
+  if (type === "palworld") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" {...props}>
+        <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" />
+        <path
+          d="M3.7 9h16.6M3.7 15h16.6M12 3v4m0 10v4"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+        />
+        <circle cx="12" cy="12" r="2.25" fill="currentColor" />
+      </svg>
+    )
+  }
+
   if (type === "neoforge") {
     return (
       <svg viewBox="0 0 24 24" fill="none" {...props}>

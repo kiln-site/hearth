@@ -35,12 +35,13 @@ ghcr.io/kiln-site/ember:java11
 ghcr.io/kiln-site/ember:java17
 ghcr.io/kiln-site/ember:java21
 ghcr.io/kiln-site/ember:java25
+ghcr.io/kiln-site/ember:palworld (amd64 only)
 ```
 
 Build the compact Kiln Ember images used by official Bricks:
 
 ```bash
-docker compose --profile images build ember-java11 ember-java17 ember-java21 ember-java25
+docker compose --profile images build ember-java11 ember-java17 ember-java21 ember-java25 ember-palworld
 ```
 
 The stack contains Hearth, Relay, MySQL, and a disposable Valkey cache. On an
@@ -186,16 +187,16 @@ and can be revoked before acceptance.
 ## Bricks and Relay lifecycle
 
 Hearth's **Bricks** screen asks a selected Relay to create the server. The
-official catalog currently includes Paper, Folia, Fabric, and Velocity. A
-Brick is a small declarative runtime definition—not a Compose fragment and not
-a long-running per-instance agent.
+official catalog currently includes Paper, Folia, Fabric, Velocity, and
+Palworld. A Brick is a small declarative runtime definition—not a Compose
+fragment and not a long-running per-instance agent.
 
 Relay creates one isolated container and one persistent data directory for
 every Brick. Containers use a read-only root filesystem, a writable `/server`
 mount, a bounded ephemeral `/tmp`, dropped Linux capabilities,
 `no-new-privileges`, PID and memory limits, and the private `kiln-minecraft`
-bridge. The Minecraft JVM remains the only substantial process in the
-container. Relay applies these labels itself:
+bridge. The game server remains the only substantial process in the container.
+Relay applies these labels itself:
 
 ```yaml
 labels:
@@ -216,9 +217,11 @@ the private Minecraft network, and a single Velocity entrypoint. Point
 Tailscale split DNS at the node, then names such as `1.21.11.paper.test` resolve
 to its Tailnet address. Port `25565` is omitted from displayed connection names.
 
-Ember uses Eclipse Temurin and `jlink`, then copies the minimal Java runtime
-into Debian slim with only certificates, `curl`, and `tini`. It downloads the
-selected server artifact into persistent storage on first boot; no `itzg`
+Minecraft Ember images use Eclipse Temurin and `jlink`, then copy the minimal
+Java runtime into Debian slim with only certificates, `curl`, and `tini`. The
+Palworld Ember is an amd64-only SteamCMD runtime that installs app `2394010`,
+tracks its latest Linux build, and publishes UDP `8211`. Server files,
+settings, and saves live in the same persistent instance directory; no `itzg`
 image or Pterodactyl/Pelican daemon is involved.
 
 ## Development

@@ -35,6 +35,14 @@ services:
       args:
         JAVA_VERSION: "25"
 
+  ember-palworld:
+    image: ghcr.io/kiln-site/ember:palworld
+    platform: linux/amd64
+    profiles: ["images"]
+    build:
+      context: .
+      dockerfile: apps/ember-palworld/Dockerfile
+
   cache:
     image: ${KILN_CACHE_IMAGE:-valkey/valkey:9.1.0-alpine}
     restart: unless-stopped

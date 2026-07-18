@@ -884,6 +884,7 @@ export class DockerDriver {
       brickId === "paper" ||
       brickId === "folia" ||
       brickId === "fabric" ||
+      brickId === "palworld" ||
       brickId === "velocity"
         ? brickId
         : undefined
@@ -919,7 +920,9 @@ export class DockerDriver {
           ? host
           : `${host}:${this.#config.connectPort}`),
       directory: relativeDirectory,
-      game: "Minecraft",
+      game:
+        labels["kiln.instance.game"] ??
+        (validBrickId === "palworld" ? "Palworld" : "Minecraft"),
       id,
       implementation,
       javaVersion: imageTag,

@@ -68,6 +68,10 @@ test("rejects missing keys, tampering, and use under another purpose", () => {
     oldKeyring,
     "relay-credential"
   )
+  const tamperedParts = ciphertext.split(".")
+  const tag = tamperedParts[3]
+  tamperedParts[3] = `${tag.startsWith("A") ? "B" : "A"}${tag.slice(1)}`
+  const tamperedCiphertext = tamperedParts.join(".")
 
   assert.throws(
     () => decryptWithKeyring(ciphertext, newKeyring, "relay-credential"),
@@ -76,7 +80,7 @@ test("rejects missing keys, tampering, and use under another purpose", () => {
   assert.throws(
     () =>
       decryptWithKeyring(
-        `${ciphertext.slice(0, -1)}A`,
+        tamperedCiphertext,
         oldKeyring,
         "relay-credential"
       ),

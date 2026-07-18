@@ -1,5 +1,5 @@
 export interface RelayInstanceConfig {
-  brickId?: "fabric" | "folia" | "paper" | "velocity"
+  brickId?: "fabric" | "folia" | "paper" | "palworld" | "velocity"
   connectAddress: string
   directory: string
   game: string
