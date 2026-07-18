@@ -27,7 +27,11 @@ import {
 import type { AccessPermission } from "@/lib/permissions"
 import type { AuthenticatedUser } from "@/lib/auth-session"
 import { requireAuthenticatedUser } from "@/server/auth"
-import { AuthenticationError, ResourceNotFoundError } from "@/effect/errors"
+import {
+  AuthenticationError,
+  ExternalServiceError,
+  ResourceNotFoundError,
+} from "@/effect/errors"
 import { runAppEffect } from "@/effect/runtime"
 import {
   cachedRelayJsonEffect,
@@ -38,6 +42,7 @@ import {
 } from "@/lib/relay-client"
 import type { RelayEndpoint } from "@/lib/relay-client"
 import { resolvePrimaryRelayEffect } from "@/lib/relay-registry"
+import { resolveMclogsApiUrl } from "@/lib/mclogs"
 
 const instanceInputSchema = z.object({
   instanceId: z.string().min(1),
@@ -317,59 +322,91 @@ export const uploadLatestLogToMclogs = createServerFn({ method: "POST" })
     })
   })
 
-async function uploadLog(data: z.infer<typeof mclogsUploadInputSchema>) {
-  const endpoint = process.env.MCLOGS_API_URL ?? "https://api.mclo.gs/1/log"
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      content: data.content,
-      source: "Kiln",
-      metadata: [
-        {
-          key: "instance",
-          label: "Instance",
-          value: data.instanceId,
-          visible: true,
+function uploadLog(data: z.infer<typeof mclogsUploadInputSchema>) {
+  return runAppEffect("mclogs.upload", uploadLogEffect(data))
+}
+
+const uploadLogEffect = Effect.fn("mclogs.upload")(function* (
+  data: z.infer<typeof mclogsUploadInputSchema>
+) {
+  const endpoint = resolveMclogsApiUrl(process.env.MCLOGS_API_URL)
+  const timeout = AbortSignal.timeout(20_000)
+  const response = yield* Effect.tryPromise({
+    try: () =>
+      fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
         },
-        {
-          key: "software",
-          label: "Software",
-          value: `${data.implementation} ${data.version}`,
-          visible: true,
-        },
-        {
-          key: "path",
-          label: "Source file",
-          value: data.path,
-          visible: true,
-        },
-      ],
-    }),
-    signal: AbortSignal.timeout(20_000),
+        body: JSON.stringify({
+          content: data.content,
+          source: "Kiln",
+          metadata: [
+            {
+              key: "instance",
+              label: "Instance",
+              value: data.instanceId,
+              visible: true,
+            },
+            {
+              key: "software",
+              label: "Software",
+              value: `${data.implementation} ${data.version}`,
+              visible: true,
+            },
+            {
+              key: "path",
+              label: "Source file",
+              value: data.path,
+              visible: true,
+            },
+          ],
+        }),
+        signal: timeout,
+      }),
+    catch: (cause) =>
+      ExternalServiceError.make({
+        service: "mclo.gs",
+        message: timeout.aborted
+          ? "mclo.gs upload timed out after 20 seconds"
+          : `Could not upload to mclo.gs: ${errorMessage(cause)}`,
+        cause,
+      }),
   })
 
-  const payload = (await response.json().catch(() => null)) as {
-    error?: string
-  } | null
-  if (!response.ok || !payload) {
-    throw new Error(
-      payload?.error ?? `mclo.gs returned HTTP ${response.status}`
-    )
+  const payload = yield* Effect.promise(() => response.json().catch(() => null))
+  const errorPayload = z
+    .object({ error: z.string().optional() })
+    .nullable()
+    .safeParse(payload)
+  const responseMessage = errorPayload.success
+    ? errorPayload.data?.error
+    : undefined
+
+  if (!response.ok) {
+    return yield* ExternalServiceError.make({
+      service: "mclo.gs",
+      message: responseMessage ?? `mclo.gs returned HTTP ${response.status}`,
+    })
   }
 
   const result = mclogsResponseSchema.safeParse(payload)
   if (!result.success) {
-    throw new Error(payload.error ?? "mclo.gs returned an invalid response")
+    return yield* ExternalServiceError.make({
+      service: "mclo.gs",
+      message: responseMessage ?? "mclo.gs returned an invalid response",
+    })
   }
   return {
     id: result.data.id,
     url: result.data.url,
     expires: result.data.expires,
   }
+})
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause)
 }
 
 async function relayRequest(

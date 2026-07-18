@@ -7,6 +7,7 @@ import {
 } from "@codemirror/language"
 import { json } from "@codemirror/legacy-modes/mode/javascript"
 import { properties } from "@codemirror/legacy-modes/mode/properties"
+import { shell } from "@codemirror/legacy-modes/mode/shell"
 import { toml } from "@codemirror/legacy-modes/mode/toml"
 import { xml } from "@codemirror/legacy-modes/mode/xml"
 import { yaml } from "@codemirror/legacy-modes/mode/yaml"
@@ -50,6 +51,7 @@ import { tags } from "@lezer/highlight"
 import { minimalSetup } from "codemirror"
 
 import { findSensitiveTextRedactions } from "@/lib/redaction"
+import { fileLanguageForPath } from "@/lib/file-language"
 
 const kilnHighlightStyle = HighlightStyle.define([
   { tag: tags.comment, color: "oklch(0.59 0.018 72)", fontStyle: "italic" },
@@ -294,30 +296,67 @@ const logLanguage = StreamLanguage.define({
   },
 })
 
+type ValveKeyValuesState = {
+  expectKey: boolean
+}
+
+const valveKeyValuesLanguage = StreamLanguage.define<ValveKeyValuesState>({
+  startState: () => ({ expectKey: true }),
+  token(stream, state) {
+    if (stream.eatSpace()) return null
+    if (stream.match("//")) {
+      stream.skipToEnd()
+      return "comment"
+    }
+    if (stream.match(/[{}]/)) {
+      state.expectKey = true
+      return "punctuation"
+    }
+    if (stream.peek() === '"') {
+      stream.next()
+      let escaped = false
+      while (!stream.eol()) {
+        const character = stream.next()
+        if (character === '"' && !escaped) break
+        escaped = character === "\\" && !escaped
+        if (character !== "\\") escaped = false
+      }
+      const token = state.expectKey ? "property" : "string"
+      state.expectKey = !state.expectKey
+      return token
+    }
+    if (stream.match(/[^\s{}"]+/)) {
+      const token = state.expectKey ? "property" : "atom"
+      state.expectKey = !state.expectKey
+      return token
+    }
+    stream.next()
+    return null
+  },
+})
+
 function languageForPath(path: string): Extension {
-  const lowerPath = path.toLowerCase()
-  if (
-    lowerPath.endsWith(".json") ||
-    lowerPath.endsWith(".json5") ||
-    lowerPath.endsWith(".mcmeta")
-  ) {
-    return StreamLanguage.define(json)
+  switch (fileLanguageForPath(path).id) {
+    case "json":
+      return StreamLanguage.define(json)
+    case "yaml":
+      return StreamLanguage.define(yaml)
+    case "xml":
+      return StreamLanguage.define(xml)
+    case "toml":
+      return StreamLanguage.define(toml)
+    case "log":
+      return logLanguage
+    case "ini":
+    case "properties":
+      return StreamLanguage.define(properties)
+    case "shell":
+      return StreamLanguage.define(shell)
+    case "valve-keyvalues":
+      return valveKeyValuesLanguage
+    case "text":
+      return []
   }
-  if (lowerPath.endsWith(".yml") || lowerPath.endsWith(".yaml")) {
-    return StreamLanguage.define(yaml)
-  }
-  if (lowerPath.endsWith(".xml")) return StreamLanguage.define(xml)
-  if (lowerPath.endsWith(".toml")) return StreamLanguage.define(toml)
-  if (lowerPath.endsWith(".log") || lowerPath.endsWith(".log.gz"))
-    return logLanguage
-  if (
-    lowerPath.endsWith(".properties") ||
-    lowerPath.endsWith(".cfg") ||
-    lowerPath.endsWith(".conf")
-  ) {
-    return StreamLanguage.define(properties)
-  }
-  return []
 }
 
 function contentAttributesFor(ariaLabel: string): Extension {
@@ -561,7 +600,7 @@ export const SyntaxCodeEditor = React.forwardRef<
     <div
       ref={host}
       className="kiln-code-editor h-full max-w-full min-w-0 overflow-hidden"
-      data-syntax-language={path.split(".").at(-1)?.toLowerCase() ?? "text"}
+      data-syntax-language={fileLanguageForPath(path).id}
     />
   )
 })

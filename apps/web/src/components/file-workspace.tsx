@@ -66,6 +66,7 @@ import {
   FileWorkspaceLoadingState,
 } from "@/components/file-tree-loading-panel"
 import { redactSensitiveText } from "@/lib/redaction"
+import { fileLanguageForPath } from "@/lib/file-language"
 import {
   queryKeys,
   relayFileQueryOptions,
@@ -762,15 +763,7 @@ function Editor({
         <div className="flex items-center gap-3">
           <span>UTF-8</span>
           <span>LF</span>
-          <span>
-            {file.path.endsWith(".log") || file.path.endsWith(".log.gz")
-              ? "LOG"
-              : file.path.endsWith(".yml") || file.path.endsWith(".yaml")
-                ? "YAML"
-                : file.path.endsWith(".json")
-                  ? "JSON"
-                  : "Properties"}
-          </span>
+          <span>{fileLanguageForPath(file.path).label}</span>
         </div>
       </div>
     </section>
