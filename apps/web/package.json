@@ -9,11 +9,9 @@
     "dev": "node --env-file=../../.env --import ./instrument.server.mjs ./node_modules/vite/bin/vite.js dev --port 3000",
     "start": "node --import ./instrument.server.mjs scripts/serve.mjs",
     "start:container": "node scripts/start-container.mjs",
-    "test": "vp test run && node --test keyring.test.mjs",
     "preview": "vp preview",
     "lint": "vp lint",
-    "format": "vp fmt \"**/*.{ts,tsx}\"",
-    "typecheck": "tsc --noEmit"
+    "format": "vp fmt \"**/*.{ts,tsx}\""
   },
   "dependencies": {
     "@better-auth/passkey": "^1.6.23",

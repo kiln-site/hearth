@@ -24,11 +24,11 @@ jobs:
             - cwd: .
               args: ["--frozen-lockfile"]
 
-      - name: Check lint and types
-        run: vp check
-
       - name: Typecheck
         run: vp run -r typecheck
+
+      - name: Check lint and types
+        run: vp check
 
       - name: Test retained critical behavior
         run: vp run -r test

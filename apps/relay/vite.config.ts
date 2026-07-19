@@ -27,6 +27,14 @@ export default defineConfig({
         command: "vp pack",
         dependsOn: [{ task: "build", from: "dependencies" }],
       },
+      test: {
+        command: "vp test run",
+        dependsOn: [{ task: "build", from: "dependencies" }],
+      },
+      typecheck: {
+        command: "tsc --noEmit",
+        dependsOn: [{ task: "build", from: "dependencies" }],
+      },
     },
   },
   test: {

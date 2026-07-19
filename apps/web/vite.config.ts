@@ -32,6 +32,14 @@ const config = defineConfig(({ command }) => {
             "SOURCE_COMMIT",
           ],
         },
+        test: {
+          command: ["vp test run", "node --test keyring.test.mjs"],
+          dependsOn: [{ task: "build", from: "dependencies" }],
+        },
+        typecheck: {
+          command: "tsc --noEmit",
+          dependsOn: [{ task: "build", from: "dependencies" }],
+        },
       },
     },
     pack: {
