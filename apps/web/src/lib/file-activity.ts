@@ -8,10 +8,12 @@ import type { RowDataPacket } from "mysql2/promise"
 import { Effect } from "effect"
 
 import { Database } from "@/effect/database"
+import { FilePinLimitError } from "@/effect/errors"
 import { runAppEffect } from "@/effect/runtime"
 import { databaseTable } from "@/lib/database-config"
 
 const recentFileLimit = 12
+const pinnedFileLimit = 48
 
 interface FileActivityRow extends RowDataPacket {
   instance_id: string
@@ -19,6 +21,10 @@ interface FileActivityRow extends RowDataPacket {
   pinned: boolean | number
   last_viewed_at_ms: number | string
   last_edited_at_ms: number | string | null
+}
+
+interface PinnedFileCountRow extends RowDataPacket {
+  pinned_count: number | string
 }
 
 function pathHash(path: string): string {
@@ -56,7 +62,8 @@ export const listFileActivityEffect = Effect.fn("files.activity.list")(
                   CAST(UNIX_TIMESTAMP(last_edited_at) * 1000 AS UNSIGNED) AS last_edited_at_ms
              FROM ${databaseTable("file_activity")}
             WHERE relay_id = ? AND instance_id = ? AND pinned = TRUE
-            ORDER BY GREATEST(last_viewed_at, COALESCE(last_edited_at, last_viewed_at)) DESC`,
+            ORDER BY GREATEST(last_viewed_at, COALESCE(last_edited_at, last_viewed_at)) DESC
+            LIMIT ${pinnedFileLimit}`,
           [relayId, instanceId]
         ),
         database.queryRows<FileActivityRow>(
@@ -77,8 +84,22 @@ export const listFileActivityEffect = Effect.fn("files.activity.list")(
   }
 )
 
+const ensureActivityInstanceEffect = Effect.fn("files.activity.ensureInstance")(
+  function* (relayId: string, instanceId: string) {
+    const database = yield* Database
+    yield* database.execute(
+      "file_activity_ensure_instance",
+      `INSERT IGNORE INTO ${databaseTable("instance")}
+         (relay_id, instance_id, display_name)
+       VALUES (?, ?, NULL)`,
+      [relayId, instanceId]
+    )
+  }
+)
+
 const recordFileViewedEffect = Effect.fn("files.activity.recordView")(
   function* (relayId: string, instanceId: string, path: string) {
+    yield* ensureActivityInstanceEffect(relayId, instanceId)
     const database = yield* Database
     yield* database.execute(
       "file_activity_record_view",
@@ -95,6 +116,7 @@ const recordFileViewedEffect = Effect.fn("files.activity.recordView")(
 
 const recordFileEditedEffect = Effect.fn("files.activity.recordEdit")(
   function* (relayId: string, instanceId: string, path: string) {
+    yield* ensureActivityInstanceEffect(relayId, instanceId)
     const database = yield* Database
     yield* database.execute(
       "file_activity_record_edit",
@@ -117,6 +139,23 @@ const setFilePinnedEffect = Effect.fn("files.activity.setPinned")(function* (
   pinned: boolean
 ) {
   const database = yield* Database
+  const hash = pathHash(path)
+  if (pinned) {
+    const [count] = yield* database.queryRows<PinnedFileCountRow>(
+      "file_activity_pinned_count",
+      `SELECT COUNT(*) AS pinned_count
+           FROM ${databaseTable("file_activity")}
+          WHERE relay_id = ?
+            AND instance_id = ?
+            AND pinned = TRUE
+            AND path_hash <> ?`,
+      [relayId, instanceId, hash]
+    )
+    if (Number(count?.pinned_count ?? 0) >= pinnedFileLimit) {
+      return yield* FilePinLimitError.make({ limit: pinnedFileLimit })
+    }
+  }
+  yield* ensureActivityInstanceEffect(relayId, instanceId)
   yield* database.execute(
     "file_activity_set_pinned",
     `INSERT INTO ${databaseTable("file_activity")}
@@ -125,7 +164,7 @@ const setFilePinnedEffect = Effect.fn("files.activity.setPinned")(function* (
        ON DUPLICATE KEY UPDATE
          path = VALUES(path),
          pinned = VALUES(pinned)`,
-    [relayId, instanceId, pathHash(path), path, pinned]
+    [relayId, instanceId, hash, path, pinned]
   )
 })
 

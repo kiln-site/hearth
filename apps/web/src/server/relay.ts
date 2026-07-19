@@ -286,7 +286,7 @@ export const updateRelayFilePin = createServerFn({ method: "POST" })
     await requireRelayPermission({
       user,
       relayId: relay.id,
-      permission: "instance.files.read",
+      permission: "instance.files.write",
       instanceId: data.instanceId,
     })
     const tree = await runAppEffect(

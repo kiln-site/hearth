@@ -12,6 +12,15 @@ export class DatabaseError extends Schema.TaggedErrorClass<DatabaseError>()(
   }
 }
 
+export class FilePinLimitError extends Schema.TaggedErrorClass<FilePinLimitError>()(
+  "FilePinLimitError",
+  { limit: Schema.Number }
+) {
+  override get message() {
+    return `This server already has ${this.limit} pinned files`
+  }
+}
+
 export class CacheError extends Schema.TaggedErrorClass<CacheError>()(
   "CacheError",
   {
@@ -89,6 +98,7 @@ export type AppError =
   | CredentialError
   | DatabaseError
   | ExternalServiceError
+  | FilePinLimitError
   | PermissionDeniedError
   | RelayResponseError
   | RelayUnavailableError

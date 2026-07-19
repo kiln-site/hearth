@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS kiln_setting (
 CREATE TABLE IF NOT EXISTS kiln_instance (
   relay_id CHAR(36) NOT NULL,
   instance_id CHAR(40) NOT NULL,
-  display_name VARCHAR(120) NOT NULL,
+  display_name VARCHAR(120) NULL,
   created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (relay_id, instance_id),
@@ -48,8 +48,9 @@ CREATE TABLE IF NOT EXISTS kiln_file_activity (
   updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (relay_id, instance_id, path_hash),
   KEY kiln_file_activity_recent_idx (relay_id, instance_id, pinned, last_viewed_at),
-  CONSTRAINT kiln_file_activity_relay_fk
-    FOREIGN KEY (relay_id) REFERENCES kiln_relay (id) ON DELETE CASCADE
+  CONSTRAINT kiln_file_activity_instance_fk
+    FOREIGN KEY (relay_id, instance_id)
+    REFERENCES kiln_instance (relay_id, instance_id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS kiln_auth_audit (

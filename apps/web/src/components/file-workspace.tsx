@@ -608,8 +608,12 @@ function Editor({
                       active={pinned}
                       icon={pinned ? <PinOff /> : <Pin />}
                       label={pinned ? "Unpin file" : "Pin file"}
-                      detail="Shared on this server's Files home"
-                      disabled={loading || pinning}
+                      detail={
+                        canWrite
+                          ? "Shared on this server's Files home"
+                          : "Requires file write access"
+                      }
+                      disabled={loading || pinning || !canWrite}
                       onClick={() => onPinnedChange(!pinned)}
                     />
                     <FileActionMenuItem
@@ -720,8 +724,12 @@ function Editor({
                       active={pinned}
                       icon={pinned ? <PinOff /> : <Pin />}
                       label={pinned ? "Unpin file" : "Pin file"}
-                      detail="Shared on this server's Files home"
-                      disabled={loading || pinning}
+                      detail={
+                        canWrite
+                          ? "Shared on this server's Files home"
+                          : "Requires file write access"
+                      }
+                      disabled={loading || pinning || !canWrite}
                       onClick={() => onPinnedChange(!pinned)}
                     />
                     <FileActionMenuItem
