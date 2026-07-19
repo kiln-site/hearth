@@ -4,9 +4,11 @@ Kiln is a fast, approachable, reliable self-hosted game-server platform. Keep
 privileged Docker/filesystem work in Relay; Hearth is the control plane. Favor
 simple operation and existing patterns over new abstractions.
 
+Performance/Speed and UX is always the most important thing to keep in mind for everychange.
+
 ## Work
 
-- Sync `main`, then use a focused branch. Preserve unrelated changes.
+- Sync `main`, then use a focused branch. Preserve unrelated changes. 
 - Use Vite+ (`vp`) and existing Effect patterns; never edit `.repos/effect`.
 - Keep only critical deterministic tests. Prefer browser validation during
   development; use Sentry to find production regressions.
@@ -43,3 +45,8 @@ audit Greptile findings until it reports 5/5 ready to merge.
 
 After merge: switch to `main`, pull with `--ff-only`, delete the merged local
 branch, restart `pnpm dev:docker`, and verify the OrbStack URL in T3 Preview.
+
+# Reference Repos
+
+This project takes inspiration on Pterodactyl's Panel (https://github.com/pterodactyl/panel) and wings (https://github.com/pterodactyl/wings). There's also a properly fully pterodactyl compliant alternative Hyrodactyl (formerly Pyrodactyl) that we reference (https://github.com/blueprintframework/hydrodactyl). These should just be used to reference for ideas. 
+
