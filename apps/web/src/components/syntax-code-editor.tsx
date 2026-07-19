@@ -58,6 +58,8 @@ import { fileLanguageForPath } from "@/lib/file-language"
 const defaultIndentUnit = "  "
 const indentationScanLimit = 64 * 1024
 const indentationLineLimit = 256
+const editorContentInlineEndPadding = "24px"
+const activeLineBackground = "oklch(0.24 0.015 52 / 0.32)"
 
 function greatestCommonDivisor(left: number, right: number) {
   while (right !== 0) {
@@ -164,7 +166,7 @@ const kilnEditorTheme = EditorView.theme(
     },
     ".cm-content": {
       minHeight: "100%",
-      padding: "16px 24px 16px 0",
+      padding: `16px ${editorContentInlineEndPadding} 16px 0`,
       caretColor: "oklch(0.72 0.14 50)",
     },
     ".cm-line": { paddingLeft: "16px" },
@@ -172,7 +174,11 @@ const kilnEditorTheme = EditorView.theme(
       {
         backgroundColor: "oklch(0.67 0.16 47 / 0.2) !important",
       },
-    ".cm-activeLine": { backgroundColor: "oklch(0.24 0.015 52 / 0.32)" },
+    ".cm-activeLine": { backgroundColor: "transparent" },
+    "&.cm-focused .cm-activeLine": {
+      backgroundColor: activeLineBackground,
+      boxShadow: `${editorContentInlineEndPadding} 0 0 ${activeLineBackground}`,
+    },
     ".cm-gutters": {
       minHeight: "100%",
       backgroundColor: "oklch(0.2 0.008 20 / 0.6)",
@@ -184,6 +190,10 @@ const kilnEditorTheme = EditorView.theme(
       padding: "0 12px 0 8px",
     },
     ".cm-activeLineGutter": {
+      backgroundColor: "transparent",
+      color: "inherit",
+    },
+    "&.cm-focused .cm-activeLineGutter": {
       backgroundColor: "oklch(0.25 0.018 50 / 0.65)",
       color: "oklch(0.69 0.055 58)",
     },
@@ -220,11 +230,11 @@ const kilnEditorTheme = EditorView.theme(
       background: "oklch(0.7 0.1 175 / 0.18)",
       borderBottom: "1px solid oklch(0.7 0.1 175 / 0.42)",
     },
-    "&.cm-merge-b .cm-activeLine.cm-changedLine, &.cm-merge-b .cm-activeLine.cm-inlineChangedLine":
+    "&.cm-merge-b.cm-focused .cm-activeLine.cm-changedLine, &.cm-merge-b.cm-focused .cm-activeLine.cm-inlineChangedLine":
       {
-        backgroundColor: "oklch(0.24 0.015 52 / 0.32)",
+        backgroundColor: activeLineBackground,
       },
-    "&.cm-merge-b .cm-activeLine .cm-changedText": {
+    "&.cm-merge-b.cm-focused .cm-activeLine .cm-changedText": {
       background: "transparent",
       borderBottomColor: "transparent",
     },
