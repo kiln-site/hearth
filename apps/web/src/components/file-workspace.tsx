@@ -2036,9 +2036,10 @@ function useFileWorkspaceState({
   )
   const selectedPath = optimisticPath ?? normalizedRoutePath
   const [mobileTreeOpen, setMobileTreeOpen] = React.useState(false)
-  const [navigationError, setNavigationError] = React.useState<string | null>(
-    null
-  )
+  const [navigationError, setNavigationError] = React.useState<{
+    routePath: string
+    message: string
+  } | null>(null)
   const [treeCollapsed, setTreeCollapsed] = React.useState(
     initialTreeCollapsed && !openTreeOnEntry
   )
@@ -2110,8 +2111,12 @@ function useFileWorkspaceState({
       normalizedRoutePath.endsWith("/"))
       ? `Could not find /data/${normalizedRoutePath}`
       : null
+  const currentNavigationError =
+    navigationError?.routePath === normalizedRoutePath
+      ? navigationError.message
+      : null
   const error =
-    navigationError ??
+    currentNavigationError ??
     routeError ??
     queryErrorMessage(treeQuery.error, "Could not load files") ??
     queryErrorMessage(refreshTreeMutation.error, "Could not refresh files") ??
@@ -2177,9 +2182,11 @@ function useFileWorkspaceState({
       setOptimisticPath(null)
     } catch (cause) {
       setOptimisticPath(null)
-      setNavigationError(
-        cause instanceof Error ? cause.message : "Could not navigate home"
-      )
+      setNavigationError({
+        routePath: normalizedRoutePath,
+        message:
+          cause instanceof Error ? cause.message : "Could not navigate home",
+      })
     }
   }, [instance.shortId, navigate, normalizedRoutePath])
 
@@ -2230,11 +2237,13 @@ function useFileWorkspaceState({
         } catch (cause) {
           if (pendingRoutePath.current !== path) return
           setOptimisticPath(null)
-          setNavigationError(
-            cause instanceof Error
-              ? cause.message
-              : "Could not open the selected file"
-          )
+          setNavigationError({
+            routePath: normalizedRoutePath,
+            message:
+              cause instanceof Error
+                ? cause.message
+                : "Could not open the selected file",
+          })
         } finally {
           if (pendingRoutePath.current === path) {
             pendingRoutePath.current = null

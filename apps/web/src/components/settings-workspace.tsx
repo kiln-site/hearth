@@ -47,7 +47,8 @@ export function SettingsWorkspace({
     },
   })
   const [copied, setCopied] = React.useState(false)
-  const [name, setName] = React.useState(() => instance.name)
+  const [nameDraft, setNameDraft] = React.useState<string | null>(null)
+  const name = nameDraft ?? instance.name
   const [namePending, setNamePending] = React.useState(false)
   const [nameSaved, setNameSaved] = React.useState(false)
   const [nameError, setNameError] = React.useState<string | null>(null)
@@ -70,6 +71,7 @@ export function SettingsWorkspace({
       await updateNameMutation.mutateAsync({
         data: { instanceId: instance.id, name: nextName },
       })
+      setNameDraft(null)
       setNameSaved(true)
       window.setTimeout(() => setNameSaved(false), 1_800)
     } catch (cause) {
@@ -127,7 +129,7 @@ export function SettingsWorkspace({
                   id="instance-display-name"
                   value={name}
                   onChange={(event) => {
-                    setName(event.target.value)
+                    setNameDraft(event.target.value)
                     setNameSaved(false)
                     setNameError(null)
                   }}
