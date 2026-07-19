@@ -1357,6 +1357,11 @@ function FileTreePanel({
     onFileSelected()
   }, [model, onFileSelected, onPathChange, selectedPath, selection])
 
+  function handleHomeClick() {
+    onMobileOpenChange(false)
+    onHome()
+  }
+
   return (
     <aside
       ref={panelRef}
@@ -1387,7 +1392,7 @@ function FileTreePanel({
       <div
         className={`order-2 flex h-11 shrink-0 items-center overflow-hidden border-t bg-card px-1.5 md:order-1 md:h-14 md:w-[var(--file-tree-width)] md:border-t-0 md:border-b md:px-2 ${collapsed ? "md:invisible" : ""}`}
       >
-        <FilesHomeButton active={!selectedPath} onClick={onHome} />
+        <FilesHomeButton active={!selectedPath} onClick={handleHomeClick} />
         <label className="flex h-full min-w-0 flex-1 items-center">
           <Search className="ml-1.5 size-[18px] shrink-0 text-foreground/90" />
           <input
@@ -2007,15 +2012,25 @@ export function FileWorkspace({
     [handleTreeCollapsedChange]
   )
 
-  const handleHome = React.useCallback(() => {
+  const handleHome = React.useCallback(async () => {
     pendingRoutePath.current = null
-    setSelectedPath("")
     setNavigationError(null)
-    if (!normalizedRoutePath) return
-    void navigate({
-      to: "/$serverId/files/$",
-      params: { serverId: instance.shortId, _splat: "" },
-    })
+    if (!normalizedRoutePath) {
+      setSelectedPath("")
+      return
+    }
+    try {
+      await navigate({
+        to: "/$serverId/files/$",
+        params: { serverId: instance.shortId, _splat: "" },
+      })
+      setSelectedPath("")
+    } catch (cause) {
+      setSelectedPath(normalizedRoutePath)
+      setNavigationError(
+        cause instanceof Error ? cause.message : "Could not navigate home"
+      )
+    }
   }, [instance.shortId, navigate, normalizedRoutePath])
 
   React.useLayoutEffect(() => {
