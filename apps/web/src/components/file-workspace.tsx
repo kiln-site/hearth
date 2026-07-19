@@ -101,6 +101,7 @@ const fileTreeCollapsedCookieName = "file_tree_collapsed"
 const fileTreeCookieMaxAge = 60 * 60 * 24 * 7
 const fileTreeMinWidth = 224
 const fileTreeMaxWidth = 480
+const mobileFileDrawerTransitionMs = 200
 const fileTreeLayoutCss = `
   [data-item-section="content"] {
     flex: 1 1 auto;
@@ -122,7 +123,7 @@ const fileTreeLayoutCss = `
 `
 const fileEditorFontSizeStorageKey = "kiln:file-editor-font-size"
 const fileEditorFontSizes = [10, 11, 12, 14, 16]
-const defaultFileEditorFontSize = 12
+const defaultFileEditorFontSize = 16
 
 function clampFileTreeWidth(width: number, workspaceWidth: number) {
   const responsiveMaximum = Math.floor(workspaceWidth * 0.45)
@@ -831,7 +832,7 @@ function Editor({
                 ref={searchInputRef}
                 value={searchQuery}
                 aria-label="Find in file"
-                className="h-8 bg-background/70 pr-2 pl-8 font-mono text-xs shadow-none"
+                className="h-8 bg-background/70 pr-2 pl-8 font-mono text-base shadow-none md:text-xs"
                 placeholder="Find in file…"
                 spellCheck={false}
                 onChange={(event) => setSearchQuery(event.target.value)}
@@ -1167,7 +1168,11 @@ function FileTreePanel({
   })
   const search = useFileTreeSearch(model)
   const selection = useFileTreeSelection(model)
+  const [mobileContentVisible, setMobileContentVisible] = React.useState(
+    mobileOpen
+  )
   const searchInputRef = React.useRef<HTMLInputElement>(null)
+  const mobileBrowseButtonRef = React.useRef<HTMLButtonElement>(null)
   const panelRef = React.useRef<HTMLElement>(null)
   const resizeHandleRef = React.useRef<HTMLDivElement>(null)
   const resizeFrame = React.useRef<number | null>(null)
@@ -1260,6 +1265,18 @@ function FileTreePanel({
   React.useLayoutEffect(() => {
     applyFileTreeWidth(initialWidth ?? defaultFileTreeWidth())
   }, [initialWidth])
+
+  React.useLayoutEffect(() => {
+    if (mobileOpen) {
+      setMobileContentVisible(true)
+      return
+    }
+    const timer = window.setTimeout(
+      () => setMobileContentVisible(false),
+      mobileFileDrawerTransitionMs
+    )
+    return () => window.clearTimeout(timer)
+  }, [mobileOpen])
 
   React.useLayoutEffect(() => {
     if (!collapsed) applyFileTreeWidth(currentWidth.current)
@@ -1382,6 +1399,11 @@ function FileTreePanel({
     onHome()
   }
 
+  function closeMobileFileBrowser() {
+    onMobileOpenChange(false)
+    window.requestAnimationFrame(() => mobileBrowseButtonRef.current?.focus())
+  }
+
   return (
     <aside
       ref={panelRef}
@@ -1410,18 +1432,52 @@ function FileTreePanel({
       }
     >
       <div
-        className={`order-2 flex h-11 shrink-0 items-center overflow-hidden border-t bg-card px-1.5 md:order-1 md:h-14 md:w-[var(--file-tree-width)] md:border-t-0 md:border-b md:px-2 ${collapsed ? "md:invisible" : ""}`}
+        className={`${mobileContentVisible ? "flex" : "hidden"} order-1 h-12 shrink-0 items-center border-b border-border/80 bg-card px-3 md:hidden`}
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+          <FolderTree className="size-[18px] shrink-0 text-primary" />
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold">Browse files</p>
+            <p className="truncate font-mono text-[10px] text-muted-foreground">
+              /data
+            </p>
+          </div>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Close file browser"
+          onClick={closeMobileFileBrowser}
+        >
+          <X className="size-[18px]" />
+        </Button>
+      </div>
+
+      <div
+        className={`absolute inset-x-0 bottom-0 z-10 order-2 flex h-11 shrink-0 items-center overflow-hidden border-t bg-card px-1.5 md:relative md:inset-auto md:z-auto md:order-1 md:h-14 md:w-[var(--file-tree-width)] md:border-t-0 md:border-b md:px-2 ${collapsed ? "md:invisible" : ""}`}
       >
         <FilesHomeButton active={!selectedPath} onClick={handleHomeClick} />
+        <Button
+          ref={mobileBrowseButtonRef}
+          variant={mobileOpen ? "secondary" : "ghost"}
+          size="icon-sm"
+          className="shrink-0 shadow-none md:hidden"
+          aria-label="Browse files"
+          aria-controls={`file-tree-${instance.shortId}`}
+          aria-expanded={mobileOpen}
+          onClick={() => onMobileOpenChange(!mobileOpen)}
+        >
+          <FolderTree className="size-[18px]" />
+        </Button>
         <label className="flex h-full min-w-0 flex-1 items-center">
-          <Search className="ml-1.5 size-[18px] shrink-0 text-foreground/90" />
+          <Search className="ml-1 size-[18px] shrink-0 text-foreground/90 md:ml-1.5" />
           <input
             ref={searchInputRef}
             type="search"
             value={search.value}
             placeholder="Search files…"
             aria-label="Search instance files"
-            className="h-full min-w-0 flex-1 bg-transparent px-2 text-sm text-foreground outline-none placeholder:text-muted-foreground/70"
+            className="h-full min-w-0 flex-1 bg-transparent px-2 text-base text-foreground outline-none placeholder:text-muted-foreground/70 md:text-sm"
             onChange={(event) => {
               const value = event.target.value
               if (value) search.setValue(value)
@@ -1431,7 +1487,8 @@ function FileTreePanel({
             onKeyDown={(event) => {
               if (event.key === "Escape") {
                 event.preventDefault()
-                search.close()
+                if (search.value) search.close()
+                else closeMobileFileBrowser()
                 return
               }
               if (event.key === "Enter") {
@@ -1517,7 +1574,7 @@ function FileTreePanel({
         </div>
       </div>
       <div
-        className={`order-1 min-h-0 flex-1 overflow-hidden bg-card px-1 py-1.5 md:order-2 md:block md:w-[var(--file-tree-width)] md:shrink-0 ${mobileOpen ? "block" : "hidden"} ${collapsed ? "md:invisible" : ""}`}
+        className={`order-1 mb-11 min-h-0 flex-1 overflow-hidden bg-card px-1 py-1.5 md:order-2 md:mb-0 md:block md:w-[var(--file-tree-width)] md:shrink-0 ${mobileContentVisible ? "block" : "hidden"} ${collapsed ? "md:invisible" : ""}`}
       >
         <FileTree
           model={model}
@@ -1921,9 +1978,7 @@ export function FileWorkspace({
   const queryClient = useQueryClient()
   const normalizedRoutePath = routeFilePath?.replace(/^\/+/, "") ?? ""
   const [selectedPath, setSelectedPath] = React.useState(normalizedRoutePath)
-  const [mobileTreeOpen, setMobileTreeOpen] = React.useState(
-    Boolean(normalizedRoutePath)
-  )
+  const [mobileTreeOpen, setMobileTreeOpen] = React.useState(false)
   const [navigationError, setNavigationError] = React.useState<string | null>(
     null
   )
