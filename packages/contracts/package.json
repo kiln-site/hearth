@@ -4,18 +4,17 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "format": "prettier --write \"src/**/*.{ts,tsx}\"",
-    "lint": "eslint src",
+    "format": "vp fmt \"src/**/*.{ts,tsx}\"",
+    "lint": "vp lint src",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@tanstack/eslint-config": "0.4.0",
-    "eslint": "^9",
-    "typescript": "^6"
+    "typescript": "^6",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
   },
   "exports": {
     ".": {

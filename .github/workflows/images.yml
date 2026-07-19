@@ -92,7 +92,7 @@ jobs:
           outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', matrix.image) || '' }}
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.cache_scope }}-${{ matrix.architecture }}
-          cache-to: type=gha,mode=min,scope=${{ matrix.cache_scope }}-${{ matrix.architecture }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.cache_scope }}-${{ matrix.architecture }}
           provenance: mode=max
           sbom: true
 

@@ -1,5 +1,5 @@
 import { copyFile, readdir, readFile } from "node:fs/promises"
-import { basename, join } from "node:path"
+import { basename } from "node:path"
 
 const clientAssets = new URL("../dist/client/assets/", import.meta.url)
 const serverOutput = new URL("../dist/server/", import.meta.url)

@@ -1,7 +1,7 @@
 import { IncomingMessage } from "node:http"
 import { Socket } from "node:net"
 
-import { describe, expect, it } from "vitest"
+import { describe, expect, it } from "vite-plus/test"
 import { brickRecipeSchema } from "@workspace/contracts"
 
 import { BrickRecipeError } from "./effect/errors.js"
