@@ -1619,7 +1619,11 @@ function FileActivityRow({
         <span>
           {kind}{" "}
           <time
-            dateTime={entry.lastEditedAt ?? entry.lastViewedAt}
+            dateTime={
+              kind === "Edited"
+                ? (entry.lastEditedAt ?? entry.lastViewedAt)
+                : entry.lastViewedAt
+            }
             suppressHydrationWarning
           >
             {fileActivityTime(entry)}

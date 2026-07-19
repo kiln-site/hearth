@@ -23,8 +23,9 @@ interface FileActivityRow extends RowDataPacket {
   last_edited_at_ms: number | string | null
 }
 
-interface PinnedFileCountRow extends RowDataPacket {
-  pinned_count: number | string
+interface PinnedFilePathRow extends RowDataPacket {
+  path: string
+  path_hash: string
 }
 
 function pathHash(path: string): string {
@@ -136,7 +137,8 @@ const setFilePinnedEffect = Effect.fn("files.activity.setPinned")(function* (
   relayId: string,
   instanceId: string,
   path: string,
-  pinned: boolean
+  pinned: boolean,
+  validPaths: ReadonlySet<string>
 ) {
   const database = yield* Database
   const hash = pathHash(path)
@@ -152,16 +154,31 @@ const setFilePinnedEffect = Effect.fn("files.activity.setPinned")(function* (
         [relayId, instanceId]
       )
       if (pinned) {
-        const [count] = await transaction.queryRows<PinnedFileCountRow>(
-          `SELECT COUNT(*) AS pinned_count
+        const pinnedFiles = await transaction.queryRows<PinnedFilePathRow>(
+          `SELECT path_hash, path
              FROM ${databaseTable("file_activity")}
             WHERE relay_id = ?
               AND instance_id = ?
               AND pinned = TRUE
-              AND path_hash <> ?`,
-          [relayId, instanceId, hash]
+            LIMIT ${pinnedFileLimit}`,
+          [relayId, instanceId]
         )
-        if (Number(count?.pinned_count ?? 0) >= pinnedFileLimit) return false
+        const staleHashes = pinnedFiles
+          .filter((file) => !validPaths.has(file.path))
+          .map((file) => file.path_hash)
+        if (staleHashes.length) {
+          await transaction.execute(
+            `DELETE FROM ${databaseTable("file_activity")}
+              WHERE relay_id = ?
+                AND instance_id = ?
+                AND path_hash IN (${staleHashes.map(() => "?").join(", ")})`,
+            [relayId, instanceId, ...staleHashes]
+          )
+        }
+        const activePinCount = pinnedFiles.filter(
+          (file) => validPaths.has(file.path) && file.path_hash !== hash
+        ).length
+        if (activePinCount >= pinnedFileLimit) return false
       }
       await transaction.execute(
         `INSERT INTO ${databaseTable("file_activity")}
@@ -214,11 +231,12 @@ export async function setFilePinned(
   relayId: string,
   instanceId: string,
   path: string,
-  pinned: boolean
+  pinned: boolean,
+  validPaths: ReadonlySet<string>
 ): Promise<RelayFileActivity> {
   await runAppEffect(
     "files.activity.setPinned",
-    setFilePinnedEffect(relayId, instanceId, path, pinned)
+    setFilePinnedEffect(relayId, instanceId, path, pinned, validPaths)
   )
   return listFileActivity(relayId, instanceId)
 }

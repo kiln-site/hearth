@@ -302,7 +302,13 @@ export const updateRelayFilePin = createServerFn({ method: "POST" })
       throw new Error("File not found")
     }
     return relayFileActivitySchema.parse(
-      await setFilePinned(relay.id, data.instanceId, data.path, data.pinned)
+      await setFilePinned(
+        relay.id,
+        data.instanceId,
+        data.path,
+        data.pinned,
+        new Set(tree.paths)
+      )
     )
   })
 
