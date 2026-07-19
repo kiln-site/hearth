@@ -120,6 +120,11 @@ const fileTreeLayoutCss = `
       opacity: 1;
     }
   }
+
+  [data-icon-name="file-tree-icon-chevron"] {
+    width: 14px;
+    height: 14px;
+  }
 `
 const fileEditorFontSizeStorageKey = "kiln:file-editor-font-size"
 const fileEditorFontSizes = [10, 11, 12, 14, 16]
@@ -1601,7 +1606,7 @@ function FileTreePanel({
         </div>
       </div>
       <div
-        className={`order-1 mb-11 min-h-0 flex-1 overflow-hidden bg-card px-1 py-1.5 md:order-2 md:mb-0 md:block md:w-[var(--file-tree-width)] md:shrink-0 ${mobileContentVisible ? "block" : "hidden"} ${collapsed ? "md:invisible" : ""}`}
+        className={`order-1 mb-11 min-h-0 flex-1 overflow-hidden bg-card py-1.5 md:order-2 md:mb-0 md:block md:w-[var(--file-tree-width)] md:shrink-0 ${mobileContentVisible ? "block" : "hidden"} ${collapsed ? "md:invisible" : ""}`}
       >
         <FileTree
           model={model}
@@ -1623,6 +1628,12 @@ function FileTreePanel({
               "--trees-border-radius-override": "0px",
               "--trees-font-family-override": "'Archivo Variable', sans-serif",
               "--trees-font-size-override": "12px",
+              "--trees-padding-inline-override": "0px",
+              "--trees-item-padding-x-override": "5px",
+              "--trees-item-margin-x-override": "0px",
+              "--trees-item-row-gap-override": "4px",
+              "--trees-level-gap-override": "4px",
+              "--trees-context-menu-trigger-inline-offset": "8px",
               height: "100%",
             } as React.CSSProperties
           }
