@@ -1,6 +1,10 @@
 import * as React from "react"
-import { useMutation } from "@tanstack/react-query"
-import type { RelayInstance, RelayNode } from "@workspace/contracts"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
+import type {
+  RelayInstance,
+  RelayNode,
+  RelaySnapshot,
+} from "@workspace/contracts"
 import {
   Box,
   Check,
@@ -20,31 +24,33 @@ import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
 
+import { queryKeys, replaceRelaySnapshotInstance } from "@/lib/query-options"
 import { updateInstanceName } from "@/server/relay"
 
 export function SettingsWorkspace({
   instance,
   node,
   canRename,
-  onInstanceUpdate,
 }: {
   instance: RelayInstance
   node: RelayNode
   canRename: boolean
-  onInstanceUpdate: (instance: RelayInstance) => void
 }) {
-  const updateNameMutation = useMutation({ mutationFn: updateInstanceName })
+  const queryClient = useQueryClient()
+  const updateNameMutation = useMutation({
+    mutationFn: updateInstanceName,
+    onSuccess: (updated) => {
+      queryClient.setQueryData<RelaySnapshot>(
+        queryKeys.relay.snapshot,
+        (snapshot) => replaceRelaySnapshotInstance(snapshot, updated)
+      )
+    },
+  })
   const [copied, setCopied] = React.useState(false)
-  const [name, setName] = React.useState(instance.name)
+  const [name, setName] = React.useState(() => instance.name)
   const [namePending, setNamePending] = React.useState(false)
   const [nameSaved, setNameSaved] = React.useState(false)
   const [nameError, setNameError] = React.useState<string | null>(null)
-
-  React.useEffect(() => {
-    setName(instance.name)
-    setNameSaved(false)
-    setNameError(null)
-  }, [instance.id, instance.name])
 
   async function copyAddress() {
     await navigator.clipboard.writeText(instance.connectAddress)
@@ -61,10 +67,9 @@ export function SettingsWorkspace({
     setNameSaved(false)
     setNameError(null)
     try {
-      const updated = await updateNameMutation.mutateAsync({
+      await updateNameMutation.mutateAsync({
         data: { instanceId: instance.id, name: nextName },
       })
-      onInstanceUpdate(updated)
       setNameSaved(true)
       window.setTimeout(() => setNameSaved(false), 1_800)
     } catch (cause) {

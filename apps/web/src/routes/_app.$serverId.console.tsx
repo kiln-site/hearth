@@ -13,6 +13,7 @@ function ConsoleRoute() {
   const { instance, permissions } = useInstanceWorkspace()
   return (
     <ConsoleWorkspace
+      key={instance.id}
       instance={instance}
       active
       canShare={permissions.shareLogs}

@@ -6,7 +6,6 @@ import { getAuthState } from "@/server/auth"
 import { relaysQueryOptions } from "@/lib/query-options"
 
 export const Route = createFileRoute("/_app/settings")({
-  head: () => ({ meta: [{ title: pageTitle("Settings") }] }),
   beforeLoad: async () => {
     const { user } = await getAuthState()
     if (!user?.isDevelopmentBypass && user?.role !== "admin") {
@@ -15,6 +14,7 @@ export const Route = createFileRoute("/_app/settings")({
   },
   loader: ({ context }) =>
     context.queryClient.ensureQueryData(relaysQueryOptions()),
+  head: () => ({ meta: [{ title: pageTitle("Settings") }] }),
   component: SettingsRoute,
 })
 

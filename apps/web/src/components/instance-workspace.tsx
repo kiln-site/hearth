@@ -1,6 +1,10 @@
 import * as React from "react"
-import { useMutation } from "@tanstack/react-query"
-import type { RelayInstance, RelayNode } from "@workspace/contracts"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
+import type {
+  RelayInstance,
+  RelayNode,
+  RelaySnapshot,
+} from "@workspace/contracts"
 import {
   Check,
   CircleStop,
@@ -30,12 +34,23 @@ import {
 } from "@workspace/ui/components/tooltip"
 
 import { ToolbarSidebarTrigger } from "@/components/global-page-toolbar"
+import { queryKeys, replaceRelaySnapshotInstance } from "@/lib/query-options"
 import { performRelayAction } from "@/server/relay"
 
 const ResourceHistoryChart = React.lazy(async () => {
   const module = await import("@/components/resource-history-chart")
   return { default: module.ResourceHistoryChart }
 })
+const localTimestampFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "long",
+})
+
+function clampResourcePercent(value: number | null | undefined): number {
+  return value === null || value === undefined
+    ? 0
+    : Math.max(1, Math.min(value, 100))
+}
 
 export interface InstanceWorkspacePermissions {
   consoleWrite: boolean
@@ -52,7 +67,6 @@ interface InstanceWorkspaceContextValue {
   }
   instance: RelayInstance
   node: RelayNode
-  onInstanceUpdate: (instance: RelayInstance) => void
   permissions: InstanceWorkspacePermissions
 }
 
@@ -76,7 +90,6 @@ export function InstanceWorkspace({
   title,
   fileTreePreferences,
   permissions,
-  onInstanceUpdate,
 }: {
   children: React.ReactNode
   instance: RelayInstance
@@ -87,33 +100,105 @@ export function InstanceWorkspace({
     width: number | null
   }
   permissions: InstanceWorkspacePermissions
-  onInstanceUpdate: (instance: RelayInstance) => void
 }) {
-  const relayActionMutation = useMutation({ mutationFn: performRelayAction })
-  const [action, setAction] = React.useState<string | null>(null)
-  const [error, setError] = React.useState<string | null>(null)
-  const [serverActionsOpen, setServerActionsOpen] = React.useState(false)
-  const [confirmKill, setConfirmKill] = React.useState(false)
-  const [idCopied, setIdCopied] = React.useState(false)
-  const [addressCopied, setAddressCopied] = React.useState(false)
-  const addressCopyTimer = React.useRef<number | null>(null)
-  const idCopyTimer = React.useRef<number | null>(null)
-  const isRunning = instance.observedState === "running"
-  const isStarting = instance.observedState === "starting"
-  const isStopping = instance.observedState === "stopping"
-  const powerIsOn = isRunning || isStarting
-  const startUnavailable = powerIsOn || isStopping || action !== null
-  const stopUnavailable = !powerIsOn || isStopping || action !== null
   const contextValue = React.useMemo(
     () => ({
       fileTreePreferences,
       instance,
       node,
-      onInstanceUpdate,
       permissions,
     }),
-    [fileTreePreferences, instance, node, onInstanceUpdate, permissions]
+    [fileTreePreferences, instance, node, permissions]
   )
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col bg-background">
+      <InstanceWorkspaceHeader
+        instance={instance}
+        title={title}
+        canControlPower={permissions.power}
+      />
+
+      <div
+        data-slot="instance-workspace-surface"
+        className="relative mx-2 mt-2 flex min-h-0 flex-1 overflow-hidden border border-border/80 bg-card/30"
+      >
+        <InstanceWorkspaceContext.Provider value={contextValue}>
+          {children}
+        </InstanceWorkspaceContext.Provider>
+      </div>
+    </div>
+  )
+}
+
+type ServerAction = "start" | "stop" | "restart" | "kill"
+
+function InstanceWorkspaceHeader({
+  instance,
+  title,
+  canControlPower,
+}: {
+  instance: RelayInstance
+  title: "Console" | "Files" | "Info"
+  canControlPower: boolean
+}) {
+  const queryClient = useQueryClient()
+  const relayActionMutation = useMutation({
+    mutationFn: performRelayAction,
+    onSuccess: (updated) => {
+      queryClient.setQueryData<RelaySnapshot>(
+        queryKeys.relay.snapshot,
+        (snapshot) => replaceRelaySnapshotInstance(snapshot, updated)
+      )
+    },
+  })
+  const [action, setAction] = React.useState<ServerAction | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
+
+  async function handleAction(nextAction: ServerAction) {
+    setAction(nextAction)
+    setError(null)
+    try {
+      await relayActionMutation.mutateAsync({
+        data: { instanceId: instance.id, action: nextAction },
+      })
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Relay action failed")
+    } finally {
+      setAction(null)
+    }
+  }
+
+  return (
+    <header className="shrink-0 border-b bg-background/90 backdrop-blur-xl">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-3 px-3 py-3 sm:px-5 lg:min-h-20 lg:py-2 xl:grid-cols-[minmax(0,1fr)_39rem_auto] xl:gap-x-5">
+        <InstanceIdentity error={error} instance={instance} title={title} />
+        <ResourceMeters instance={instance} />
+        <ServerPowerControls
+          action={action}
+          canControlPower={canControlPower}
+          instance={instance}
+          onAction={handleAction}
+        />
+      </div>
+    </header>
+  )
+}
+
+function InstanceIdentity({
+  error,
+  instance,
+  title,
+}: {
+  error: string | null
+  instance: RelayInstance
+  title: "Console" | "Files" | "Info"
+}) {
+  const [idCopied, setIdCopied] = React.useState(false)
+  const [addressCopied, setAddressCopied] = React.useState(false)
+  const addressCopyTimer = React.useRef<number | null>(null)
+  const idCopyTimer = React.useRef<number | null>(null)
+
   React.useEffect(
     () => () => {
       if (addressCopyTimer.current) {
@@ -141,303 +226,291 @@ export function InstanceWorkspace({
     idCopyTimer.current = window.setTimeout(() => setIdCopied(false), 1_800)
   }
 
-  async function handleAction(
-    nextAction: "start" | "stop" | "restart" | "kill"
-  ) {
-    setAction(nextAction)
-    setError(null)
-    try {
-      onInstanceUpdate(
-        await relayActionMutation.mutateAsync({
-          data: { instanceId: instance.id, action: nextAction },
-        })
-      )
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Relay action failed")
-    } finally {
-      setAction(null)
-    }
+  return (
+    <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-2">
+      <ToolbarSidebarTrigger />
+      <span className="h-6 w-px shrink-0 bg-border/80" aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        <h1
+          className="flex min-w-0 items-baseline gap-1.5 font-heading tracking-[-0.03em]"
+          title={`${instance.name} / ${title}`}
+        >
+          <span className="min-w-0 truncate text-lg font-semibold text-foreground sm:text-xl">
+            {instance.name}
+          </span>
+          <span className="shrink-0 text-border">/</span>
+          <span className="shrink-0 text-sm font-medium text-muted-foreground sm:text-base">
+            {title}
+          </span>
+        </h1>
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] whitespace-nowrap text-muted-foreground sm:text-xs">
+          <span className="shrink-0">
+            {instance.implementation} {instance.version}
+          </span>
+          <span className="text-border">/</span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className={`truncate font-mono transition-colors ${idCopied ? "text-emerald-400" : "hover:text-foreground"}`}
+                aria-label={`Copy full server ID ${instance.id}`}
+                onClick={copyId}
+              >
+                {instance.shortId}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>
+              {idCopied ? "Full server ID copied" : "Copy full server ID"}
+            </TooltipContent>
+          </Tooltip>
+          <span className="hidden text-border xl:inline">/</span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className={`hidden min-w-0 items-center gap-1 truncate font-mono transition-colors xl:inline-flex ${addressCopied ? "text-emerald-400" : "text-primary/75 hover:text-primary"}`}
+                aria-label={`Copy server address ${instance.connectAddress}`}
+                onClick={copyAddress}
+              >
+                <span className="truncate">{instance.connectAddress}</span>
+                {addressCopied ? (
+                  <Check className="size-3 shrink-0" />
+                ) : (
+                  <Copy className="size-3 shrink-0 opacity-55" />
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>
+              {addressCopied ? "Address copied" : "Copy server address"}
+            </TooltipContent>
+          </Tooltip>
+        </div>
+        {error ? (
+          <p className="mt-0.5 truncate text-[9px] text-destructive">{error}</p>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+function ServerPowerControls({
+  action,
+  canControlPower,
+  instance,
+  onAction,
+}: {
+  action: ServerAction | null
+  canControlPower: boolean
+  instance: RelayInstance
+  onAction: (action: ServerAction) => Promise<void>
+}) {
+  const [serverActionsOpen, setServerActionsOpen] = React.useState(false)
+  const [confirmKill, setConfirmKill] = React.useState(false)
+  if (!canControlPower) return null
+
+  const isRunning = instance.observedState === "running"
+  const isStarting = instance.observedState === "starting"
+  const isStopping = instance.observedState === "stopping"
+  const powerIsOn = isRunning || isStarting
+  const startUnavailable = powerIsOn || isStopping || action !== null
+  const stopUnavailable = !powerIsOn || isStopping || action !== null
+
+  function runAction(nextAction: ServerAction) {
+    setServerActionsOpen(false)
+    setConfirmKill(false)
+    void onAction(nextAction)
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-background">
-      <header className="shrink-0 border-b bg-background/90 backdrop-blur-xl">
-        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-3 px-3 py-3 sm:px-5 lg:min-h-20 lg:py-2 xl:grid-cols-[minmax(0,1fr)_39rem_auto] xl:gap-x-5">
-          <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-2">
-            <ToolbarSidebarTrigger />
-            <span
-              className="h-6 w-px shrink-0 bg-border/80"
-              aria-hidden="true"
-            />
-            <div className="min-w-0 flex-1">
-              <h1
-                className="flex min-w-0 items-baseline gap-1.5 font-heading tracking-[-0.03em]"
-                title={`${instance.name} / ${title}`}
-              >
-                <span className="min-w-0 truncate text-lg font-semibold text-foreground sm:text-xl">
-                  {instance.name}
-                </span>
-                <span className="shrink-0 text-border">/</span>
-                <span className="shrink-0 text-sm font-medium text-muted-foreground sm:text-base">
-                  {title}
-                </span>
-              </h1>
-              <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] whitespace-nowrap text-muted-foreground sm:text-xs">
-                <span className="shrink-0">
-                  {instance.implementation} {instance.version}
-                </span>
-                <span className="text-border">/</span>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      className={`truncate font-mono transition-colors ${idCopied ? "text-emerald-400" : "hover:text-foreground"}`}
-                      aria-label={`Copy full server ID ${instance.id}`}
-                      onClick={copyId}
-                    >
-                      {instance.shortId}
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" sideOffset={6}>
-                    {idCopied ? "Full server ID copied" : "Copy full server ID"}
-                  </TooltipContent>
-                </Tooltip>
-                <span className="hidden text-border xl:inline">/</span>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      className={`hidden min-w-0 items-center gap-1 truncate font-mono transition-colors xl:inline-flex ${addressCopied ? "text-emerald-400" : "text-primary/75 hover:text-primary"}`}
-                      aria-label={`Copy server address ${instance.connectAddress}`}
-                      onClick={copyAddress}
-                    >
-                      <span className="truncate">
-                        {instance.connectAddress}
-                      </span>
-                      {addressCopied ? (
-                        <Check className="size-3 shrink-0" />
-                      ) : (
-                        <Copy className="size-3 shrink-0 opacity-55" />
-                      )}
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" sideOffset={6}>
-                    {addressCopied ? "Address copied" : "Copy server address"}
-                  </TooltipContent>
-                </Tooltip>
-              </div>
-              {error ? (
-                <p className="mt-0.5 truncate text-[9px] text-destructive">
-                  {error}
-                </p>
-              ) : null}
-            </div>
-          </div>
-
-          <ResourceMeters instance={instance} />
-
-          <div className="col-start-2 row-start-1 flex items-center justify-end gap-1.5 xl:col-start-3">
-            {permissions.power ? (
+    <div className="col-start-2 row-start-1 flex items-center justify-end gap-1.5 xl:col-start-3">
+      <Button
+        variant="outline"
+        size="sm"
+        className={
+          powerIsOn
+            ? "hidden h-9 gap-1.5 !border-red-500/65 !bg-red-600 px-3 text-xs !text-white shadow-none hover:!border-red-400 hover:!bg-red-500 disabled:!border-red-500/35 disabled:!bg-red-600/45 disabled:!text-white/70 md:inline-flex"
+            : "hidden h-9 gap-1.5 !border-blue-500/65 !bg-blue-600 px-3 text-xs !text-white shadow-none hover:!border-blue-400 hover:!bg-blue-500 md:inline-flex"
+        }
+        disabled={action !== null || isStopping}
+        onClick={() => runAction(powerIsOn ? "stop" : "start")}
+      >
+        {action === "start" || action === "stop" || isStopping ? (
+          <LoaderCircle className="animate-spin" />
+        ) : powerIsOn ? (
+          <CircleStop />
+        ) : (
+          <Play />
+        )}
+        {action === "start"
+          ? "Starting"
+          : action === "stop" || isStopping
+            ? "Stopping"
+            : powerIsOn
+              ? "Stop"
+              : "Start"}
+      </Button>
+      <Popover
+        open={serverActionsOpen}
+        onOpenChange={(open) => {
+          setServerActionsOpen(open)
+          if (!open) setConfirmKill(false)
+        }}
+      >
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <PopoverTrigger asChild>
               <Button
                 variant="outline"
-                size="sm"
-                className={
-                  powerIsOn
-                    ? "hidden h-9 gap-1.5 !border-red-500/65 !bg-red-600 px-3 text-xs !text-white shadow-none hover:!border-red-400 hover:!bg-red-500 disabled:!border-red-500/35 disabled:!bg-red-600/45 disabled:!text-white/70 md:inline-flex"
-                    : "hidden h-9 gap-1.5 !border-blue-500/65 !bg-blue-600 px-3 text-xs !text-white shadow-none hover:!border-blue-400 hover:!bg-blue-500 md:inline-flex"
-                }
-                disabled={action !== null || isStopping}
-                onClick={() => handleAction(powerIsOn ? "stop" : "start")}
+                size="icon-lg"
+                className="bg-card shadow-none"
+                aria-label="Server actions"
+                disabled={action !== null}
               >
-                {action === "start" || action === "stop" || isStopping ? (
+                {action !== null ? (
                   <LoaderCircle className="animate-spin" />
-                ) : powerIsOn ? (
-                  <CircleStop />
                 ) : (
-                  <Play />
+                  <EllipsisVertical />
                 )}
-                {action === "start"
-                  ? "Starting"
-                  : action === "stop" || isStopping
-                    ? "Stopping"
-                    : powerIsOn
-                      ? "Stop"
-                      : "Start"}
               </Button>
-            ) : null}
-            {permissions.power ? (
-              <Popover
-                open={serverActionsOpen}
-                onOpenChange={(open) => {
-                  setServerActionsOpen(open)
-                  if (!open) setConfirmKill(false)
-                }}
-              >
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <PopoverTrigger asChild>
-                      <Button
-                        variant="outline"
-                        size="icon-lg"
-                        className="bg-card shadow-none"
-                        aria-label="Server actions"
-                        disabled={action !== null}
-                      >
-                        {action !== null ? (
-                          <LoaderCircle className="animate-spin" />
-                        ) : (
-                          <EllipsisVertical />
-                        )}
-                      </Button>
-                    </PopoverTrigger>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" sideOffset={6}>
-                    Power Options
-                  </TooltipContent>
-                </Tooltip>
-                <PopoverContent
-                  align="end"
-                  sideOffset={7}
-                  className="w-[min(17rem,calc(100vw-1.5rem))] p-0"
+            </PopoverTrigger>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" sideOffset={6}>
+            Power Options
+          </TooltipContent>
+        </Tooltip>
+        <PopoverContent
+          align="end"
+          sideOffset={7}
+          className="w-[min(17rem,calc(100vw-1.5rem))] p-0"
+        >
+          {confirmKill ? (
+            <>
+              <div className="border-b px-3 py-2.5">
+                <p className="text-xs font-semibold text-foreground">
+                  Kill {instance.name}?
+                </p>
+                <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                  This immediately terminates the container. Unsaved world data
+                  may be lost.
+                </p>
+              </div>
+              <div className="flex justify-end gap-1.5 p-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setConfirmKill(false)}
                 >
-                  {confirmKill ? (
-                    <>
-                      <div className="border-b px-3 py-2.5">
-                        <p className="text-xs font-semibold text-foreground">
-                          Kill {instance.name}?
-                        </p>
-                        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-                          This immediately terminates the container. Unsaved
-                          world data may be lost.
-                        </p>
-                      </div>
-                      <div className="flex justify-end gap-1.5 p-2">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setConfirmKill(false)}
-                        >
-                          Back
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="!border-red-500/65 !bg-red-600 !text-white hover:!border-red-400 hover:!bg-red-500"
-                          onClick={() => {
-                            setServerActionsOpen(false)
-                            setConfirmKill(false)
-                            void handleAction("kill")
-                          }}
-                        >
-                          <OctagonX />
-                          Kill now
-                        </Button>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="p-1">
-                      <p className="border-b px-2 py-2 text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
-                        Server actions
-                      </p>
-                      <button
-                        type="button"
-                        className={`flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs transition-colors ${startUnavailable ? "cursor-default text-muted-foreground/35" : "text-blue-300 hover:bg-blue-500/10"}`}
-                        disabled={startUnavailable}
-                        onClick={() => {
-                          setServerActionsOpen(false)
-                          void handleAction("start")
-                        }}
-                      >
-                        <span
-                          className={`grid size-7 place-items-center border ${startUnavailable ? "border-border/55 bg-muted/15" : "border-blue-500/25 bg-blue-500/5"}`}
-                        >
-                          <Play className="size-3.5" />
-                        </span>
-                        <span>
-                          <span className="block font-medium">Start</span>
-                          <span
-                            className={`block text-[10px] ${startUnavailable ? "text-muted-foreground/30" : "text-muted-foreground"}`}
-                          >
-                            Power on the server
-                          </span>
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        className={`flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs transition-colors ${stopUnavailable ? "cursor-default text-muted-foreground/35" : "text-red-400 hover:bg-red-500/10"}`}
-                        disabled={stopUnavailable}
-                        onClick={() => {
-                          setServerActionsOpen(false)
-                          void handleAction("stop")
-                        }}
-                      >
-                        <span
-                          className={`grid size-7 place-items-center border ${stopUnavailable ? "border-border/55 bg-muted/15" : "border-red-500/25 bg-red-500/5"}`}
-                        >
-                          <CircleStop className="size-3.5" />
-                        </span>
-                        <span>
-                          <span className="block font-medium">Stop</span>
-                          <span
-                            className={`block text-[10px] ${stopUnavailable ? "text-muted-foreground/30" : "text-muted-foreground"}`}
-                          >
-                            Gracefully shut down
-                          </span>
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-foreground transition-colors hover:bg-popover-accent/80 focus-visible:bg-popover-accent focus-visible:outline-none disabled:cursor-default disabled:opacity-35"
-                        disabled={!isRunning}
-                        onClick={() => {
-                          setServerActionsOpen(false)
-                          void handleAction("restart")
-                        }}
-                      >
-                        <span className="grid size-7 place-items-center border border-border bg-card text-muted-foreground">
-                          <RotateCw className="size-3.5" />
-                        </span>
-                        <span>
-                          <span className="block font-medium">Restart</span>
-                          <span className="block text-[10px] text-muted-foreground">
-                            Gracefully stop and start
-                          </span>
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-default disabled:opacity-35"
-                        disabled={!powerIsOn || isStopping}
-                        onClick={() => setConfirmKill(true)}
-                      >
-                        <span className="grid size-7 place-items-center border border-red-500/25 bg-red-500/5">
-                          <OctagonX className="size-3.5" />
-                        </span>
-                        <span>
-                          <span className="block font-medium">Kill</span>
-                          <span className="block text-[10px] text-muted-foreground">
-                            Terminate immediately
-                          </span>
-                        </span>
-                      </button>
-                    </div>
-                  )}
-                </PopoverContent>
-              </Popover>
-            ) : null}
-          </div>
-        </div>
-      </header>
-
-      <div
-        data-slot="instance-workspace-surface"
-        className="relative mx-2 mt-2 flex min-h-0 flex-1 overflow-hidden border border-border/80 bg-card/30"
-      >
-        <InstanceWorkspaceContext.Provider value={contextValue}>
-          {children}
-        </InstanceWorkspaceContext.Provider>
-      </div>
+                  Back
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="!border-red-500/65 !bg-red-600 !text-white hover:!border-red-400 hover:!bg-red-500"
+                  onClick={() => runAction("kill")}
+                >
+                  <OctagonX />
+                  Kill now
+                </Button>
+              </div>
+            </>
+          ) : (
+            <div className="p-1">
+              <p className="border-b px-2 py-2 text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+                Server actions
+              </p>
+              <PowerActionButton
+                description="Power on the server"
+                disabled={startUnavailable}
+                icon={<Play className="size-3.5" />}
+                label="Start"
+                tone="start"
+                onClick={() => runAction("start")}
+              />
+              <PowerActionButton
+                description="Gracefully shut down"
+                disabled={stopUnavailable}
+                icon={<CircleStop className="size-3.5" />}
+                label="Stop"
+                tone="stop"
+                onClick={() => runAction("stop")}
+              />
+              <PowerActionButton
+                description="Gracefully stop and start"
+                disabled={!isRunning}
+                icon={<RotateCw className="size-3.5" />}
+                label="Restart"
+                onClick={() => runAction("restart")}
+              />
+              <PowerActionButton
+                description="Terminate immediately"
+                disabled={!powerIsOn || isStopping}
+                icon={<OctagonX className="size-3.5" />}
+                label="Kill"
+                tone="kill"
+                onClick={() => setConfirmKill(true)}
+              />
+            </div>
+          )}
+        </PopoverContent>
+      </Popover>
     </div>
+  )
+}
+
+function PowerActionButton({
+  description,
+  disabled,
+  icon,
+  label,
+  onClick,
+  tone = "default",
+}: {
+  description: string
+  disabled: boolean
+  icon: React.ReactNode
+  label: string
+  onClick: () => void
+  tone?: "default" | "start" | "stop" | "kill"
+}) {
+  const toneClassName = {
+    default: "text-foreground hover:bg-popover-accent/80",
+    start: disabled
+      ? "text-muted-foreground/35"
+      : "text-blue-300 hover:bg-blue-500/10",
+    stop: disabled
+      ? "text-muted-foreground/35"
+      : "text-red-400 hover:bg-red-500/10",
+    kill: "text-red-400 hover:bg-red-500/10",
+  }[tone]
+  const iconClassName = {
+    default: "border-border bg-card text-muted-foreground",
+    start: disabled
+      ? "border-border/55 bg-muted/15"
+      : "border-blue-500/25 bg-blue-500/5",
+    stop: disabled
+      ? "border-border/55 bg-muted/15"
+      : "border-red-500/25 bg-red-500/5",
+    kill: "border-red-500/25 bg-red-500/5",
+  }[tone]
+  return (
+    <button
+      type="button"
+      className={`flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs transition-colors focus-visible:bg-popover-accent focus-visible:outline-none disabled:cursor-default disabled:opacity-35 ${toneClassName}`}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <span
+        className={`grid size-7 place-items-center border ${iconClassName}`}
+      >
+        {icon}
+      </span>
+      <span>
+        <span className="block font-medium">{label}</span>
+        <span className="block text-[10px] text-muted-foreground">
+          {description}
+        </span>
+      </span>
+    </button>
   )
 }
 
@@ -477,14 +550,14 @@ function ResourceMeters({ instance }: { instance: RelayInstance }) {
     >
       <div className="grid h-14 min-w-0 grid-cols-[repeat(3,minmax(0,1fr))_minmax(0,1.25fr)_5.5rem] divide-x divide-border/60 border border-border/80 bg-card/40 px-1.5 py-2 xl:grid-cols-[repeat(3,minmax(0,1fr))_minmax(0,1.15fr)_5.75rem]">
         {resources.map((resource) => (
-          <ResourceHistoryHoverCard
+          <ResourceHistoryPopover
             key={resource.id}
             resource={resource}
             history={history}
           >
-            <div
-              className={`group min-w-0 outline-none first:pl-1.5 focus-visible:bg-muted/25 ${resource.id === "network" ? "px-1.5" : "px-2.5"}`}
-              tabIndex={0}
+            <button
+              type="button"
+              className={`group min-w-0 text-left outline-none first:pl-1.5 focus-visible:bg-muted/25 ${resource.id === "network" ? "px-1.5" : "px-2.5"}`}
             >
               <div className="flex items-center justify-between gap-1.5 font-mono text-[11px] leading-none tracking-[0.065em] xl:text-xs">
                 <span className="shrink-0 font-medium text-muted-foreground/85 transition-colors group-hover:text-foreground/85">
@@ -508,8 +581,8 @@ function ResourceMeters({ instance }: { instance: RelayInstance }) {
                 )}
               </div>
               <ResourceBar resource={resource} className="mt-3" />
-            </div>
-          </ResourceHistoryHoverCard>
+            </button>
+          </ResourceHistoryPopover>
         ))}
         <HoverCard openDelay={160} closeDelay={100}>
           <HoverCardTrigger asChild>
@@ -589,29 +662,23 @@ function useInstanceUptime(instance: RelayInstance): string | null {
 }
 
 function useBrowserLocalTimestamp(value: string | null): string | null {
-  const [formatted, setFormatted] = React.useState<string | null>(null)
+  return React.useSyncExternalStore(
+    subscribeToBrowserLocale,
+    () => formatBrowserLocalTimestamp(value),
+    () => null
+  )
+}
 
-  React.useEffect(() => {
-    if (!value) {
-      setFormatted(null)
-      return
-    }
+function subscribeToBrowserLocale(): () => void {
+  return () => undefined
+}
 
-    const timestamp = Date.parse(value)
-    if (!Number.isFinite(timestamp)) {
-      setFormatted(null)
-      return
-    }
-
-    setFormatted(
-      new Intl.DateTimeFormat(undefined, {
-        dateStyle: "medium",
-        timeStyle: "long",
-      }).format(new Date(timestamp))
-    )
-  }, [value])
-
-  return formatted
+function formatBrowserLocalTimestamp(value: string | null): string | null {
+  if (!value) return null
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp)
+    ? localTimestampFormatter.format(new Date(timestamp))
+    : null
 }
 
 function resourceItems(instance: RelayInstance): Array<ResourceItem> {
@@ -703,11 +770,6 @@ function ResourceBar({
   resource: ResourceItem
   className?: string
 }) {
-  const width = (value: number | null | undefined) =>
-    value === null || value === undefined
-      ? 0
-      : Math.max(1, Math.min(value, 100))
-
   return (
     <div
       className={`h-2 ${resource.id === "network" ? "grid grid-rows-2 gap-px" : "overflow-hidden bg-muted/55"} ${className}`}
@@ -729,20 +791,22 @@ function ResourceBar({
           <div className="overflow-hidden bg-muted/55">
             <div
               className="h-full bg-cyan-300/85 transition-[width] duration-500 ease-out"
-              style={{ width: `${width(resource.receivedValue)}%` }}
+              style={{
+                width: `${clampResourcePercent(resource.receivedValue)}%`,
+              }}
             />
           </div>
           <div className="overflow-hidden bg-muted/55">
             <div
               className="h-full bg-primary/75 transition-[width] duration-500 ease-out"
-              style={{ width: `${width(resource.sentValue)}%` }}
+              style={{ width: `${clampResourcePercent(resource.sentValue)}%` }}
             />
           </div>
         </>
       ) : (
         <div
           className={`h-full transition-[width] duration-500 ease-out ${resource.indicatorClassName}`}
-          style={{ width: `${width(resource.value)}%` }}
+          style={{ width: `${clampResourcePercent(resource.value)}%` }}
         />
       )}
     </div>
@@ -812,7 +876,7 @@ function useResourceHistory(instance: RelayInstance) {
   return history.instanceId === instance.id ? history.points : []
 }
 
-function ResourceHistoryHoverCard({
+function ResourceHistoryPopover({
   resource,
   history,
   children,
@@ -822,9 +886,9 @@ function ResourceHistoryHoverCard({
   children: React.ReactElement
 }) {
   return (
-    <HoverCard openDelay={160} closeDelay={100}>
-      <HoverCardTrigger asChild>{children}</HoverCardTrigger>
-      <HoverCardContent
+    <Popover>
+      <PopoverTrigger asChild>{children}</PopoverTrigger>
+      <PopoverContent
         align="center"
         side="bottom"
         sideOffset={8}
@@ -832,8 +896,8 @@ function ResourceHistoryHoverCard({
         className="w-[min(20rem,calc(100vw-1.5rem))] border-border/90 bg-popover p-0 shadow-2xl"
       >
         <ResourceHistoryCard resource={resource} history={history} />
-      </HoverCardContent>
-    </HoverCard>
+      </PopoverContent>
+    </Popover>
   )
 }
 

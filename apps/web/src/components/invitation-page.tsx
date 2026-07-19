@@ -1,5 +1,5 @@
 import * as React from "react"
-import { useMutation } from "@tanstack/react-query"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import {
   ArrowRight,
@@ -16,6 +16,7 @@ import { Button } from "@workspace/ui/components/button"
 import { HearthMark } from "@/components/hearth-mark"
 import { authClient } from "@/lib/auth-client"
 import type { AuthenticatedUser } from "@/lib/auth-session"
+import { queryKeys } from "@/lib/query-options"
 import type { getInvitationPreview } from "@/server/access"
 import { acceptAccessInvitation } from "@/server/access"
 import { disableDevelopmentBypass } from "@/server/auth"
@@ -33,8 +34,13 @@ export function InvitationPage({
   token: string
   user: AuthenticatedUser | null
 }) {
+  const queryClient = useQueryClient()
   const acceptInvitationMutation = useMutation({
     mutationFn: acceptAccessInvitation,
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.access.capabilities,
+      }),
   })
   const [pending, setPending] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)

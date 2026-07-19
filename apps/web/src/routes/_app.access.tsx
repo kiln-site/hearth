@@ -11,7 +11,6 @@ import {
 } from "@/lib/query-options"
 
 export const Route = createFileRoute("/_app/access")({
-  head: () => ({ meta: [{ title: pageTitle("Access") }] }),
   beforeLoad: async ({ context }) => {
     const [capabilities, connection] = await Promise.all([
       context.queryClient.ensureQueryData(accessCapabilitiesQueryOptions()),
@@ -32,6 +31,7 @@ export const Route = createFileRoute("/_app/access")({
       context.queryClient.ensureQueryData(relaySnapshotQueryOptions()),
     ])
   },
+  head: () => ({ meta: [{ title: pageTitle("Access") }] }),
   component: AccessRoute,
 })
 

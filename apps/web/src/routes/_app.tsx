@@ -39,6 +39,7 @@ const tabRoutes = {
 } as const
 
 const selectedInstanceStorageKey = "kiln:selected-instance-id"
+const emptyInstances: Array<RelayInstance> = []
 
 export const Route = createFileRoute("/_app")({
   staleTime: Infinity,
@@ -104,15 +105,15 @@ function AppLayout() {
       : pathname.endsWith("/info")
         ? "info"
         : "console"
-  const instances = snapshot?.instances ?? []
+  const instances = snapshot?.instances ?? emptyInstances
   const routeInstance = findInstance(instances, serverId)
   const rememberedInstance = findInstance(instances, selectedInstanceId)
   const instance: RelayInstance | undefined =
     routeInstance ?? rememberedInstance ?? instances.at(0)
 
-  const rememberInstance = React.useCallback((next: RelayInstance) => {
-    setSelectedInstanceId(next.id)
-    window.localStorage.setItem(selectedInstanceStorageKey, next.id)
+  const rememberInstance = React.useCallback((instanceId: string) => {
+    setSelectedInstanceId(instanceId)
+    window.localStorage.setItem(selectedInstanceStorageKey, instanceId)
   }, [])
   const navigateToInstanceTab = React.useCallback(
     (tab: InstanceTab, nextServerId: string, replace = false) => {
@@ -147,10 +148,10 @@ function AppLayout() {
       window.localStorage.getItem(selectedInstanceStorageKey)
     )
     if (storedInstance) setSelectedInstanceId(storedInstance.id)
-  }, [serverId, snapshot?.instances])
+  }, [instances, serverId])
 
   React.useEffect(() => {
-    if (routeInstance) rememberInstance(routeInstance)
+    if (routeInstance?.id) rememberInstance(routeInstance.id)
   }, [rememberInstance, routeInstance?.id])
 
   React.useEffect(() => {
@@ -175,7 +176,7 @@ function AppLayout() {
         relayName={connection.relay?.name}
         onInstanceChange={(shortId) => {
           const nextInstance = findInstance(instances, shortId)
-          if (nextInstance) rememberInstance(nextInstance)
+          if (nextInstance) rememberInstance(nextInstance.id)
           void navigateToInstanceTab(activeTab ?? "console", shortId)
         }}
         onTabChange={(tab) => {

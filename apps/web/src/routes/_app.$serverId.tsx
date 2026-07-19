@@ -1,11 +1,7 @@
 import * as React from "react"
-import {
-  useQuery,
-  useQueryClient,
-  useSuspenseQuery,
-} from "@tanstack/react-query"
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { Outlet, createFileRoute, useRouterState } from "@tanstack/react-router"
-import type { RelayInstance, RelaySnapshot } from "@workspace/contracts"
+import type { RelayInstance } from "@workspace/contracts"
 
 import type { InstanceTab } from "@/components/app-sidebar"
 import { InstanceWorkspace } from "@/components/instance-workspace"
@@ -13,7 +9,6 @@ import type { AccessPermission } from "@/lib/permissions"
 import { roleHasPermission } from "@/lib/permissions"
 import {
   accessCapabilitiesQueryOptions,
-  queryKeys,
   relaySnapshotQueryOptions,
   uiPreferencesQueryOptions,
 } from "@/lib/query-options"
@@ -23,7 +18,6 @@ export const Route = createFileRoute("/_app/$serverId")({
 })
 
 function InstanceRouteLayout() {
-  const queryClient = useQueryClient()
   const { serverId } = Route.useParams()
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
@@ -48,23 +42,6 @@ function InstanceRouteLayout() {
         ? "Files"
         : "Info"
 
-  const updateInstance = React.useCallback(
-    (updated: RelayInstance) => {
-      queryClient.setQueryData<RelaySnapshot>(
-        queryKeys.relay.snapshot,
-        (current) =>
-          current
-            ? {
-                ...current,
-                instances: current.instances.map((item) =>
-                  item.id === updated.id ? updated : item
-                ),
-              }
-            : current
-      )
-    },
-    [queryClient]
-  )
   const fileTreePreferences = React.useMemo(
     () => ({
       collapsed: uiPreferences.fileTreeCollapsed,
@@ -99,7 +76,6 @@ function InstanceRouteLayout() {
       title={title}
       fileTreePreferences={fileTreePreferences}
       permissions={permissions}
-      onInstanceUpdate={updateInstance}
     >
       <Outlet />
     </InstanceWorkspace>

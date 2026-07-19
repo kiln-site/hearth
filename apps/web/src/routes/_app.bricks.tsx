@@ -9,7 +9,6 @@ import {
 } from "@/lib/query-options"
 
 export const Route = createFileRoute("/_app/bricks")({
-  head: () => ({ meta: [{ title: pageTitle("Bricks") }] }),
   beforeLoad: async ({ context }) => {
     const { user } = await getAuthState()
     if (!user?.isDevelopmentBypass && user?.role !== "admin") {
@@ -24,6 +23,7 @@ export const Route = createFileRoute("/_app/bricks")({
   },
   loader: ({ context }) =>
     context.queryClient.ensureQueryData(brickStudioQueryOptions()),
+  head: () => ({ meta: [{ title: pageTitle("Bricks") }] }),
   component: BricksRoute,
 })
 
