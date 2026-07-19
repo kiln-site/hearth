@@ -7,15 +7,11 @@
     "db:generate": "node --env-file=../../.env ./node_modules/auth/dist/index.mjs generate --config ./src/lib/auth.ts --output ./migrations/auth.sql --yes",
     "db:migrate": "node --env-file=../../.env ./node_modules/auth/dist/index.mjs migrate --config ./src/lib/auth.ts --yes && node --env-file=../../.env ./scripts/migrate-app.mjs",
     "dev": "node --env-file=../../.env --import ./instrument.server.mjs ./node_modules/vite/bin/vite.js dev --port 3000",
-    "build": "vite build && node scripts/normalize-build-assets.mjs",
     "start": "node --import ./instrument.server.mjs scripts/serve.mjs",
     "start:container": "node scripts/start-container.mjs",
-    "test:keyring": "node --test keyring.test.mjs",
-    "test": "vitest run",
-    "preview": "vite preview",
-    "lint": "eslint",
-    "format": "prettier --write \"**/*.{ts,tsx}\"",
-    "typecheck": "tsc --noEmit"
+    "preview": "vp preview",
+    "lint": "vp lint",
+    "format": "vp fmt \"**/*.{ts,tsx}\""
   },
   "dependencies": {
     "@better-auth/passkey": "^1.6.23",
@@ -58,16 +54,15 @@
     "@effect/vitest": "4.0.0-beta.99",
     "@tailwindcss/vite": "^4",
     "@tanstack/devtools-vite": "latest",
-    "@tanstack/eslint-config": "0.4.0",
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^6",
     "auth": "^1.6.23",
-    "eslint": "^9",
     "tailwindcss": "^4",
     "typescript": "^6",
-    "vite": "^8",
-    "vitest": "4.1.10"
+    "vite": "catalog:",
+    "vitest": "catalog:",
+    "vite-plus": "catalog:"
   }
 }

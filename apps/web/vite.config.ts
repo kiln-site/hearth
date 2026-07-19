@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
-import { defineConfig } from "vite"
+import { defineConfig, lazyPlugins } from "vite-plus"
 import { sentryTanstackStart } from "@sentry/tanstackstart-react/vite"
 import { devtools } from "@tanstack/devtools-vite"
 import { tanstackStart } from "@tanstack/react-start/plugin/vite"
@@ -15,11 +15,59 @@ const config = defineConfig(({ command }) => {
   const sentryAuthToken = process.env.SENTRY_AUTH_TOKEN
 
   return {
+    run: {
+      tasks: {
+        build: {
+          command: [
+            "vp build",
+            "node scripts/normalize-build-assets.mjs",
+            "vp pack",
+          ],
+          dependsOn: [{ task: "build", from: "dependencies" }],
+          env: [
+            "COMMIT_SHA",
+            "GITHUB_SHA",
+            "KILN_BUILD_SHA",
+            "SENTRY_AUTH_TOKEN",
+            "SOURCE_COMMIT",
+          ],
+        },
+        test: {
+          command: ["vp test run", "node --test keyring.test.mjs"],
+          dependsOn: [{ task: "build", from: "dependencies" }],
+        },
+        typecheck: {
+          command: "tsc --noEmit",
+          dependsOn: [{ task: "build", from: "dependencies" }],
+        },
+      },
+    },
+    pack: {
+      clean: false,
+      deps: {
+        alwaysBundle: [
+          "@opentelemetry/api",
+          "@opentelemetry/core",
+          "@sentry/tanstackstart-react",
+        ],
+        onlyBundle: false,
+      },
+      entry: ["instrument.server.mjs"],
+      format: "esm",
+      minify: true,
+      outDir: "dist/instrument",
+      platform: "node",
+      target: "node24",
+    },
     define: {
       "import.meta.env.VITE_KILN_BUILD_SHA": JSON.stringify(buildCommit),
     },
     envDir: "../..",
     resolve: { tsconfigPaths: true },
+    ssr: {
+      external: ["better-sqlite3", "pg", "tedious"],
+      noExternal: true,
+    },
     // Browser errors remain available in devtools and the collaborative preview.
     // Forwarding them back through Vite can recursively re-forward its own output.
     server: {
@@ -27,7 +75,7 @@ const config = defineConfig(({ command }) => {
       forwardConsole: false,
       host: "0.0.0.0",
     },
-    plugins: [
+    plugins: lazyPlugins(() => [
       devtools(),
       tailwindcss(),
       tanstackStart(),
@@ -42,7 +90,10 @@ const config = defineConfig(({ command }) => {
           ]
         : []),
       viteReact(),
-    ],
+    ]),
+    test: {
+      include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    },
   }
 })
 

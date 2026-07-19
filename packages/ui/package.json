@@ -4,8 +4,8 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "lint": "eslint",
-    "format": "prettier --write \"**/*.{ts,tsx}\"",
+    "lint": "vp lint",
+    "format": "vp fmt \"**/*.{ts,tsx}\"",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -26,12 +26,9 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4",
-    "@tanstack/eslint-config": "0.4.0",
-    "@turbo/gen": "^2.9.15",
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "eslint": "^9",
     "tailwindcss": "^4",
     "typescript": "^6"
   },

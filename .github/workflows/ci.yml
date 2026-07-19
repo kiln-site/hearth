@@ -9,35 +9,32 @@ permissions:
 
 jobs:
   code:
-    name: Typecheck, lint, test, and build
+    name: Check, test, and build
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1.15.0
         with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+          cache: true
+          node-version-file: .node-version
+          run-install: |
+            - cwd: .
+              args: ["--frozen-lockfile"]
 
       - name: Typecheck
-        run: pnpm typecheck
+        run: vp run -r typecheck
 
-      - name: Lint
-        run: pnpm lint
+      - name: Check lint and types
+        run: vp check
 
-      - name: Test keyring
-        run: pnpm --filter web test:keyring
+      - name: Test retained critical behavior
+        run: vp run -r test
 
       - name: Build
-        run: pnpm build
+        run: vp run -r build
 
       - name: Verify generated routes are current
         run: git diff --exit-code -- apps/web/src/routeTree.gen.ts
