@@ -19,6 +19,11 @@ on:
         description: Stable cache and artifact prefix
         required: true
         type: string
+      architectures:
+        description: JSON array of architectures published in the image manifest
+        required: false
+        type: string
+        default: '["amd64", "arm64"]'
       build_args:
         description: Newline-delimited Docker build arguments
         required: false
@@ -45,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        architecture: ${{ fromJSON(github.event_name == 'pull_request' && '["amd64"]' || '["amd64", "arm64"]') }}
+        architecture: ${{ fromJSON(github.event_name == 'pull_request' && '["amd64"]' || inputs.architectures) }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -144,11 +149,15 @@ jobs:
 
       - name: Create and verify multi-platform manifest
         env:
+          ARCHITECTURES: ${{ inputs.architectures }}
           IMAGE: ${{ inputs.image }}
           METADATA: ${{ steps.metadata.outputs.json }}
         run: |
           mapfile -t tags < <(jq -r '.tags[]' <<< "$METADATA")
           test "${#tags[@]}" -gt 0
+
+          expected_architectures="$(jq 'length' <<< "$ARCHITECTURES")"
+          test "$expected_architectures" -gt 0
 
           tag_args=()
           for tag in "${tags[@]}"; do
@@ -159,7 +168,7 @@ jobs:
           for digest_file in /tmp/digests/*; do
             sources+=("$IMAGE@sha256:$(basename "$digest_file")")
           done
-          test "${#sources[@]}" -eq 2
+          test "${#sources[@]}" -eq "$expected_architectures"
 
           docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
           docker buildx imagetools inspect "${tags[0]}"
