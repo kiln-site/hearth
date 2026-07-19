@@ -140,32 +140,42 @@ const setFilePinnedEffect = Effect.fn("files.activity.setPinned")(function* (
 ) {
   const database = yield* Database
   const hash = pathHash(path)
-  if (pinned) {
-    const [count] = yield* database.queryRows<PinnedFileCountRow>(
-      "file_activity_pinned_count",
-      `SELECT COUNT(*) AS pinned_count
-           FROM ${databaseTable("file_activity")}
-          WHERE relay_id = ?
-            AND instance_id = ?
-            AND pinned = TRUE
-            AND path_hash <> ?`,
-      [relayId, instanceId, hash]
-    )
-    if (Number(count?.pinned_count ?? 0) >= pinnedFileLimit) {
-      return yield* FilePinLimitError.make({ limit: pinnedFileLimit })
-    }
-  }
   yield* ensureActivityInstanceEffect(relayId, instanceId)
-  yield* database.execute(
+  const updated = yield* database.transaction(
     "file_activity_set_pinned",
-    `INSERT INTO ${databaseTable("file_activity")}
-         (relay_id, instance_id, path_hash, path, pinned, last_viewed_at)
-       VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))
-       ON DUPLICATE KEY UPDATE
-         path = VALUES(path),
-         pinned = VALUES(pinned)`,
-    [relayId, instanceId, hash, path, pinned]
+    async (transaction) => {
+      await transaction.queryRows(
+        `SELECT instance_id
+           FROM ${databaseTable("instance")}
+          WHERE relay_id = ? AND instance_id = ?
+          FOR UPDATE`,
+        [relayId, instanceId]
+      )
+      if (pinned) {
+        const [count] = await transaction.queryRows<PinnedFileCountRow>(
+          `SELECT COUNT(*) AS pinned_count
+             FROM ${databaseTable("file_activity")}
+            WHERE relay_id = ?
+              AND instance_id = ?
+              AND pinned = TRUE
+              AND path_hash <> ?`,
+          [relayId, instanceId, hash]
+        )
+        if (Number(count?.pinned_count ?? 0) >= pinnedFileLimit) return false
+      }
+      await transaction.execute(
+        `INSERT INTO ${databaseTable("file_activity")}
+           (relay_id, instance_id, path_hash, path, pinned, last_viewed_at)
+         VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))
+         ON DUPLICATE KEY UPDATE
+           path = VALUES(path),
+           pinned = VALUES(pinned)`,
+        [relayId, instanceId, hash, path, pinned]
+      )
+      return true
+    }
   )
+  if (!updated) return yield* FilePinLimitError.make({ limit: pinnedFileLimit })
 })
 
 export function listFileActivity(
