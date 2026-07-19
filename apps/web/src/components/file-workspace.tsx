@@ -2076,8 +2076,8 @@ export function FileWorkspace({
     if (routePathIsValid) {
       if (selectedPath !== normalizedRoutePath) {
         setSelectedPath(normalizedRoutePath)
-        setNavigationError(null)
       }
+      setNavigationError(null)
       return
     }
 
