@@ -9,8 +9,22 @@ permissions:
 
 jobs:
   code:
-    name: Check, test, and build
+    name: ${{ matrix.name }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Static checks
+            command: |
+              vp run -r typecheck
+              vp check
+          - name: Tests
+            command: vp run -r test
+          - name: Build
+            command: |
+              vp run -r build
+              git diff --exit-code -- apps/web/src/routeTree.gen.ts
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -24,17 +38,5 @@ jobs:
             - cwd: .
               args: ["--frozen-lockfile"]
 
-      - name: Typecheck
-        run: vp run -r typecheck
-
-      - name: Check lint and types
-        run: vp check
-
-      - name: Test retained critical behavior
-        run: vp run -r test
-
-      - name: Build
-        run: vp run -r build
-
-      - name: Verify generated routes are current
-        run: git diff --exit-code -- apps/web/src/routeTree.gen.ts
+      - name: Run ${{ matrix.name }}
+        run: ${{ matrix.command }}

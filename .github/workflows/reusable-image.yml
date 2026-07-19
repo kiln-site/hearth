@@ -1,0 +1,165 @@
+name: Reusable container image
+
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: Human-readable component name
+        required: true
+        type: string
+      image:
+        description: Fully qualified container image name
+        required: true
+        type: string
+      dockerfile:
+        description: Dockerfile path relative to the repository root
+        required: true
+        type: string
+      cache_scope:
+        description: Stable cache and artifact prefix
+        required: true
+        type: string
+      build_args:
+        description: Newline-delimited Docker build arguments
+        required: false
+        type: string
+        default: ""
+      uses_sentry:
+        description: Whether the image build uploads Sentry artifacts
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      sentry_auth_token:
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: ${{ inputs.name }}${{ matrix.architecture == 'arm64' && ' · arm64' || '' }}
+    runs-on: ${{ matrix.architecture == 'arm64' && 'blacksmith-4vcpu-ubuntu-2404-arm' || 'blacksmith-4vcpu-ubuntu-2404' }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: ${{ fromJSON(github.event_name == 'pull_request' && '["amd64"]' || '["amd64", "arm64"]') }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ inputs.image }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+
+      - name: Build${{ github.event_name != 'pull_request' && ' and publish' || '' }} image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ${{ inputs.dockerfile }}
+          build-args: ${{ inputs.build_args }}
+          secrets: |
+            SENTRY_AUTH_TOKEN=${{ inputs.uses_sentry && matrix.architecture == 'amd64' && secrets.sentry_auth_token || '' }}
+          platforms: linux/${{ matrix.architecture }}
+          outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', inputs.image) || '' }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=${{ inputs.cache_scope }}-${{ matrix.architecture }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.cache_scope }}-${{ matrix.architecture }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Export image digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          test -n "$DIGEST"
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - name: Upload image digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digests-${{ inputs.cache_scope }}-${{ matrix.architecture }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish ${{ inputs.name }} manifest
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download image digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: digests-${{ inputs.cache_scope }}-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Generate image metadata
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ inputs.image }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+
+      - name: Create and verify multi-platform manifest
+        env:
+          IMAGE: ${{ inputs.image }}
+          METADATA: ${{ steps.metadata.outputs.json }}
+        run: |
+          mapfile -t tags < <(jq -r '.tags[]' <<< "$METADATA")
+          test "${#tags[@]}" -gt 0
+
+          tag_args=()
+          for tag in "${tags[@]}"; do
+            tag_args+=(--tag "$tag")
+          done
+
+          sources=()
+          for digest_file in /tmp/digests/*; do
+            sources+=("$IMAGE@sha256:$(basename "$digest_file")")
+          done
+          test "${#sources[@]}" -eq 2
+
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+          docker buildx imagetools inspect "${tags[0]}"
