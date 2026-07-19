@@ -8,7 +8,7 @@ Performance/Speed and UX is always the most important thing to keep in mind for 
 
 ## Work
 
-- Sync `main`, then use a focused branch. Preserve unrelated changes. 
+- When making big feature changes, Sync `main`, then use a focused branch, and prepare a PR. Otherwise, or when explicitly told, feel free to make minor changes on main, however do not commit to main. Let human do that.
 - Use Vite+ (`vp`) and existing Effect patterns; never edit `.repos/effect`.
 - Keep only critical deterministic tests. Prefer browser validation during
   development; use Sentry to find production regressions.

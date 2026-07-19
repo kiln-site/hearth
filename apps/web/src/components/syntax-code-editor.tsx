@@ -151,7 +151,6 @@ const kilnEditorTheme = EditorView.theme(
       maxWidth: "100%",
       backgroundColor: "transparent",
       color: "oklch(0.87 0.018 70)",
-      fontSize: "12px",
     },
     "&.cm-focused": { outline: "none" },
     "&.cm-editor.cm-focused .cm-cursor": {
@@ -159,7 +158,6 @@ const kilnEditorTheme = EditorView.theme(
     },
     ".cm-scroller": {
       fontFamily: "'JetBrains Mono Variable', 'JetBrains Mono', monospace",
-      lineHeight: "1.65rem",
       minWidth: "0",
       maxWidth: "100%",
       overflow: "auto",
@@ -205,12 +203,15 @@ const kilnEditorTheme = EditorView.theme(
     },
     ".cm-search-bridge": { display: "none" },
     ".cm-searchMatch": {
-      backgroundColor: "oklch(0.67 0.16 47 / 0.16)",
-      outline: "1px solid oklch(0.67 0.16 47 / 0.24)",
+      backgroundColor: "oklch(0.76 0.14 70 / 0.38)",
+      outline: "1px solid oklch(0.8 0.15 72 / 0.68)",
+      boxShadow: "0 0 0 1px oklch(0.16 0.01 35 / 0.3)",
     },
     ".cm-searchMatch-selected": {
-      backgroundColor: "oklch(0.67 0.16 47 / 0.3)",
-      outlineColor: "oklch(0.72 0.15 50 / 0.55)",
+      backgroundColor: "oklch(0.72 0.17 55 / 0.72)",
+      color: "oklch(0.16 0.02 45)",
+      outlineColor: "oklch(0.86 0.16 76 / 0.95)",
+      boxShadow: "0 0 0 2px oklch(0.72 0.15 55 / 0.24)",
     },
     "&.cm-merge-b .cm-changedLine, .cm-inlineChangedLine": {
       backgroundColor: "oklch(0.66 0.09 175 / 0.09)",
@@ -434,6 +435,13 @@ function editabilityFor(readOnly: boolean, disabled: boolean): Extension {
   ]
 }
 
+function textScaleFor(fontSize: number): Extension {
+  return EditorView.theme({
+    "&": { fontSize: `${fontSize}px` },
+    ".cm-scroller": { lineHeight: `${fontSize * 2.2}px` },
+  })
+}
+
 export type SyntaxCodeEditorHandle = {
   findNext: () => boolean
   findPrevious: () => boolean
@@ -442,6 +450,7 @@ export type SyntaxCodeEditorHandle = {
 type SyntaxCodeEditorProps = {
   ariaLabel: string
   disabled: boolean
+  fontSize: number
   onChange: (value: string) => void
   onSearchOpenChange: (open: boolean) => void
   originalValue: string
@@ -462,6 +471,7 @@ export const SyntaxCodeEditor = React.forwardRef<
   {
     ariaLabel,
     disabled,
+    fontSize,
     onChange,
     onSearchOpenChange,
     originalValue,
@@ -485,6 +495,7 @@ export const SyntaxCodeEditor = React.forwardRef<
   const initialShowChanges = React.useRef(showChanges)
   const initialAriaLabel = React.useRef(ariaLabel)
   const initialDisabled = React.useRef(disabled)
+  const initialFontSize = React.useRef(fontSize)
   const initialPath = React.useRef(path)
   const initialReadOnly = React.useRef(readOnly)
   const syncing = React.useRef(false)
@@ -494,6 +505,7 @@ export const SyntaxCodeEditor = React.forwardRef<
   const languageMode = React.useRef(new Compartment())
   const mergeReview = React.useRef(new Compartment())
   const redaction = React.useRef(new Compartment())
+  const textScale = React.useRef(new Compartment())
   const wrapping = React.useRef(new Compartment())
 
   onChangeRef.current = onChange
@@ -554,6 +566,7 @@ export const SyntaxCodeEditor = React.forwardRef<
               : mergeGutterSpacer
           ),
           redaction.current.of(redactSensitive ? redactSensitiveExtension : []),
+          textScale.current.of(textScaleFor(initialFontSize.current)),
           wrapping.current.of(wrapLines ? EditorView.lineWrapping : []),
           EditorView.updateListener.of((update) => {
             if (update.docChanged && !syncing.current) {
@@ -587,6 +600,12 @@ export const SyntaxCodeEditor = React.forwardRef<
       ],
     })
   }, [ariaLabel, disabled, path, readOnly])
+
+  React.useLayoutEffect(() => {
+    view.current?.dispatch({
+      effects: textScale.current.reconfigure(textScaleFor(fontSize)),
+    })
+  }, [fontSize])
 
   React.useLayoutEffect(() => {
     const editor = view.current

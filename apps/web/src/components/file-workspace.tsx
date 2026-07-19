@@ -18,6 +18,7 @@ import type {
   RelayInstance,
 } from "@workspace/contracts"
 import {
+  ALargeSmall,
   Check,
   ChevronDown,
   ChevronUp,
@@ -43,6 +44,7 @@ import {
   TriangleAlert,
   Upload,
   WrapText,
+  X,
 } from "lucide-react"
 
 import { Button } from "@workspace/ui/components/button"
@@ -88,6 +90,9 @@ const fileTreeCollapsedCookieName = "file_tree_collapsed"
 const fileTreeCookieMaxAge = 60 * 60 * 24 * 7
 const fileTreeMinWidth = 224
 const fileTreeMaxWidth = 480
+const fileEditorFontSizeStorageKey = "kiln:file-editor-font-size"
+const fileEditorFontSizes = [10, 11, 12, 14, 16]
+const defaultFileEditorFontSize = 12
 
 function clampFileTreeWidth(width: number, workspaceWidth: number) {
   const responsiveMaximum = Math.floor(workspaceWidth * 0.45)
@@ -258,6 +263,7 @@ function Editor({
   onTreeExpand: () => void
 }) {
   const fileVersion = `${file.instanceId}:${file.path}:${file.modifiedAt}`
+  const fileIdentity = `${file.instanceId}:${file.path}`
   const [value, setValue] = React.useState(file.content)
   const [savedValue, setSavedValue] = React.useState(file.content)
   const [loadedFileVersion, setLoadedFileVersion] = React.useState(fileVersion)
@@ -272,6 +278,8 @@ function Editor({
   const [mobileActionsOpen, setMobileActionsOpen] = React.useState(false)
   const [searchOpen, setSearchOpen] = React.useState(false)
   const [searchQuery, setSearchQuery] = React.useState("")
+  const [fontSize, setFontSize] = React.useState(defaultFileEditorFontSize)
+  const [fontSizeReady, setFontSizeReady] = React.useState(false)
   const [reviewChanges, setReviewChanges] = React.useState(true)
   const [wrapLines, setWrapLines] = React.useState(true)
   const editorRef = React.useRef<SyntaxCodeEditorHandle>(null)
@@ -279,8 +287,38 @@ function Editor({
   const resetShareTimer = React.useRef<number | null>(null)
   const resetCopyTimer = React.useRef<number | null>(null)
   const sectionRef = React.useRef<HTMLElement>(null)
+  const loadedFileIdentity = React.useRef(fileIdentity)
 
   React.useEffect(() => {
+    let storedFontSize = defaultFileEditorFontSize
+    try {
+      const storedValue = Number.parseInt(
+        window.localStorage.getItem(fileEditorFontSizeStorageKey) ?? "",
+        10
+      )
+      if (fileEditorFontSizes.includes(storedValue))
+        storedFontSize = storedValue
+    } catch {
+      // Keep the default when browser storage is unavailable.
+    }
+    setFontSize(storedFontSize)
+    setFontSizeReady(true)
+  }, [])
+
+  React.useEffect(() => {
+    if (!fontSizeReady) return
+    try {
+      window.localStorage.setItem(
+        fileEditorFontSizeStorageKey,
+        String(fontSize)
+      )
+    } catch {
+      // The editor remains usable when browser storage is unavailable.
+    }
+  }, [fontSize, fontSizeReady])
+
+  React.useEffect(() => {
+    const changedFile = loadedFileIdentity.current !== fileIdentity
     setValue(file.content)
     setSavedValue(file.content)
     setLoadedFileVersion(fileVersion)
@@ -289,12 +327,15 @@ function Editor({
     setCopyState("idle")
     setDesktopActionsOpen(false)
     setMobileActionsOpen(false)
-    setSearchOpen(false)
-    setSearchQuery("")
+    if (changedFile) {
+      setSearchOpen(false)
+      setSearchQuery("")
+      loadedFileIdentity.current = fileIdentity
+    }
     setReviewChanges(true)
     if (resetShareTimer.current) window.clearTimeout(resetShareTimer.current)
     if (resetCopyTimer.current) window.clearTimeout(resetCopyTimer.current)
-  }, [file.content, fileVersion])
+  }, [file.content, fileIdentity, fileVersion])
 
   const loading = queryLoading || loadedFileVersion !== fileVersion
 
@@ -462,6 +503,10 @@ function Editor({
                     <Search className="size-[17px]" />
                   </Button>
                 </EditorTooltip>
+                <EditorFontSizeButton
+                  fontSize={fontSize}
+                  onFontSizeChange={setFontSize}
+                />
                 <EditorTooltip
                   content={wrapLines ? "Disable Line Wrap" : "Enable Line Wrap"}
                 >
@@ -556,7 +601,6 @@ function Editor({
                       detail="Compare with the saved file"
                       disabled={!dirty || loading || file.readOnly}
                       onClick={() => {
-                        setDesktopActionsOpen(false)
                         setReviewChanges((current) => !current)
                       }}
                     />
@@ -571,6 +615,30 @@ function Editor({
                   loading={loading}
                   saving={saving}
                   onSave={handleSave}
+                />
+                <EditorTooltip
+                  content={
+                    searchOpen ? "Hide Search in File" : "Search in File"
+                  }
+                >
+                  <Button
+                    variant={searchOpen ? "secondary" : "ghost"}
+                    size="icon"
+                    className="disabled:opacity-100"
+                    aria-label={
+                      searchOpen ? "Close file search" : "Search file"
+                    }
+                    aria-pressed={searchOpen}
+                    aria-keyshortcuts="Control+F Meta+F"
+                    disabled={loading}
+                    onClick={() => setSearchOpen((current) => !current)}
+                  >
+                    <Search className="size-[17px]" />
+                  </Button>
+                </EditorTooltip>
+                <EditorFontSizeButton
+                  fontSize={fontSize}
+                  onFontSizeChange={setFontSize}
                 />
                 <Popover
                   open={mobileActionsOpen}
@@ -625,16 +693,6 @@ function Editor({
                       />
                     ) : null}
                     <FileActionMenuItem
-                      icon={<Search />}
-                      label="Find in file"
-                      detail="Search this document"
-                      disabled={loading}
-                      onClick={() => {
-                        setMobileActionsOpen(false)
-                        window.setTimeout(() => setSearchOpen(true), 0)
-                      }}
-                    />
-                    <FileActionMenuItem
                       active={wrapLines}
                       icon={<WrapText />}
                       label="Wrap long lines"
@@ -681,6 +739,7 @@ function Editor({
             event.preventDefault()
             searchInputRef.current?.focus()
           }}
+          onInteractOutside={(event) => event.preventDefault()}
         >
           <div className="flex items-center gap-1.5">
             <div className="relative min-w-0 flex-1">
@@ -701,26 +760,37 @@ function Editor({
                 }}
               />
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-8"
-              aria-label="Previous match"
-              disabled={!searchQuery}
-              onClick={() => editorRef.current?.findPrevious()}
-            >
-              <ChevronUp className="size-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-8"
-              aria-label="Next match"
-              disabled={!searchQuery}
-              onClick={() => editorRef.current?.findNext()}
-            >
-              <ChevronDown className="size-4" />
-            </Button>
+            <div className="flex shrink-0 items-center">
+              <div className="flex h-10 w-9 flex-col gap-px">
+                <button
+                  type="button"
+                  className="grid min-h-0 flex-1 place-items-center text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground focus-visible:z-10 focus-visible:ring-1 focus-visible:ring-ring/60 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-35"
+                  aria-label="Previous match"
+                  disabled={!searchQuery}
+                  onClick={() => editorRef.current?.findPrevious()}
+                >
+                  <ChevronUp className="size-[18px]" />
+                </button>
+                <button
+                  type="button"
+                  className="grid min-h-0 flex-1 place-items-center text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground focus-visible:z-10 focus-visible:ring-1 focus-visible:ring-ring/60 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-35"
+                  aria-label="Next match"
+                  disabled={!searchQuery}
+                  onClick={() => editorRef.current?.findNext()}
+                >
+                  <ChevronDown className="size-[18px]" />
+                </button>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8"
+                aria-label="Close file search"
+                onClick={() => setSearchOpen(false)}
+              >
+                <X className="size-[18px]" />
+              </Button>
+            </div>
           </div>
         </PopoverContent>
       </Popover>
@@ -739,6 +809,7 @@ function Editor({
           readOnly={file.readOnly || !canWrite}
           searchOpen={searchOpen}
           searchQuery={searchQuery}
+          fontSize={fontSize}
           showChanges={reviewChanges}
           wrapLines={wrapLines}
         />
@@ -796,11 +867,11 @@ function EditorSaveButton({
       }
     >
       <Button
-        size="icon"
+        size="default"
         className={
           !dirty && !file.readOnly
-            ? "bg-primary/35 text-primary-foreground/65 shadow-none disabled:opacity-100"
-            : "shadow-none"
+            ? "gap-1.5 bg-primary/35 px-2.5 text-xs text-primary-foreground/65 shadow-none disabled:opacity-100"
+            : "gap-1.5 px-2.5 text-xs shadow-none"
         }
         aria-label={
           file.readOnly
@@ -819,17 +890,78 @@ function EditorSaveButton({
         ) : (
           <Save className="size-[17px]" />
         )}
-        <span className="sr-only">
-          {file.readOnly
-            ? "Read only"
-            : saving
-              ? "Saving"
-              : dirty
-                ? "Save changes"
-                : "Saved"}
-        </span>
+        <span>{file.readOnly ? "Read only" : saving ? "Saving" : "Save"}</span>
       </Button>
     </EditorTooltip>
+  )
+}
+
+function EditorFontSizeButton({
+  fontSize,
+  onFontSizeChange,
+}: {
+  fontSize: number
+  onFontSizeChange: (fontSize: number) => void
+}) {
+  const [open, setOpen] = React.useState(false)
+  const selectedIndex = Math.max(0, fileEditorFontSizes.indexOf(fontSize))
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <EditorTooltip content="File Text Size">
+        <PopoverTrigger asChild>
+          <Button
+            variant={open ? "secondary" : "ghost"}
+            size="icon"
+            aria-label={`File text size, ${fontSize} pixels`}
+            aria-expanded={open}
+          >
+            <ALargeSmall className="size-[18px]" />
+          </Button>
+        </PopoverTrigger>
+      </EditorTooltip>
+      <PopoverContent
+        align="end"
+        side="bottom"
+        sideOffset={7}
+        collisionPadding={12}
+        className="w-[min(13rem,calc(100vw-1rem))] p-2.5"
+      >
+        <div className="flex items-center gap-2.5">
+          <span className="w-3 shrink-0 text-left font-mono text-[9px] text-muted-foreground">
+            A
+          </span>
+          <div className="relative min-w-0 flex-1 py-1.5">
+            <div className="pointer-events-none absolute inset-x-2 top-1/2 grid -translate-y-1/2 grid-cols-4 gap-1">
+              {fileEditorFontSizes.slice(1).map((size, index) => (
+                <span
+                  key={size}
+                  className={`h-1 ${index < selectedIndex ? "bg-primary/75" : "bg-muted-foreground/25"}`}
+                />
+              ))}
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={fileEditorFontSizes.length - 1}
+              step={1}
+              value={selectedIndex}
+              aria-label="File text size"
+              aria-valuetext={`${fontSize} pixels`}
+              className="relative z-10 block h-5 w-full cursor-pointer appearance-none bg-transparent accent-primary [&::-moz-range-progress]:bg-transparent [&::-moz-range-thumb]:size-4 [&::-moz-range-thumb]:rounded-none [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-background [&::-moz-range-thumb]:bg-primary [&::-moz-range-track]:bg-transparent [&::-webkit-slider-runnable-track]:h-1 [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:mt-[-6px] [&::-webkit-slider-thumb]:size-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-none [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-background [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow-sm"
+              onChange={(event) => {
+                const nextFontSize =
+                  fileEditorFontSizes[event.target.valueAsNumber]
+                if (nextFontSize !== undefined) onFontSizeChange(nextFontSize)
+              }}
+            />
+          </div>
+          <span className="w-3 shrink-0 text-right font-mono text-sm leading-none text-muted-foreground">
+            A
+          </span>
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }
 
