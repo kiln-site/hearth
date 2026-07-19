@@ -262,6 +262,19 @@ export const relaySaveFileInputSchema = z.object({
   expectedModifiedAt: z.string().datetime().optional(),
 })
 
+export const relayFileActivityEntrySchema = z.object({
+  instanceId: z.string(),
+  path: z.string(),
+  pinned: z.boolean(),
+  lastViewedAt: z.string().datetime(),
+  lastEditedAt: z.string().datetime().nullable(),
+})
+
+export const relayFileActivitySchema = z.object({
+  instanceId: z.string(),
+  files: z.array(relayFileActivityEntrySchema),
+})
+
 export const relayInstanceActionSchema = z.object({
   action: z.enum(["start", "stop", "restart", "kill"]),
 })
@@ -383,6 +396,10 @@ export type RelaySnapshot = z.infer<typeof relaySnapshotSchema>
 export type RelayFileTree = z.infer<typeof relayFileTreeSchema>
 export type RelayFileContent = z.infer<typeof relayFileContentSchema>
 export type RelaySaveFileInput = z.infer<typeof relaySaveFileInputSchema>
+export type RelayFileActivityEntry = z.infer<
+  typeof relayFileActivityEntrySchema
+>
+export type RelayFileActivity = z.infer<typeof relayFileActivitySchema>
 export type RelayInstanceAction = z.infer<typeof relayInstanceActionSchema>
 export type RelayConsoleLevel = z.infer<typeof relayConsoleLevelSchema>
 export type RelayConsoleLine = z.infer<typeof relayConsoleLineSchema>
