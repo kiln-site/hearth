@@ -2066,6 +2066,8 @@ export function FileWorkspace({
       )
     },
   })
+  const pinMutationTargetsSelectedPath =
+    pinFileMutation.variables?.data.path === selectedPath
   const refreshTreeMutation = useMutation({
     mutationFn: () =>
       getRelayTree({ data: { instanceId: instance.id, fresh: true } }),
@@ -2083,7 +2085,10 @@ export function FileWorkspace({
     queryErrorMessage(treeQuery.error, "Could not load files") ??
     queryErrorMessage(refreshTreeMutation.error, "Could not refresh files") ??
     queryErrorMessage(fileQuery.error, "Could not read file") ??
-    queryErrorMessage(pinFileMutation.error, "Could not update file pin")
+    queryErrorMessage(
+      pinMutationTargetsSelectedPath ? pinFileMutation.error : null,
+      "Could not update file pin"
+    )
   const selectedFileUnavailable =
     Boolean(tree && selectedPath && !selectedPathIsReadable) ||
     (selectedPathIsReadable && fileQuery.isError && file?.path !== selectedPath)
@@ -2338,7 +2343,9 @@ export function FileWorkspace({
               canShare={canShare}
               canWrite={canWrite}
               pinned={selectedActivity?.pinned ?? false}
-              pinning={pinFileMutation.isPending}
+              pinning={
+                pinMutationTargetsSelectedPath && pinFileMutation.isPending
+              }
               file={file}
               displayPath={selectedPath || file.path}
               instance={instance}
