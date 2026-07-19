@@ -34,6 +34,7 @@ import {
   GitCompareArrows,
   GripVertical,
   HardDriveDownload,
+  House,
   LoaderCircle,
   LockKeyhole,
   Network,
@@ -162,6 +163,29 @@ function FileTreeRevealButton({ onClick }: { onClick: () => void }) {
         </TooltipContent>
       </Tooltip>
     </div>
+  )
+}
+
+function FilesHomeButton({
+  active = false,
+  onClick,
+}: {
+  active?: boolean
+  onClick: () => void
+}) {
+  return (
+    <EditorTooltip content="Files Home">
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className={`shrink-0 shadow-none ${active ? "text-primary hover:bg-transparent hover:text-primary focus-visible:bg-transparent" : ""}`}
+        aria-label="Files home"
+        aria-current={active ? "page" : undefined}
+        onClick={onClick}
+      >
+        <House className="size-[18px]" />
+      </Button>
+    </EditorTooltip>
   )
 }
 
@@ -1078,6 +1102,7 @@ function FileTreePanel({
   onRefresh,
   onMobileOpenChange,
   onFileSelected,
+  onHome,
   collapsed,
   animateCollapsedChange,
   onCollapsedChange,
@@ -1092,6 +1117,7 @@ function FileTreePanel({
   onRefresh: () => void
   onMobileOpenChange: (open: boolean) => void
   onFileSelected: () => void
+  onHome: () => void
   collapsed: boolean
   animateCollapsedChange: boolean
   onCollapsedChange: (collapsed: boolean) => void
@@ -1220,6 +1246,21 @@ function FileTreePanel({
   }, [collapsed])
 
   React.useLayoutEffect(() => {
+    const currentSelection = model.getSelectedPaths()
+    if (selectedPath) {
+      if (
+        currentSelection.length !== 1 ||
+        currentSelection[0] !== selectedPath
+      ) {
+        for (const path of currentSelection) model.getItem(path)?.deselect()
+        model.getItem(selectedPath)?.select()
+      }
+      return
+    }
+    for (const path of currentSelection) model.getItem(path)?.deselect()
+  }, [model, selectedPath])
+
+  React.useLayoutEffect(() => {
     const panel = panelRef.current
     const changed = previousCollapsed.current !== collapsed
     previousCollapsed.current = collapsed
@@ -1308,11 +1349,13 @@ function FileTreePanel({
   }
 
   React.useEffect(() => {
-    const selected = selection.at(-1)
-    if (!selected || selected.endsWith("/") || selected === selectedPath) return
+    const selected = model.getSelectedPaths().at(-1)
+    if (!selected || selected.endsWith("/") || selected === selectedPath) {
+      return
+    }
     onPathChange(selected)
     onFileSelected()
-  }, [onFileSelected, onPathChange, selectedPath, selection])
+  }, [model, onFileSelected, onPathChange, selectedPath, selection])
 
   return (
     <aside
@@ -1344,8 +1387,9 @@ function FileTreePanel({
       <div
         className={`order-2 flex h-11 shrink-0 items-center overflow-hidden border-t bg-card px-1.5 md:order-1 md:h-14 md:w-[var(--file-tree-width)] md:border-t-0 md:border-b md:px-2 ${collapsed ? "md:invisible" : ""}`}
       >
+        <FilesHomeButton active={!selectedPath} onClick={onHome} />
         <label className="flex h-full min-w-0 flex-1 items-center">
-          <Search className="ml-1 size-5 shrink-0 text-foreground/90" />
+          <Search className="ml-1.5 size-[18px] shrink-0 text-foreground/90" />
           <input
             ref={searchInputRef}
             type="search"
@@ -1382,7 +1426,7 @@ function FileTreePanel({
                 aria-label="New"
                 title="New…"
               >
-                <Plus className="size-[17px]" />
+                <Plus className="size-[18px]" />
               </Button>
             </PopoverTrigger>
             <PopoverContent
@@ -1410,7 +1454,7 @@ function FileTreePanel({
                     aria-label="Refreshing files"
                     disabled
                   >
-                    <RefreshCw className="size-[17px] animate-spin" />
+                    <RefreshCw className="size-[18px] animate-spin" />
                   </Button>
                 </span>
               ) : (
@@ -1420,7 +1464,7 @@ function FileTreePanel({
                   aria-label="Refresh files"
                   onClick={onRefresh}
                 >
-                  <RefreshCw className="size-[17px]" />
+                  <RefreshCw className="size-[18px]" />
                 </Button>
               )}
             </TooltipTrigger>
@@ -1438,7 +1482,7 @@ function FileTreePanel({
                 aria-controls={`file-tree-${instance.shortId}`}
                 onClick={() => onCollapsedChange(true)}
               >
-                <PanelLeftClose className="size-[17px]" />
+                <PanelLeftClose className="size-[18px]" />
               </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>
@@ -1641,7 +1685,6 @@ function FileActivityRow({
 }
 
 function FilesHome({
-  instance,
   activity,
   loading,
   error,
@@ -1649,7 +1692,6 @@ function FilesHome({
   onTreeExpand,
   onOpen,
 }: {
-  instance: RelayInstance
   activity: ReadonlyArray<RelayFileActivityEntry>
   loading: boolean
   error: string | null
@@ -1668,28 +1710,13 @@ function FilesHome({
         <div className={fileEditorHeaderContentClassName}>
           <div className="flex min-w-0 flex-1 items-center gap-2.5 md:gap-3">
             <Clock3 className="size-5 shrink-0 text-primary" />
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold">Files</p>
-              <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground sm:text-[11px]">
-                Shared activity for {instance.name}
-              </p>
-            </div>
+            <p className="truncate text-sm font-semibold">Files</p>
           </div>
         </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-8">
         <div className="mx-auto w-full max-w-3xl">
-          <div className="mb-6">
-            <h1 className="text-lg font-semibold tracking-tight">
-              Pick up where the team left off
-            </h1>
-            <p className="mt-1.5 max-w-xl text-xs leading-relaxed text-muted-foreground">
-              Files opened or edited through the panel are shared with everyone
-              who can access this server on the active Relay.
-            </p>
-          </div>
-
           {loading ? (
             <div className="grid min-h-44 place-items-center border border-border/70 bg-muted/5">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -1980,6 +2007,17 @@ export function FileWorkspace({
     [handleTreeCollapsedChange]
   )
 
+  const handleHome = React.useCallback(() => {
+    pendingRoutePath.current = null
+    setSelectedPath("")
+    setNavigationError(null)
+    if (!normalizedRoutePath) return
+    void navigate({
+      to: "/$serverId/files/$",
+      params: { serverId: instance.shortId, _splat: "" },
+    })
+  }, [instance.shortId, navigate, normalizedRoutePath])
+
   React.useLayoutEffect(() => {
     if (!openTreeOnEntry) {
       handledTreeEntry.current = false
@@ -2132,6 +2170,7 @@ export function FileWorkspace({
           onRefresh={handleRefresh}
           onMobileOpenChange={setMobileTreeOpen}
           onFileSelected={closeMobileTree}
+          onHome={handleHome}
           collapsed={displayedTreeCollapsed}
           animateCollapsedChange={
             !openingTreeForRouteEntry && !treeTransitionSuppressed
@@ -2148,7 +2187,6 @@ export function FileWorkspace({
       <div className="relative flex min-h-0 min-w-0 flex-1 pb-11 md:pb-0">
         {isHome ? (
           <FilesHome
-            instance={instance}
             activity={activity}
             loading={treeQuery.isPending || activityQuery.isPending}
             error={
