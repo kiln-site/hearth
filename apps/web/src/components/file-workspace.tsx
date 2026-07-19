@@ -701,10 +701,6 @@ function Editor({
                     <Search className="size-[17px]" />
                   </Button>
                 </EditorTooltip>
-                <EditorFontSizeButton
-                  fontSize={fontSize}
-                  onFontSizeChange={setFontSize}
-                />
                 <EditorSaveButton
                   dirty={dirty}
                   file={file}
@@ -737,6 +733,21 @@ function Editor({
                     <p className="px-2 pt-1 pb-1.5 font-mono text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
                       File actions
                     </p>
+                    <div className="border-t border-border/45 px-2 py-2.5">
+                      <div className="mb-1.5 flex items-center justify-between gap-3">
+                        <span className="flex items-center gap-2 text-xs font-medium text-foreground">
+                          <ALargeSmall className="size-4 text-muted-foreground" />
+                          Text size
+                        </span>
+                        <span className="font-mono text-[10px] text-muted-foreground">
+                          {fontSize}px
+                        </span>
+                      </div>
+                      <EditorFontSizeControl
+                        fontSize={fontSize}
+                        onFontSizeChange={setFontSize}
+                      />
+                    </div>
                     {canShare ? (
                       <FileActionMenuItem
                         icon={
@@ -988,7 +999,6 @@ function EditorFontSizeButton({
   onFontSizeChange: (fontSize: number) => void
 }) {
   const [open, setOpen] = React.useState(false)
-  const selectedIndex = Math.max(0, fileEditorFontSizes.indexOf(fontSize))
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -1011,41 +1021,58 @@ function EditorFontSizeButton({
         collisionPadding={12}
         className="w-[min(13rem,calc(100vw-1rem))] p-2.5"
       >
-        <div className="flex items-center gap-2.5">
-          <span className="w-3 shrink-0 text-left font-mono text-[9px] text-muted-foreground">
-            A
-          </span>
-          <div className="relative min-w-0 flex-1 py-1.5">
-            <div className="pointer-events-none absolute inset-x-2 top-1/2 grid -translate-y-1/2 grid-cols-4 gap-1">
-              {fileEditorFontSizes.slice(1).map((size, index) => (
-                <span
-                  key={size}
-                  className={`h-1 ${index < selectedIndex ? "bg-primary/75" : "bg-muted-foreground/25"}`}
-                />
-              ))}
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={fileEditorFontSizes.length - 1}
-              step={1}
-              value={selectedIndex}
-              aria-label="File text size"
-              aria-valuetext={`${fontSize} pixels`}
-              className="relative z-10 block h-5 w-full cursor-pointer appearance-none bg-transparent accent-primary [&::-moz-range-progress]:bg-transparent [&::-moz-range-thumb]:size-4 [&::-moz-range-thumb]:rounded-none [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-background [&::-moz-range-thumb]:bg-primary [&::-moz-range-track]:bg-transparent [&::-webkit-slider-runnable-track]:h-1 [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:mt-[-6px] [&::-webkit-slider-thumb]:size-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-none [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-background [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow-sm"
-              onChange={(event) => {
-                const nextFontSize =
-                  fileEditorFontSizes[event.target.valueAsNumber]
-                if (nextFontSize !== undefined) onFontSizeChange(nextFontSize)
-              }}
-            />
-          </div>
-          <span className="w-3 shrink-0 text-right font-mono text-sm leading-none text-muted-foreground">
-            A
-          </span>
-        </div>
+        <EditorFontSizeControl
+          fontSize={fontSize}
+          onFontSizeChange={onFontSizeChange}
+        />
       </PopoverContent>
     </Popover>
+  )
+}
+
+function EditorFontSizeControl({
+  fontSize,
+  onFontSizeChange,
+}: {
+  fontSize: number
+  onFontSizeChange: (fontSize: number) => void
+}) {
+  const selectedIndex = Math.max(0, fileEditorFontSizes.indexOf(fontSize))
+
+  return (
+    <div className="flex items-center gap-2.5">
+      <span className="w-3 shrink-0 text-left font-mono text-[9px] text-muted-foreground">
+        A
+      </span>
+      <div className="relative min-w-0 flex-1 py-1.5">
+        <div className="pointer-events-none absolute inset-x-2 top-1/2 grid -translate-y-1/2 grid-cols-4 gap-1">
+          {fileEditorFontSizes.slice(1).map((size, index) => (
+            <span
+              key={size}
+              className={`h-1 ${index < selectedIndex ? "bg-primary/75" : "bg-muted-foreground/25"}`}
+            />
+          ))}
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={fileEditorFontSizes.length - 1}
+          step={1}
+          value={selectedIndex}
+          aria-label="File text size"
+          aria-valuetext={`${fontSize} pixels`}
+          className="relative z-10 block h-5 w-full cursor-pointer appearance-none bg-transparent accent-primary [&::-moz-range-progress]:bg-transparent [&::-moz-range-thumb]:size-4 [&::-moz-range-thumb]:rounded-none [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-background [&::-moz-range-thumb]:bg-primary [&::-moz-range-track]:bg-transparent [&::-webkit-slider-runnable-track]:h-1 [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:mt-[-6px] [&::-webkit-slider-thumb]:size-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-none [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-background [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow-sm"
+          onChange={(event) => {
+            const nextFontSize =
+              fileEditorFontSizes[event.target.valueAsNumber]
+            if (nextFontSize !== undefined) onFontSizeChange(nextFontSize)
+          }}
+        />
+      </div>
+      <span className="w-3 shrink-0 text-right font-mono text-sm leading-none text-muted-foreground">
+        A
+      </span>
+    </div>
   )
 }
 
