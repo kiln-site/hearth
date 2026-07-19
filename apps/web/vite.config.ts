@@ -66,7 +66,7 @@ const config = defineConfig(({ command }) => {
     resolve: { tsconfigPaths: true },
     ssr: {
       external: ["better-sqlite3", "pg", "tedious"],
-      noExternal: true,
+      ...(command === "serve" ? {} : { noExternal: true }),
     },
     // Browser errors remain available in devtools and the collaborative preview.
     // Forwarding them back through Vite can recursively re-forward its own output.

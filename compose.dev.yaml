@@ -1,4 +1,42 @@
 services:
+  relay:
+    build: !reset null
+    image: node:24-alpine
+    restart: "no"
+    working_dir: /workspace
+    environment:
+      NODE_ENV: development
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        apk add --no-cache docker-cli docker-cli-compose
+        corepack enable
+        pnpm install --frozen-lockfile --ignore-scripts --filter relay...
+        pnpm rebuild esbuild
+        pnpm --filter @workspace/contracts exec vp pack
+        exec pnpm --filter relay dev
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4100/health',{signal:AbortSignal.timeout(2500)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 6
+    volumes: !override
+      - /var/run/docker.sock:/var/run/docker.sock
+      - relay-data:/data
+      - .:/workspace
+      - relay-dev-node-modules:/workspace/node_modules
+      - relay-dev-app-node-modules:/workspace/apps/relay/node_modules
+      - relay-dev-contracts-node-modules:/workspace/packages/contracts/node_modules
+      - relay-dev-pnpm-store:/root/.local/share/pnpm/store
+
   hearth:
     build: !reset null
     image: node:24-alpine
@@ -20,7 +58,7 @@ services:
         corepack enable
         pnpm install --frozen-lockfile --ignore-scripts --filter web...
         pnpm rebuild esbuild
-        pnpm --filter @workspace/contracts build
+        pnpm --filter @workspace/contracts exec vp pack
         pnpm --filter web db:migrate
         exec pnpm --filter web dev --host 0.0.0.0
     healthcheck:
@@ -46,6 +84,10 @@ services:
       - hearth-dev-pnpm-store:/root/.local/share/pnpm/store
 
 volumes:
+  relay-dev-node-modules:
+  relay-dev-app-node-modules:
+  relay-dev-contracts-node-modules:
+  relay-dev-pnpm-store:
   hearth-dev-node-modules:
   hearth-dev-web-node-modules:
   hearth-dev-contracts-node-modules:
