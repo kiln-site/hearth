@@ -681,13 +681,6 @@ function Editor({
               </div>
 
               <div className="ml-auto flex shrink-0 items-center gap-1 md:hidden">
-                <EditorSaveButton
-                  dirty={dirty}
-                  file={file}
-                  loading={loading}
-                  saving={saving}
-                  onSave={handleSave}
-                />
                 <EditorTooltip
                   content={
                     searchOpen ? "Hide Search in File" : "Search in File"
@@ -711,6 +704,13 @@ function Editor({
                 <EditorFontSizeButton
                   fontSize={fontSize}
                   onFontSizeChange={setFontSize}
+                />
+                <EditorSaveButton
+                  dirty={dirty}
+                  file={file}
+                  loading={loading}
+                  saving={saving}
+                  onSave={handleSave}
                 />
                 <Popover
                   open={mobileActionsOpen}
