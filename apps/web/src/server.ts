@@ -1,7 +1,3 @@
-if (import.meta.env.DEV) {
-  await import("../instrument.server.mjs")
-}
-
 import * as Sentry from "@sentry/tanstackstart-react"
 import { wrapFetchWithSentry } from "@sentry/tanstackstart-react"
 import handler, { createServerEntry } from "@tanstack/react-start/server-entry"
