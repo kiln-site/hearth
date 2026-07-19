@@ -34,7 +34,7 @@ import {
 
 type AccessOverview = Awaited<ReturnType<typeof getAccessOverview>>
 
-const invitationExpiryFormatter = new Intl.DateTimeFormat("en-US", {
+const invitationExpiryFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeZone: "UTC",
 })
@@ -458,10 +458,7 @@ function PendingInvitationList({
                 </p>
                 <p className="mt-1 font-mono text-[9px] text-muted-foreground">
                   {instance?.name ?? "Entire Relay"} · {invitation.role} ·
-                  expires{" "}
-                  {invitationExpiryFormatter.format(
-                    new Date(invitation.expiresAt)
-                  )}
+                  expires <InvitationExpiry value={invitation.expiresAt} />
                 </p>
               </div>
               <Button
@@ -484,6 +481,19 @@ function PendingInvitationList({
       </div>
     </section>
   )
+}
+
+function InvitationExpiry({ value }: { value: string }) {
+  return React.useSyncExternalStore(
+    subscribeToBrowserLocale,
+    () => invitationExpiryFormatter.format(new Date(value)),
+    () => "—"
+  )
+}
+
+function subscribeToBrowserLocale(): () => void {
+  // Locale has no browser change event; this store only defers formatting until hydration.
+  return () => undefined
 }
 
 function Field({

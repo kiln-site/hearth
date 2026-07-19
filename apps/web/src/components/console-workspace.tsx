@@ -1219,6 +1219,7 @@ function ConsoleTimestamp({ timestamp }: { timestamp: string | null }) {
 }
 
 function subscribeToBrowserLocale(): () => void {
+  // Locale has no browser change event; this store only defers formatting until hydration.
   return () => undefined
 }
 
