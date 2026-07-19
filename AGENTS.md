@@ -11,7 +11,7 @@ Performance/Speed and UX is always the most important thing to keep in mind for 
 - When making big feature changes, Sync `main`, then use a focused branch, and prepare a PR. Otherwise, or when explicitly told, feel free to make minor changes on main, however do not commit to main. Let human do that.
 - Use Vite+ (`vp`) and existing Effect patterns; never edit `.repos/effect`.
 - Keep only critical deterministic tests. Prefer browser validation during
-  development; use Sentry to find production regressions.
+  development; use Sentry to find production regressions. In your browser, you will already have an authenticated sentry.io page you can use
 
 ## Setup
 
@@ -41,7 +41,7 @@ against `https://hearth.hearth.orb.local`; never substitute localhost or
 `127.0.0.1`. Check the affected flows plus browser console/network failures.
 
 Before a PR, run the full checks and T3 browser pass. Keep pushes minimal and
-audit Greptile findings until it reports 5/5 ready to merge.
+audit Greptile, and Macroscope findings until they reports 5/5, or approved and ready to merge.
 
 After merge: switch to `main`, pull with `--ff-only`, delete the merged local
 branch, restart `pnpm dev:docker`, and verify the OrbStack URL in T3 Preview.
