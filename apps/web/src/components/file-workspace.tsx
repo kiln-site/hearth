@@ -101,6 +101,25 @@ const fileTreeCollapsedCookieName = "file_tree_collapsed"
 const fileTreeCookieMaxAge = 60 * 60 * 24 * 7
 const fileTreeMinWidth = 224
 const fileTreeMaxWidth = 480
+const fileTreeLayoutCss = `
+  [data-item-section="content"] {
+    flex: 1 1 auto;
+  }
+
+  [data-item-section="decoration"]:empty {
+    display: none;
+  }
+
+  [data-truncate-marker] {
+    opacity: 0;
+  }
+
+  @container measure (height > calc(1lh + 1px)) {
+    [data-truncate-marker] {
+      opacity: 1;
+    }
+  }
+`
 const fileEditorFontSizeStorageKey = "kiln:file-editor-font-size"
 const fileEditorFontSizes = [10, 11, 12, 14, 16]
 const defaultFileEditorFontSize = 12
@@ -1144,6 +1163,7 @@ function FileTreePanel({
     stickyFolders: true,
     itemHeight: 29,
     composition: { contextMenu: { enabled: true, triggerMode: "both" } },
+    unsafeCSS: fileTreeLayoutCss,
   })
   const search = useFileTreeSearch(model)
   const selection = useFileTreeSelection(model)

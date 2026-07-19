@@ -63,7 +63,7 @@ export function InvitationPage({
   }
 
   return (
-    <main className="relative grid min-h-svh place-items-center overflow-hidden bg-background px-6 py-12">
+    <main className="relative grid min-h-dvh place-items-center overflow-hidden bg-background px-6 py-12">
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,oklch(0.55_0.03_55/0.035)_1px,transparent_1px),linear-gradient(to_bottom,oklch(0.55_0.03_55/0.028)_1px,transparent_1px)] [mask-image:radial-gradient(ellipse_70%_70%_at_50%_40%,black,transparent)] bg-[size:64px_64px]" />
       <section className="relative w-full max-w-md rounded-2xl border border-border/70 bg-card/45 p-6 shadow-2xl shadow-black/20 backdrop-blur-sm sm:p-8">
         <div className="flex items-center justify-between">

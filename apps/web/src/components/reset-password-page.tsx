@@ -61,7 +61,7 @@ export function ResetPasswordPage({
   }
 
   return (
-    <main className="relative flex min-h-svh items-center justify-center overflow-hidden bg-background p-6 md:p-10">
+    <main className="relative flex min-h-dvh items-center justify-center overflow-hidden bg-background p-6 md:p-10">
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,oklch(0.55_0.03_55/0.035)_1px,transparent_1px),linear-gradient(to_bottom,oklch(0.55_0.03_55/0.028)_1px,transparent_1px)] [mask-image:radial-gradient(ellipse_70%_70%_at_50%_40%,black,transparent)] bg-[size:64px_64px]" />
       <div className="pointer-events-none absolute top-[22%] left-1/2 h-44 w-72 -translate-x-1/2 rounded-full bg-primary/5 blur-[100px]" />
 

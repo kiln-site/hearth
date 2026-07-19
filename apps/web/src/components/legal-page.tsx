@@ -13,7 +13,7 @@ export function LegalPage({
   updated: string
 }) {
   return (
-    <main className="h-svh overflow-y-auto bg-background text-foreground">
+    <main className="h-dvh overflow-y-auto bg-background text-foreground">
       <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-5 py-6 sm:px-8 sm:py-8">
         <header className="flex items-center justify-between border-b border-border/70 pb-4">
           <a

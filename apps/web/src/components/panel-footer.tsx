@@ -13,7 +13,7 @@ export function PanelFooter({ className }: { className?: string }) {
     <footer
       aria-label="Hearth Panel build information"
       className={cn(
-        "grid h-14 shrink-0 grid-cols-[minmax(0,1fr)_auto] grid-rows-2 bg-background text-center text-[11px] tracking-wide text-muted-foreground/82 sm:grid-cols-[minmax(4.5rem,1fr)_auto_minmax(4.5rem,1fr)]",
+        "hidden h-14 shrink-0 grid-cols-[minmax(0,1fr)_auto] grid-rows-2 bg-background text-center text-[11px] tracking-wide text-muted-foreground/82 sm:grid sm:grid-cols-[minmax(4.5rem,1fr)_auto_minmax(4.5rem,1fr)]",
         className
       )}
     >
