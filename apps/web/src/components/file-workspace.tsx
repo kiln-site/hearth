@@ -1570,10 +1570,16 @@ function fileActivityTime(entry: RelayFileActivityEntry): string {
   if (elapsed < hour) return `${Math.floor(elapsed / minute)}m ago`
   if (elapsed < day) return `${Math.floor(elapsed / hour)}h ago`
   if (elapsed < 7 * day) return `${Math.floor(elapsed / day)}d ago`
+  const activityDate = new Date(latest)
+  const currentDate = new Date()
   return new Intl.DateTimeFormat(undefined, {
     month: "short",
     day: "numeric",
-  }).format(latest)
+    year:
+      activityDate.getFullYear() === currentDate.getFullYear()
+        ? undefined
+        : "numeric",
+  }).format(activityDate)
 }
 
 function FileActivityRow({
