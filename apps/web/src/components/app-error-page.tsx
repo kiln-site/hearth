@@ -78,7 +78,7 @@ function StatusPage({
   detail?: string
 }) {
   return (
-    <main className="relative grid min-h-svh place-items-center overflow-hidden bg-background px-5 py-10">
+    <main className="relative grid min-h-dvh place-items-center overflow-hidden bg-background px-5 py-10">
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute top-1/2 left-1/2 h-[38rem] w-[38rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/4 blur-3xl" />
         <div className="absolute inset-x-0 top-1/2 border-t border-border/35" />

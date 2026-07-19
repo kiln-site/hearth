@@ -183,7 +183,7 @@ function AppLayout() {
           void navigateToInstanceTab(tab, instance.shortId)
         }}
       />
-      <SidebarInset className="h-svh min-w-0 overflow-hidden">
+      <SidebarInset className="h-dvh min-w-0 overflow-hidden">
         <div
           data-slot="app-content"
           className="flex min-h-0 flex-1 flex-col overflow-hidden"

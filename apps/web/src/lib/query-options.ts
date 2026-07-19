@@ -11,6 +11,7 @@ import { getUiPreferences } from "@/server/preferences"
 import {
   getRelayConnectionState,
   getRelayFile,
+  getRelayFileActivity,
   getRelaySnapshot,
   getRelayTree,
 } from "@/server/relay"
@@ -35,6 +36,8 @@ export const queryKeys = {
     connection: ["relay", "connection"] as const,
     file: (instanceId: string, path: string) =>
       ["relay", "instances", instanceId, "files", "content", path] as const,
+    fileActivity: (instanceId: string) =>
+      ["relay", "instances", instanceId, "files", "activity"] as const,
     snapshot: ["relay", "snapshot"] as const,
     tree: (instanceId: string) =>
       ["relay", "instances", instanceId, "files", "tree"] as const,
@@ -133,6 +136,14 @@ export function relayFileQueryOptions(instanceId: string, path: string) {
   return queryOptions({
     queryKey: queryKeys.relay.file(instanceId, path),
     queryFn: () => getRelayFile({ data: { instanceId, path } }),
+    staleTime: 15_000,
+  })
+}
+
+export function relayFileActivityQueryOptions(instanceId: string) {
+  return queryOptions({
+    queryKey: queryKeys.relay.fileActivity(instanceId),
+    queryFn: () => getRelayFileActivity({ data: { instanceId } }),
     staleTime: 15_000,
   })
 }

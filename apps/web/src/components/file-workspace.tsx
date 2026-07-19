@@ -13,6 +13,7 @@ import {
   useFileTreeSelection,
 } from "@pierre/trees/react"
 import type {
+  RelayFileActivityEntry,
   RelayFileContent,
   RelayFileTree,
   RelayInstance,
@@ -22,6 +23,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Clock3,
   Copy,
   Download,
   EllipsisVertical,
@@ -32,10 +34,13 @@ import {
   GitCompareArrows,
   GripVertical,
   HardDriveDownload,
+  House,
   LoaderCircle,
   LockKeyhole,
   Network,
   PanelLeftClose,
+  Pin,
+  PinOff,
   Plus,
   RefreshCw,
   Save,
@@ -71,10 +76,16 @@ import { redactSensitiveText } from "@/lib/redaction"
 import { fileLanguageForPath } from "@/lib/file-language"
 import {
   queryKeys,
+  relayFileActivityQueryOptions,
   relayFileQueryOptions,
   relayTreeQueryOptions,
 } from "@/lib/query-options"
-import { getRelayTree, saveRelayFile, uploadToMclogs } from "@/server/relay"
+import {
+  getRelayTree,
+  saveRelayFile,
+  updateRelayFilePin,
+  uploadToMclogs,
+} from "@/server/relay"
 
 function formatName(path: string) {
   return path.split("/").filter(Boolean).at(-1) ?? path
@@ -90,9 +101,34 @@ const fileTreeCollapsedCookieName = "file_tree_collapsed"
 const fileTreeCookieMaxAge = 60 * 60 * 24 * 7
 const fileTreeMinWidth = 224
 const fileTreeMaxWidth = 480
+const mobileFileDrawerTransitionMs = 200
+const fileTreeLayoutCss = `
+  [data-item-section="content"] {
+    flex: 1 1 auto;
+  }
+
+  [data-item-section="decoration"]:empty {
+    display: none;
+  }
+
+  [data-truncate-marker] {
+    opacity: 0;
+  }
+
+  @container measure (height > calc(1lh + 1px)) {
+    [data-truncate-marker] {
+      opacity: 1;
+    }
+  }
+
+  [data-icon-name="file-tree-icon-chevron"] {
+    width: 14px;
+    height: 14px;
+  }
+`
 const fileEditorFontSizeStorageKey = "kiln:file-editor-font-size"
 const fileEditorFontSizes = [10, 11, 12, 14, 16]
-const defaultFileEditorFontSize = 12
+const defaultFileEditorFontSize = 16
 
 function clampFileTreeWidth(width: number, workspaceWidth: number) {
   const responsiveMaximum = Math.floor(workspaceWidth * 0.45)
@@ -152,6 +188,29 @@ function FileTreeRevealButton({ onClick }: { onClick: () => void }) {
         </TooltipContent>
       </Tooltip>
     </div>
+  )
+}
+
+function FilesHomeButton({
+  active = false,
+  onClick,
+}: {
+  active?: boolean
+  onClick: () => void
+}) {
+  return (
+    <EditorTooltip content="Files Home">
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className={`shrink-0 shadow-none ${active ? "text-primary hover:bg-transparent hover:text-primary focus-visible:bg-transparent" : ""}`}
+        aria-label="Files home"
+        aria-current={active ? "page" : undefined}
+        onClick={onClick}
+      >
+        <House className="size-[18px]" />
+      </Button>
+    </EditorTooltip>
   )
 }
 
@@ -247,7 +306,10 @@ function Editor({
   error,
   canShare,
   canWrite,
+  pinned,
+  pinning,
   onSave,
+  onPinnedChange,
   treeCollapsed,
   onTreeExpand,
 }: {
@@ -258,7 +320,10 @@ function Editor({
   error: string | null
   canShare: boolean
   canWrite: boolean
+  pinned: boolean
+  pinning: boolean
   onSave: (content: string) => Promise<void>
+  onPinnedChange: (pinned: boolean) => void
   treeCollapsed: boolean
   onTreeExpand: () => void
 }) {
@@ -589,6 +654,18 @@ function Editor({
                       File actions
                     </p>
                     <FileActionMenuItem
+                      active={pinned}
+                      icon={pinned ? <PinOff /> : <Pin />}
+                      label={pinned ? "Unpin file" : "Pin file"}
+                      detail={
+                        canWrite
+                          ? "Shared on this server's Files home"
+                          : "Requires file write access"
+                      }
+                      disabled={loading || pinning || !canWrite}
+                      onClick={() => onPinnedChange(!pinned)}
+                    />
+                    <FileActionMenuItem
                       active={dirty && reviewChanges}
                       icon={<GitCompareArrows />}
                       label={
@@ -609,13 +686,6 @@ function Editor({
               </div>
 
               <div className="ml-auto flex shrink-0 items-center gap-1 md:hidden">
-                <EditorSaveButton
-                  dirty={dirty}
-                  file={file}
-                  loading={loading}
-                  saving={saving}
-                  onSave={handleSave}
-                />
                 <EditorTooltip
                   content={
                     searchOpen ? "Hide Search in File" : "Search in File"
@@ -636,9 +706,12 @@ function Editor({
                     <Search className="size-[17px]" />
                   </Button>
                 </EditorTooltip>
-                <EditorFontSizeButton
-                  fontSize={fontSize}
-                  onFontSizeChange={setFontSize}
+                <EditorSaveButton
+                  dirty={dirty}
+                  file={file}
+                  loading={loading}
+                  saving={saving}
+                  onSave={handleSave}
                 />
                 <Popover
                   open={mobileActionsOpen}
@@ -665,6 +738,21 @@ function Editor({
                     <p className="px-2 pt-1 pb-1.5 font-mono text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
                       File actions
                     </p>
+                    <div className="border-t border-border/45 px-2 py-2.5">
+                      <div className="mb-1.5 flex items-center justify-between gap-3">
+                        <span className="flex items-center gap-2 text-xs font-medium text-foreground">
+                          <ALargeSmall className="size-4 text-muted-foreground" />
+                          Text size
+                        </span>
+                        <span className="font-mono text-[10px] text-muted-foreground">
+                          {fontSize}px
+                        </span>
+                      </div>
+                      <EditorFontSizeControl
+                        fontSize={fontSize}
+                        onFontSizeChange={setFontSize}
+                      />
+                    </div>
                     {canShare ? (
                       <FileActionMenuItem
                         icon={
@@ -692,6 +780,18 @@ function Editor({
                         onClick={() => void handleShare()}
                       />
                     ) : null}
+                    <FileActionMenuItem
+                      active={pinned}
+                      icon={pinned ? <PinOff /> : <Pin />}
+                      label={pinned ? "Unpin file" : "Pin file"}
+                      detail={
+                        canWrite
+                          ? "Shared on this server's Files home"
+                          : "Requires file write access"
+                      }
+                      disabled={loading || pinning || !canWrite}
+                      onClick={() => onPinnedChange(!pinned)}
+                    />
                     <FileActionMenuItem
                       active={wrapLines}
                       icon={<WrapText />}
@@ -748,7 +848,7 @@ function Editor({
                 ref={searchInputRef}
                 value={searchQuery}
                 aria-label="Find in file"
-                className="h-8 bg-background/70 pr-2 pl-8 font-mono text-xs shadow-none"
+                className="h-8 bg-background/70 pr-2 pl-8 font-mono text-base shadow-none md:text-xs"
                 placeholder="Find in file…"
                 spellCheck={false}
                 onChange={(event) => setSearchQuery(event.target.value)}
@@ -904,7 +1004,6 @@ function EditorFontSizeButton({
   onFontSizeChange: (fontSize: number) => void
 }) {
   const [open, setOpen] = React.useState(false)
-  const selectedIndex = Math.max(0, fileEditorFontSizes.indexOf(fontSize))
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -927,41 +1026,58 @@ function EditorFontSizeButton({
         collisionPadding={12}
         className="w-[min(13rem,calc(100vw-1rem))] p-2.5"
       >
-        <div className="flex items-center gap-2.5">
-          <span className="w-3 shrink-0 text-left font-mono text-[9px] text-muted-foreground">
-            A
-          </span>
-          <div className="relative min-w-0 flex-1 py-1.5">
-            <div className="pointer-events-none absolute inset-x-2 top-1/2 grid -translate-y-1/2 grid-cols-4 gap-1">
-              {fileEditorFontSizes.slice(1).map((size, index) => (
-                <span
-                  key={size}
-                  className={`h-1 ${index < selectedIndex ? "bg-primary/75" : "bg-muted-foreground/25"}`}
-                />
-              ))}
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={fileEditorFontSizes.length - 1}
-              step={1}
-              value={selectedIndex}
-              aria-label="File text size"
-              aria-valuetext={`${fontSize} pixels`}
-              className="relative z-10 block h-5 w-full cursor-pointer appearance-none bg-transparent accent-primary [&::-moz-range-progress]:bg-transparent [&::-moz-range-thumb]:size-4 [&::-moz-range-thumb]:rounded-none [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-background [&::-moz-range-thumb]:bg-primary [&::-moz-range-track]:bg-transparent [&::-webkit-slider-runnable-track]:h-1 [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:mt-[-6px] [&::-webkit-slider-thumb]:size-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-none [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-background [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow-sm"
-              onChange={(event) => {
-                const nextFontSize =
-                  fileEditorFontSizes[event.target.valueAsNumber]
-                if (nextFontSize !== undefined) onFontSizeChange(nextFontSize)
-              }}
-            />
-          </div>
-          <span className="w-3 shrink-0 text-right font-mono text-sm leading-none text-muted-foreground">
-            A
-          </span>
-        </div>
+        <EditorFontSizeControl
+          fontSize={fontSize}
+          onFontSizeChange={onFontSizeChange}
+        />
       </PopoverContent>
     </Popover>
+  )
+}
+
+function EditorFontSizeControl({
+  fontSize,
+  onFontSizeChange,
+}: {
+  fontSize: number
+  onFontSizeChange: (fontSize: number) => void
+}) {
+  const selectedIndex = Math.max(0, fileEditorFontSizes.indexOf(fontSize))
+
+  return (
+    <div className="flex items-center gap-2.5">
+      <span className="w-3 shrink-0 text-left font-mono text-[9px] text-muted-foreground">
+        A
+      </span>
+      <div className="relative min-w-0 flex-1 py-1.5">
+        <div className="pointer-events-none absolute inset-x-2 top-1/2 grid -translate-y-1/2 grid-cols-4 gap-1">
+          {fileEditorFontSizes.slice(1).map((size, index) => (
+            <span
+              key={size}
+              className={`h-1 ${index < selectedIndex ? "bg-primary/75" : "bg-muted-foreground/25"}`}
+            />
+          ))}
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={fileEditorFontSizes.length - 1}
+          step={1}
+          value={selectedIndex}
+          aria-label="File text size"
+          aria-valuetext={`${fontSize} pixels`}
+          className="relative z-10 block h-5 w-full cursor-pointer appearance-none bg-transparent accent-primary [&::-moz-range-progress]:bg-transparent [&::-moz-range-thumb]:size-4 [&::-moz-range-thumb]:rounded-none [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-background [&::-moz-range-thumb]:bg-primary [&::-moz-range-track]:bg-transparent [&::-webkit-slider-runnable-track]:h-1 [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:mt-[-6px] [&::-webkit-slider-thumb]:size-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-none [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-background [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow-sm"
+          onChange={(event) => {
+            const nextFontSize =
+              fileEditorFontSizes[event.target.valueAsNumber]
+            if (nextFontSize !== undefined) onFontSizeChange(nextFontSize)
+          }}
+        />
+      </div>
+      <span className="w-3 shrink-0 text-right font-mono text-sm leading-none text-muted-foreground">
+        A
+      </span>
+    </div>
   )
 }
 
@@ -1038,6 +1154,7 @@ function FileTreePanel({
   onRefresh,
   onMobileOpenChange,
   onFileSelected,
+  onHome,
   collapsed,
   animateCollapsedChange,
   onCollapsedChange,
@@ -1052,6 +1169,7 @@ function FileTreePanel({
   onRefresh: () => void
   onMobileOpenChange: (open: boolean) => void
   onFileSelected: () => void
+  onHome: () => void
   collapsed: boolean
   animateCollapsedChange: boolean
   onCollapsedChange: (collapsed: boolean) => void
@@ -1078,10 +1196,15 @@ function FileTreePanel({
     stickyFolders: true,
     itemHeight: 29,
     composition: { contextMenu: { enabled: true, triggerMode: "both" } },
+    unsafeCSS: fileTreeLayoutCss,
   })
   const search = useFileTreeSearch(model)
   const selection = useFileTreeSelection(model)
+  const [mobileContentVisible, setMobileContentVisible] = React.useState(
+    mobileOpen
+  )
   const searchInputRef = React.useRef<HTMLInputElement>(null)
+  const mobileBrowseButtonRef = React.useRef<HTMLButtonElement>(null)
   const panelRef = React.useRef<HTMLElement>(null)
   const resizeHandleRef = React.useRef<HTMLDivElement>(null)
   const resizeFrame = React.useRef<number | null>(null)
@@ -1176,8 +1299,35 @@ function FileTreePanel({
   }, [initialWidth])
 
   React.useLayoutEffect(() => {
+    if (mobileOpen) {
+      setMobileContentVisible(true)
+      return
+    }
+    const timer = window.setTimeout(
+      () => setMobileContentVisible(false),
+      mobileFileDrawerTransitionMs
+    )
+    return () => window.clearTimeout(timer)
+  }, [mobileOpen])
+
+  React.useLayoutEffect(() => {
     if (!collapsed) applyFileTreeWidth(currentWidth.current)
   }, [collapsed])
+
+  React.useLayoutEffect(() => {
+    const currentSelection = model.getSelectedPaths()
+    if (selectedPath) {
+      if (
+        currentSelection.length !== 1 ||
+        currentSelection[0] !== selectedPath
+      ) {
+        for (const path of currentSelection) model.getItem(path)?.deselect()
+        model.getItem(selectedPath)?.select()
+      }
+      return
+    }
+    for (const path of currentSelection) model.getItem(path)?.deselect()
+  }, [model, selectedPath])
 
   React.useLayoutEffect(() => {
     const panel = panelRef.current
@@ -1268,11 +1418,23 @@ function FileTreePanel({
   }
 
   React.useEffect(() => {
-    const selected = selection.at(-1)
-    if (!selected || selected.endsWith("/") || selected === selectedPath) return
+    const selected = model.getSelectedPaths().at(-1)
+    if (!selected || selected.endsWith("/") || selected === selectedPath) {
+      return
+    }
     onPathChange(selected)
     onFileSelected()
-  }, [onFileSelected, onPathChange, selectedPath, selection])
+  }, [model, onFileSelected, onPathChange, selectedPath, selection])
+
+  function handleHomeClick() {
+    onMobileOpenChange(false)
+    onHome()
+  }
+
+  function closeMobileFileBrowser() {
+    onMobileOpenChange(false)
+    window.requestAnimationFrame(() => mobileBrowseButtonRef.current?.focus())
+  }
 
   return (
     <aside
@@ -1302,17 +1464,52 @@ function FileTreePanel({
       }
     >
       <div
-        className={`order-2 flex h-11 shrink-0 items-center overflow-hidden border-t bg-card px-1.5 md:order-1 md:h-14 md:w-[var(--file-tree-width)] md:border-t-0 md:border-b md:px-2 ${collapsed ? "md:invisible" : ""}`}
+        className={`${mobileContentVisible ? "flex" : "hidden"} order-1 h-12 shrink-0 items-center border-b border-border/80 bg-card px-3 md:hidden`}
       >
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+          <FolderTree className="size-[18px] shrink-0 text-primary" />
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold">Browse files</p>
+            <p className="truncate font-mono text-[10px] text-muted-foreground">
+              /data
+            </p>
+          </div>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Close file browser"
+          onClick={closeMobileFileBrowser}
+        >
+          <X className="size-[18px]" />
+        </Button>
+      </div>
+
+      <div
+        className={`absolute inset-x-0 bottom-0 z-10 order-2 flex h-11 shrink-0 items-center overflow-hidden border-t bg-card px-1.5 md:relative md:inset-auto md:z-auto md:order-1 md:h-14 md:w-[var(--file-tree-width)] md:border-t-0 md:border-b md:px-2 ${collapsed ? "md:invisible" : ""}`}
+      >
+        <FilesHomeButton active={!selectedPath} onClick={handleHomeClick} />
+        <Button
+          ref={mobileBrowseButtonRef}
+          variant={mobileOpen ? "secondary" : "ghost"}
+          size="icon-sm"
+          className="shrink-0 shadow-none md:hidden"
+          aria-label="Browse files"
+          aria-controls={`file-tree-${instance.shortId}`}
+          aria-expanded={mobileOpen}
+          onClick={() => onMobileOpenChange(!mobileOpen)}
+        >
+          <FolderTree className="size-[18px]" />
+        </Button>
         <label className="flex h-full min-w-0 flex-1 items-center">
-          <Search className="ml-1 size-5 shrink-0 text-foreground/90" />
+          <Search className="ml-1 size-[18px] shrink-0 text-foreground/90 md:ml-1.5" />
           <input
             ref={searchInputRef}
             type="search"
             value={search.value}
             placeholder="Search files…"
             aria-label="Search instance files"
-            className="h-full min-w-0 flex-1 bg-transparent px-2 text-sm text-foreground outline-none placeholder:text-muted-foreground/70"
+            className="h-full min-w-0 flex-1 bg-transparent px-2 text-base text-foreground outline-none placeholder:text-muted-foreground/70 md:text-sm"
             onChange={(event) => {
               const value = event.target.value
               if (value) search.setValue(value)
@@ -1322,7 +1519,8 @@ function FileTreePanel({
             onKeyDown={(event) => {
               if (event.key === "Escape") {
                 event.preventDefault()
-                search.close()
+                if (search.value) search.close()
+                else closeMobileFileBrowser()
                 return
               }
               if (event.key === "Enter") {
@@ -1342,7 +1540,7 @@ function FileTreePanel({
                 aria-label="New"
                 title="New…"
               >
-                <Plus className="size-[17px]" />
+                <Plus className="size-[18px]" />
               </Button>
             </PopoverTrigger>
             <PopoverContent
@@ -1370,7 +1568,7 @@ function FileTreePanel({
                     aria-label="Refreshing files"
                     disabled
                   >
-                    <RefreshCw className="size-[17px] animate-spin" />
+                    <RefreshCw className="size-[18px] animate-spin" />
                   </Button>
                 </span>
               ) : (
@@ -1380,7 +1578,7 @@ function FileTreePanel({
                   aria-label="Refresh files"
                   onClick={onRefresh}
                 >
-                  <RefreshCw className="size-[17px]" />
+                  <RefreshCw className="size-[18px]" />
                 </Button>
               )}
             </TooltipTrigger>
@@ -1398,7 +1596,7 @@ function FileTreePanel({
                 aria-controls={`file-tree-${instance.shortId}`}
                 onClick={() => onCollapsedChange(true)}
               >
-                <PanelLeftClose className="size-[17px]" />
+                <PanelLeftClose className="size-[18px]" />
               </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>
@@ -1408,7 +1606,7 @@ function FileTreePanel({
         </div>
       </div>
       <div
-        className={`order-1 min-h-0 flex-1 overflow-hidden bg-card px-1 py-1.5 md:order-2 md:block md:w-[var(--file-tree-width)] md:shrink-0 ${mobileOpen ? "block" : "hidden"} ${collapsed ? "md:invisible" : ""}`}
+        className={`order-1 mb-11 min-h-0 flex-1 overflow-hidden bg-card py-1.5 md:order-2 md:mb-0 md:block md:w-[var(--file-tree-width)] md:shrink-0 ${mobileContentVisible ? "block" : "hidden"} ${collapsed ? "md:invisible" : ""}`}
       >
         <FileTree
           model={model}
@@ -1430,6 +1628,12 @@ function FileTreePanel({
               "--trees-border-radius-override": "0px",
               "--trees-font-family-override": "'Archivo Variable', sans-serif",
               "--trees-font-size-override": "12px",
+              "--trees-padding-inline-override": "0px",
+              "--trees-item-padding-x-override": "5px",
+              "--trees-item-margin-x-override": "0px",
+              "--trees-item-row-gap-override": "4px",
+              "--trees-level-gap-override": "4px",
+              "--trees-context-menu-trigger-inline-offset": "8px",
               height: "100%",
             } as React.CSSProperties
           }
@@ -1509,6 +1713,204 @@ function FileActionPreview({
         Soon
       </span>
     </button>
+  )
+}
+
+function fileActivityKind(entry: RelayFileActivityEntry): "Edited" | "Viewed" {
+  if (
+    entry.lastEditedAt &&
+    new Date(entry.lastEditedAt).getTime() >=
+      new Date(entry.lastViewedAt).getTime()
+  ) {
+    return "Edited"
+  }
+  return "Viewed"
+}
+
+function fileActivityTime(entry: RelayFileActivityEntry): string {
+  const latest = entry.lastEditedAt
+    ? Math.max(
+        new Date(entry.lastViewedAt).getTime(),
+        new Date(entry.lastEditedAt).getTime()
+      )
+    : new Date(entry.lastViewedAt).getTime()
+  const elapsed = Math.max(0, Date.now() - latest)
+  const minute = 60_000
+  const hour = 60 * minute
+  const day = 24 * hour
+  if (elapsed < minute) return "just now"
+  if (elapsed < hour) return `${Math.floor(elapsed / minute)}m ago`
+  if (elapsed < day) return `${Math.floor(elapsed / hour)}h ago`
+  if (elapsed < 7 * day) return `${Math.floor(elapsed / day)}d ago`
+  const activityDate = new Date(latest)
+  const currentDate = new Date()
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year:
+      activityDate.getFullYear() === currentDate.getFullYear()
+        ? undefined
+        : "numeric",
+  }).format(activityDate)
+}
+
+function FileActivityRow({
+  entry,
+  onOpen,
+}: {
+  entry: RelayFileActivityEntry
+  onOpen: (path: string) => void
+}) {
+  const kind = fileActivityKind(entry)
+  return (
+    <button
+      type="button"
+      className="group grid w-full grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border/55 px-2 py-3 text-left transition-colors first:border-t-0 hover:bg-accent/35 focus-visible:bg-accent/45 focus-visible:outline-none sm:px-3"
+      onClick={() => onOpen(entry.path)}
+    >
+      <span className="grid size-8 place-items-center border border-border/70 bg-muted/20 text-muted-foreground transition-colors group-hover:border-primary/25 group-hover:text-primary">
+        <FileCode2 className="size-4" />
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-sm font-medium text-foreground">
+          {formatName(entry.path)}
+        </span>
+        <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
+          /data/{entry.path}
+        </span>
+      </span>
+      <span className="flex shrink-0 items-center gap-2 pl-2 text-[10px] text-muted-foreground">
+        <span>
+          {kind}{" "}
+          <time
+            dateTime={
+              kind === "Edited"
+                ? (entry.lastEditedAt ?? entry.lastViewedAt)
+                : entry.lastViewedAt
+            }
+            suppressHydrationWarning
+          >
+            {fileActivityTime(entry)}
+          </time>
+        </span>
+        {entry.pinned ? (
+          <Pin
+            className="size-3.5 fill-primary/15 text-primary"
+            aria-label="Pinned"
+          />
+        ) : null}
+      </span>
+    </button>
+  )
+}
+
+function FilesHome({
+  activity,
+  loading,
+  error,
+  treeCollapsed,
+  onTreeExpand,
+  onOpen,
+}: {
+  activity: ReadonlyArray<RelayFileActivityEntry>
+  loading: boolean
+  error: string | null
+  treeCollapsed: boolean
+  onTreeExpand: () => void
+  onOpen: (path: string) => void
+}) {
+  const pinned = activity.filter((entry) => entry.pinned)
+  const recent = activity.filter((entry) => !entry.pinned)
+  const empty = pinned.length === 0 && recent.length === 0
+
+  return (
+    <section className="flex min-h-[360px] min-w-0 flex-1 flex-col bg-card">
+      <div className={fileEditorHeaderClassName}>
+        {treeCollapsed ? <FileTreeRevealButton onClick={onTreeExpand} /> : null}
+        <div className={fileEditorHeaderContentClassName}>
+          <div className="flex min-w-0 flex-1 items-center gap-2.5 md:gap-3">
+            <Clock3 className="size-5 shrink-0 text-primary" />
+            <p className="truncate text-sm font-semibold">Files</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-8">
+        <div className="mx-auto w-full max-w-3xl">
+          {loading ? (
+            <div className="grid min-h-44 place-items-center border border-border/70 bg-muted/5">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <LoaderCircle className="size-4 animate-spin text-primary" />
+                Loading file activity
+              </div>
+            </div>
+          ) : null}
+
+          {!loading && error ? (
+            <div className="border border-destructive/30 bg-destructive/5 px-4 py-3 text-xs text-destructive">
+              {error}
+            </div>
+          ) : null}
+
+          {!loading && !error && empty ? (
+            <div className="grid min-h-52 place-items-center border border-dashed border-border/80 bg-muted/5 px-6 text-center">
+              <div className="max-w-sm">
+                <div className="mx-auto grid size-10 place-items-center border border-border/70 bg-card text-muted-foreground">
+                  <Clock3 className="size-[18px]" />
+                </div>
+                <p className="mt-4 text-sm font-semibold">
+                  No recent files yet
+                </p>
+                <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+                  Open a file from the tree and it will appear here for everyone
+                  with access to this server.
+                </p>
+              </div>
+            </div>
+          ) : null}
+
+          {!loading && !error && pinned.length > 0 ? (
+            <div className="mb-7">
+              <div className="mb-2 flex items-center gap-2 px-1">
+                <Pin className="size-3.5 text-primary" />
+                <h2 className="font-mono text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+                  Pinned
+                </h2>
+              </div>
+              <div className="border border-border/75 bg-muted/5">
+                {pinned.map((entry) => (
+                  <FileActivityRow
+                    key={entry.path}
+                    entry={entry}
+                    onOpen={onOpen}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {!loading && !error && recent.length > 0 ? (
+            <div>
+              <div className="mb-2 flex items-center gap-2 px-1">
+                <Clock3 className="size-3.5 text-primary" />
+                <h2 className="font-mono text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+                  Recent
+                </h2>
+              </div>
+              <div className="border border-border/75 bg-muted/5">
+                {recent.map((entry) => (
+                  <FileActivityRow
+                    key={entry.path}
+                    entry={entry}
+                    onOpen={onOpen}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </section>
   )
 }
 
@@ -1614,7 +2016,7 @@ export function FileWorkspace({
   const queryClient = useQueryClient()
   const normalizedRoutePath = routeFilePath?.replace(/^\/+/, "") ?? ""
   const [selectedPath, setSelectedPath] = React.useState(normalizedRoutePath)
-  const [mobileTreeOpen, setMobileTreeOpen] = React.useState(true)
+  const [mobileTreeOpen, setMobileTreeOpen] = React.useState(false)
   const [navigationError, setNavigationError] = React.useState<string | null>(
     null
   )
@@ -1628,7 +2030,15 @@ export function FileWorkspace({
   const openingTreeForRouteEntry = openTreeOnEntry && !handledTreeEntry.current
   const displayedTreeCollapsed = treeCollapsed && !openingTreeForRouteEntry
   const treeQuery = useQuery(relayTreeQueryOptions(instance.id))
+  const activityQuery = useQuery(relayFileActivityQueryOptions(instance.id))
   const tree = treeQuery.data ?? null
+  const activity = React.useMemo(() => {
+    if (!tree || !activityQuery.data) return []
+    const availablePaths = new Set(tree.paths)
+    return activityQuery.data.files.filter((entry) =>
+      availablePaths.has(entry.path)
+    )
+  }, [activityQuery.data, tree])
   const selectedPathIsReadable = Boolean(
     tree?.paths.includes(selectedPath) && !selectedPath.endsWith("/")
   )
@@ -1647,6 +2057,15 @@ export function FileWorkspace({
   }
   const file = retainedFile.current
   const saveFileMutation = useMutation({ mutationFn: saveRelayFile })
+  const pinFileMutation = useMutation({
+    mutationFn: updateRelayFilePin,
+    onSuccess: (nextActivity) => {
+      queryClient.setQueryData(
+        queryKeys.relay.fileActivity(instance.id),
+        nextActivity
+      )
+    },
+  })
   const refreshTreeMutation = useMutation({
     mutationFn: () =>
       getRelayTree({ data: { instanceId: instance.id, fresh: true } }),
@@ -1663,9 +2082,36 @@ export function FileWorkspace({
     navigationError ??
     queryErrorMessage(treeQuery.error, "Could not load files") ??
     queryErrorMessage(refreshTreeMutation.error, "Could not refresh files") ??
-    queryErrorMessage(fileQuery.error, "Could not read file")
+    queryErrorMessage(fileQuery.error, "Could not read file") ??
+    queryErrorMessage(pinFileMutation.error, "Could not update file pin")
   const selectedFileUnavailable =
-    selectedPathIsReadable && fileQuery.isError && file?.path !== selectedPath
+    Boolean(tree && selectedPath && !selectedPathIsReadable) ||
+    (selectedPathIsReadable && fileQuery.isError && file?.path !== selectedPath)
+  const selectedActivity = activity.find((entry) => entry.path === selectedPath)
+  const isHome = !normalizedRoutePath && !selectedPath
+  const activitySyncKey = React.useRef<string | null>(null)
+
+  React.useEffect(() => {
+    if (
+      !fileQuery.data ||
+      fileQuery.isPlaceholderData ||
+      fileQuery.data.path !== selectedPath
+    ) {
+      return
+    }
+    const nextKey = `${fileQuery.data.path}:${fileQuery.data.modifiedAt}`
+    if (activitySyncKey.current === nextKey) return
+    activitySyncKey.current = nextKey
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.relay.fileActivity(instance.id),
+    })
+  }, [
+    fileQuery.data,
+    fileQuery.isPlaceholderData,
+    instance.id,
+    queryClient,
+    selectedPath,
+  ])
 
   const handleTreeCollapsedChange = React.useCallback(
     (nextCollapsed: boolean) => {
@@ -1678,6 +2124,27 @@ export function FileWorkspace({
     () => handleTreeCollapsedChange(false),
     [handleTreeCollapsedChange]
   )
+
+  const handleHome = React.useCallback(async () => {
+    pendingRoutePath.current = null
+    setNavigationError(null)
+    if (!normalizedRoutePath) {
+      setSelectedPath("")
+      return
+    }
+    try {
+      await navigate({
+        to: "/$serverId/files/$",
+        params: { serverId: instance.shortId, _splat: "" },
+      })
+      setSelectedPath("")
+    } catch (cause) {
+      setSelectedPath(normalizedRoutePath)
+      setNavigationError(
+        cause instanceof Error ? cause.message : "Could not navigate home"
+      )
+    }
+  }, [instance.shortId, navigate, normalizedRoutePath])
 
   React.useLayoutEffect(() => {
     if (!openTreeOnEntry) {
@@ -1762,64 +2229,29 @@ export function FileWorkspace({
       }
     }
 
+    if (!normalizedRoutePath) {
+      if (selectedPath) setSelectedPath("")
+      setNavigationError(null)
+      return
+    }
+
     const routePathIsValid =
-      normalizedRoutePath &&
       tree.paths.includes(normalizedRoutePath) &&
       !normalizedRoutePath.endsWith("/")
 
     if (routePathIsValid) {
       if (selectedPath !== normalizedRoutePath) {
         setSelectedPath(normalizedRoutePath)
-        setNavigationError(null)
       }
+      setNavigationError(null)
       return
     }
 
-    const selectedPathIsValid =
-      selectedPath &&
-      tree.paths.includes(selectedPath) &&
-      !selectedPath.endsWith("/")
-    let nextPath = selectedPathIsValid ? selectedPath : ""
-
-    if (!nextPath) {
-      if (
-        !normalizedRoutePath &&
-        window.matchMedia("(max-width: 767px)").matches
-      ) {
-        return
-      }
-      nextPath = tree.paths.includes("server.properties")
-        ? "server.properties"
-        : (tree.paths.find((path) => !path.endsWith("/")) ?? "")
-      if (!nextPath) {
-        setNavigationError(`${instance.name} has no readable files`)
-        return
-      }
-      setSelectedPath(nextPath)
+    if (selectedPath !== normalizedRoutePath) {
+      setSelectedPath(normalizedRoutePath)
     }
-
-    if (normalizedRoutePath !== nextPath) {
-      void navigate({
-        to: "/$serverId/files/$",
-        params: { serverId: instance.shortId, _splat: nextPath },
-        replace: true,
-      }).catch((cause: unknown) => {
-        setNavigationError(
-          cause instanceof Error
-            ? cause.message
-            : "Could not update the file URL"
-        )
-      })
-    }
-  }, [
-    active,
-    instance.name,
-    instance.shortId,
-    navigate,
-    normalizedRoutePath,
-    selectedPath,
-    tree,
-  ])
+    setNavigationError(`Could not find /data/${normalizedRoutePath}`)
+  }, [active, normalizedRoutePath, selectedPath, tree])
 
   function handleRefresh() {
     setNavigationError(null)
@@ -1837,6 +2269,16 @@ export function FileWorkspace({
       },
     })
     queryClient.setQueryData(queryKeys.relay.file(instance.id, file.path), next)
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.relay.fileActivity(instance.id),
+    })
+  }
+
+  function handlePinnedChange(pinned: boolean) {
+    if (!file) return
+    pinFileMutation.mutate({
+      data: { instanceId: instance.id, path: file.path, pinned },
+    })
   }
 
   return (
@@ -1856,6 +2298,7 @@ export function FileWorkspace({
           onRefresh={handleRefresh}
           onMobileOpenChange={setMobileTreeOpen}
           onFileSelected={closeMobileTree}
+          onHome={handleHome}
           collapsed={displayedTreeCollapsed}
           animateCollapsedChange={
             !openingTreeForRouteEntry && !treeTransitionSuppressed
@@ -1870,7 +2313,22 @@ export function FileWorkspace({
         />
       )}
       <div className="relative flex min-h-0 min-w-0 flex-1 pb-11 md:pb-0">
-        {file ? (
+        {isHome ? (
+          <FilesHome
+            activity={activity}
+            loading={treeQuery.isPending || activityQuery.isPending}
+            error={
+              queryErrorMessage(treeQuery.error, "Could not load files") ??
+              queryErrorMessage(
+                activityQuery.error,
+                "Could not load recent files"
+              )
+            }
+            treeCollapsed={displayedTreeCollapsed}
+            onTreeExpand={handleTreeExpand}
+            onOpen={(path) => void handlePathChange(path)}
+          />
+        ) : file ? (
           <div
             aria-hidden={selectedFileUnavailable}
             inert={selectedFileUnavailable ? true : undefined}
@@ -1879,18 +2337,21 @@ export function FileWorkspace({
             <Editor
               canShare={canShare}
               canWrite={canWrite}
+              pinned={selectedActivity?.pinned ?? false}
+              pinning={pinFileMutation.isPending}
               file={file}
               displayPath={selectedPath || file.path}
               instance={instance}
               loading={loadingFile}
               error={error}
               onSave={handleSave}
+              onPinnedChange={handlePinnedChange}
               treeCollapsed={displayedTreeCollapsed}
               onTreeExpand={handleTreeExpand}
             />
           </div>
         ) : null}
-        {!tree || !file || selectedFileUnavailable ? (
+        {!isHome && (!tree || !file || selectedFileUnavailable) ? (
           <UnavailablePreview
             path={selectedPath || normalizedRoutePath || instance.name}
             pathIsCopyable={Boolean(selectedPath || normalizedRoutePath)}

@@ -1,5 +1,5 @@
 import * as React from "react"
-import { createFileRoute, useParams } from "@tanstack/react-router"
+import { createFileRoute, useMatch } from "@tanstack/react-router"
 import { FileCode2 } from "lucide-react"
 
 import {
@@ -20,7 +20,11 @@ export const Route = createFileRoute("/_app/$serverId/files")({
 })
 
 function FilesRoute() {
-  const { _splat: filePath } = useParams({ strict: false })
+  const filePath = useMatch({
+    from: "/_app/$serverId/files/$",
+    shouldThrow: false,
+    select: (match) => match.params._splat,
+  })
   const { fileTreePreferences, instance, permissions } = useInstanceWorkspace()
 
   return (

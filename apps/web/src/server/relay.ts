@@ -6,6 +6,7 @@ import {
   relayConsoleCompletionInputSchema,
   relayConsoleCompletionSchema,
   relayConsoleSchema,
+  relayFileActivitySchema,
   relayFileContentSchema,
   relayFileTreeSchema,
   relayInstanceActionSchema,
@@ -24,6 +25,12 @@ import {
   applyInstanceDisplayNames,
   saveInstanceDisplayName,
 } from "@/lib/instance-registry"
+import {
+  listFileActivity,
+  recordFileEdited,
+  recordFileViewed,
+  setFilePinned,
+} from "@/lib/file-activity"
 import type { AccessPermission } from "@/lib/permissions"
 import type { AuthenticatedUser } from "@/lib/auth-session"
 import { requireAuthenticatedUser } from "@/server/auth"
@@ -60,9 +67,21 @@ const liveConsoleInputSchema = instanceInputSchema.extend({
   requestedAt: z.number(),
 })
 
-const fileInputSchema = instanceInputSchema.extend({
-  path: z.string().min(1),
-})
+const filePathSchema = z
+  .string()
+  .min(1)
+  .max(2_048)
+  .refine(
+    (path) =>
+      !path.includes("\0") &&
+      !path.startsWith("/") &&
+      !path.split(/[\\/]/u).includes(".."),
+    "Invalid relative file path"
+  )
+
+const fileInputSchema = instanceInputSchema.extend({ path: filePathSchema })
+
+const filePinInputSchema = fileInputSchema.extend({ pinned: z.boolean() })
 
 const saveFileInputSchema = fileInputSchema.extend(
   relaySaveFileInputSchema.shape
@@ -201,27 +220,94 @@ export const getRelayTree = createServerFn({ method: "GET" })
 
 export const getRelayFile = createServerFn({ method: "GET" })
   .validator(fileInputSchema)
-  .handler(async ({ data }) =>
-    relayFileContentSchema.parse(
-      await relayRequest(
-        `/v1/instances/${encodeURIComponent(data.instanceId)}/file?path=${encodeURIComponent(data.path)}`,
-        undefined,
-        "instance.files.read",
-        data.instanceId
-      )
+  .handler(async ({ data }) => {
+    const { relay, user } = await activeRelayAccess()
+    await requireRelayPermission({
+      user,
+      relayId: relay.id,
+      permission: "instance.files.read",
+      instanceId: data.instanceId,
+    })
+    const response = await relayFetch(
+      relay,
+      `/v1/instances/${encodeURIComponent(data.instanceId)}/file?path=${encodeURIComponent(data.path)}`
     )
-  )
+    const file = relayFileContentSchema.parse(await response.json())
+    await recordFileActivityBestEffort(
+      "view",
+      recordFileViewed(relay.id, data.instanceId, data.path)
+    )
+    return file
+  })
 
 export const saveRelayFile = createServerFn({ method: "POST" })
   .validator(saveFileInputSchema)
   .handler(async ({ data }) => {
     const { instanceId, path, ...input } = data
-    return relayFileContentSchema.parse(
-      await relayRequest(
-        `/v1/instances/${encodeURIComponent(instanceId)}/file?path=${encodeURIComponent(path)}`,
-        { method: "PUT", body: JSON.stringify(input) },
-        "instance.files.write",
-        instanceId
+    const { relay, user } = await activeRelayAccess()
+    await requireRelayPermission({
+      user,
+      relayId: relay.id,
+      permission: "instance.files.write",
+      instanceId,
+    })
+    const response = await relayFetch(
+      relay,
+      `/v1/instances/${encodeURIComponent(instanceId)}/file?path=${encodeURIComponent(path)}`,
+      { method: "PUT", body: JSON.stringify(input) }
+    )
+    const file = relayFileContentSchema.parse(await response.json())
+    await recordFileActivityBestEffort(
+      "edit",
+      recordFileEdited(relay.id, instanceId, path)
+    )
+    return file
+  })
+
+export const getRelayFileActivity = createServerFn({ method: "GET" })
+  .validator(instanceInputSchema)
+  .handler(async ({ data }) => {
+    const { relay, user } = await activeRelayAccess()
+    await requireRelayPermission({
+      user,
+      relayId: relay.id,
+      permission: "instance.files.read",
+      instanceId: data.instanceId,
+    })
+    return relayFileActivitySchema.parse(
+      await listFileActivity(relay.id, data.instanceId)
+    )
+  })
+
+export const updateRelayFilePin = createServerFn({ method: "POST" })
+  .validator(filePinInputSchema)
+  .handler(async ({ data }) => {
+    const { relay, user } = await activeRelayAccess()
+    await requireRelayPermission({
+      user,
+      relayId: relay.id,
+      permission: "instance.files.write",
+      instanceId: data.instanceId,
+    })
+    const tree = await runAppEffect(
+      "relay.tree.pinValidation",
+      cachedRelayJsonEffect({
+        decode: relayFileTreeSchema.parse,
+        path: `/v1/instances/${encodeURIComponent(data.instanceId)}/tree`,
+        policy: relayCachePolicy.tree(relay.id, data.instanceId),
+        relay,
+      })
+    )
+    if (!tree.paths.includes(data.path) || data.path.endsWith("/")) {
+      throw new Error("File not found")
+    }
+    return relayFileActivitySchema.parse(
+      await setFilePinned(
+        relay.id,
+        data.instanceId,
+        data.path,
+        data.pinned,
+        new Set(tree.paths)
       )
     )
   })
@@ -407,6 +493,20 @@ const uploadLogEffect = Effect.fn("mclogs.upload")(function* (
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause)
+}
+
+async function recordFileActivityBestEffort(
+  kind: "edit" | "view",
+  operation: Promise<void>
+): Promise<void> {
+  try {
+    await operation
+  } catch (cause) {
+    console.warn(
+      `[Kiln Files] The ${kind} succeeded, but its recent-file activity could not be recorded:`,
+      cause
+    )
+  }
 }
 
 async function relayRequest(

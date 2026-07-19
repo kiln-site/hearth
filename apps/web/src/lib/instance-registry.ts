@@ -32,8 +32,10 @@ export const applyInstanceDisplayNamesEffect = Effect.fn(
   const rows = yield* database.queryRows<InstanceNameRow>(
     "instance_display_names",
     `SELECT instance_id, display_name
-       FROM ${databaseTable("instance")}
+      FROM ${databaseTable("instance")}
       WHERE relay_id = ?
+        AND display_name IS NOT NULL
+        AND display_name <> ''
         AND instance_id IN (${placeholders})`,
     [relayId, ...instances.map((instance) => instance.id)]
   )
