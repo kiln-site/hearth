@@ -2,7 +2,7 @@ import * as Sentry from "@sentry/tanstackstart-react"
 
 const dsn = process.env.SENTRY_DSN?.trim()
 
-if (dsn) {
+if (dsn && !Sentry.isInitialized()) {
   Sentry.init({
     dsn,
     environment:

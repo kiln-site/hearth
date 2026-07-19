@@ -235,12 +235,12 @@ replacement, run:
 pnpm dev:docker
 ```
 
-This uses `compose.dev.yaml` to bind-mount the repository into a development
-Node container while keeping Linux `node_modules` and the pnpm store in named
-volumes. Hearth runs with `NODE_ENV=development` and `KILN_ENVIRONMENT=dev`;
-the production Compose path and production image remain unchanged. Both
-`http://localhost:3000` and `https://hearth.hearth.orb.local` reach the HMR
-server. Stop the development stack with `pnpm dev:docker:down`.
+This uses `compose.dev.yaml` to bind-mount the repository into development Node
+containers for Hearth and Relay while keeping their Linux `node_modules` and
+pnpm stores in named volumes. The production Compose path and images remain
+unchanged. Both `http://localhost:3000` and
+`https://hearth.hearth.orb.local` reach the HMR server. Stop the development
+stack with `pnpm dev:docker:down`.
 
 For a host-run development process instead, install dependencies, start MySQL,
 and apply the development schema:
