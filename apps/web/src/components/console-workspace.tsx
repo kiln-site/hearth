@@ -735,7 +735,7 @@ function ConsoleCommandBar({
                   title={command.error ?? undefined}
                   autoFocus
                   autoComplete="off"
-                  className="h-10 border-border/80 bg-card font-mono text-xs shadow-none"
+                  className="h-10 border-border/80 bg-card font-mono text-base shadow-none sm:text-xs"
                 />
               </div>
             </PopoverAnchor>
