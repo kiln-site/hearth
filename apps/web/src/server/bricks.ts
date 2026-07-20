@@ -42,7 +42,7 @@ export const getBrickStudio = createServerFn({ method: "GET" }).handler(
       throw new Error("Platform administrator access required")
     }
     const relays = await listPersistedRelays()
-    const relay = relays.find((item) => item.isPrimary) ?? relays.at(0)
+    const relay = relays.at(0)
     if (!relay)
       return {
         relays,

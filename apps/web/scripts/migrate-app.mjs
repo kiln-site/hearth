@@ -32,6 +32,7 @@ try {
       `ALTER TABLE ${databaseTable("relay")} ADD COLUMN is_primary BOOLEAN NOT NULL DEFAULT FALSE AFTER enabled`
     )
   }
+  await ensureRelayMetadataSchema(connection)
 
   const [relayRows] = await connection.query(
     `SELECT COUNT(*) AS relay_count FROM ${databaseTable("relay")}`
@@ -111,6 +112,26 @@ async function ensureFileActivitySchema(database) {
      REFERENCES ${databaseTable("instance")} (relay_id, instance_id)
      ON DELETE CASCADE`
   )
+}
+
+async function ensureRelayMetadataSchema(database) {
+  const columns = [
+    ["managed_ember_count", "INT UNSIGNED NULL"],
+    ["node_arch", "VARCHAR(32) NULL"],
+    ["node_platform", "VARCHAR(32) NULL"],
+    ["node_version", "VARCHAR(120) NULL"],
+  ]
+  for (const [name, definition] of columns) {
+    const [existing] = await database.query(
+      `SHOW COLUMNS FROM ${databaseTable("relay")} LIKE ?`,
+      [name]
+    )
+    if (existing.length === 0) {
+      await database.query(
+        `ALTER TABLE ${databaseTable("relay")} ADD COLUMN ${name} ${definition}`
+      )
+    }
+  }
 }
 
 function configuredInitialRelay() {

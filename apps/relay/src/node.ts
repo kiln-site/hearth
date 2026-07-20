@@ -16,6 +16,7 @@ import type { RelayConfig } from "./config.js"
 import type { DockerDriver } from "./docker.js"
 
 const connectedAt = new Date().toISOString()
+const relayVersion = buildVersion()
 
 export async function nodeSnapshot(
   config: RelayConfig,
@@ -30,7 +31,7 @@ export async function nodeSnapshot(
   return {
     id: config.nodeId,
     name: config.nodeName || hostname(),
-    version: "0.1.0-dev",
+    version: relayVersion,
     platform: platform(),
     arch: arch(),
     uptimeSeconds: uptime(),
@@ -52,4 +53,13 @@ export async function nodeSnapshot(
     },
     connectedAt,
   }
+}
+
+function buildVersion(): string {
+  const commit = (
+    process.env.SOURCE_COMMIT ??
+    process.env.SENTRY_RELEASE ??
+    ""
+  ).trim()
+  return commit ? commit.slice(0, 8) : "development"
 }

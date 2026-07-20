@@ -17,9 +17,14 @@ const createRelaySchema = z.object({
       "Enter a hostname or IP address"
     ),
   port: z.number().int().min(1).max(65_535),
-  useTls: z.boolean(),
   token: z.string().trim().min(32).max(512),
 })
+const updateRelaySchema = createRelaySchema
+  .omit({ token: true })
+  .extend({
+    id: z.uuid(),
+    token: z.string().trim().min(32).max(512).optional(),
+  })
 
 export const getRelays = createServerFn({ method: "GET" }).handler(async () => {
   const user = await requireAuthenticatedUser()
@@ -36,18 +41,17 @@ export const addRelay = createServerFn({ method: "POST" })
     if (!isPlatformAdmin(user))
       throw new Error("Platform administrator access required")
     const { createPersistedRelay } = await import("@/lib/relay-registry")
-    return createPersistedRelay(data)
+    return createPersistedRelay({ ...data, useTls: true })
   })
 
-export const selectRelay = createServerFn({ method: "POST" })
-  .validator(relayIdSchema)
+export const updateRelay = createServerFn({ method: "POST" })
+  .validator(updateRelaySchema)
   .handler(async ({ data }) => {
     const user = await requireAuthenticatedUser()
     if (!isPlatformAdmin(user))
       throw new Error("Platform administrator access required")
-    const { makePersistedRelayPrimary } = await import("@/lib/relay-registry")
-    await makePersistedRelayPrimary(data.id)
-    return { selected: true }
+    const { updatePersistedRelay } = await import("@/lib/relay-registry")
+    return updatePersistedRelay(data)
   })
 
 export const checkRelay = createServerFn({ method: "POST" })

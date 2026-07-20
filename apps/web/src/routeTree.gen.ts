@@ -26,9 +26,14 @@ import { Route as AppSecurityRouteImport } from './routes/_app.security'
 import { Route as AppBricksRouteImport } from './routes/_app.bricks'
 import { Route as AppAccessRouteImport } from './routes/_app.access'
 import { Route as AppServerIdRouteImport } from './routes/_app.$serverId'
+import { Route as AppSettingsIndexRouteImport } from './routes/_app.settings.index'
 import { Route as AppServerIdIndexRouteImport } from './routes/_app.$serverId.index'
 import { Route as ApiConsoleInstanceIdRouteImport } from './routes/api.console.$instanceId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api.auth.$'
+import { Route as AppSettingsRelaysRouteImport } from './routes/_app.settings.relays'
+import { Route as AppSettingsBillingRouteImport } from './routes/_app.settings.billing'
+import { Route as AppSettingsAppearanceRouteImport } from './routes/_app.settings.appearance'
+import { Route as AppSettingsAccountRouteImport } from './routes/_app.settings.account'
 import { Route as AppServerIdInfoRouteImport } from './routes/_app.$serverId.info'
 import { Route as AppServerIdFilesRouteImport } from './routes/_app.$serverId.files'
 import { Route as AppServerIdConsoleRouteImport } from './routes/_app.$serverId.console'
@@ -118,6 +123,11 @@ const AppServerIdRoute = AppServerIdRouteImport.update({
   path: '/$serverId',
   getParentRoute: () => AppRoute,
 } as any)
+const AppSettingsIndexRoute = AppSettingsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppSettingsRoute,
+} as any)
 const AppServerIdIndexRoute = AppServerIdIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -132,6 +142,26 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
+} as any)
+const AppSettingsRelaysRoute = AppSettingsRelaysRouteImport.update({
+  id: '/relays',
+  path: '/relays',
+  getParentRoute: () => AppSettingsRoute,
+} as any)
+const AppSettingsBillingRoute = AppSettingsBillingRouteImport.update({
+  id: '/billing',
+  path: '/billing',
+  getParentRoute: () => AppSettingsRoute,
+} as any)
+const AppSettingsAppearanceRoute = AppSettingsAppearanceRouteImport.update({
+  id: '/appearance',
+  path: '/appearance',
+  getParentRoute: () => AppSettingsRoute,
+} as any)
+const AppSettingsAccountRoute = AppSettingsAccountRouteImport.update({
+  id: '/account',
+  path: '/account',
+  getParentRoute: () => AppSettingsRoute,
 } as any)
 const AppServerIdInfoRoute = AppServerIdInfoRouteImport.update({
   id: '/info',
@@ -168,15 +198,20 @@ export interface FileRoutesByFullPath {
   '/access': typeof AppAccessRoute
   '/bricks': typeof AppBricksRoute
   '/security': typeof AppSecurityRoute
-  '/settings': typeof AppSettingsRoute
+  '/settings': typeof AppSettingsRouteWithChildren
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
   '/$serverId/console': typeof AppServerIdConsoleRoute
   '/$serverId/files': typeof AppServerIdFilesRouteWithChildren
   '/$serverId/info': typeof AppServerIdInfoRoute
+  '/settings/account': typeof AppSettingsAccountRoute
+  '/settings/appearance': typeof AppSettingsAppearanceRoute
+  '/settings/billing': typeof AppSettingsBillingRoute
+  '/settings/relays': typeof AppSettingsRelaysRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/console/$instanceId': typeof ApiConsoleInstanceIdRoute
   '/$serverId/': typeof AppServerIdIndexRoute
+  '/settings/': typeof AppSettingsIndexRoute
   '/$serverId/files/$': typeof AppServerIdFilesSplatRoute
 }
 export interface FileRoutesByTo {
@@ -192,15 +227,19 @@ export interface FileRoutesByTo {
   '/access': typeof AppAccessRoute
   '/bricks': typeof AppBricksRoute
   '/security': typeof AppSecurityRoute
-  '/settings': typeof AppSettingsRoute
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
   '/$serverId/console': typeof AppServerIdConsoleRoute
   '/$serverId/files': typeof AppServerIdFilesRouteWithChildren
   '/$serverId/info': typeof AppServerIdInfoRoute
+  '/settings/account': typeof AppSettingsAccountRoute
+  '/settings/appearance': typeof AppSettingsAppearanceRoute
+  '/settings/billing': typeof AppSettingsBillingRoute
+  '/settings/relays': typeof AppSettingsRelaysRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/console/$instanceId': typeof ApiConsoleInstanceIdRoute
   '/$serverId': typeof AppServerIdIndexRoute
+  '/settings': typeof AppSettingsIndexRoute
   '/$serverId/files/$': typeof AppServerIdFilesSplatRoute
 }
 export interface FileRoutesById {
@@ -219,15 +258,20 @@ export interface FileRoutesById {
   '/_app/access': typeof AppAccessRoute
   '/_app/bricks': typeof AppBricksRoute
   '/_app/security': typeof AppSecurityRoute
-  '/_app/settings': typeof AppSettingsRoute
+  '/_app/settings': typeof AppSettingsRouteWithChildren
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
   '/_app/$serverId/console': typeof AppServerIdConsoleRoute
   '/_app/$serverId/files': typeof AppServerIdFilesRouteWithChildren
   '/_app/$serverId/info': typeof AppServerIdInfoRoute
+  '/_app/settings/account': typeof AppSettingsAccountRoute
+  '/_app/settings/appearance': typeof AppSettingsAppearanceRoute
+  '/_app/settings/billing': typeof AppSettingsBillingRoute
+  '/_app/settings/relays': typeof AppSettingsRelaysRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/console/$instanceId': typeof ApiConsoleInstanceIdRoute
   '/_app/$serverId/': typeof AppServerIdIndexRoute
+  '/_app/settings/': typeof AppSettingsIndexRoute
   '/_app/$serverId/files/$': typeof AppServerIdFilesSplatRoute
 }
 export interface FileRouteTypes {
@@ -252,9 +296,14 @@ export interface FileRouteTypes {
     | '/$serverId/console'
     | '/$serverId/files'
     | '/$serverId/info'
+    | '/settings/account'
+    | '/settings/appearance'
+    | '/settings/billing'
+    | '/settings/relays'
     | '/api/auth/$'
     | '/api/console/$instanceId'
     | '/$serverId/'
+    | '/settings/'
     | '/$serverId/files/$'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -270,15 +319,19 @@ export interface FileRouteTypes {
     | '/access'
     | '/bricks'
     | '/security'
-    | '/settings'
     | '/api/health'
     | '/api/sentry-check'
     | '/$serverId/console'
     | '/$serverId/files'
     | '/$serverId/info'
+    | '/settings/account'
+    | '/settings/appearance'
+    | '/settings/billing'
+    | '/settings/relays'
     | '/api/auth/$'
     | '/api/console/$instanceId'
     | '/$serverId'
+    | '/settings'
     | '/$serverId/files/$'
   id:
     | '__root__'
@@ -302,9 +355,14 @@ export interface FileRouteTypes {
     | '/_app/$serverId/console'
     | '/_app/$serverId/files'
     | '/_app/$serverId/info'
+    | '/_app/settings/account'
+    | '/_app/settings/appearance'
+    | '/_app/settings/billing'
+    | '/_app/settings/relays'
     | '/api/auth/$'
     | '/api/console/$instanceId'
     | '/_app/$serverId/'
+    | '/_app/settings/'
     | '/_app/$serverId/files/$'
   fileRoutesById: FileRoutesById
 }
@@ -446,6 +504,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppServerIdRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/settings/': {
+      id: '/_app/settings/'
+      path: '/'
+      fullPath: '/settings/'
+      preLoaderRoute: typeof AppSettingsIndexRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
     '/_app/$serverId/': {
       id: '/_app/$serverId/'
       path: '/'
@@ -466,6 +531,34 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/auth/$'
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_app/settings/relays': {
+      id: '/_app/settings/relays'
+      path: '/relays'
+      fullPath: '/settings/relays'
+      preLoaderRoute: typeof AppSettingsRelaysRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
+    '/_app/settings/billing': {
+      id: '/_app/settings/billing'
+      path: '/billing'
+      fullPath: '/settings/billing'
+      preLoaderRoute: typeof AppSettingsBillingRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
+    '/_app/settings/appearance': {
+      id: '/_app/settings/appearance'
+      path: '/appearance'
+      fullPath: '/settings/appearance'
+      preLoaderRoute: typeof AppSettingsAppearanceRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
+    '/_app/settings/account': {
+      id: '/_app/settings/account'
+      path: '/account'
+      fullPath: '/settings/account'
+      preLoaderRoute: typeof AppSettingsAccountRouteImport
+      parentRoute: typeof AppSettingsRoute
     }
     '/_app/$serverId/info': {
       id: '/_app/$serverId/info'
@@ -527,12 +620,32 @@ const AppServerIdRouteWithChildren = AppServerIdRoute._addFileChildren(
   AppServerIdRouteChildren,
 )
 
+interface AppSettingsRouteChildren {
+  AppSettingsAccountRoute: typeof AppSettingsAccountRoute
+  AppSettingsAppearanceRoute: typeof AppSettingsAppearanceRoute
+  AppSettingsBillingRoute: typeof AppSettingsBillingRoute
+  AppSettingsRelaysRoute: typeof AppSettingsRelaysRoute
+  AppSettingsIndexRoute: typeof AppSettingsIndexRoute
+}
+
+const AppSettingsRouteChildren: AppSettingsRouteChildren = {
+  AppSettingsAccountRoute: AppSettingsAccountRoute,
+  AppSettingsAppearanceRoute: AppSettingsAppearanceRoute,
+  AppSettingsBillingRoute: AppSettingsBillingRoute,
+  AppSettingsRelaysRoute: AppSettingsRelaysRoute,
+  AppSettingsIndexRoute: AppSettingsIndexRoute,
+}
+
+const AppSettingsRouteWithChildren = AppSettingsRoute._addFileChildren(
+  AppSettingsRouteChildren,
+)
+
 interface AppRouteChildren {
   AppServerIdRoute: typeof AppServerIdRouteWithChildren
   AppAccessRoute: typeof AppAccessRoute
   AppBricksRoute: typeof AppBricksRoute
   AppSecurityRoute: typeof AppSecurityRoute
-  AppSettingsRoute: typeof AppSettingsRoute
+  AppSettingsRoute: typeof AppSettingsRouteWithChildren
 }
 
 const AppRouteChildren: AppRouteChildren = {
@@ -540,7 +653,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppAccessRoute: AppAccessRoute,
   AppBricksRoute: AppBricksRoute,
   AppSecurityRoute: AppSecurityRoute,
-  AppSettingsRoute: AppSettingsRoute,
+  AppSettingsRoute: AppSettingsRouteWithChildren,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)

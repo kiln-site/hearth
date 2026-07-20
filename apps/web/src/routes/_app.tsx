@@ -297,7 +297,8 @@ type AppRouteDestination = Exclude<GlobalSection, null> | InstanceTab
 
 function appRouteDestination(pathname: string): AppRouteDestination {
   if (pathname === "/bricks") return "bricks"
-  if (pathname === "/settings") return "settings"
+  if (pathname === "/settings" || pathname.startsWith("/settings/"))
+    return "settings"
   if (pathname === "/access") return "access"
   if (pathname === "/security") return "security"
   if (/\/files(?:\/|$)/.test(pathname)) return "files"

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 
 import type { ResultSetHeader, RowDataPacket } from "mysql2/promise"
 import { Effect } from "effect"
+import { relaySnapshotSchema } from "@workspace/contracts"
 
 import { Database } from "@/effect/database"
 import { CredentialError } from "@/effect/errors"
@@ -21,9 +22,12 @@ export interface PersistedRelay {
   port: number
   useTls: boolean
   enabled: boolean
-  isPrimary: boolean
   lastConnectedAt: string | null
   lastError: string | null
+  managedEmberCount: number | null
+  nodeArch: string | null
+  nodePlatform: string | null
+  nodeVersion: string | null
   tokenConfigured: boolean
 }
 
@@ -34,9 +38,12 @@ interface RelayRow extends RowDataPacket {
   port: number
   use_tls: number
   enabled: number
-  is_primary: number
   last_connected_at: Date | null
   last_error: string | null
+  managed_ember_count: number | null
+  node_arch: string | null
+  node_platform: string | null
+  node_version: string | null
   token_ciphertext: string | null
 }
 
@@ -48,10 +55,11 @@ export const listPersistedRelaysEffect = Effect.fn("relays.list")(function* () {
   const database = yield* Database
   const rows = yield* database.queryRows<RelayRow>(
     "relays_list",
-    `SELECT id, name, hostname, port, use_tls, enabled, is_primary,
-              last_connected_at, last_error, token_ciphertext
+    `SELECT id, name, hostname, port, use_tls, enabled,
+              last_connected_at, last_error, managed_ember_count,
+              node_arch, node_platform, node_version, token_ciphertext
          FROM ${databaseTable("relay")}
-        ORDER BY is_primary DESC, name ASC, created_at ASC`
+        ORDER BY name ASC, created_at ASC`
   )
   return rows.map(toPersistedRelay)
 })
@@ -64,34 +72,19 @@ export async function createPersistedRelay(input: {
   token: string
 }): Promise<PersistedRelay> {
   const id = randomUUID()
-  const connection = await databasePool.getConnection()
-  try {
-    await connection.beginTransaction()
-    const [primaryRows] = await connection.query<Array<RowDataPacket>>(
-      `SELECT COUNT(*) AS primary_count FROM ${databaseTable("relay")} WHERE is_primary = TRUE`
-    )
-    const isPrimary = Number(primaryRows[0]?.primary_count ?? 0) === 0
-    await connection.execute(
-      `INSERT INTO ${databaseTable("relay")}
-        (id, name, hostname, port, use_tls, token_ciphertext, enabled, is_primary)
-       VALUES (?, ?, ?, ?, ?, ?, TRUE, ?)`,
-      [
-        id,
-        input.name,
-        input.hostname,
-        input.port,
-        input.useTls,
-        encryptRelayToken(input.token),
-        isPrimary,
-      ]
-    )
-    await connection.commit()
-  } catch (cause) {
-    await connection.rollback()
-    throw cause
-  } finally {
-    connection.release()
-  }
+  await databasePool.execute(
+    `INSERT INTO ${databaseTable("relay")}
+      (id, name, hostname, port, use_tls, token_ciphertext, enabled, is_primary)
+     VALUES (?, ?, ?, ?, ?, ?, TRUE, FALSE)`,
+    [
+      id,
+      input.name,
+      input.hostname,
+      input.port,
+      input.useTls,
+      encryptRelayToken(input.token),
+    ]
+  )
 
   await checkPersistedRelay(id)
   const relay = (await listPersistedRelays()).find((item) => item.id === id)
@@ -99,34 +92,39 @@ export async function createPersistedRelay(input: {
   return relay
 }
 
-export async function makePersistedRelayPrimary(id: string): Promise<void> {
-  const connection = await databasePool.getConnection()
-  try {
-    await connection.beginTransaction()
-    await connection.query(
-      `UPDATE ${databaseTable("relay")} SET is_primary = FALSE`
-    )
-    const [result] = await connection.execute<ResultSetHeader>(
-      `UPDATE ${databaseTable("relay")} SET is_primary = TRUE, enabled = TRUE WHERE id = ?`,
-      [id]
-    )
-    if (result.affectedRows !== 1) throw new Error("Relay not found")
-    await connection.commit()
-  } catch (cause) {
-    await connection.rollback()
-    throw cause
-  } finally {
-    connection.release()
-  }
+export async function updatePersistedRelay(input: {
+  id: string
+  name: string
+  hostname: string
+  port: number
+  token?: string
+}): Promise<PersistedRelay> {
+  const tokenCiphertext = input.token
+    ? encryptRelayToken(input.token)
+    : undefined
+  const [result] = await databasePool.execute<ResultSetHeader>(
+    `UPDATE ${databaseTable("relay")}
+        SET name = ?, hostname = ?, port = ?,
+            token_ciphertext = COALESCE(?, token_ciphertext), enabled = TRUE
+      WHERE id = ?`,
+    [input.name, input.hostname, input.port, tokenCiphertext ?? null, input.id]
+  )
+  if (result.affectedRows !== 1) throw new Error("Relay not found")
+  await checkPersistedRelay(input.id)
+  const relay = (await listPersistedRelays()).find(
+    (item) => item.id === input.id
+  )
+  if (!relay) throw new Error("Relay was saved but could not be read back")
+  return relay
 }
 
 export async function deletePersistedRelay(id: string): Promise<void> {
   const [result] = await databasePool.execute<ResultSetHeader>(
-    `DELETE FROM ${databaseTable("relay")} WHERE id = ? AND is_primary = FALSE`,
+    `DELETE FROM ${databaseTable("relay")} WHERE id = ?`,
     [id]
   )
   if (result.affectedRows !== 1) {
-    throw new Error("Make another Relay active before removing this one")
+    throw new Error("Relay not found")
   }
 }
 
@@ -141,17 +139,29 @@ export async function checkPersistedRelay(id: string): Promise<PersistedRelay> {
       signal: AbortSignal.timeout(5_000),
     })
     if (!response.ok) throw new Error(`Relay returned HTTP ${response.status}`)
-    await response.body?.cancel()
+    const snapshot = relaySnapshotSchema.parse(await response.json())
+    await databasePool.execute(
+      `UPDATE ${databaseTable("relay")}
+          SET last_connected_at = ?, last_error = NULL,
+              managed_ember_count = ?, node_arch = ?, node_platform = ?,
+              node_version = ?
+        WHERE id = ?`,
+      [
+        new Date(),
+        snapshot.instances.filter((instance) => instance.managedByRelay).length,
+        snapshot.node.arch,
+        snapshot.node.platform,
+        snapshot.node.version,
+        id,
+      ]
+    )
   } catch (cause) {
     error = cause instanceof Error ? cause.message : "Could not reach Relay"
+    await databasePool.execute(
+      `UPDATE ${databaseTable("relay")} SET last_error = ? WHERE id = ?`,
+      [error, id]
+    )
   }
-
-  await databasePool.execute(
-    `UPDATE ${databaseTable("relay")}
-        SET last_connected_at = ?, last_error = ?
-      WHERE id = ?`,
-    [error ? null : new Date(), error, id]
-  )
   const checked = (await listPersistedRelays()).find((item) => item.id === id)
   if (!checked) throw new Error("Relay not found")
   return checked
@@ -169,9 +179,7 @@ export async function resolvePrimaryRelay(): Promise<PersistedRelay | null> {
 export const resolvePrimaryRelayEffect = Effect.fn("relays.resolvePrimary")(
   function* () {
     return (
-      (yield* listPersistedRelaysEffect()).find(
-        (item) => item.isPrimary && item.enabled
-      ) ?? null
+      (yield* listPersistedRelaysEffect()).find((item) => item.enabled) ?? null
     )
   }
 )
@@ -238,9 +246,13 @@ function toPersistedRelay(row: RelayRow): PersistedRelay {
     port: Number(row.port),
     useTls: Boolean(row.use_tls),
     enabled: Boolean(row.enabled),
-    isPrimary: Boolean(row.is_primary),
     lastConnectedAt: row.last_connected_at?.toISOString() ?? null,
     lastError: row.last_error,
+    managedEmberCount:
+      row.managed_ember_count === null ? null : Number(row.managed_ember_count),
+    nodeArch: row.node_arch,
+    nodePlatform: row.node_platform,
+    nodeVersion: row.node_version,
     tokenConfigured: Boolean(row.token_ciphertext || relayKey()),
   }
 }

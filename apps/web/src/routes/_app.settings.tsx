@@ -1,9 +1,7 @@
 import { createFileRoute, redirect } from "@tanstack/react-router"
 
-import { AppSettingsPage } from "@/components/app-settings-page"
-import { pageTitle } from "@/lib/page-title"
+import { SettingsLayout } from "@/components/settings-layout"
 import { getAuthState } from "@/server/auth"
-import { relaysQueryOptions } from "@/lib/query-options"
 
 export const Route = createFileRoute("/_app/settings")({
   beforeLoad: async () => {
@@ -12,12 +10,5 @@ export const Route = createFileRoute("/_app/settings")({
       throw redirect({ to: "/" })
     }
   },
-  loader: ({ context }) =>
-    context.queryClient.ensureQueryData(relaysQueryOptions()),
-  head: () => ({ meta: [{ title: pageTitle("Settings") }] }),
-  component: SettingsRoute,
+  component: SettingsLayout,
 })
-
-function SettingsRoute() {
-  return <AppSettingsPage />
-}

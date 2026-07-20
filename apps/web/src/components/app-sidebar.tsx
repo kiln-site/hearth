@@ -208,7 +208,7 @@ function InfrastructureNavigation({
                   : "text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
               }
               onClick={() => {
-                if (isPlatformAdmin) void navigate({ to: "/settings" })
+                if (isPlatformAdmin) void navigate({ to: "/settings/relays" })
               }}
             >
               <Server />
