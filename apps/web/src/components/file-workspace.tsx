@@ -152,13 +152,6 @@ function defaultFileTreeWidth() {
   return window.innerWidth >= 1280 ? 304 : 280
 }
 
-function parentDirectoryPaths(path: string) {
-  const parts = path.split("/").filter(Boolean)
-  return parts.slice(0, -1).map((_, index) => {
-    return `${parts.slice(0, index + 1).join("/")}/`
-  })
-}
-
 async function copyToClipboard(value: string) {
   try {
     await navigator.clipboard.writeText(value)
@@ -1156,11 +1149,6 @@ function FileTreePanel({
 }) {
   const initialPath =
     selectedPath && tree.paths.includes(selectedPath) ? selectedPath : undefined
-  const initialExpansionPath =
-    initialPath ??
-    (tree.paths.includes("server.properties")
-      ? "server.properties"
-      : tree.paths.find((path) => !path.endsWith("/")))
   const selectionHandlers = React.useRef({
     onFileSelected,
     onPathChange,
@@ -1169,12 +1157,7 @@ function FileTreePanel({
   const previousTreePaths = React.useRef(tree.paths)
   const { model } = useFileTree({
     paths: tree.paths,
-    initialExpansion: 1,
-    initialExpandedPaths: [
-      "config/",
-      "plugins/",
-      ...parentDirectoryPaths(initialExpansionPath ?? ""),
-    ],
+    initialExpansion: "closed",
     initialSelectedPaths: initialPath ? [initialPath] : [],
     onSelectionChange: (paths) => {
       const selected = paths.at(-1)
@@ -1301,14 +1284,8 @@ function FileTreePanel({
   React.useLayoutEffect(() => {
     if (previousTreePaths.current === tree.paths) return
     previousTreePaths.current = tree.paths
-    model.resetPaths(tree.paths, {
-      initialExpandedPaths: [
-        "config/",
-        "plugins/",
-        ...parentDirectoryPaths(selectedPath),
-      ],
-    })
-  }, [model, selectedPath, tree.paths])
+    model.resetPaths(tree.paths, { initialExpandedPaths: [] })
+  }, [model, tree.paths])
 
   React.useLayoutEffect(() => {
     if (mobileOpen) {
