@@ -1,10 +1,6 @@
 import * as React from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
-import type {
-  RelayInstance,
-  RelayNode,
-  RelaySnapshot,
-} from "@workspace/contracts"
+import type { RelaySnapshot } from "@workspace/contracts"
 import {
   Box,
   Check,
@@ -25,6 +21,10 @@ import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
 
 import { queryKeys, replaceRelaySnapshotInstance } from "@/lib/query-options"
+import type {
+  InstanceSettingsInstance,
+  RelayNodeSummary,
+} from "@/lib/relay-selectors"
 import { updateInstanceName } from "@/server/relay"
 
 export function SettingsWorkspace({
@@ -32,8 +32,8 @@ export function SettingsWorkspace({
   node,
   canRename,
 }: {
-  instance: RelayInstance
-  node: RelayNode
+  instance: InstanceSettingsInstance
+  node: RelayNodeSummary
   canRename: boolean
 }) {
   const queryClient = useQueryClient()

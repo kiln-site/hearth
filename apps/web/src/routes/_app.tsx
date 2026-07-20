@@ -88,32 +88,26 @@ function AppLayout() {
     select: selectSidebarInstances,
   })
   const connection = connectionQuery.data
-  const { user } = Route.useRouteContext()
-  const navigate = useNavigate()
-  const pathname = useRouterState({
-    select: (state) => state.location.pathname,
+  const user = Route.useRouteContext({
+    select: (context) => context.user,
   })
-  const { serverId } = useParams({ strict: false })
+  const navigate = useNavigate()
+  const routeDestination = useRouterState({
+    select: (state) => appRouteDestination(state.location.pathname),
+  })
+  const serverId = useParams({
+    strict: false,
+    select: (params) => params.serverId,
+  })
   const [selectedInstanceId, setSelectedInstanceId] = React.useState<
     string | null
   >(null)
-  const activeSection: GlobalSection =
-    pathname === "/bricks"
-      ? "bricks"
-      : pathname === "/settings"
-        ? "settings"
-        : pathname === "/access"
-          ? "access"
-          : pathname === "/security"
-            ? "security"
-            : null
-  const activeTab: InstanceTab | null = activeSection
+  const activeSection: GlobalSection = isGlobalSection(routeDestination)
+    ? routeDestination
+    : null
+  const activeTab: InstanceTab | null = isGlobalSection(routeDestination)
     ? null
-    : /\/files(?:\/|$)/.test(pathname)
-      ? "files"
-      : pathname.endsWith("/info")
-        ? "info"
-        : "console"
+    : routeDestination
   const instances = sidebarInstances ?? emptyInstances
   const routeInstance = findRelayInstance(instances, serverId)
   const rememberedInstance = findRelayInstance(instances, selectedInstanceId)
@@ -168,31 +162,61 @@ function AppLayout() {
     void navigateToInstanceTab(activeTab, instance.shortId, true)
   }, [activeTab, instance, navigateToInstanceTab, serverId])
 
+  const handleInstanceChange = React.useCallback(
+    (shortId: string) => {
+      const nextInstance = findRelayInstance(instances, shortId)
+      if (nextInstance) rememberInstance(nextInstance.id)
+      void navigateToInstanceTab(activeTab ?? "console", shortId)
+    },
+    [activeTab, instances, navigateToInstanceTab, rememberInstance]
+  )
+  const handleTabChange = React.useCallback(
+    (tab: InstanceTab) => {
+      if (!instance) return
+      void navigateToInstanceTab(tab, instance.shortId)
+    },
+    [instance, navigateToInstanceTab]
+  )
+  const handleRetry = React.useCallback(() => {
+    void connectionQuery.refetch()
+  }, [connectionQuery.refetch])
+  const handleConfigure = React.useCallback(() => {
+    void navigate({ to: "/settings" })
+  }, [navigate])
+  const sidebarProps = React.useMemo<React.ComponentProps<typeof AppSidebar>>(
+    () => ({
+      activeSection,
+      activeTab,
+      canManageAccess:
+        connection.status === "connected" && capabilities.canManageAccess,
+      instance,
+      instances,
+      isPlatformAdmin: capabilities.isPlatformAdmin,
+      onInstanceChange: handleInstanceChange,
+      onTabChange: handleTabChange,
+      relayName: connection.relay?.name,
+      relayStatus: connection.status,
+      user,
+    }),
+    [
+      activeSection,
+      activeTab,
+      capabilities.canManageAccess,
+      capabilities.isPlatformAdmin,
+      connection.relay?.name,
+      connection.status,
+      handleInstanceChange,
+      handleTabChange,
+      instance,
+      instances,
+      user,
+    ]
+  )
+
   return (
     <SidebarProvider defaultOpen={uiPreferences.sidebarOpen}>
-      <MobileSidebarNavigationDismiss pathname={pathname} />
-      <AppSidebar
-        instances={instances}
-        instance={instance}
-        user={user}
-        activeTab={activeTab}
-        activeSection={activeSection}
-        canManageAccess={
-          connection.status === "connected" && capabilities.canManageAccess
-        }
-        isPlatformAdmin={capabilities.isPlatformAdmin}
-        relayStatus={connection.status}
-        relayName={connection.relay?.name}
-        onInstanceChange={(shortId) => {
-          const nextInstance = findRelayInstance(instances, shortId)
-          if (nextInstance) rememberInstance(nextInstance.id)
-          void navigateToInstanceTab(activeTab ?? "console", shortId)
-        }}
-        onTabChange={(tab) => {
-          if (!instance) return
-          void navigateToInstanceTab(tab, instance.shortId)
-        }}
-      />
+      <MobileSidebarNavigationDismiss />
+      <AppSidebar {...sidebarProps} />
       <SidebarInset className="h-dvh min-w-0 overflow-hidden">
         <div
           data-slot="app-content"
@@ -204,8 +228,8 @@ function AppLayout() {
             <RelayUnavailableState
               connection={connection}
               canConfigure={capabilities.isPlatformAdmin}
-              onRetry={() => void connectionQuery.refetch()}
-              onConfigure={() => void navigate({ to: "/settings" })}
+              onRetry={handleRetry}
+              onConfigure={handleConfigure}
             />
           ) : !sidebarInstances ? (
             <div className="min-h-0 flex-1 bg-background" />
@@ -221,14 +245,40 @@ function AppLayout() {
   )
 }
 
-function MobileSidebarNavigationDismiss({ pathname }: { pathname: string }) {
+function MobileSidebarNavigationDismiss() {
   const { isMobile, setOpenMobile } = useSidebar()
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
 
   React.useEffect(() => {
     if (isMobile) setOpenMobile(false)
   }, [isMobile, pathname, setOpenMobile])
 
   return null
+}
+
+type AppRouteDestination = Exclude<GlobalSection, null> | InstanceTab
+
+function appRouteDestination(pathname: string): AppRouteDestination {
+  if (pathname === "/bricks") return "bricks"
+  if (pathname === "/settings") return "settings"
+  if (pathname === "/access") return "access"
+  if (pathname === "/security") return "security"
+  if (/\/files(?:\/|$)/.test(pathname)) return "files"
+  if (pathname.endsWith("/info")) return "info"
+  return "console"
+}
+
+function isGlobalSection(
+  destination: AppRouteDestination
+): destination is Exclude<GlobalSection, null> {
+  return (
+    destination === "bricks" ||
+    destination === "settings" ||
+    destination === "access" ||
+    destination === "security"
+  )
 }
 
 function EmptyServerState({ canProvision }: { canProvision: boolean }) {

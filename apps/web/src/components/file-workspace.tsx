@@ -2085,6 +2085,9 @@ function UnavailablePreview({
   )
 }
 
+const StableEditor = React.memo(Editor)
+const StableFileTreePanel = React.memo(FileTreePanel)
+
 interface FileWorkspaceProps {
   instance: InstanceWorkspaceInstance
   active: boolean
@@ -2114,6 +2117,10 @@ function useFileWorkspaceState({
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const normalizedRoutePath = routeFilePath?.replace(/^\/+/, "") ?? ""
+  const normalizedRoutePathRef = React.useRef(normalizedRoutePath)
+  React.useLayoutEffect(() => {
+    normalizedRoutePathRef.current = normalizedRoutePath
+  }, [normalizedRoutePath])
   const [optimisticPath, setOptimisticPath] = React.useState<string | null>(
     null
   )
@@ -2250,10 +2257,11 @@ function useFileWorkspaceState({
   )
 
   const handleHome = React.useCallback(async () => {
+    const routePath = normalizedRoutePathRef.current
     pendingRoutePath.current = null
     setOptimisticPath("")
     setNavigationError(null)
-    if (!normalizedRoutePath) {
+    if (!routePath) {
       setOptimisticPath(null)
       return
     }
@@ -2266,12 +2274,12 @@ function useFileWorkspaceState({
     } catch (cause) {
       setOptimisticPath(null)
       setNavigationError({
-        routePath: normalizedRoutePath,
+        routePath,
         message:
           cause instanceof Error ? cause.message : "Could not navigate home",
       })
     }
-  }, [instance.shortId, navigate, normalizedRoutePath])
+  }, [instance.shortId, navigate])
 
   React.useLayoutEffect(() => {
     if (!openTreeOnEntry) {
@@ -2300,9 +2308,10 @@ function useFileWorkspaceState({
 
   const handlePathChange = React.useCallback(
     async (path: string) => {
+      const routePath = normalizedRoutePathRef.current
       setOptimisticPath(path)
       setNavigationError(null)
-      if (active && normalizedRoutePath !== path) {
+      if (active && routePath !== path) {
         pendingRoutePath.current = path
         try {
           await queryClient
@@ -2321,7 +2330,7 @@ function useFileWorkspaceState({
           if (pendingRoutePath.current !== path) return
           setOptimisticPath(null)
           setNavigationError({
-            routePath: normalizedRoutePath,
+            routePath,
             message:
               cause instanceof Error
                 ? cause.message
@@ -2342,7 +2351,6 @@ function useFileWorkspaceState({
       instance.id,
       instance.shortId,
       navigate,
-      normalizedRoutePath,
       queryClient,
     ]
   )
@@ -2351,29 +2359,38 @@ function useFileWorkspaceState({
     setMobileTreeOpen(false)
   }, [])
 
-  function handleRefresh() {
+  const refreshTree = refreshTreeMutation.mutate
+  const handleRefresh = React.useCallback(() => {
     setNavigationError(null)
-    refreshTreeMutation.mutate()
-  }
+    refreshTree()
+  }, [refreshTree])
 
-  async function handleSave(content: string) {
-    if (!file) return
-    await saveFileMutation.mutateAsync({
+  const fileRef = React.useRef(file)
+  React.useLayoutEffect(() => {
+    fileRef.current = file
+  }, [file])
+  const saveFile = saveFileMutation.mutateAsync
+  const handleSave = React.useCallback(async (content: string) => {
+    const currentFile = fileRef.current
+    if (!currentFile) return
+    await saveFile({
       data: {
         instanceId: instance.id,
-        path: file.path,
+        path: currentFile.path,
         content,
-        expectedModifiedAt: file.modifiedAt,
+        expectedModifiedAt: currentFile.modifiedAt,
       },
     })
-  }
+  }, [instance.id, saveFile])
 
-  function handlePinnedChange(pinned: boolean) {
-    if (!file) return
-    pinFileMutation.mutate({
-      data: { instanceId: instance.id, path: file.path, pinned },
+  const updatePinned = pinFileMutation.mutate
+  const handlePinnedChange = React.useCallback((pinned: boolean) => {
+    const currentFile = fileRef.current
+    if (!currentFile) return
+    updatePinned({
+      data: { instanceId: instance.id, path: currentFile.path, pinned },
     })
-  }
+  }, [instance.id, updatePinned])
 
   return {
     activity,
@@ -2451,7 +2468,7 @@ function FileWorkspaceView({
       data-file-workspace
     >
       {tree ? (
-        <FileTreePanel
+        <StableFileTreePanel
           key={instance.id}
           instance={instance}
           tree={tree}
@@ -2498,7 +2515,7 @@ function FileWorkspaceView({
             inert={selectedFileUnavailable ? true : undefined}
             className={`absolute inset-0 flex ${selectedFileUnavailable ? "invisible" : "visible"}`}
           >
-            <Editor
+            <StableEditor
               key={`${file.instanceId}:${file.path}:${file.modifiedAt}`}
               canShare={canShare}
               canWrite={canWrite}

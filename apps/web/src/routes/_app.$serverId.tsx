@@ -19,8 +19,9 @@ export const Route = createFileRoute("/_app/$serverId")({
 
 function InstanceRouteLayout() {
   const { serverId } = Route.useParams()
-  const pathname = useRouterState({
-    select: (state) => state.location.pathname,
+  const activeTab = useRouterState({
+    select: (state): InstanceTab =>
+      instanceTabFromPathname(state.location.pathname),
   })
   const selectInstance = React.useMemo(
     () => selectInstanceWorkspaceInstance(serverId),
@@ -36,11 +37,6 @@ function InstanceRouteLayout() {
   const { data: uiPreferences } = useSuspenseQuery(uiPreferencesQueryOptions())
   const instanceId = instance?.id
 
-  const activeTab: InstanceTab = /\/files(?:\/|$)/.test(pathname)
-    ? "files"
-    : pathname.endsWith("/info")
-      ? "info"
-      : "console"
   const title =
     activeTab === "console"
       ? "Console"
@@ -85,4 +81,10 @@ function InstanceRouteLayout() {
       <Outlet />
     </InstanceWorkspace>
   )
+}
+
+function instanceTabFromPathname(pathname: string): InstanceTab {
+  if (/\/files(?:\/|$)/.test(pathname)) return "files"
+  if (pathname.endsWith("/info")) return "info"
+  return "console"
 }

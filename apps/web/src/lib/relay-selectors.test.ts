@@ -3,6 +3,7 @@ import type { RelayInstance, RelaySnapshot } from "@workspace/contracts"
 
 import {
   selectInstanceRuntime,
+  selectInstanceSettings,
   selectInstanceWorkspaceInstance,
   selectSidebarInstances,
 } from "@/lib/relay-selectors"
@@ -53,6 +54,9 @@ describe("Relay render selectors", () => {
     )
     expect(selectInstanceWorkspaceInstance(instance.id)(after)).toEqual(
       selectInstanceWorkspaceInstance(instance.id)(before)
+    )
+    expect(selectInstanceSettings(instance.id)(after)).toEqual(
+      selectInstanceSettings(instance.id)(before)
     )
   })
 

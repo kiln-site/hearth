@@ -463,6 +463,7 @@ function InstancePowerControls({
       )
     },
   })
+  const mutateRelayAction = relayActionMutation.mutateAsync
   const [action, setAction] = React.useState<ServerAction | null>(null)
 
   const handleAction = React.useCallback(
@@ -470,7 +471,7 @@ function InstancePowerControls({
       setAction(nextAction)
       onError(null)
       try {
-        await relayActionMutation.mutateAsync({
+        await mutateRelayAction({
           data: { instanceId: instance.id, action: nextAction },
         })
       } catch (cause) {
@@ -479,7 +480,7 @@ function InstancePowerControls({
         setAction(null)
       }
     },
-    [instance.id, onError, relayActionMutation]
+    [instance.id, mutateRelayAction, onError]
   )
 
   if (!observedState) return null

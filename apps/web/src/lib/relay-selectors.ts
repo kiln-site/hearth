@@ -1,4 +1,8 @@
-import type { RelayInstance, RelaySnapshot } from "@workspace/contracts"
+import type {
+  RelayInstance,
+  RelayNode,
+  RelaySnapshot,
+} from "@workspace/contracts"
 
 import type { RelayConnection } from "@/lib/query-options"
 
@@ -28,6 +32,28 @@ export type InstanceRuntime = Pick<
   RelayInstance,
   "id" | "observedState" | "resources" | "startedAt"
 >
+
+export type InstanceSettingsInstance = Pick<
+  RelayInstance,
+  | "connectAddress"
+  | "containerId"
+  | "directory"
+  | "game"
+  | "id"
+  | "implementation"
+  | "javaVersion"
+  | "name"
+  | "service"
+  | "shortId"
+  | "version"
+>
+
+export type RelayNodeSummary = Pick<RelayNode, "id" | "name">
+
+export interface InstanceSettingsData {
+  instance: InstanceSettingsInstance
+  node: RelayNodeSummary
+}
 
 export function selectRelayConnectionSummary(
   connection: RelayConnection
@@ -79,6 +105,29 @@ export function selectInstanceRuntime(instanceId: string) {
           startedAt: instance.startedAt,
         }
       : null
+  }
+}
+
+export function selectInstanceSettings(instanceId: string) {
+  return (snapshot: RelaySnapshot): InstanceSettingsData | null => {
+    const instance = snapshot.instances.find((item) => item.id === instanceId)
+    if (!instance) return null
+    return {
+      instance: {
+        connectAddress: instance.connectAddress,
+        containerId: instance.containerId,
+        directory: instance.directory,
+        game: instance.game,
+        id: instance.id,
+        implementation: instance.implementation,
+        javaVersion: instance.javaVersion,
+        name: instance.name,
+        service: instance.service,
+        shortId: instance.shortId,
+        version: instance.version,
+      },
+      node: { id: snapshot.node.id, name: snapshot.node.name },
+    }
   }
 }
 

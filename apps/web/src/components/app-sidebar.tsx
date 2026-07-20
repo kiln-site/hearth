@@ -65,19 +65,7 @@ const instanceItems: Array<{
   { title: "Info", value: "info", icon: SlidersHorizontal },
 ]
 
-export function AppSidebar({
-  instances,
-  instance,
-  user,
-  activeTab,
-  activeSection,
-  canManageAccess,
-  isPlatformAdmin,
-  relayStatus,
-  relayName,
-  onInstanceChange,
-  onTabChange,
-}: {
+interface AppSidebarProps {
   instances: Array<SidebarInstance>
   instance?: SidebarInstance
   user: AuthenticatedUser
@@ -89,7 +77,21 @@ export function AppSidebar({
   relayName?: string
   onInstanceChange: (id: string) => void
   onTabChange: (tab: InstanceTab) => void
-}) {
+}
+
+export const AppSidebar = React.memo(function AppSidebar({
+  instances,
+  instance,
+  user,
+  activeTab,
+  activeSection,
+  canManageAccess,
+  isPlatformAdmin,
+  relayStatus,
+  relayName,
+  onInstanceChange,
+  onTabChange,
+}: AppSidebarProps) {
   return (
     <Sidebar collapsible="icon" className="border-sidebar-border/80">
       <SidebarHeader className="gap-1 px-2 pt-3">
@@ -139,7 +141,7 @@ export function AppSidebar({
       />
     </Sidebar>
   )
-}
+})
 
 function InfrastructureNavigation({
   activeSection,
