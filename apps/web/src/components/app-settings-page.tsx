@@ -51,19 +51,6 @@ const relayConnectedFormatter = new Intl.DateTimeFormat("en-US", {
 export function AppSettingsPage() {
   const queryClient = useQueryClient()
   const { data: relays } = useSuspenseQuery(relaysQueryOptions())
-  const addRelayMutation = useMutation({
-    mutationFn: addRelay,
-    onSuccess: () =>
-      Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.relays }),
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.relay.connection,
-        }),
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.access.capabilities,
-        }),
-      ]),
-  })
   const checkRelayMutation = useMutation({
     mutationFn: checkRelay,
     onSuccess: () =>
@@ -106,49 +93,6 @@ export function AppSettingsPage() {
   const [pending, setPending] = React.useState<string | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [notice, setNotice] = React.useState<string | null>(null)
-  const [form, setForm] = React.useState({
-    name: "",
-    hostname: "",
-    port: "4100",
-    token: "",
-    useTls: false,
-  })
-  const [copied, setCopied] = React.useState(false)
-
-  async function createRelay(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    setPending("add")
-    setError(null)
-    setNotice(null)
-    try {
-      const created = await addRelayMutation.mutateAsync({
-        data: {
-          name: form.name,
-          hostname: form.hostname,
-          port: Number(form.port),
-          token: form.token,
-          useTls: form.useTls,
-        },
-      })
-      setNotice(
-        created.lastError
-          ? `${created.name} was saved, but the first connection check failed.`
-          : `${created.name} is connected and ready.`
-      )
-      setForm({
-        name: "",
-        hostname: "",
-        port: "4100",
-        token: "",
-        useTls: false,
-      })
-    } catch (cause) {
-      setError(messageFrom(cause, "Could not save Relay"))
-    } finally {
-      setPending(null)
-    }
-  }
-
   async function act(id: string, action: "check" | "select" | "remove") {
     setPending(`${action}:${id}`)
     setError(null)
@@ -235,14 +179,7 @@ export function AppSettingsPage() {
 
         <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_21rem]">
           <RelayList relays={relays} pending={pending} onAction={act} />
-          <AddRelaySection
-            form={form}
-            copied={copied}
-            pending={pending}
-            onCopiedChange={setCopied}
-            onFormChange={setForm}
-            onSubmit={createRelay}
-          />
+          <AddRelaySection onError={setError} onNotice={setNotice} />
         </div>
       </div>
     </main>
@@ -360,20 +297,66 @@ function RelayList({
 }
 
 function AddRelaySection({
-  form,
-  copied,
-  pending,
-  onCopiedChange,
-  onFormChange,
-  onSubmit,
+  onError,
+  onNotice,
 }: {
-  form: RelayForm
-  copied: boolean
-  pending: string | null
-  onCopiedChange: React.Dispatch<React.SetStateAction<boolean>>
-  onFormChange: React.Dispatch<React.SetStateAction<RelayForm>>
-  onSubmit: (event: React.FormEvent<HTMLFormElement>) => Promise<void>
+  onError: (error: string | null) => void
+  onNotice: (notice: string | null) => void
 }) {
+  const queryClient = useQueryClient()
+  const addRelayMutation = useMutation({
+    mutationFn: addRelay,
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.relays }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.relay.connection,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.access.capabilities,
+        }),
+      ]),
+  })
+  const [form, setForm] = React.useState<RelayForm>({
+    name: "",
+    hostname: "",
+    port: "4100",
+    token: "",
+    useTls: false,
+  })
+  const [copied, setCopied] = React.useState(false)
+
+  async function createRelay(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    onError(null)
+    onNotice(null)
+    try {
+      const created = await addRelayMutation.mutateAsync({
+        data: {
+          name: form.name,
+          hostname: form.hostname,
+          port: Number(form.port),
+          token: form.token,
+          useTls: form.useTls,
+        },
+      })
+      onNotice(
+        created.lastError
+          ? `${created.name} was saved, but the first connection check failed.`
+          : `${created.name} is connected and ready.`
+      )
+      setForm({
+        name: "",
+        hostname: "",
+        port: "4100",
+        token: "",
+        useTls: false,
+      })
+    } catch (cause) {
+      onError(messageFrom(cause, "Could not save Relay"))
+    }
+  }
+
   return (
     <section className="rounded-xl border bg-card/45 p-4">
       <div className="flex items-center gap-2">
@@ -384,14 +367,17 @@ function AddRelaySection({
         Paste the key already configured on Relay, or generate a new shared key,
         then save the node endpoint.
       </p>
-      <form className="mt-5 space-y-3" onSubmit={onSubmit}>
+      <form
+        className="mt-5 space-y-3"
+        onSubmit={(event) => void createRelay(event)}
+      >
         <Field label="Relay access key">
           <div className="flex gap-1.5">
             <Input
               value={form.token}
               onChange={(event) => {
-                onCopiedChange(false)
-                onFormChange((value) => ({
+                setCopied(false)
+                setForm((value) => ({
                   ...value,
                   token: event.target.value,
                 }))
@@ -416,15 +402,15 @@ function AddRelaySection({
               }
               onClick={() => {
                 if (!form.token) {
-                  onFormChange((value) => ({
+                  setForm((value) => ({
                     ...value,
                     token: generateRelayKey(),
                   }))
                   return
                 }
                 void navigator.clipboard.writeText(form.token)
-                onCopiedChange(true)
-                window.setTimeout(() => onCopiedChange(false), 1_500)
+                setCopied(true)
+                window.setTimeout(() => setCopied(false), 1_500)
               }}
             >
               {form.token ? copied ? <Check /> : <Copy /> : <KeyRound />}
@@ -442,7 +428,7 @@ function AddRelaySection({
           <Input
             value={form.name}
             onChange={(event) =>
-              onFormChange((value) => ({
+              setForm((value) => ({
                 ...value,
                 name: event.target.value,
               }))
@@ -455,7 +441,7 @@ function AddRelaySection({
           <Input
             value={form.hostname}
             onChange={(event) =>
-              onFormChange((value) => ({
+              setForm((value) => ({
                 ...value,
                 hostname: event.target.value,
               }))
@@ -470,7 +456,7 @@ function AddRelaySection({
           <Input
             value={form.port}
             onChange={(event) =>
-              onFormChange((value) => ({
+              setForm((value) => ({
                 ...value,
                 port: event.target.value,
               }))
@@ -486,7 +472,7 @@ function AddRelaySection({
             type="checkbox"
             checked={form.useTls}
             onChange={(event) =>
-              onFormChange((value) => {
+              setForm((value) => {
                 const useTls = event.target.checked
                 return {
                   ...value,
@@ -508,8 +494,8 @@ function AddRelaySection({
           Behind a reverse proxy, use HTTPS on public port 443. The proxy
           forwards traffic to Relay on its internal port, normally 4100.
         </p>
-        <Button className="w-full" disabled={pending !== null}>
-          {pending === "add" ? (
+        <Button className="w-full" disabled={addRelayMutation.isPending}>
+          {addRelayMutation.isPending ? (
             <LoaderCircle className="animate-spin" />
           ) : (
             <Check />

@@ -1,3 +1,4 @@
+import * as React from "react"
 import { Area, AreaChart, CartesianGrid, Line, XAxis, YAxis } from "recharts"
 
 import {
@@ -6,6 +7,8 @@ import {
   ChartTooltipContent,
 } from "@workspace/ui/components/chart"
 import type { ChartConfig } from "@workspace/ui/components/chart"
+
+const networkSentColor = "oklch(0.73 0.15 65)"
 
 export function ResourceHistoryChart({
   data,
@@ -29,16 +32,18 @@ export function ResourceHistoryChart({
   domainEnd: number
   formatValue: (value: number) => string
 }) {
-  const sentColor = "oklch(0.73 0.15 65)"
-  const chartConfig: ChartConfig =
-    resourceId === "network"
-      ? {
-          received: { label: "Download", color },
-          sent: { label: "Upload", color: sentColor },
-        }
-      : {
-          value: { label, color },
-        }
+  const [pointerInside, setPointerInside] = React.useState(false)
+  const chartConfig = React.useMemo<ChartConfig>(() => {
+    if (resourceId === "network") {
+      const config: ChartConfig = {
+        received: { label: "Download", color },
+        sent: { label: "Upload", color: networkSentColor },
+      }
+      return config
+    }
+    const config: ChartConfig = { value: { label, color } }
+    return config
+  }, [color, label, resourceId])
   const gradientId = `resource-history-${resourceId}`
   const yDomain =
     resourceId === "network"
@@ -51,7 +56,11 @@ export function ResourceHistoryChart({
         : ([0, 100] as const)
 
   return (
-    <div className="relative">
+    <div
+      className="relative"
+      onPointerEnter={() => setPointerInside(true)}
+      onPointerLeave={() => setPointerInside(false)}
+    >
       {resourceId === "network" ? (
         <div className="pointer-events-none absolute top-0 right-3 z-10 flex items-center gap-3 font-mono text-[8px] tracking-[0.07em] text-muted-foreground">
           <span className="flex items-center gap-1.5">
@@ -61,7 +70,7 @@ export function ResourceHistoryChart({
           <span className="flex items-center gap-1.5">
             <span
               className="w-3 border-t border-dashed"
-              style={{ borderColor: sentColor }}
+              style={{ borderColor: networkSentColor }}
             />
             ↑ UP
           </span>
@@ -122,6 +131,7 @@ export function ResourceHistoryChart({
           />
           <YAxis hide domain={yDomain} />
           <ChartTooltip
+            active={pointerInside ? undefined : false}
             cursor={{
               stroke: color,
               strokeOpacity: 0.3,
@@ -138,7 +148,7 @@ export function ResourceHistoryChart({
                       <span
                         className="text-[8px] tracking-[0.06em]"
                         style={{
-                          color: name === "received" ? color : sentColor,
+                          color: name === "received" ? color : networkSentColor,
                         }}
                       >
                         {name === "received" ? "↓ DOWN" : "↑ UP"}

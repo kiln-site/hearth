@@ -574,7 +574,93 @@ const RESOURCE_STYLES = {
   },
 } as const
 
+type ResourceId = keyof typeof RESOURCE_STYLES
+const RESOURCE_IDS: Array<ResourceId> = ["cpu", "memory", "storage", "network"]
+
+interface ResourceHistoryStore {
+  getSnapshot: () => Array<ResourceHistoryPoint>
+  record: (instance: InstanceRuntime) => void
+  subscribe: (listener: () => void) => () => void
+}
+
+function createResourceHistoryStore(instanceId: string): ResourceHistoryStore {
+  let currentInstanceId = instanceId
+  let points: Array<ResourceHistoryPoint> = []
+  const listeners = new Set<() => void>()
+
+  return {
+    getSnapshot: () => points,
+    record: (instance) => {
+      if (currentInstanceId !== instance.id) {
+        currentInstanceId = instance.id
+        points = []
+      }
+      const resources = instance.resources
+      if (!resources) return
+      const timestamp = Date.parse(resources.sampledAt)
+      if (
+        !Number.isFinite(timestamp) ||
+        points.at(-1)?.timestamp === timestamp
+      ) {
+        return
+      }
+      const point: ResourceHistoryPoint = {
+        timestamp,
+        cpu: resources.cpu.percent,
+        memory: resources.memory.percent,
+        storage: resources.storage.percent,
+        network: resources.network
+          ? resources.network.receivedBytesPerSecond +
+            resources.network.sentBytesPerSecond
+          : null,
+        networkReceived: resources.network?.receivedBytesPerSecond ?? null,
+        networkSent: resources.network?.sentBytesPerSecond ?? null,
+      }
+      points = [...points, point].filter(
+        (sample) => timestamp - sample.timestamp <= 60_000
+      )
+      for (const listener of listeners) listener()
+    },
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+  }
+}
+
 function LiveResourceMeters({ instanceId }: { instanceId: string }) {
+  const [historyStore] = React.useState(() =>
+    createResourceHistoryStore(instanceId)
+  )
+
+  return (
+    <div
+      className="hidden min-w-0 md:col-span-2 md:block xl:col-span-1 xl:col-start-2 xl:row-start-1"
+      aria-label="Server resource usage"
+    >
+      <ResourceHistoryRecorder instanceId={instanceId} store={historyStore} />
+      <div className="grid h-14 min-w-0 grid-cols-[repeat(3,minmax(0,1fr))_minmax(0,1.25fr)_5.5rem] divide-x divide-border/60 border border-border/80 bg-card/40 px-1.5 py-2 xl:grid-cols-[repeat(3,minmax(0,1fr))_minmax(0,1.15fr)_5.75rem]">
+        {RESOURCE_IDS.map((resourceId) => (
+          <LiveResourceMeter
+            key={resourceId}
+            instanceId={instanceId}
+            resourceId={resourceId}
+            historyStore={historyStore}
+          />
+        ))}
+        <InstanceUptimeMeter instanceId={instanceId} />
+      </div>
+    </div>
+  )
+}
+
+function ResourceHistoryRecorder({
+  instanceId,
+  store,
+}: {
+  instanceId: string
+  store: ResourceHistoryStore
+}) {
   const selectRuntime = React.useMemo(
     () => selectInstanceRuntime(instanceId),
     [instanceId]
@@ -583,97 +669,131 @@ function LiveResourceMeters({ instanceId }: { instanceId: string }) {
     ...relaySnapshotQueryOptions(),
     select: selectRuntime,
   })
-  return instance ? <ResourceMeters instance={instance} /> : null
+
+  React.useEffect(() => {
+    if (instance) store.record(instance)
+  }, [instance, store])
+
+  return null
 }
 
-function ResourceMeters({ instance }: { instance: InstanceRuntime }) {
-  const resources = resourceItems(instance)
-  const history = useResourceHistory(instance)
-  const uptime = useInstanceUptime(instance)
-  const startedAt = useBrowserLocalTimestamp(instance.startedAt)
+function LiveResourceMeter({
+  instanceId,
+  resourceId,
+  historyStore,
+}: {
+  instanceId: string
+  resourceId: ResourceId
+  historyStore: ResourceHistoryStore
+}) {
+  const selectResource = React.useMemo(
+    () => (snapshot: RelaySnapshot) => {
+      const instance = snapshot.instances.find((item) => item.id === instanceId)
+      return instance ? resourceItem(instance, resourceId) : null
+    },
+    [instanceId, resourceId]
+  )
+  const { data: resource } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectResource,
+  })
+  if (!resource) return null
 
   return (
-    <div
-      className="hidden min-w-0 md:col-span-2 md:block xl:col-span-1 xl:col-start-2 xl:row-start-1"
-      aria-label="Server resource usage"
-    >
-      <div className="grid h-14 min-w-0 grid-cols-[repeat(3,minmax(0,1fr))_minmax(0,1.25fr)_5.5rem] divide-x divide-border/60 border border-border/80 bg-card/40 px-1.5 py-2 xl:grid-cols-[repeat(3,minmax(0,1fr))_minmax(0,1.15fr)_5.75rem]">
-        {resources.map((resource) => (
-          <ResourceHistoryPopover
-            key={resource.id}
-            resource={resource}
-            history={history}
-          >
-            <button
-              type="button"
-              className={`group min-w-0 text-left outline-none first:pl-1.5 focus-visible:bg-muted/25 ${resource.id === "network" ? "px-1.5" : "px-2.5"}`}
-            >
-              <div className="flex items-center justify-between gap-1.5 font-mono text-[11px] leading-none tracking-[0.065em] xl:text-xs">
-                <span className="shrink-0 font-medium text-muted-foreground/85 transition-colors group-hover:text-foreground/85">
-                  {resource.label}
-                </span>
-                {resource.id === "network" ? (
-                  <span className="flex min-w-0 items-center gap-1 font-medium tracking-[-0.045em] tabular-nums xl:gap-1.5">
-                    <span className="truncate text-cyan-200/95">
-                      ↓ {resource.receivedDisplayValue}
-                    </span>
-                    <span className="truncate text-primary/90">
-                      ↑ {resource.sentDisplayValue}
-                    </span>
-                  </span>
-                ) : (
-                  <span
-                    className={`truncate font-medium tabular-nums ${resource.valueClassName}`}
-                  >
-                    {resource.displayValue}
-                  </span>
-                )}
-              </div>
-              <ResourceBar resource={resource} className="mt-3" />
-            </button>
-          </ResourceHistoryPopover>
-        ))}
-        <HoverCard openDelay={160} closeDelay={100}>
-          <HoverCardTrigger asChild>
-            <div
-              className="min-w-0 px-1.5 font-mono text-[11px] leading-none outline-none focus-visible:bg-muted/25 xl:px-2 xl:text-xs"
-              aria-label={`Instance uptime ${uptime ?? "unavailable"}`}
-              tabIndex={startedAt ? 0 : undefined}
-            >
-              <span className="block font-medium tracking-[0.065em] text-muted-foreground/85">
-                UPTIME
+    <ResourceHistoryPopover resource={resource} historyStore={historyStore}>
+      <button
+        type="button"
+        className={`group min-w-0 text-left outline-none first:pl-1.5 focus-visible:bg-muted/25 ${resource.id === "network" ? "px-1.5" : "px-2.5"}`}
+      >
+        <div className="flex items-center justify-between gap-1.5 font-mono text-[11px] leading-none tracking-[0.065em] xl:text-xs">
+          <span className="shrink-0 font-medium text-muted-foreground/85 transition-colors group-hover:text-foreground/85">
+            {resource.label}
+          </span>
+          {resource.id === "network" ? (
+            <span className="flex min-w-0 items-center gap-1 font-medium tracking-[-0.045em] tabular-nums xl:gap-1.5">
+              <span className="truncate text-cyan-200/95">
+                ↓ {resource.receivedDisplayValue}
               </span>
-              <div className="mt-2.5 flex h-2 items-center justify-center">
-                <span className="font-medium tracking-[-0.045em] whitespace-nowrap text-foreground/85 tabular-nums xl:text-[13px]">
-                  {uptime ?? "—"}
-                </span>
-              </div>
-            </div>
-          </HoverCardTrigger>
-          {startedAt ? (
-            <HoverCardContent
-              align="end"
-              side="bottom"
-              sideOffset={8}
-              collisionPadding={12}
-              className="w-max max-w-[calc(100vw-1.5rem)] rounded-none border-border/90 bg-popover px-3 py-2 shadow-xl"
+              <span className="truncate text-primary/90">
+                ↑ {resource.sentDisplayValue}
+              </span>
+            </span>
+          ) : (
+            <span
+              className={`truncate font-medium tabular-nums ${resource.valueClassName}`}
             >
-              <div className="text-left">
-                <p className="font-mono text-[8px] font-medium tracking-[0.1em] text-muted-foreground/70 uppercase">
-                  Started on
-                </p>
-                <time
-                  dateTime={instance.startedAt ?? undefined}
-                  className="mt-1 block font-mono text-xs whitespace-nowrap text-foreground/85"
-                >
-                  {startedAt}
-                </time>
-              </div>
-            </HoverCardContent>
-          ) : null}
-        </HoverCard>
-      </div>
-    </div>
+              {resource.displayValue}
+            </span>
+          )}
+        </div>
+        <ResourceBar resource={resource} className="mt-3" />
+      </button>
+    </ResourceHistoryPopover>
+  )
+}
+
+function InstanceUptimeMeter({ instanceId }: { instanceId: string }) {
+  const selectRuntime = React.useMemo(
+    () => (snapshot: RelaySnapshot) => {
+      const instance = snapshot.instances.find((item) => item.id === instanceId)
+      return instance
+        ? {
+            id: instance.id,
+            observedState: instance.observedState,
+            resources: null,
+            startedAt: instance.startedAt,
+          }
+        : null
+    },
+    [instanceId]
+  )
+  const { data: instance } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectRuntime,
+  })
+  const uptime = useInstanceUptime(instance)
+  const startedAt = useBrowserLocalTimestamp(instance?.startedAt ?? null)
+
+  return (
+    <HoverCard openDelay={160} closeDelay={100}>
+      <HoverCardTrigger asChild>
+        <div
+          className="min-w-0 px-1.5 font-mono text-[11px] leading-none outline-none focus-visible:bg-muted/25 xl:px-2 xl:text-xs"
+          aria-label={`Instance uptime ${uptime ?? "unavailable"}`}
+          tabIndex={startedAt ? 0 : undefined}
+        >
+          <span className="block font-medium tracking-[0.065em] text-muted-foreground/85">
+            UPTIME
+          </span>
+          <div className="mt-2.5 flex h-2 items-center justify-center">
+            <span className="font-medium tracking-[-0.045em] whitespace-nowrap text-foreground/85 tabular-nums xl:text-[13px]">
+              {uptime ?? "—"}
+            </span>
+          </div>
+        </div>
+      </HoverCardTrigger>
+      {startedAt ? (
+        <HoverCardContent
+          align="end"
+          side="bottom"
+          sideOffset={8}
+          collisionPadding={12}
+          className="w-max max-w-[calc(100vw-1.5rem)] rounded-none border-border/90 bg-popover px-3 py-2 shadow-xl"
+        >
+          <div className="text-left">
+            <p className="font-mono text-[8px] font-medium tracking-[0.1em] text-muted-foreground/70 uppercase">
+              Started on
+            </p>
+            <time
+              dateTime={instance?.startedAt ?? undefined}
+              className="mt-1 block font-mono text-xs whitespace-nowrap text-foreground/85"
+            >
+              {startedAt}
+            </time>
+          </div>
+        </HoverCardContent>
+      ) : null}
+    </HoverCard>
   )
 }
 
@@ -693,10 +813,12 @@ interface ResourceItem {
   chartColor: string
 }
 
-function useInstanceUptime(instance: InstanceRuntime): string | null {
+function useInstanceUptime(
+  instance: InstanceRuntime | null | undefined
+): string | null {
   const [now, setNow] = React.useState<number | null>(null)
-  const startedAt = instance.startedAt ? Date.parse(instance.startedAt) : NaN
-  const running = instance.observedState === "running"
+  const startedAt = instance?.startedAt ? Date.parse(instance.startedAt) : NaN
+  const running = instance?.observedState === "running"
 
   React.useEffect(() => {
     setNow(Date.now())
@@ -704,7 +826,7 @@ function useInstanceUptime(instance: InstanceRuntime): string | null {
 
     const interval = window.setInterval(() => setNow(Date.now()), 30_000)
     return () => window.clearInterval(interval)
-  }, [instance.id, running, startedAt])
+  }, [instance?.id, running, startedAt])
 
   if (!running || !Number.isFinite(startedAt) || now === null) return null
   return formatUptime(Math.max(0, Math.floor((now - startedAt) / 1_000)))
@@ -731,13 +853,13 @@ function formatBrowserLocalTimestamp(value: string | null): string | null {
     : null
 }
 
-function resourceItems(instance: InstanceRuntime): Array<ResourceItem> {
+function resourceItem(instance: InstanceRuntime, id: ResourceId): ResourceItem {
   const resources = instance.resources
   const unavailable =
     instance.observedState === "running" ? "Sampling" : "Offline"
 
-  return [
-    {
+  if (id === "cpu") {
+    return {
       id: "cpu",
       label: "CPU",
       value: resources?.cpu.percent ?? null,
@@ -748,8 +870,10 @@ function resourceItems(instance: InstanceRuntime): Array<ResourceItem> {
       indicatorClassName: RESOURCE_STYLES.cpu.indicator,
       valueClassName: RESOURCE_STYLES.cpu.value,
       chartColor: RESOURCE_STYLES.cpu.chart,
-    },
-    {
+    }
+  }
+  if (id === "memory") {
+    return {
       id: "memory",
       label: "RAM",
       value: resources?.memory.percent ?? null,
@@ -760,8 +884,10 @@ function resourceItems(instance: InstanceRuntime): Array<ResourceItem> {
       indicatorClassName: RESOURCE_STYLES.memory.indicator,
       valueClassName: RESOURCE_STYLES.memory.value,
       chartColor: RESOURCE_STYLES.memory.chart,
-    },
-    {
+    }
+  }
+  if (id === "storage") {
+    return {
       id: "storage",
       label: "DISK",
       value: resources?.storage.percent ?? null,
@@ -772,45 +898,45 @@ function resourceItems(instance: InstanceRuntime): Array<ResourceItem> {
       indicatorClassName: RESOURCE_STYLES.storage.indicator,
       valueClassName: RESOURCE_STYLES.storage.value,
       chartColor: RESOURCE_STYLES.storage.chart,
-    },
-    {
-      id: "network",
-      label: "NET",
-      value: resources?.network
-        ? networkActivityPercent(
-            resources.network.receivedBytesPerSecond +
-              resources.network.sentBytesPerSecond
-          )
-        : null,
-      displayValue: resources?.network
-        ? `${formatBytesPerSecond(
-            resources.network.receivedBytesPerSecond +
-              resources.network.sentBytesPerSecond
-          )}`
-        : "—",
-      receivedDisplayValue: resources?.network
-        ? formatCompactBytesPerSecond(resources.network.receivedBytesPerSecond)
-        : "—",
-      sentDisplayValue: resources?.network
-        ? formatCompactBytesPerSecond(resources.network.sentBytesPerSecond)
-        : "—",
-      receivedValue: resources?.network
-        ? networkActivityPercent(resources.network.receivedBytesPerSecond)
-        : null,
-      sentValue: resources?.network
-        ? networkActivityPercent(resources.network.sentBytesPerSecond)
-        : null,
-      detail: resources?.network
-        ? `↓ ${formatBytesPerSecond(resources.network.receivedBytesPerSecond)} · ↑ ${formatBytesPerSecond(resources.network.sentBytesPerSecond)} · ${formatBytes(resources.network.receivedBytes + resources.network.sentBytes)} total`
-        : unavailable,
-      historyDetail: resources?.network
-        ? `${formatBytes(resources.network.receivedBytes + resources.network.sentBytes)} transferred`
-        : unavailable,
-      indicatorClassName: RESOURCE_STYLES.network.indicator,
-      valueClassName: RESOURCE_STYLES.network.value,
-      chartColor: RESOURCE_STYLES.network.chart,
-    },
-  ]
+    }
+  }
+  return {
+    id: "network",
+    label: "NET",
+    value: resources?.network
+      ? networkActivityPercent(
+          resources.network.receivedBytesPerSecond +
+            resources.network.sentBytesPerSecond
+        )
+      : null,
+    displayValue: resources?.network
+      ? `${formatBytesPerSecond(
+          resources.network.receivedBytesPerSecond +
+            resources.network.sentBytesPerSecond
+        )}`
+      : "—",
+    receivedDisplayValue: resources?.network
+      ? formatCompactBytesPerSecond(resources.network.receivedBytesPerSecond)
+      : "—",
+    sentDisplayValue: resources?.network
+      ? formatCompactBytesPerSecond(resources.network.sentBytesPerSecond)
+      : "—",
+    receivedValue: resources?.network
+      ? networkActivityPercent(resources.network.receivedBytesPerSecond)
+      : null,
+    sentValue: resources?.network
+      ? networkActivityPercent(resources.network.sentBytesPerSecond)
+      : null,
+    detail: resources?.network
+      ? `↓ ${formatBytesPerSecond(resources.network.receivedBytesPerSecond)} · ↑ ${formatBytesPerSecond(resources.network.sentBytesPerSecond)} · ${formatBytes(resources.network.receivedBytes + resources.network.sentBytes)} total`
+      : unavailable,
+    historyDetail: resources?.network
+      ? `${formatBytes(resources.network.receivedBytes + resources.network.sentBytes)} transferred`
+      : unavailable,
+    indicatorClassName: RESOURCE_STYLES.network.indicator,
+    valueClassName: RESOURCE_STYLES.network.value,
+    chartColor: RESOURCE_STYLES.network.chart,
+  }
 }
 
 function ResourceBar({
@@ -873,91 +999,43 @@ interface ResourceHistoryPoint {
   networkSent: number | null
 }
 
-interface ResourceHistoryState {
-  instanceId: string
-  points: Array<ResourceHistoryPoint>
-}
-
-function useResourceHistory(instance: InstanceRuntime) {
-  const [history, setHistory] = React.useState<ResourceHistoryState>(() => ({
-    instanceId: instance.id,
-    points: [],
-  }))
-
-  React.useEffect(() => {
-    const resources = instance.resources
-
-    setHistory((current) => {
-      const currentPoints =
-        current.instanceId === instance.id ? current.points : []
-
-      if (!resources) {
-        return current.instanceId === instance.id
-          ? current
-          : { instanceId: instance.id, points: [] }
-      }
-
-      const timestamp = Date.parse(resources.sampledAt)
-      if (!Number.isFinite(timestamp)) return current
-      if (currentPoints.at(-1)?.timestamp === timestamp) return current
-
-      const point: ResourceHistoryPoint = {
-        timestamp,
-        cpu: resources.cpu.percent,
-        memory: resources.memory.percent,
-        storage: resources.storage.percent,
-        network: resources.network
-          ? resources.network.receivedBytesPerSecond +
-            resources.network.sentBytesPerSecond
-          : null,
-        networkReceived: resources.network?.receivedBytesPerSecond ?? null,
-        networkSent: resources.network?.sentBytesPerSecond ?? null,
-      }
-
-      return {
-        instanceId: instance.id,
-        points: [...currentPoints, point].filter(
-          (sample) => timestamp - sample.timestamp <= 60_000
-        ),
-      }
-    })
-  }, [instance.id, instance.resources])
-
-  return history.instanceId === instance.id ? history.points : []
-}
-
 function ResourceHistoryPopover({
   resource,
-  history,
+  historyStore,
   children,
 }: {
   resource: ResourceItem
-  history: Array<ResourceHistoryPoint>
+  historyStore: ResourceHistoryStore
   children: React.ReactElement
 }) {
   return (
-    <Popover>
-      <PopoverTrigger asChild>{children}</PopoverTrigger>
-      <PopoverContent
+    <HoverCard openDelay={160} closeDelay={100}>
+      <HoverCardTrigger asChild>{children}</HoverCardTrigger>
+      <HoverCardContent
         align="center"
         side="bottom"
         sideOffset={8}
         collisionPadding={12}
         className="w-[min(20rem,calc(100vw-1.5rem))] border-border/90 bg-popover p-0 shadow-2xl"
       >
-        <ResourceHistoryCard resource={resource} history={history} />
-      </PopoverContent>
-    </Popover>
+        <ResourceHistoryCard resource={resource} historyStore={historyStore} />
+      </HoverCardContent>
+    </HoverCard>
   )
 }
 
 function ResourceHistoryCard({
   resource,
-  history,
+  historyStore,
 }: {
   resource: ResourceItem
-  history: Array<ResourceHistoryPoint>
+  historyStore: ResourceHistoryStore
 }) {
+  const history = React.useSyncExternalStore(
+    historyStore.subscribe,
+    historyStore.getSnapshot,
+    historyStore.getSnapshot
+  )
   const now = Date.now()
   const domainStart = now - 60_000
   const visibleHistory = history.filter(

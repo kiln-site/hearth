@@ -36,53 +36,6 @@ export function SettingsWorkspace({
   node: RelayNodeSummary
   canRename: boolean
 }) {
-  const queryClient = useQueryClient()
-  const updateNameMutation = useMutation({
-    mutationFn: updateInstanceName,
-    onSuccess: (updated) => {
-      queryClient.setQueryData<RelaySnapshot>(
-        queryKeys.relay.snapshot,
-        (snapshot) => replaceRelaySnapshotInstance(snapshot, updated)
-      )
-    },
-  })
-  const [copied, setCopied] = React.useState(false)
-  const [nameDraft, setNameDraft] = React.useState<string | null>(null)
-  const name = nameDraft ?? instance.name
-  const [namePending, setNamePending] = React.useState(false)
-  const [nameSaved, setNameSaved] = React.useState(false)
-  const [nameError, setNameError] = React.useState<string | null>(null)
-
-  async function copyAddress() {
-    await navigator.clipboard.writeText(instance.connectAddress)
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1_800)
-  }
-
-  async function saveName(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const nextName = name.trim()
-    if (!nextName || nextName === instance.name || namePending) return
-
-    setNamePending(true)
-    setNameSaved(false)
-    setNameError(null)
-    try {
-      await updateNameMutation.mutateAsync({
-        data: { instanceId: instance.id, name: nextName },
-      })
-      setNameDraft(null)
-      setNameSaved(true)
-      window.setTimeout(() => setNameSaved(false), 1_800)
-    } catch (cause) {
-      setNameError(
-        cause instanceof Error ? cause.message : "Could not save instance name"
-      )
-    } finally {
-      setNamePending(false)
-    }
-  }
-
   return (
     <section className="min-h-0 flex-1 overflow-y-auto bg-card">
       <div className="mx-auto max-w-5xl px-5 py-6 sm:px-8 sm:py-8">
@@ -111,64 +64,7 @@ export function SettingsWorkspace({
                 {instance.game}
               </Badge>
             </div>
-            <form
-              className="border-b px-4 py-3"
-              onSubmit={(event) => void saveName(event)}
-            >
-              <div className="flex items-center gap-2">
-                <Server className="size-3.5 shrink-0 text-muted-foreground" />
-                <label
-                  htmlFor="instance-display-name"
-                  className="text-[9px] tracking-wider text-muted-foreground uppercase"
-                >
-                  Display name
-                </label>
-              </div>
-              <div className="mt-2 flex gap-2">
-                <Input
-                  id="instance-display-name"
-                  value={name}
-                  onChange={(event) => {
-                    setNameDraft(event.target.value)
-                    setNameSaved(false)
-                    setNameError(null)
-                  }}
-                  maxLength={120}
-                  disabled={!canRename || namePending}
-                  aria-invalid={Boolean(nameError)}
-                  className="h-9 min-w-0 flex-1"
-                />
-                <Button
-                  type="submit"
-                  variant="outline"
-                  size="sm"
-                  className="h-9 shrink-0"
-                  disabled={
-                    !canRename ||
-                    namePending ||
-                    !name.trim() ||
-                    name.trim() === instance.name
-                  }
-                >
-                  {namePending ? (
-                    <LoaderCircle className="animate-spin" />
-                  ) : nameSaved ? (
-                    <Check />
-                  ) : (
-                    <Save />
-                  )}
-                  {namePending ? "Saving" : nameSaved ? "Saved" : "Save"}
-                </Button>
-              </div>
-              <p
-                className={`mt-1.5 text-[9px] ${nameError ? "text-destructive" : "text-muted-foreground"}`}
-              >
-                {nameError ??
-                  (canRename
-                    ? "Stored by Hearth; the Relay and container keep their stable ID."
-                    : "You do not have permission to rename this instance.")}
-              </p>
-            </form>
+            <InstanceNameForm instance={instance} canRename={canRename} />
             <MetaRow
               icon={Fingerprint}
               label="Server ID"
@@ -194,41 +90,7 @@ export function SettingsWorkspace({
             />
           </div>
 
-          <div className="rounded-xl border bg-background/45 p-4">
-            <div className="flex items-center gap-2">
-              <Globe2 className="size-4 text-primary" />
-              <h3 className="text-sm font-semibold">Connect</h3>
-            </div>
-            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-              {instance.game === "Palworld"
-                ? "Direct UDP endpoint on the Relay node."
-                : "Routed through Velocity and the existing CoreDNS wildcard."}
-            </p>
-            <button
-              type="button"
-              className="group mt-5 flex w-full items-center justify-between rounded-lg border border-primary/25 bg-primary/7 px-3 py-3 text-left transition-[background-color,border-color,box-shadow] outline-none hover:border-primary/40 hover:bg-primary/12 focus-visible:border-ring/70 focus-visible:ring-2 focus-visible:ring-ring/35"
-              onClick={copyAddress}
-            >
-              <span>
-                <span className="block font-mono text-[9px] tracking-wider text-primary uppercase">
-                  Server address
-                </span>
-                <span className="mt-1 block font-mono text-sm font-semibold">
-                  {instance.connectAddress}
-                </span>
-              </span>
-              <span className="grid size-8 place-items-center rounded-md bg-background/70 text-muted-foreground group-hover:text-foreground">
-                {copied ? (
-                  <Check className="size-4 text-emerald-400" />
-                ) : (
-                  <Copy className="size-4" />
-                )}
-              </span>
-            </button>
-            <p className="mt-3 font-mono text-[9px] text-muted-foreground/75">
-              {copied ? "Address copied to clipboard" : "Click to copy"}
-            </p>
-          </div>
+          <CopyAddressCard instance={instance} />
         </div>
 
         <div className="mt-4 overflow-hidden rounded-xl border bg-background/45">
@@ -283,6 +145,160 @@ export function SettingsWorkspace({
         </div>
       </div>
     </section>
+  )
+}
+
+function InstanceNameForm({
+  instance,
+  canRename,
+}: {
+  instance: InstanceSettingsInstance
+  canRename: boolean
+}) {
+  const queryClient = useQueryClient()
+  const updateNameMutation = useMutation({
+    mutationFn: updateInstanceName,
+    onSuccess: (updated) => {
+      queryClient.setQueryData<RelaySnapshot>(
+        queryKeys.relay.snapshot,
+        (snapshot) => replaceRelaySnapshotInstance(snapshot, updated)
+      )
+    },
+  })
+  const [draftName, setDraftName] = React.useState<string | null>(null)
+  const [pending, setPending] = React.useState(false)
+  const [saved, setSaved] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+  const name = draftName ?? instance.name
+
+  async function saveName(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const nextName = name.trim()
+    if (!nextName || nextName === instance.name || pending) return
+    setPending(true)
+    setSaved(false)
+    setError(null)
+    try {
+      await updateNameMutation.mutateAsync({
+        data: { instanceId: instance.id, name: nextName },
+      })
+      setDraftName(null)
+      setSaved(true)
+      window.setTimeout(() => setSaved(false), 1800)
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "Could not save instance name"
+      )
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <form
+      className="border-b px-4 py-3"
+      onSubmit={(event) => void saveName(event)}
+    >
+      <div className="flex items-center gap-2">
+        <Server className="size-3.5 shrink-0 text-muted-foreground" />
+        <label
+          htmlFor="instance-display-name"
+          className="text-[9px] tracking-wider text-muted-foreground uppercase"
+        >
+          Display name
+        </label>
+      </div>
+      <div className="mt-2 flex gap-2">
+        <Input
+          id="instance-display-name"
+          value={name}
+          onChange={(event) => {
+            setDraftName(event.target.value)
+            setSaved(false)
+            setError(null)
+          }}
+          maxLength={120}
+          disabled={!canRename || pending}
+          aria-invalid={Boolean(error)}
+          className="h-9 min-w-0 flex-1"
+        />
+        <Button
+          type="submit"
+          variant="outline"
+          size="sm"
+          className="h-9 shrink-0"
+          disabled={
+            !canRename ||
+            pending ||
+            !name.trim() ||
+            name.trim() === instance.name
+          }
+        >
+          {pending ? (
+            <LoaderCircle className="animate-spin" />
+          ) : saved ? (
+            <Check />
+          ) : (
+            <Save />
+          )}
+          {pending ? "Saving" : saved ? "Saved" : "Save"}
+        </Button>
+      </div>
+      <p
+        className={`mt-1.5 text-[9px] ${error ? "text-destructive" : "text-muted-foreground"}`}
+      >
+        {error ??
+          (canRename
+            ? "Stored by Hearth; the Relay and container keep their stable ID."
+            : "You do not have permission to rename this instance.")}
+      </p>
+    </form>
+  )
+}
+
+function CopyAddressCard({ instance }: { instance: InstanceSettingsInstance }) {
+  const [copied, setCopied] = React.useState(false)
+  async function copyAddress() {
+    await navigator.clipboard.writeText(instance.connectAddress)
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1800)
+  }
+  return (
+    <div className="rounded-xl border bg-background/45 p-4">
+      <div className="flex items-center gap-2">
+        <Globe2 className="size-4 text-primary" />
+        <h3 className="text-sm font-semibold">Connect</h3>
+      </div>
+      <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+        {instance.game === "Palworld"
+          ? "Direct UDP endpoint on the Relay node."
+          : "Routed through Velocity and the existing CoreDNS wildcard."}
+      </p>
+      <button
+        type="button"
+        className="group mt-5 flex w-full items-center justify-between rounded-lg border border-primary/25 bg-primary/7 px-3 py-3 text-left transition-[background-color,border-color,box-shadow] outline-none hover:border-primary/40 hover:bg-primary/12 focus-visible:border-ring/70 focus-visible:ring-2 focus-visible:ring-ring/35"
+        onClick={copyAddress}
+      >
+        <span>
+          <span className="block font-mono text-[9px] tracking-wider text-primary uppercase">
+            Server address
+          </span>
+          <span className="mt-1 block font-mono text-sm font-semibold">
+            {instance.connectAddress}
+          </span>
+        </span>
+        <span className="grid size-8 place-items-center rounded-md bg-background/70 text-muted-foreground group-hover:text-foreground">
+          {copied ? (
+            <Check className="size-4 text-emerald-400" />
+          ) : (
+            <Copy className="size-4" />
+          )}
+        </span>
+      </button>
+      <p className="mt-3 font-mono text-[9px] text-muted-foreground/75">
+        {copied ? "Address copied to clipboard" : "Click to copy"}
+      </p>
+    </div>
   )
 }
 

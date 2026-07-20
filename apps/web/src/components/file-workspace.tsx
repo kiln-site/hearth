@@ -109,6 +109,32 @@ interface EditorSearchStore {
   subscribe: (listener: () => void) => () => void
 }
 
+interface FileEditorPreferencesStore {
+  getFontSizeSnapshot: () => number
+  hydrate: () => void
+  setFontSize: (fontSize: number) => void
+  subscribe: (listener: () => void) => () => void
+}
+
+interface EditorSessionStore {
+  getDirtySnapshot: () => boolean
+  getReviewChangesSnapshot: () => boolean
+  getSavedValueSnapshot: () => string
+  getSaveErrorSnapshot: () => string | null
+  getSavingSnapshot: () => boolean
+  getSearchOpenSnapshot: () => boolean
+  getValue: () => string
+  getWrapLinesSnapshot: () => boolean
+  markSaved: (value: string) => void
+  setSaveError: (error: string | null) => void
+  setSaving: (saving: boolean) => void
+  setSearchOpen: (open: boolean) => void
+  setValue: (value: string) => void
+  subscribe: (listener: () => void) => () => void
+  toggleReviewChanges: () => void
+  toggleWrapLines: () => void
+}
+
 interface FileSelectionStore {
   cancelNavigation: () => void
   completeNavigation: (path: string, result: "loaded" | "unavailable") => void
@@ -193,6 +219,115 @@ function createEditorSearchStore(): EditorSearchStore {
     subscribe: (listener) => {
       listeners.add(listener)
       return () => listeners.delete(listener)
+    },
+  }
+}
+
+function createFileEditorPreferencesStore(): FileEditorPreferencesStore {
+  let fontSize = defaultFileEditorFontSize
+  const listeners = new Set<() => void>()
+  const notify = () => {
+    for (const listener of listeners) listener()
+  }
+  const setFontSize = (nextFontSize: number) => {
+    if (
+      fontSize === nextFontSize ||
+      !fileEditorFontSizes.includes(nextFontSize)
+    ) {
+      return
+    }
+    fontSize = nextFontSize
+    try {
+      window.localStorage.setItem(
+        fileEditorFontSizeStorageKey,
+        String(nextFontSize)
+      )
+    } catch {
+      // The editor remains usable when browser storage is unavailable.
+    }
+    notify()
+  }
+  return {
+    getFontSizeSnapshot: () => fontSize,
+    hydrate: () => {
+      try {
+        const storedValue = Number.parseInt(
+          window.localStorage.getItem(fileEditorFontSizeStorageKey) ?? "",
+          10
+        )
+        setFontSize(storedValue)
+      } catch {
+        // Keep the default when browser storage is unavailable.
+      }
+    },
+    setFontSize,
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+  }
+}
+
+function createEditorSessionStore(initialValue: string): EditorSessionStore {
+  let value = initialValue
+  let savedValue = initialValue
+  let dirty = false
+  let saving = false
+  let saveError: string | null = null
+  let searchOpen = false
+  let reviewChanges = true
+  let wrapLines = true
+  const listeners = new Set<() => void>()
+  const notify = () => {
+    for (const listener of listeners) listener()
+  }
+  return {
+    getDirtySnapshot: () => dirty,
+    getReviewChangesSnapshot: () => reviewChanges,
+    getSavedValueSnapshot: () => savedValue,
+    getSaveErrorSnapshot: () => saveError,
+    getSavingSnapshot: () => saving,
+    getSearchOpenSnapshot: () => searchOpen,
+    getValue: () => value,
+    getWrapLinesSnapshot: () => wrapLines,
+    markSaved: (nextSavedValue) => {
+      savedValue = nextSavedValue
+      dirty = value !== savedValue
+      notify()
+    },
+    setSaveError: (nextError) => {
+      if (saveError === nextError) return
+      saveError = nextError
+      notify()
+    },
+    setSaving: (nextSaving) => {
+      if (saving === nextSaving) return
+      saving = nextSaving
+      notify()
+    },
+    setSearchOpen: (nextOpen) => {
+      if (searchOpen === nextOpen) return
+      searchOpen = nextOpen
+      notify()
+    },
+    setValue: (nextValue) => {
+      value = nextValue
+      const nextDirty = value !== savedValue
+      if (dirty === nextDirty) return
+      dirty = nextDirty
+      notify()
+    },
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    toggleReviewChanges: () => {
+      reviewChanges = !reviewChanges
+      notify()
+    },
+    toggleWrapLines: () => {
+      wrapLines = !wrapLines
+      notify()
     },
   }
 }
@@ -393,10 +528,9 @@ function Editor({
   error,
   canShare,
   canWrite,
-  fontSize,
+  preferencesStore,
   pinned,
   pinning,
-  onFontSizeChange,
   onSave,
   onPinnedChange,
   treeCollapsed,
@@ -409,47 +543,22 @@ function Editor({
   error: string | null
   canShare: boolean
   canWrite: boolean
-  fontSize: number
+  preferencesStore: FileEditorPreferencesStore
   pinned: boolean
   pinning: boolean
-  onFontSizeChange: (fontSize: number) => void
   onSave: (content: string) => Promise<void>
   onPinnedChange: (pinned: boolean) => void
   treeCollapsed: boolean
   onTreeExpand: () => void
 }) {
-  const [savedValue, setSavedValue] = React.useState(file.content)
-  const [dirty, setDirty] = React.useState(false)
-  const [saving, setSaving] = React.useState(false)
-  const [saveError, setSaveError] = React.useState<string | null>(null)
-  const [shareState, setShareState] = React.useState<
-    "idle" | "uploading" | "copied" | "error"
-  >("idle")
-  const [copyState, setCopyState] = React.useState<"idle" | "copied">("idle")
-  const [redactSensitive] = React.useState(true)
-  const [desktopActionsOpen, setDesktopActionsOpen] = React.useState(false)
-  const [mobileActionsOpen, setMobileActionsOpen] = React.useState(false)
-  const [searchOpen, setSearchOpen] = React.useState(false)
-  const searchStore = React.useMemo(createEditorSearchStore, [])
-  const [reviewChanges, setReviewChanges] = React.useState(true)
-  const [wrapLines, setWrapLines] = React.useState(true)
-  const editorRef = React.useRef<SyntaxCodeEditorHandle>(null)
-  const valueRef = React.useRef(file.content)
-  const savedValueRef = React.useRef(file.content)
-  const searchInputRef = React.useRef<HTMLInputElement>(null)
-  const resetShareTimer = React.useRef<number | null>(null)
-  const resetCopyTimer = React.useRef<number | null>(null)
-  const sectionRef = React.useRef<HTMLElement>(null)
-
-  const loading = queryLoading
-
-  React.useEffect(
-    () => () => {
-      if (resetShareTimer.current) window.clearTimeout(resetShareTimer.current)
-      if (resetCopyTimer.current) window.clearTimeout(resetCopyTimer.current)
-    },
-    []
+  const [sessionStore] = React.useState(() =>
+    createEditorSessionStore(file.content)
   )
+  const searchStore = React.useMemo(createEditorSearchStore, [])
+  const editorRef = React.useRef<SyntaxCodeEditorHandle>(null)
+  const searchInputRef = React.useRef<HTMLInputElement>(null)
+  const sectionRef = React.useRef<HTMLElement>(null)
+  const loading = queryLoading
 
   React.useLayoutEffect(() => {
     const section = sectionRef.current
@@ -475,69 +584,17 @@ function Editor({
     return () => observer.disconnect()
   }, [file.path])
 
-  const handleDocumentValueChange = React.useCallback((value: string) => {
-    valueRef.current = value
-    const nextDirty = value !== savedValueRef.current
-    setDirty((current) => (current === nextDirty ? current : nextDirty))
-  }, [])
-
-  async function handleSave() {
-    setSaving(true)
-    setSaveError(null)
-    try {
-      const value = valueRef.current
-      await onSave(value)
-      savedValueRef.current = value
-      setSavedValue(value)
-      const nextDirty = valueRef.current !== value
-      setDirty((current) => (current === nextDirty ? current : nextDirty))
-    } catch (cause) {
-      setSaveError(cause instanceof Error ? cause.message : "Save failed")
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function handleShare() {
-    setShareState("uploading")
-    try {
-      const result = await uploadToMclogs({
-        data: {
-          content: redactSensitive
-            ? redactSensitiveText(valueRef.current)
-            : valueRef.current,
-          instanceId: instance.id,
-          path: file.path,
-          implementation: instance.implementation,
-          version: instance.version,
-        },
-      })
-      await copyToClipboard(result.url)
-      setShareState("copied")
-    } catch {
-      setShareState("error")
-    }
-    resetShareTimer.current = window.setTimeout(
-      () => setShareState("idle"),
-      2800
-    )
-  }
-
-  async function handleCopy() {
-    await copyToClipboard(
-      redactSensitive ? redactSensitiveText(valueRef.current) : valueRef.current
-    )
-    setCopyState("copied")
-    if (resetCopyTimer.current) window.clearTimeout(resetCopyTimer.current)
-    resetCopyTimer.current = window.setTimeout(() => setCopyState("idle"), 1800)
-  }
-
   return (
     <section
       ref={sectionRef}
       className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-card"
     >
-      <Popover open={searchOpen} onOpenChange={setSearchOpen}>
+      <EditorSearchBoundary
+        editorRef={editorRef}
+        inputRef={searchInputRef}
+        searchStore={searchStore}
+        sessionStore={sessionStore}
+      >
         <PopoverAnchor asChild>
           <div className={fileEditorHeaderClassName} data-file-toolbar>
             {treeCollapsed ? (
@@ -554,115 +611,20 @@ function Editor({
                 data-file-editor-actions
               >
                 {canShare ? (
-                  <EditorTooltip
-                    content={
-                      shareState === "uploading"
-                        ? "Uploading to mclo.gs"
-                        : shareState === "copied"
-                          ? "Link Copied"
-                          : shareState === "error"
-                            ? "Retry mclo.gs Upload"
-                            : "Upload to mclo.gs"
-                    }
-                  >
-                    <Button
-                      variant={
-                        shareState === "copied"
-                          ? "secondary"
-                          : shareState === "error"
-                            ? "destructive"
-                            : "ghost"
-                      }
-                      size="default"
-                      className="h-8 shrink-0 gap-1.5 px-2.5 text-xs shadow-none disabled:opacity-100"
-                      aria-label={`Upload ${formatName(file.path)} to mclo.gs and copy link`}
-                      disabled={shareState === "uploading" || loading}
-                      onClick={handleShare}
-                    >
-                      {shareState === "uploading" ? (
-                        <LoaderCircle className="size-[17px] animate-spin" />
-                      ) : shareState === "copied" ? (
-                        <Check className="size-[17px]" />
-                      ) : shareState === "error" ? (
-                        <TriangleAlert className="size-[17px]" />
-                      ) : (
-                        <Share2 className="size-[17px]" />
-                      )}
-                      <span>
-                        {shareState === "uploading"
-                          ? "Uploading"
-                          : shareState === "copied"
-                            ? "Link copied"
-                            : shareState === "error"
-                              ? "Try again"
-                              : "mclo.gs"}
-                      </span>
-                    </Button>
-                  </EditorTooltip>
+                  <EditorShareButton
+                    file={file}
+                    instance={instance}
+                    loading={loading}
+                    sessionStore={sessionStore}
+                  />
                 ) : null}
-                <EditorTooltip
-                  content={
-                    searchOpen ? "Hide Search in File" : "Search in File"
-                  }
-                >
-                  <Button
-                    variant={searchOpen ? "secondary" : "ghost"}
-                    size="icon"
-                    className="disabled:opacity-100"
-                    aria-label={
-                      searchOpen ? "Close file search" : "Search file"
-                    }
-                    aria-pressed={searchOpen}
-                    aria-keyshortcuts="Control+F Meta+F"
-                    disabled={loading}
-                    onClick={() => setSearchOpen((current) => !current)}
-                  >
-                    <Search className="size-[17px]" />
-                  </Button>
-                </EditorTooltip>
-                <EditorFontSizeButton
-                  fontSize={fontSize}
-                  onFontSizeChange={onFontSizeChange}
+                <EditorSearchToggleButton
+                  loading={loading}
+                  sessionStore={sessionStore}
                 />
-                <EditorTooltip
-                  content={wrapLines ? "Disable Line Wrap" : "Enable Line Wrap"}
-                >
-                  <Button
-                    variant={wrapLines ? "secondary" : "ghost"}
-                    size="icon"
-                    aria-label={
-                      wrapLines ? "Disable line wrap" : "Enable line wrap"
-                    }
-                    aria-pressed={wrapLines}
-                    onClick={() => setWrapLines((current) => !current)}
-                  >
-                    <WrapText className="size-[17px]" />
-                  </Button>
-                </EditorTooltip>
-                <EditorTooltip
-                  content={
-                    copyState === "copied"
-                      ? "File Contents Copied"
-                      : "Copy File Contents"
-                  }
-                >
-                  <Button
-                    variant={copyState === "copied" ? "secondary" : "ghost"}
-                    size="icon"
-                    aria-label={
-                      copyState === "copied"
-                        ? "File Contents Copied"
-                        : "Copy File Contents"
-                    }
-                    onClick={handleCopy}
-                  >
-                    {copyState === "copied" ? (
-                      <Check className="size-[17px]" />
-                    ) : (
-                      <Copy className="size-[17px]" />
-                    )}
-                  </Button>
-                </EditorTooltip>
+                <EditorFontSizeButton preferencesStore={preferencesStore} />
+                <EditorWrapButton sessionStore={sessionStore} />
+                <EditorCopyButton sessionStore={sessionStore} />
                 <EditorTooltip content="Download - Coming Soon">
                   <Button
                     variant="ghost"
@@ -674,251 +636,63 @@ function Editor({
                   </Button>
                 </EditorTooltip>
                 <EditorSaveButton
-                  dirty={dirty}
                   file={file}
                   loading={loading}
-                  saving={saving}
-                  onSave={handleSave}
+                  onSave={onSave}
+                  sessionStore={sessionStore}
                 />
-                <Popover
-                  open={desktopActionsOpen}
-                  onOpenChange={setDesktopActionsOpen}
-                >
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant={desktopActionsOpen ? "secondary" : "ghost"}
-                      size="icon"
-                      aria-label="More file actions"
-                      aria-expanded={desktopActionsOpen}
-                      title="More file actions"
-                    >
-                      <EllipsisVertical className="size-[18px]" />
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent
-                    align="end"
-                    side="bottom"
-                    sideOffset={7}
-                    collisionPadding={8}
-                    className="w-[min(17rem,calc(100vw-1rem))] p-1"
-                  >
-                    <p className="border-b px-2 py-2 text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
-                      File actions
-                    </p>
-                    <FileActionMenuItem
-                      active={pinned}
-                      icon={pinned ? <PinOff /> : <Pin />}
-                      label={pinned ? "Unpin file" : "Pin file"}
-                      detail={
-                        canWrite
-                          ? "Shared on this server's Files home"
-                          : "Requires file write access"
-                      }
-                      disabled={loading || pinning || !canWrite}
-                      onClick={() => onPinnedChange(!pinned)}
-                    />
-                    <FileActionMenuItem
-                      active={dirty && reviewChanges}
-                      icon={<GitCompareArrows />}
-                      label={
-                        dirty
-                          ? reviewChanges
-                            ? "Hide changes"
-                            : "Highlight changes"
-                          : "Review changes"
-                      }
-                      detail="Compare with the saved file"
-                      disabled={!dirty || loading || file.readOnly}
-                      onClick={() => {
-                        setReviewChanges((current) => !current)
-                      }}
-                    />
-                  </PopoverContent>
-                </Popover>
+                <EditorOverflowMenu
+                  canWrite={canWrite}
+                  file={file}
+                  loading={loading}
+                  pinned={pinned}
+                  pinning={pinning}
+                  sessionStore={sessionStore}
+                  onPinnedChange={onPinnedChange}
+                />
               </div>
 
               <div className="ml-auto flex shrink-0 items-center gap-1 md:hidden">
-                <EditorTooltip
-                  content={
-                    searchOpen ? "Hide Search in File" : "Search in File"
-                  }
-                >
-                  <Button
-                    variant={searchOpen ? "secondary" : "ghost"}
-                    size="icon"
-                    className="disabled:opacity-100"
-                    aria-label={
-                      searchOpen ? "Close file search" : "Search file"
-                    }
-                    aria-pressed={searchOpen}
-                    aria-keyshortcuts="Control+F Meta+F"
-                    disabled={loading}
-                    onClick={() => setSearchOpen((current) => !current)}
-                  >
-                    <Search className="size-[17px]" />
-                  </Button>
-                </EditorTooltip>
+                <EditorSearchToggleButton
+                  loading={loading}
+                  sessionStore={sessionStore}
+                />
                 <EditorSaveButton
-                  dirty={dirty}
                   file={file}
                   loading={loading}
-                  saving={saving}
-                  onSave={handleSave}
+                  onSave={onSave}
+                  sessionStore={sessionStore}
                 />
-                <Popover
-                  open={mobileActionsOpen}
-                  onOpenChange={setMobileActionsOpen}
-                >
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant={mobileActionsOpen ? "secondary" : "ghost"}
-                      size="icon"
-                      className="shadow-none"
-                      aria-label="More file actions"
-                      aria-expanded={mobileActionsOpen}
-                    >
-                      <EllipsisVertical className="size-[18px]" />
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent
-                    align="end"
-                    side="bottom"
-                    sideOffset={7}
-                    collisionPadding={8}
-                    className="w-[min(18rem,calc(100vw-1rem))] p-1.5"
-                  >
-                    <p className="px-2 pt-1 pb-1.5 font-mono text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
-                      File actions
-                    </p>
-                    <div className="border-t border-border/45 px-2 py-2.5">
-                      <div className="mb-1.5 flex items-center justify-between gap-3">
-                        <span className="flex items-center gap-2 text-xs font-medium text-foreground">
-                          <ALargeSmall className="size-4 text-muted-foreground" />
-                          Text size
-                        </span>
-                        <span className="font-mono text-[10px] text-muted-foreground">
-                          {fontSize}px
-                        </span>
-                      </div>
-                      <EditorFontSizeControl
-                        fontSize={fontSize}
-                        onFontSizeChange={onFontSizeChange}
-                      />
-                    </div>
-                    {canShare ? (
-                      <FileActionMenuItem
-                        icon={
-                          shareState === "uploading" ? (
-                            <LoaderCircle className="animate-spin" />
-                          ) : shareState === "copied" ? (
-                            <Check />
-                          ) : shareState === "error" ? (
-                            <TriangleAlert />
-                          ) : (
-                            <Share2 />
-                          )
-                        }
-                        label={
-                          shareState === "uploading"
-                            ? "Uploading"
-                            : shareState === "copied"
-                              ? "Link copied"
-                              : shareState === "error"
-                                ? "Try mclo.gs again"
-                                : "Upload to mclo.gs"
-                        }
-                        detail="Copies a shareable link"
-                        disabled={shareState === "uploading" || loading}
-                        onClick={() => void handleShare()}
-                      />
-                    ) : null}
-                    <FileActionMenuItem
-                      active={pinned}
-                      icon={pinned ? <PinOff /> : <Pin />}
-                      label={pinned ? "Unpin file" : "Pin file"}
-                      detail={
-                        canWrite
-                          ? "Shared on this server's Files home"
-                          : "Requires file write access"
-                      }
-                      disabled={loading || pinning || !canWrite}
-                      onClick={() => onPinnedChange(!pinned)}
-                    />
-                    <FileActionMenuItem
-                      active={wrapLines}
-                      icon={<WrapText />}
-                      label="Wrap long lines"
-                      detail="Fit text to the editor"
-                      onClick={() => setWrapLines((current) => !current)}
-                    />
-                    <FileActionMenuItem
-                      icon={copyState === "copied" ? <Check /> : <Copy />}
-                      label={
-                        copyState === "copied"
-                          ? "Contents copied"
-                          : "Copy contents"
-                      }
-                      detail="Redacts IP addresses"
-                      onClick={() => void handleCopy()}
-                    />
-                    <FileActionMenuItem
-                      active={dirty && reviewChanges}
-                      icon={<GitCompareArrows />}
-                      label="Review changes"
-                      detail="Compare with the saved file"
-                      disabled={!dirty || loading || file.readOnly}
-                      onClick={() => setReviewChanges((current) => !current)}
-                    />
-                    <FileActionMenuItem
-                      icon={<Download />}
-                      label="Download"
-                      detail="Coming soon"
-                      disabled
-                    />
-                  </PopoverContent>
-                </Popover>
+                <EditorMobileOverflowMenu
+                  canShare={canShare}
+                  canWrite={canWrite}
+                  file={file}
+                  instance={instance}
+                  loading={loading}
+                  pinned={pinned}
+                  pinning={pinning}
+                  preferencesStore={preferencesStore}
+                  sessionStore={sessionStore}
+                  onPinnedChange={onPinnedChange}
+                />
               </div>
             </div>
           </div>
         </PopoverAnchor>
-        <PopoverContent
-          align="end"
-          side="bottom"
-          sideOffset={7}
-          collisionPadding={12}
-          className="w-[min(18rem,calc(100vw-1rem))] p-2"
-          onOpenAutoFocus={(event) => {
-            event.preventDefault()
-            searchInputRef.current?.focus()
-          }}
-          onInteractOutside={(event) => event.preventDefault()}
-        >
-          <EditorSearchContent
-            editorRef={editorRef}
-            inputRef={searchInputRef}
-            store={searchStore}
-            onClose={() => setSearchOpen(false)}
-          />
-        </PopoverContent>
-      </Popover>
+      </EditorSearchBoundary>
 
       <div className="editor-grid relative min-h-[360px] min-w-0 flex-1 overflow-hidden">
         <EditorDocument
           editorRef={editorRef}
           ariaLabel={`Edit ${formatName(file.path)}`}
           initialValue={file.content}
-          originalValue={savedValue}
-          onValueChange={handleDocumentValueChange}
-          onSearchOpenChange={setSearchOpen}
           path={file.path}
           disabled={loading}
-          redactSensitive={redactSensitive}
+          redactSensitive
           readOnly={file.readOnly || !canWrite}
-          searchOpen={searchOpen}
+          preferencesStore={preferencesStore}
           searchStore={searchStore}
-          fontSize={fontSize}
-          showChanges={reviewChanges}
-          wrapLines={wrapLines}
+          sessionStore={sessionStore}
         />
         {loading ? (
           <div className="absolute inset-y-0 right-0 left-[var(--file-editor-gutter-width,3rem)] z-20 grid place-items-center bg-card/75 backdrop-blur-[2px]">
@@ -930,40 +704,610 @@ function Editor({
         ) : null}
       </div>
 
-      <div className="flex h-7 shrink-0 items-center justify-between border-t bg-muted/10 px-3 font-mono text-[9px] text-muted-foreground">
-        <span className={error || saveError ? "text-destructive" : undefined}>
-          {error ||
-            saveError ||
-            (file.encoding === "gzip"
-              ? `${file.size.toLocaleString()} B GZIP → ${file.decodedSize.toLocaleString()} B TEXT`
-              : `${file.size.toLocaleString()} BYTES`)}
-        </span>
-        <div className="flex items-center gap-3">
-          <span>UTF-8</span>
-          <span>LF</span>
-          <span>{fileLanguageForPath(file.path).label}</span>
-        </div>
-      </div>
+      <EditorFooter error={error} file={file} sessionStore={sessionStore} />
     </section>
+  )
+}
+
+function EditorSearchBoundary({
+  children,
+  editorRef,
+  inputRef,
+  searchStore,
+  sessionStore,
+}: {
+  children: React.ReactElement
+  editorRef: React.RefObject<SyntaxCodeEditorHandle | null>
+  inputRef: React.RefObject<HTMLInputElement | null>
+  searchStore: EditorSearchStore
+  sessionStore: EditorSessionStore
+}) {
+  const open = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getSearchOpenSnapshot,
+    sessionStore.getSearchOpenSnapshot
+  )
+
+  return (
+    <Popover open={open} onOpenChange={sessionStore.setSearchOpen}>
+      {children}
+      <PopoverContent
+        align="end"
+        side="bottom"
+        sideOffset={7}
+        collisionPadding={12}
+        className="w-[min(18rem,calc(100vw-1rem))] p-2"
+        onOpenAutoFocus={(event) => {
+          event.preventDefault()
+          inputRef.current?.focus()
+        }}
+        onInteractOutside={(event) => event.preventDefault()}
+      >
+        <EditorSearchContent
+          editorRef={editorRef}
+          inputRef={inputRef}
+          store={searchStore}
+          onClose={() => sessionStore.setSearchOpen(false)}
+        />
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function EditorSearchToggleButton({
+  loading,
+  sessionStore,
+}: {
+  loading: boolean
+  sessionStore: EditorSessionStore
+}) {
+  const open = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getSearchOpenSnapshot,
+    sessionStore.getSearchOpenSnapshot
+  )
+  return (
+    <EditorTooltip content={open ? "Hide Search in File" : "Search in File"}>
+      <Button
+        variant={open ? "secondary" : "ghost"}
+        size="icon"
+        className="disabled:opacity-100"
+        aria-label={open ? "Close file search" : "Search file"}
+        aria-pressed={open}
+        aria-keyshortcuts="Control+F Meta+F"
+        disabled={loading}
+        onClick={() => sessionStore.setSearchOpen(!open)}
+      >
+        <Search className="size-[17px]" />
+      </Button>
+    </EditorTooltip>
+  )
+}
+
+function EditorShareButton({
+  file,
+  instance,
+  loading,
+  sessionStore,
+}: {
+  file: RelayFileContent
+  instance: InstanceWorkspaceInstance
+  loading: boolean
+  sessionStore: EditorSessionStore
+}) {
+  const [state, setState] = React.useState<
+    "idle" | "uploading" | "copied" | "error"
+  >("idle")
+  const resetTimer = React.useRef<number | null>(null)
+  React.useEffect(
+    () => () => {
+      if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    },
+    []
+  )
+
+  async function handleShare() {
+    setState("uploading")
+    try {
+      const result = await uploadToMclogs({
+        data: {
+          content: redactSensitiveText(sessionStore.getValue()),
+          instanceId: instance.id,
+          path: file.path,
+          implementation: instance.implementation,
+          version: instance.version,
+        },
+      })
+      await copyToClipboard(result.url)
+      setState("copied")
+    } catch {
+      setState("error")
+    }
+    if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    resetTimer.current = window.setTimeout(() => setState("idle"), 2800)
+  }
+
+  return (
+    <EditorTooltip
+      content={
+        state === "uploading"
+          ? "Uploading to mclo.gs"
+          : state === "copied"
+            ? "Link Copied"
+            : state === "error"
+              ? "Retry mclo.gs Upload"
+              : "Upload to mclo.gs"
+      }
+    >
+      <Button
+        variant={
+          state === "copied"
+            ? "secondary"
+            : state === "error"
+              ? "destructive"
+              : "ghost"
+        }
+        size="default"
+        className="h-8 shrink-0 gap-1.5 px-2.5 text-xs shadow-none disabled:opacity-100"
+        aria-label={`Upload ${formatName(file.path)} to mclo.gs and copy link`}
+        disabled={state === "uploading" || loading}
+        onClick={handleShare}
+      >
+        {state === "uploading" ? (
+          <LoaderCircle className="size-[17px] animate-spin" />
+        ) : state === "copied" ? (
+          <Check className="size-[17px]" />
+        ) : state === "error" ? (
+          <TriangleAlert className="size-[17px]" />
+        ) : (
+          <Share2 className="size-[17px]" />
+        )}
+        <span>
+          {state === "uploading"
+            ? "Uploading"
+            : state === "copied"
+              ? "Link copied"
+              : state === "error"
+                ? "Try again"
+                : "mclo.gs"}
+        </span>
+      </Button>
+    </EditorTooltip>
+  )
+}
+
+function EditorCopyButton({
+  sessionStore,
+}: {
+  sessionStore: EditorSessionStore
+}) {
+  const [copied, setCopied] = React.useState(false)
+  const resetTimer = React.useRef<number | null>(null)
+  React.useEffect(
+    () => () => {
+      if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    },
+    []
+  )
+
+  async function handleCopy() {
+    await copyToClipboard(redactSensitiveText(sessionStore.getValue()))
+    setCopied(true)
+    if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    resetTimer.current = window.setTimeout(() => setCopied(false), 1800)
+  }
+
+  return (
+    <EditorTooltip
+      content={copied ? "File Contents Copied" : "Copy File Contents"}
+    >
+      <Button
+        variant={copied ? "secondary" : "ghost"}
+        size="icon"
+        aria-label={copied ? "File Contents Copied" : "Copy File Contents"}
+        onClick={handleCopy}
+      >
+        {copied ? (
+          <Check className="size-[17px]" />
+        ) : (
+          <Copy className="size-[17px]" />
+        )}
+      </Button>
+    </EditorTooltip>
+  )
+}
+
+function EditorWrapButton({
+  sessionStore,
+}: {
+  sessionStore: EditorSessionStore
+}) {
+  const wrapLines = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getWrapLinesSnapshot,
+    sessionStore.getWrapLinesSnapshot
+  )
+  return (
+    <EditorTooltip
+      content={wrapLines ? "Disable Line Wrap" : "Enable Line Wrap"}
+    >
+      <Button
+        variant={wrapLines ? "secondary" : "ghost"}
+        size="icon"
+        aria-label={wrapLines ? "Disable line wrap" : "Enable line wrap"}
+        aria-pressed={wrapLines}
+        onClick={sessionStore.toggleWrapLines}
+      >
+        <WrapText className="size-[17px]" />
+      </Button>
+    </EditorTooltip>
+  )
+}
+
+function EditorOverflowMenu({
+  canWrite,
+  file,
+  loading,
+  pinned,
+  pinning,
+  sessionStore,
+  onPinnedChange,
+}: {
+  canWrite: boolean
+  file: RelayFileContent
+  loading: boolean
+  pinned: boolean
+  pinning: boolean
+  sessionStore: EditorSessionStore
+  onPinnedChange: (pinned: boolean) => void
+}) {
+  const [open, setOpen] = React.useState(false)
+  const dirty = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getDirtySnapshot,
+    sessionStore.getDirtySnapshot
+  )
+  const reviewChanges = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getReviewChangesSnapshot,
+    sessionStore.getReviewChangesSnapshot
+  )
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant={open ? "secondary" : "ghost"}
+          size="icon"
+          aria-label="More file actions"
+          aria-expanded={open}
+          title="More file actions"
+        >
+          <EllipsisVertical className="size-[18px]" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        side="bottom"
+        sideOffset={7}
+        collisionPadding={8}
+        className="w-[min(17rem,calc(100vw-1rem))] p-1"
+      >
+        <p className="border-b px-2 py-2 text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+          File actions
+        </p>
+        <FileActionMenuItem
+          active={pinned}
+          icon={pinned ? <PinOff /> : <Pin />}
+          label={pinned ? "Unpin file" : "Pin file"}
+          detail={
+            canWrite
+              ? "Shared on this server's Files home"
+              : "Requires file write access"
+          }
+          disabled={loading || pinning || !canWrite}
+          onClick={() => onPinnedChange(!pinned)}
+        />
+        <FileActionMenuItem
+          active={dirty && reviewChanges}
+          icon={<GitCompareArrows />}
+          label={
+            dirty
+              ? reviewChanges
+                ? "Hide changes"
+                : "Highlight changes"
+              : "Review changes"
+          }
+          detail="Compare with the saved file"
+          disabled={!dirty || loading || file.readOnly}
+          onClick={sessionStore.toggleReviewChanges}
+        />
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function EditorMobileOverflowMenu({
+  canShare,
+  canWrite,
+  file,
+  instance,
+  loading,
+  pinned,
+  pinning,
+  preferencesStore,
+  sessionStore,
+  onPinnedChange,
+}: {
+  canShare: boolean
+  canWrite: boolean
+  file: RelayFileContent
+  instance: InstanceWorkspaceInstance
+  loading: boolean
+  pinned: boolean
+  pinning: boolean
+  preferencesStore: FileEditorPreferencesStore
+  sessionStore: EditorSessionStore
+  onPinnedChange: (pinned: boolean) => void
+}) {
+  const [open, setOpen] = React.useState(false)
+  const [shareState, setShareState] = React.useState<
+    "idle" | "uploading" | "copied" | "error"
+  >("idle")
+  const [copied, setCopied] = React.useState(false)
+  const resetShareTimer = React.useRef<number | null>(null)
+  const resetCopyTimer = React.useRef<number | null>(null)
+  const fontSize = React.useSyncExternalStore(
+    preferencesStore.subscribe,
+    preferencesStore.getFontSizeSnapshot,
+    preferencesStore.getFontSizeSnapshot
+  )
+  const dirty = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getDirtySnapshot,
+    sessionStore.getDirtySnapshot
+  )
+  const reviewChanges = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getReviewChangesSnapshot,
+    sessionStore.getReviewChangesSnapshot
+  )
+  const wrapLines = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getWrapLinesSnapshot,
+    sessionStore.getWrapLinesSnapshot
+  )
+
+  React.useEffect(
+    () => () => {
+      if (resetShareTimer.current) window.clearTimeout(resetShareTimer.current)
+      if (resetCopyTimer.current) window.clearTimeout(resetCopyTimer.current)
+    },
+    []
+  )
+
+  async function handleShare() {
+    setShareState("uploading")
+    try {
+      const result = await uploadToMclogs({
+        data: {
+          content: redactSensitiveText(sessionStore.getValue()),
+          instanceId: instance.id,
+          path: file.path,
+          implementation: instance.implementation,
+          version: instance.version,
+        },
+      })
+      await copyToClipboard(result.url)
+      setShareState("copied")
+    } catch {
+      setShareState("error")
+    }
+    if (resetShareTimer.current) window.clearTimeout(resetShareTimer.current)
+    resetShareTimer.current = window.setTimeout(
+      () => setShareState("idle"),
+      2800
+    )
+  }
+
+  async function handleCopy() {
+    await copyToClipboard(redactSensitiveText(sessionStore.getValue()))
+    setCopied(true)
+    if (resetCopyTimer.current) window.clearTimeout(resetCopyTimer.current)
+    resetCopyTimer.current = window.setTimeout(() => setCopied(false), 1800)
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant={open ? "secondary" : "ghost"}
+          size="icon"
+          className="shadow-none"
+          aria-label="More file actions"
+          aria-expanded={open}
+        >
+          <EllipsisVertical className="size-[18px]" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        side="bottom"
+        sideOffset={7}
+        collisionPadding={8}
+        className="w-[min(18rem,calc(100vw-1rem))] p-1.5"
+      >
+        <p className="px-2 pt-1 pb-1.5 font-mono text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
+          File actions
+        </p>
+        <div className="border-t border-border/45 px-2 py-2.5">
+          <div className="mb-1.5 flex items-center justify-between gap-3">
+            <span className="flex items-center gap-2 text-xs font-medium text-foreground">
+              <ALargeSmall className="size-4 text-muted-foreground" /> Text size
+            </span>
+            <span className="font-mono text-[10px] text-muted-foreground">
+              {fontSize}px
+            </span>
+          </div>
+          <EditorFontSizeControl
+            fontSize={fontSize}
+            onFontSizeChange={preferencesStore.setFontSize}
+          />
+        </div>
+        {canShare ? (
+          <FileActionMenuItem
+            icon={
+              shareState === "uploading" ? (
+                <LoaderCircle className="animate-spin" />
+              ) : shareState === "copied" ? (
+                <Check />
+              ) : shareState === "error" ? (
+                <TriangleAlert />
+              ) : (
+                <Share2 />
+              )
+            }
+            label={
+              shareState === "uploading"
+                ? "Uploading"
+                : shareState === "copied"
+                  ? "Link copied"
+                  : shareState === "error"
+                    ? "Try mclo.gs again"
+                    : "Upload to mclo.gs"
+            }
+            detail="Copies a shareable link"
+            disabled={shareState === "uploading" || loading}
+            onClick={handleShare}
+          />
+        ) : null}
+        <FileActionMenuItem
+          active={pinned}
+          icon={pinned ? <PinOff /> : <Pin />}
+          label={pinned ? "Unpin file" : "Pin file"}
+          detail={
+            canWrite
+              ? "Shared on this server's Files home"
+              : "Requires file write access"
+          }
+          disabled={loading || pinning || !canWrite}
+          onClick={() => onPinnedChange(!pinned)}
+        />
+        <FileActionMenuItem
+          active={wrapLines}
+          icon={<WrapText />}
+          label="Wrap long lines"
+          detail="Fit text to the editor"
+          onClick={sessionStore.toggleWrapLines}
+        />
+        <FileActionMenuItem
+          icon={copied ? <Check /> : <Copy />}
+          label={copied ? "Contents copied" : "Copy contents"}
+          detail="Redacts IP addresses"
+          onClick={handleCopy}
+        />
+        <FileActionMenuItem
+          active={dirty && reviewChanges}
+          icon={<GitCompareArrows />}
+          label="Review changes"
+          detail="Compare with the saved file"
+          disabled={!dirty || loading || file.readOnly}
+          onClick={sessionStore.toggleReviewChanges}
+        />
+        <FileActionMenuItem
+          icon={<Download />}
+          label="Download"
+          detail="Coming soon"
+          disabled
+        />
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function EditorFooter({
+  error,
+  file,
+  sessionStore,
+}: {
+  error: string | null
+  file: RelayFileContent
+  sessionStore: EditorSessionStore
+}) {
+  const saveError = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getSaveErrorSnapshot,
+    sessionStore.getSaveErrorSnapshot
+  )
+  return (
+    <div className="flex h-7 shrink-0 items-center justify-between border-t bg-muted/10 px-3 font-mono text-[9px] text-muted-foreground">
+      <span className={error || saveError ? "text-destructive" : undefined}>
+        {error ||
+          saveError ||
+          (file.encoding === "gzip"
+            ? `${file.size.toLocaleString()} B GZIP → ${file.decodedSize.toLocaleString()} B TEXT`
+            : `${file.size.toLocaleString()} BYTES`)}
+      </span>
+      <div className="flex items-center gap-3">
+        <span>UTF-8</span>
+        <span>LF</span>
+        <span>{fileLanguageForPath(file.path).label}</span>
+      </div>
+    </div>
   )
 }
 
 function EditorDocument({
   editorRef,
   initialValue,
-  onValueChange,
+  preferencesStore,
   searchStore,
+  sessionStore,
   ...props
 }: Omit<
   React.ComponentProps<typeof SyntaxCodeEditor>,
-  "onChange" | "ref" | "searchQuery" | "value"
+  | "fontSize"
+  | "onChange"
+  | "onSearchOpenChange"
+  | "originalValue"
+  | "ref"
+  | "searchOpen"
+  | "searchQuery"
+  | "showChanges"
+  | "value"
+  | "wrapLines"
 > & {
   editorRef: React.RefObject<SyntaxCodeEditorHandle | null>
   initialValue: string
-  onValueChange: (value: string) => void
+  preferencesStore: FileEditorPreferencesStore
   searchStore: EditorSearchStore
+  sessionStore: EditorSessionStore
 }) {
   const [value, setValue] = React.useState(initialValue)
+  const fontSize = React.useSyncExternalStore(
+    preferencesStore.subscribe,
+    preferencesStore.getFontSizeSnapshot,
+    preferencesStore.getFontSizeSnapshot
+  )
+  const originalValue = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getSavedValueSnapshot,
+    sessionStore.getSavedValueSnapshot
+  )
+  const searchOpen = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getSearchOpenSnapshot,
+    sessionStore.getSearchOpenSnapshot
+  )
+  const showChanges = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getReviewChangesSnapshot,
+    sessionStore.getReviewChangesSnapshot
+  )
+  const wrapLines = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getWrapLinesSnapshot,
+    sessionStore.getWrapLinesSnapshot
+  )
   const searchQuery = React.useSyncExternalStore(
     searchStore.subscribe,
     searchStore.getSnapshot,
@@ -973,17 +1317,23 @@ function EditorDocument({
   const handleChange = React.useCallback(
     (nextValue: string) => {
       setValue(nextValue)
-      onValueChange(nextValue)
+      sessionStore.setValue(nextValue)
     },
-    [onValueChange]
+    [sessionStore]
   )
 
   return (
     <SyntaxCodeEditor
       ref={editorRef}
       {...props}
+      fontSize={fontSize}
+      onSearchOpenChange={sessionStore.setSearchOpen}
+      originalValue={originalValue}
+      searchOpen={searchOpen}
       searchQuery={searchQuery}
+      showChanges={showChanges}
       value={value}
+      wrapLines={wrapLines}
       onChange={handleChange}
     />
   )
@@ -1062,18 +1412,43 @@ function EditorSearchContent({
 }
 
 function EditorSaveButton({
-  dirty,
   file,
   loading,
-  saving,
   onSave,
+  sessionStore,
 }: {
-  dirty: boolean
   file: RelayFileContent
   loading: boolean
-  saving: boolean
-  onSave: () => void
+  onSave: (content: string) => Promise<void>
+  sessionStore: EditorSessionStore
 }) {
+  const dirty = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getDirtySnapshot,
+    sessionStore.getDirtySnapshot
+  )
+  const saving = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getSavingSnapshot,
+    sessionStore.getSavingSnapshot
+  )
+
+  async function handleSave() {
+    sessionStore.setSaving(true)
+    sessionStore.setSaveError(null)
+    try {
+      const value = sessionStore.getValue()
+      await onSave(value)
+      sessionStore.markSaved(value)
+    } catch (cause) {
+      sessionStore.setSaveError(
+        cause instanceof Error ? cause.message : "Save failed"
+      )
+    } finally {
+      sessionStore.setSaving(false)
+    }
+  }
+
   return (
     <EditorTooltip
       content={
@@ -1101,7 +1476,7 @@ function EditorSaveButton({
               : "Changes saved"
         }
         disabled={!dirty || saving || loading || file.readOnly}
-        onClick={onSave}
+        onClick={handleSave}
       >
         {file.readOnly ? (
           <LockKeyhole className="size-[17px]" />
@@ -1117,13 +1492,16 @@ function EditorSaveButton({
 }
 
 function EditorFontSizeButton({
-  fontSize,
-  onFontSizeChange,
+  preferencesStore,
 }: {
-  fontSize: number
-  onFontSizeChange: (fontSize: number) => void
+  preferencesStore: FileEditorPreferencesStore
 }) {
   const [open, setOpen] = React.useState(false)
+  const fontSize = React.useSyncExternalStore(
+    preferencesStore.subscribe,
+    preferencesStore.getFontSizeSnapshot,
+    preferencesStore.getFontSizeSnapshot
+  )
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -1148,7 +1526,7 @@ function EditorFontSizeButton({
       >
         <EditorFontSizeControl
           fontSize={fontSize}
-          onFontSizeChange={onFontSizeChange}
+          onFontSizeChange={preferencesStore.setFontSize}
         />
       </PopoverContent>
     </Popover>
@@ -1326,10 +1704,8 @@ function FileTreePanel({
     composition: { contextMenu: { enabled: true, triggerMode: "both" } },
     unsafeCSS: fileTreeLayoutCss,
   })
-  const search = useFileTreeSearch(model)
   const [mobileContentVisible, setMobileContentVisible] =
     React.useState(mobileOpen)
-  const searchInputRef = React.useRef<HTMLInputElement>(null)
   const mobileBrowseButtonRef = React.useRef<HTMLButtonElement>(null)
   const panelRef = React.useRef<HTMLElement>(null)
   const resizeHandleRef = React.useRef<HTMLDivElement>(null)
@@ -1615,36 +1991,11 @@ function FileTreePanel({
         >
           <FolderTree className="size-[18px]" />
         </Button>
-        <label className="flex h-full min-w-0 flex-1 items-center">
-          <Search className="ml-1 size-[18px] shrink-0 text-foreground/90 md:ml-1.5" />
-          <input
-            ref={searchInputRef}
-            type="search"
-            value={search.value}
-            placeholder="Search files…"
-            aria-label="Search instance files"
-            className="h-full min-w-0 flex-1 bg-transparent px-2 text-base text-foreground outline-none placeholder:text-muted-foreground/70 md:text-sm"
-            onChange={(event) => {
-              const value = event.target.value
-              if (value) search.setValue(value)
-              else search.close()
-            }}
-            onFocus={() => onMobileOpenChange(true)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.preventDefault()
-                if (search.value) search.close()
-                else closeMobileFileBrowser()
-                return
-              }
-              if (event.key === "Enter") {
-                event.preventDefault()
-                if (event.shiftKey) search.focusPreviousMatch()
-                else search.focusNextMatch()
-              }
-            }}
-          />
-        </label>
+        <FileTreeSearchInput
+          model={model}
+          onMobileOpenChange={onMobileOpenChange}
+          onMobileClose={closeMobileFileBrowser}
+        />
         <div className="flex shrink-0 items-center gap-0.5">
           <Popover>
             <PopoverTrigger asChild>
@@ -1829,6 +2180,54 @@ function FileTreeHomeButton({
     selectionStore.getIsHomeSnapshot
   )
   return <FilesHomeButton active={isHome} onClick={onClick} />
+}
+
+function FileTreeSearchInput({
+  model,
+  onMobileOpenChange,
+  onMobileClose,
+}: {
+  model: ReturnType<typeof useFileTree>["model"]
+  onMobileOpenChange: (open: boolean) => void
+  onMobileClose: () => void
+}) {
+  const search = useFileTreeSearch(model)
+
+  return (
+    <label className="flex h-full min-w-0 flex-1 items-center">
+      <Search className="ml-1 size-[18px] shrink-0 text-foreground/90 md:ml-1.5" />
+      <input
+        type="search"
+        value={search.value}
+        placeholder="Search files…"
+        aria-label="Search instance files"
+        className="h-full min-w-0 flex-1 bg-transparent px-2 text-base text-foreground outline-none placeholder:text-muted-foreground/70 md:text-sm"
+        onChange={(event) => {
+          const value = event.target.value
+          if (value) search.setValue(value)
+          else search.close()
+        }}
+        onFocus={() => {
+          if (window.matchMedia("(max-width: 767px)").matches) {
+            onMobileOpenChange(true)
+          }
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault()
+            if (search.value) search.close()
+            else onMobileClose()
+            return
+          }
+          if (event.key === "Enter") {
+            event.preventDefault()
+            if (event.shiftKey) search.focusPreviousMatch()
+            else search.focusNextMatch()
+          }
+        }}
+      />
+    </label>
+  )
 }
 
 function FileTreeSelectionSync({
@@ -2189,42 +2588,6 @@ function UnavailablePreview({
 const StableEditor = React.memo(Editor)
 const StableFileTreePanel = React.memo(FileTreePanel)
 
-function useFileEditorFontSize() {
-  const [fontSize, setFontSize] = React.useState(defaultFileEditorFontSize)
-  const [ready, setReady] = React.useState(false)
-
-  React.useEffect(() => {
-    let storedFontSize = defaultFileEditorFontSize
-    try {
-      const storedValue = Number.parseInt(
-        window.localStorage.getItem(fileEditorFontSizeStorageKey) ?? "",
-        10
-      )
-      if (fileEditorFontSizes.includes(storedValue)) {
-        storedFontSize = storedValue
-      }
-    } catch {
-      // Keep the default when browser storage is unavailable.
-    }
-    setFontSize(storedFontSize)
-    setReady(true)
-  }, [])
-
-  React.useEffect(() => {
-    if (!ready) return
-    try {
-      window.localStorage.setItem(
-        fileEditorFontSizeStorageKey,
-        String(fontSize)
-      )
-    } catch {
-      // The editor remains usable when browser storage is unavailable.
-    }
-  }, [fontSize, ready])
-
-  return [fontSize, setFontSize] as const
-}
-
 interface FileWorkspaceProps {
   instance: InstanceWorkspaceInstance
   active: boolean
@@ -2318,7 +2681,7 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
   initialTreeWidth,
 }: FileWorkspaceSurfaceProps) {
   const queryClient = useQueryClient()
-  const [fontSize, setFontSize] = useFileEditorFontSize()
+  const [preferencesStore] = React.useState(createFileEditorPreferencesStore)
   const [mobileTreeOpen, setMobileTreeOpen] = React.useState(false)
   const [treeCollapsed, setTreeCollapsed] = React.useState(
     initialTreeCollapsed && !openTreeOnEntry
@@ -2337,6 +2700,8 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
       queryClient.setQueryData(queryKeys.relay.tree(instance.id), nextTree)
     },
   })
+
+  React.useEffect(() => preferencesStore.hydrate(), [preferencesStore])
 
   const handleTreeCollapsedChange = React.useCallback(
     (nextCollapsed: boolean) => {
@@ -2431,11 +2796,10 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
             )
           }
           fileTreeLoading={treeQuery.isPending}
-          fontSize={fontSize}
           instance={instance}
-          onFontSizeChange={setFontSize}
           onPathChange={onPathChange}
           onTreeExpand={handleTreeExpand}
+          preferencesStore={preferencesStore}
           selectionStore={selectionStore}
           tree={tree}
           treeCollapsed={displayedTreeCollapsed}
@@ -2450,11 +2814,10 @@ interface FileViewerProps {
   canWrite: boolean
   fileTreeError: string | null
   fileTreeLoading: boolean
-  fontSize: number
   instance: InstanceWorkspaceInstance
-  onFontSizeChange: (fontSize: number) => void
   onPathChange: (path: string) => void
   onTreeExpand: () => void
+  preferencesStore: FileEditorPreferencesStore
   selectionStore: FileSelectionStore
   tree: RelayFileTree | null
   treeCollapsed: boolean
@@ -2465,11 +2828,10 @@ function FileViewer({
   canWrite,
   fileTreeError,
   fileTreeLoading,
-  fontSize,
   instance,
-  onFontSizeChange,
   onPathChange,
   onTreeExpand,
+  preferencesStore,
   selectionStore,
   tree,
   treeCollapsed,
@@ -2626,7 +2988,6 @@ function FileViewer({
         key={`${file.instanceId}:${file.path}:${file.modifiedAt}`}
         canShare={canShare}
         canWrite={canWrite}
-        fontSize={fontSize}
         pinned={selectedActivity?.pinned ?? false}
         pinning={pinMutationTargetsSelectedPath && pinFileMutation.isPending}
         file={file}
@@ -2634,7 +2995,7 @@ function FileViewer({
         instance={instance}
         loading={false}
         error={error}
-        onFontSizeChange={onFontSizeChange}
+        preferencesStore={preferencesStore}
         onSave={handleSave}
         onPinnedChange={handlePinnedChange}
         treeCollapsed={treeCollapsed}
