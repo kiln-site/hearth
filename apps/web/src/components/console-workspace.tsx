@@ -40,7 +40,6 @@ import {
 import { openRelayConsoleStream } from "@/lib/relay-console-stream"
 import { redactSensitiveText } from "@/lib/redaction"
 import { queryKeys, relaySnapshotQueryOptions } from "@/lib/query-options"
-import { useRelayConnection } from "@/components/relay-connection-status"
 import { selectInstanceObservedState } from "@/lib/relay-selectors"
 import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
 import {
@@ -278,8 +277,7 @@ function ConsoleWorkspaceSession({
   canShare: boolean
   canWrite: boolean
 }) {
-  const { status: relayStatus } = useRelayConnection()
-  const relayConnected = relayStatus === "connected"
+  const relayConnected = instance.relayStatus === "connected"
   const [uiStore] = React.useState(createConsoleUiStore)
   const [streamStore] = React.useState(createConsoleStreamStore)
 
@@ -1801,9 +1799,10 @@ function useRelayConsoleStream(
 
     void connect()
     return () => {
+      if (flushTimer !== null) window.clearTimeout(flushTimer)
+      flush()
       cancelled = true
       lifecycle.abort()
-      if (flushTimer !== null) window.clearTimeout(flushTimer)
       if (activeIterator) void activeIterator.return(undefined)
     }
   }, [instanceId, queryClient, relayConnected, relayId])

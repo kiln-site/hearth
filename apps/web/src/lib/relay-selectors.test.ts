@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test"
 import type { RelayInstance, RelaySnapshot } from "@workspace/contracts"
 
 import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
+import { replaceRelaySnapshotInstance } from "@/lib/query-options"
 import {
   selectInstanceRuntime,
   selectInstanceSettings,
@@ -79,5 +80,28 @@ describe("Relay render selectors", () => {
     expect(before?.resources?.cpu.percent).toBe(1)
     expect(after?.resources?.cpu.percent).toBe(2)
     expect(after?.resources?.sampledAt).not.toBe(before?.resources?.sampledAt)
+  })
+
+  it("updates only the matching Relay when local instance IDs collide", () => {
+    const first = snapshotWithCpu(1).instances[0]
+    if (!first) throw new Error("Expected Relay fixture")
+    const second = {
+      ...first,
+      relayId: "relay-two",
+      relayName: "Relay two",
+      routeId: "relay-two-aaaaaaaa",
+    }
+    const snapshot = snapshotWithCpu(1)
+    snapshot.instances.push(second)
+
+    const updated = replaceRelaySnapshotInstance(snapshot, {
+      ...first,
+      name: "Renamed on Relay one",
+    })
+
+    expect(updated?.instances.map((item) => item.name)).toEqual([
+      "Renamed on Relay one",
+      "Test server",
+    ])
   })
 })

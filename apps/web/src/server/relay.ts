@@ -220,7 +220,10 @@ export const updateInstanceName = createServerFn({ method: "POST" })
     if (!instance) throw new Error("Instance not found")
 
     await saveInstanceDisplayName(relay.id, instance.id, data.name)
-    return relayInstanceSchema.parse({ ...instance, name: data.name })
+    return {
+      ...relayInstanceSchema.parse({ ...instance, name: data.name }),
+      relayId: relay.id,
+    }
   })
 
 export const getRelayTree = createServerFn({ method: "GET" })
@@ -364,7 +367,7 @@ export const performRelayAction = createServerFn({ method: "POST" })
     const [displayInstance] = await applyInstanceDisplayNames(relay.id, [
       instance,
     ])
-    return displayInstance
+    return { ...displayInstance, relayId: relay.id }
   })
 
 export const getRelayConsole = createServerFn({ method: "POST" })
@@ -706,7 +709,7 @@ function mergeRelaySnapshots(
       routeId:
         shortIdCounts.get(instance.shortId) === 1
           ? instance.shortId
-          : `${instance.relayId.slice(0, 8)}-${instance.shortId}`,
+          : `${instance.relayId}-${instance.shortId}`,
     })),
   }
 }

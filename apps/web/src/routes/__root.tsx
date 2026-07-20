@@ -1,3 +1,4 @@
+import * as React from "react"
 import {
   HeadContent,
   Scripts,
@@ -10,6 +11,8 @@ import appCss from "@workspace/ui/globals.css?url"
 
 import { AppErrorPage, AppNotFoundPage } from "@/components/app-error-page"
 import type { AppRouterContext } from "@/lib/query-client"
+
+const RootDocument = React.memo(RootDocumentContent, preserveDocumentShell)
 
 export const Route = createRootRouteWithContext<AppRouterContext>()({
   head: () => ({
@@ -65,7 +68,7 @@ export const Route = createRootRouteWithContext<AppRouterContext>()({
   shellComponent: RootDocument,
 })
 
-function RootDocument({ children }: { children: React.ReactNode }) {
+function RootDocumentContent({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="dark">
       <head>
@@ -77,4 +80,8 @@ function RootDocument({ children }: { children: React.ReactNode }) {
       </body>
     </html>
   )
+}
+
+function preserveDocumentShell() {
+  return !import.meta.env.SSR
 }

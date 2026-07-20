@@ -160,7 +160,12 @@ const RelayRow = React.memo(function RelayRow({
       aria-pressed={selected}
       onClick={() => onSelect(relay.id)}
       onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") onSelect(relay.id)
+        if (
+          event.target === event.currentTarget &&
+          (event.key === "Enter" || event.key === " ")
+        ) {
+          onSelect(relay.id)
+        }
       }}
     >
       <div className="flex items-start gap-3">
@@ -382,7 +387,7 @@ const RelayEditor = React.memo(function RelayEditor({
           <Field label="Host" htmlFor="relay-hostname">
             <div className="flex items-center rounded-md border border-input bg-transparent shadow-xs focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50">
               <span className="pl-3 font-mono text-[10px] text-muted-foreground">
-                https://
+                {relay?.useTls === false ? "http://" : "https://"}
               </span>
               <Input
                 id="relay-hostname"

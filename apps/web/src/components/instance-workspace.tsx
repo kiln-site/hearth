@@ -1,5 +1,6 @@
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useRouterState } from "@tanstack/react-router"
 import {
   Check,
   CircleStop,
@@ -94,14 +95,12 @@ export function useInstanceWorkspace() {
 export function InstanceWorkspace({
   children,
   instance,
-  title,
   fileTreePreferences,
   permissions,
   relayConnected,
 }: {
   children: React.ReactNode
   instance: InstanceWorkspaceInstance
-  title: "Console" | "Files" | "Info"
   fileTreePreferences: {
     collapsed: boolean
     width: number | null
@@ -123,14 +122,13 @@ export function InstanceWorkspace({
     <div className="flex min-h-0 flex-1 flex-col bg-background">
       <InstanceWorkspaceHeader
         instance={instance}
-        title={title}
         canControlPower={permissions.power}
         relayConnected={relayConnected}
       />
 
       <div
         data-slot="instance-workspace-surface"
-        className="relative mx-2 mt-2 flex min-h-0 flex-1 overflow-hidden border border-border/80 bg-card/30"
+        className="relative mx-2 mt-2 flex min-h-0 flex-1 overflow-hidden border border-border/80 bg-card/30 [contain:paint]"
       >
         <InstanceWorkspaceContext.Provider value={contextValue}>
           {children}
@@ -144,12 +142,10 @@ type ServerAction = "start" | "stop" | "restart" | "kill"
 
 function InstanceWorkspaceHeader({
   instance,
-  title,
   canControlPower,
   relayConnected,
 }: {
   instance: InstanceWorkspaceInstance
-  title: "Console" | "Files" | "Info"
   canControlPower: boolean
   relayConnected: boolean
 }) {
@@ -158,7 +154,7 @@ function InstanceWorkspaceHeader({
   return (
     <header className="shrink-0 border-b bg-background/90 backdrop-blur-xl">
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-3 px-3 py-3 sm:px-5 lg:min-h-20 lg:py-2 xl:grid-cols-[minmax(0,1fr)_39rem_auto] xl:gap-x-5">
-        <InstanceIdentity error={error} instance={instance} title={title} />
+        <InstanceIdentity error={error} instance={instance} />
         <LiveResourceMeters
           instanceId={instance.id}
           relayId={instance.relayId}
@@ -177,11 +173,9 @@ function InstanceWorkspaceHeader({
 function InstanceIdentity({
   error,
   instance,
-  title,
 }: {
   error: string | null
   instance: InstanceWorkspaceInstance
-  title: "Console" | "Files" | "Info"
 }) {
   const [idCopied, setIdCopied] = React.useState(false)
   const [addressCopied, setAddressCopied] = React.useState(false)
@@ -222,14 +216,14 @@ function InstanceIdentity({
       <div className="min-w-0 flex-1">
         <h1
           className="flex min-w-0 items-baseline gap-1.5 font-heading tracking-[-0.03em]"
-          title={`${instance.name} / ${title}`}
+          title={instance.name}
         >
           <span className="min-w-0 truncate text-lg font-semibold text-foreground sm:text-xl">
             {instance.name}
           </span>
           <span className="shrink-0 text-border">/</span>
           <span className="shrink-0 text-sm font-medium text-muted-foreground sm:text-base">
-            {title}
+            <InstanceRouteTitle />
           </span>
         </h1>
         <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] whitespace-nowrap text-muted-foreground sm:text-xs">
@@ -280,6 +274,18 @@ function InstanceIdentity({
       </div>
     </div>
   )
+}
+
+function InstanceRouteTitle() {
+  const title = useRouterState({
+    select: (state) => {
+      const pathname = state.location.pathname
+      if (/\/files(?:\/|$)/.test(pathname)) return "Files"
+      if (pathname.endsWith("/info")) return "Info"
+      return "Console"
+    },
+  })
+  return <>{title}</>
 }
 
 function ServerPowerControls({
@@ -617,8 +623,12 @@ interface ResourceHistoryStore {
   subscribe: (listener: () => void) => () => void
 }
 
-function createResourceHistoryStore(instanceId: string): ResourceHistoryStore {
+function createResourceHistoryStore(
+  instanceId: string,
+  relayId: string
+): ResourceHistoryStore {
   let currentInstanceId = instanceId
+  let currentRelayId = relayId
   let points: Array<ResourceHistoryPoint> = []
   const listeners = new Set<() => void>()
 
@@ -626,8 +636,12 @@ function createResourceHistoryStore(instanceId: string): ResourceHistoryStore {
     getSnapshot: () => points,
     record: (instance) => {
       let cleared = false
-      if (currentInstanceId !== instance.id) {
+      if (
+        currentInstanceId !== instance.id ||
+        currentRelayId !== instance.relayId
+      ) {
         currentInstanceId = instance.id
+        currentRelayId = instance.relayId
         points = []
         cleared = true
       }
@@ -676,7 +690,7 @@ function LiveResourceMeters({
   relayId: string
 }) {
   const [historyStore] = React.useState(() =>
-    createResourceHistoryStore(instanceId)
+    createResourceHistoryStore(instanceId, relayId)
   )
 
   return (
@@ -805,6 +819,7 @@ function InstanceUptimeMeter({
         ? {
             id: instance.id,
             observedState: instance.observedState,
+            relayId: instance.relayId,
             resources: null,
             startedAt: instance.startedAt,
           }

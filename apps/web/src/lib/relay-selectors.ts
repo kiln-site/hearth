@@ -41,7 +41,7 @@ export type InstanceWorkspaceInstance = Pick<
 export type InstanceRuntime = Pick<
   RelayInstance,
   "id" | "observedState" | "resources" | "startedAt"
->
+> & { relayId: string }
 
 export type InstanceSettingsInstance = Pick<
   RelayInstance,
@@ -56,7 +56,7 @@ export type InstanceSettingsInstance = Pick<
   | "service"
   | "shortId"
   | "version"
-> & { relayId: string }
+> & { relayId: string; relayStatus: "connected" | "unreachable" }
 
 export type RelayNodeSummary = Pick<RelayNode, "id" | "name">
 
@@ -125,6 +125,7 @@ export function selectInstanceRuntime(instanceId: string, relayId?: string) {
       ? {
           id: instance.id,
           observedState: instance.observedState,
+          relayId: instance.relayId,
           resources: instance.resources,
           startedAt: instance.startedAt,
         }
@@ -149,6 +150,7 @@ export function selectInstanceSettings(instanceId: string, relayId?: string) {
         javaVersion: instance.javaVersion,
         name: instance.name,
         relayId: instance.relayId,
+        relayStatus: instance.relayStatus,
         service: instance.service,
         shortId: instance.shortId,
         version: instance.version,

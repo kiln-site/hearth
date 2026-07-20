@@ -70,6 +70,7 @@ export const getAccessCapabilities = createServerFn({ method: "GET" }).handler(
         ? await listUserGrants(user.id, relay.id)
         : []
     return {
+      user,
       canManageAccess:
         isPlatformAdmin(user) ||
         (relay

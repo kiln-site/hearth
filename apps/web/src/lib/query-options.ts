@@ -60,13 +60,15 @@ export const queryKeys = {
 
 export function replaceRelaySnapshotInstance(
   snapshot: RelayFleetSnapshot | undefined,
-  updated: RelayInstance
+  updated: RelayInstance & { relayId: string }
 ): RelayFleetSnapshot | undefined {
   return snapshot
     ? {
         ...snapshot,
         instances: snapshot.instances.map((instance) =>
-          instance.id === updated.id ? { ...instance, ...updated } : instance
+          instance.id === updated.id && instance.relayId === updated.relayId
+            ? { ...instance, ...updated }
+            : instance
         ),
       }
     : snapshot

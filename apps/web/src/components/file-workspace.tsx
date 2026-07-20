@@ -65,7 +65,6 @@ import {
 import { redactSensitiveText } from "@/lib/redaction"
 import { fileLanguageForPath } from "@/lib/file-language"
 import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
-import { useRelayConnection } from "@/components/relay-connection-status"
 import {
   queryKeys,
   relayFileActivityQueryOptions,
@@ -2690,8 +2689,7 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
   initialTreeCollapsed,
   initialTreeWidth,
 }: FileWorkspaceSurfaceProps) {
-  const { status: relayStatus } = useRelayConnection()
-  const relayConnected = relayStatus === "connected"
+  const relayConnected = instance.relayStatus === "connected"
   const queryClient = useQueryClient()
   const [preferencesStore] = React.useState(createFileEditorPreferencesStore)
   const [mobileTreeOpen, setMobileTreeOpen] = React.useState(false)

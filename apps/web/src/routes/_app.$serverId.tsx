@@ -1,10 +1,8 @@
 import * as React from "react"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, useRouterState } from "@tanstack/react-router"
+import { createFileRoute } from "@tanstack/react-router"
 
-import type { InstanceTab } from "@/components/app-sidebar"
 import { InstanceRouteFrame } from "@/components/instance-route-frame"
-import { useRelayConnection } from "@/components/relay-connection-status"
 import type { AccessPermission } from "@/lib/permissions"
 import { roleHasPermission } from "@/lib/permissions"
 import {
@@ -19,13 +17,8 @@ export const Route = createFileRoute("/_app/$serverId")({
 })
 
 function InstanceRouteLayout() {
-  const { status: relayStatus } = useRelayConnection()
   const serverId = Route.useParams({
     select: (params) => params.serverId,
-  })
-  const activeTab = useRouterState({
-    select: (state): InstanceTab =>
-      instanceTabFromPathname(state.location.pathname),
   })
   const selectInstance = React.useMemo(
     () => selectInstanceWorkspaceInstance(serverId),
@@ -40,13 +33,6 @@ function InstanceRouteLayout() {
   )
   const { data: uiPreferences } = useSuspenseQuery(uiPreferencesQueryOptions())
   const instanceId = instance?.id
-
-  const title =
-    activeTab === "console"
-      ? "Console"
-      : activeTab === "files"
-        ? "Files"
-        : "Info"
 
   const fileTreePreferences = React.useMemo(
     () => ({
@@ -78,16 +64,9 @@ function InstanceRouteLayout() {
   return (
     <InstanceRouteFrame
       instance={instance}
-      title={title}
       fileTreePreferences={fileTreePreferences}
       permissions={permissions}
-      relayConnected={relayStatus === "connected"}
+      relayConnected={instance.relayStatus === "connected"}
     />
   )
-}
-
-function instanceTabFromPathname(pathname: string): InstanceTab {
-  if (/\/files(?:\/|$)/.test(pathname)) return "files"
-  if (pathname.endsWith("/info")) return "info"
-  return "console"
 }

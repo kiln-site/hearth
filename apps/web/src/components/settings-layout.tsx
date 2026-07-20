@@ -44,7 +44,9 @@ export function SettingsLayout() {
           ))}
         </nav>
       </header>
-      <Outlet />
+      <div data-slot="settings-content" className="[contain:paint]">
+        <Outlet />
+      </div>
     </main>
   )
 }

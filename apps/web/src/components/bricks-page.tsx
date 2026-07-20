@@ -29,11 +29,15 @@ import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
 
 import { GlobalPageToolbar } from "@/components/global-page-toolbar"
-import { useRelayConnection } from "@/components/relay-connection-status"
 import { ServerTypeIcon } from "@/components/server-type-icon"
 import { updateBrickVariable } from "@/lib/brick-variables"
 import type { PersistedRelay } from "@/lib/relay-registry"
-import { brickStudioQueryOptions, queryKeys } from "@/lib/query-options"
+import {
+  brickStudioQueryOptions,
+  queryKeys,
+  relayConnectionQueryOptions,
+} from "@/lib/query-options"
+import type { RelayConnection } from "@/lib/query-options"
 import {
   configureBrickNetworking,
   createBrickInstance,
@@ -87,8 +91,6 @@ export function BricksPage() {
 }
 
 function BrickStudio({ studio }: { studio: Studio }) {
-  const { status: relayStatus } = useRelayConnection()
-  const relayConnected = relayStatus === "connected"
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const createInstanceMutation = useMutation({
@@ -136,6 +138,18 @@ function BrickStudio({ studio }: { studio: Studio }) {
     address: studio.networking?.address ?? "",
     dnsPort: String(studio.networking?.dnsPort ?? 53),
     proxyPort: String(studio.networking?.proxyPort ?? 25_565),
+  })
+  const selectRelayConnected = React.useCallback(
+    (connection: RelayConnection) =>
+      connection.status === "connected" &&
+      connection.relays.some(
+        (relay) => relay.id === form.relayId && relay.status === "connected"
+      ),
+    [form.relayId]
+  )
+  const { data: relayConnected = false } = useQuery({
+    ...relayConnectionQueryOptions(queryClient),
+    select: selectRelayConnected,
   })
 
   function chooseBrick(brick: Brick) {

@@ -13,7 +13,7 @@ import {
   TerminalSquare,
   UserRoundCog,
 } from "lucide-react"
-import { useNavigate } from "@tanstack/react-router"
+import { useNavigate, useParams, useRouterState } from "@tanstack/react-router"
 
 import { Avatar, AvatarFallback } from "@workspace/ui/components/avatar"
 import {
@@ -50,6 +50,7 @@ import { ServerTypeIcon } from "@/components/server-type-icon"
 import { authClient } from "@/lib/auth-client"
 import type { AuthenticatedUser } from "@/lib/auth-session"
 import { disableDevelopmentBypass } from "@/server/auth"
+import { findRelayInstance } from "@/lib/relay-selectors"
 import type { SidebarInstance } from "@/lib/relay-selectors"
 
 export type InstanceTab = "console" | "files" | "info"
@@ -65,34 +66,26 @@ const instanceItems: Array<{
   { title: "Info", value: "info", icon: SlidersHorizontal },
 ]
 
+const selectedInstanceStorageKey = "kiln:selected-instance-id"
+
 interface AppSidebarProps {
   instances: Array<SidebarInstance>
-  instance?: SidebarInstance
   user: AuthenticatedUser
-  activeTab: InstanceTab | null
-  activeSection: GlobalSection
   canManageAccess: boolean
   isPlatformAdmin: boolean
   relayStatus: "connected" | "unconfigured" | "unreachable"
   relayCount: number
   relayName?: string
-  onInstanceChange: (id: string) => void
-  onTabChange: (tab: InstanceTab) => void
 }
 
 export const AppSidebar = React.memo(function AppSidebar({
   instances,
-  instance,
   user,
-  activeTab,
-  activeSection,
   canManageAccess,
   isPlatformAdmin,
   relayStatus,
   relayCount,
   relayName,
-  onInstanceChange,
-  onTabChange,
 }: AppSidebarProps) {
   return (
     <Sidebar collapsible="icon" className="border-sidebar-border/80">
@@ -115,29 +108,21 @@ export const AppSidebar = React.memo(function AppSidebar({
 
       <SidebarContent>
         <InfrastructureNavigation
-          activeSection={activeSection}
-          instanceCount={instances.length}
+          instances={instances}
           isPlatformAdmin={isPlatformAdmin}
           relayName={relayName}
           relayCount={relayCount}
           relayStatus={relayStatus}
         />
 
-        {instance ? <SidebarSeparator /> : null}
+        {instances.length > 0 ? <SidebarSeparator /> : null}
 
-        {instance ? (
-          <InstanceNavigation
-            activeTab={activeTab}
-            instance={instance}
-            instances={instances}
-            onInstanceChange={onInstanceChange}
-            onTabChange={onTabChange}
-          />
+        {instances.length > 0 ? (
+          <SelectedInstanceNavigation instances={instances} />
         ) : null}
       </SidebarContent>
 
       <AccountNavigation
-        activeSection={activeSection}
         canManageAccess={canManageAccess}
         isPlatformAdmin={isPlatformAdmin}
         user={user}
@@ -147,21 +132,32 @@ export const AppSidebar = React.memo(function AppSidebar({
 })
 
 function InfrastructureNavigation({
-  activeSection,
-  instanceCount,
+  instances,
   isPlatformAdmin,
   relayName,
   relayCount,
   relayStatus,
 }: {
-  activeSection: GlobalSection
-  instanceCount: number
+  instances: Array<SidebarInstance>
   isPlatformAdmin: boolean
   relayName?: string
   relayCount: number
   relayStatus: "connected" | "unconfigured" | "unreachable"
 }) {
   const navigate = useNavigate()
+  const activeSection = useRouterState({
+    select: (state) => globalSectionFromPathname(state.location.pathname),
+  })
+  const serverId = useParams({
+    strict: false,
+    select: (params) => params.serverId,
+  })
+  const selectedInstance = findRelayInstance(instances, serverId)
+  const displayedRelayStatus = activeSection
+    ? relayStatus
+    : relayStatus === "unreachable"
+      ? "unreachable"
+      : (selectedInstance?.relayStatus ?? relayStatus)
   return (
     <SidebarGroup className="pt-2">
       <SidebarGroupLabel className="text-[10px] tracking-[0.12em] uppercase">
@@ -193,7 +189,7 @@ function InfrastructureNavigation({
               <span>Bricks</span>
             </SidebarMenuButton>
             <SidebarMenuBadge className="text-sidebar-foreground/25">
-              {instanceCount}
+              {instances.length}
             </SidebarMenuBadge>
           </SidebarMenuItem>
           <SidebarMenuItem>
@@ -219,7 +215,7 @@ function InfrastructureNavigation({
               <Server />
               <span>Relays</span>
             </SidebarMenuButton>
-            <SidebarMenuBadge className={relayBadgeTone(relayStatus)}>
+            <SidebarMenuBadge className={relayBadgeTone(displayedRelayStatus)}>
               {relayCount}
             </SidebarMenuBadge>
           </SidebarMenuItem>
@@ -229,20 +225,86 @@ function InfrastructureNavigation({
   )
 }
 
+function SelectedInstanceNavigation({
+  instances,
+}: {
+  instances: Array<SidebarInstance>
+}) {
+  const serverId = useParams({
+    strict: false,
+    select: (params) => params.serverId,
+  })
+  const [selectedInstanceId, setSelectedInstanceId] = React.useState<
+    string | null
+  >(null)
+  const routeInstance = findRelayInstance(instances, serverId)
+  const rememberedInstance = findRelayInstance(instances, selectedInstanceId)
+  const instance = routeInstance ?? rememberedInstance ?? instances.at(0)
+
+  const rememberInstance = React.useCallback((instanceId: string) => {
+    setSelectedInstanceId(instanceId)
+    window.localStorage.setItem(selectedInstanceStorageKey, instanceId)
+  }, [])
+
+  React.useEffect(() => {
+    if (serverId) return
+    const storedInstance = findRelayInstance(
+      instances,
+      window.localStorage.getItem(selectedInstanceStorageKey)
+    )
+    if (storedInstance) setSelectedInstanceId(storedInstance.routeId)
+  }, [instances, serverId])
+
+  React.useEffect(() => {
+    if (routeInstance?.routeId) rememberInstance(routeInstance.routeId)
+  }, [rememberInstance, routeInstance?.routeId])
+
+  return instance ? (
+    <InstanceNavigation
+      instance={instance}
+      instances={instances}
+      onRememberInstance={rememberInstance}
+    />
+  ) : null
+}
+
 function InstanceNavigation({
-  activeTab,
   instance,
   instances,
-  onInstanceChange,
-  onTabChange,
+  onRememberInstance,
 }: {
-  activeTab: InstanceTab | null
   instance: SidebarInstance
   instances: Array<SidebarInstance>
-  onInstanceChange: (id: string) => void
-  onTabChange: (tab: InstanceTab) => void
+  onRememberInstance: (id: string) => void
 }) {
   const { isMobile } = useSidebar()
+  const navigate = useNavigate()
+
+  const navigateToTab = React.useCallback(
+    (tab: InstanceTab, nextServerId: string, replace = false) => {
+      if (tab === "files") {
+        return navigate({
+          to: "/$serverId/files/$",
+          params: { serverId: nextServerId, _splat: "" },
+          replace,
+        })
+      }
+      if (tab === "info") {
+        return navigate({
+          to: "/$serverId/info",
+          params: { serverId: nextServerId },
+          replace,
+        })
+      }
+      return navigate({
+        to: "/$serverId/console",
+        params: { serverId: nextServerId },
+        replace,
+      })
+    },
+    [navigate]
+  )
+
   return (
     <SidebarGroup>
       <SidebarGroupLabel className="text-[10px] tracking-[0.12em] uppercase">
@@ -292,7 +354,14 @@ function InstanceNavigation({
                     key={`${item.relayId}:${item.id}`}
                     className={`gap-2.5 border-l-2 py-2 ${statusBorderTone(item.observedState)}`}
                     aria-label={`${item.name}, ${item.implementation} ${item.version}, ${item.observedState}`}
-                    onSelect={() => onInstanceChange(item.routeId)}
+                    onSelect={() => {
+                      onRememberInstance(item.routeId)
+                      void navigateToTab(
+                        instanceTabFromPathname(window.location.pathname) ??
+                          "console",
+                        item.routeId
+                      )
+                    }}
                   >
                     <ServerTypeIcon
                       implementation={item.implementation}
@@ -318,38 +387,95 @@ function InstanceNavigation({
               </DropdownMenuContent>
             </DropdownMenu>
           </SidebarMenuItem>
-          {instanceItems.map((item) => (
-            <SidebarMenuItem key={item.value}>
-              <SidebarMenuButton
-                tooltip={item.title}
-                isActive={activeTab === item.value}
-                type="button"
-                className="data-active:bg-primary/10 data-active:text-primary"
-                onClick={() => onTabChange(item.value)}
-              >
-                <item.icon />
-                <span>{item.title}</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          ))}
+          <CanonicalInstanceRoute
+            instanceRouteId={instance.routeId}
+          />
+          <InstanceTabNavigation
+            instanceRouteId={instance.routeId}
+            navigateToTab={navigateToTab}
+          />
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
   )
 }
 
+function CanonicalInstanceRoute({
+  instanceRouteId,
+}: {
+  instanceRouteId: string
+}) {
+  const navigate = useNavigate()
+  const activeTab = useRouterState({
+    select: (state) => instanceTabFromPathname(state.location.pathname),
+  })
+  const serverId = useParams({
+    strict: false,
+    select: (params) => params.serverId,
+  })
+
+  // Router state can change through direct navigation and history, so this is
+  // URL normalization rather than a deferred user-event handler.
+  // oxlint-disable-next-line react-doctor/no-effect-event-handler
+  React.useEffect(() => {
+    if (!activeTab || instanceRouteId === serverId) return
+    if (activeTab === "files") {
+      void navigate({
+        to: "/$serverId/files/$",
+        params: { serverId: instanceRouteId, _splat: "" },
+        replace: true,
+      })
+      return
+    }
+    void navigate({
+      to: activeTab === "info" ? "/$serverId/info" : "/$serverId/console",
+      params: { serverId: instanceRouteId },
+      replace: true,
+    })
+  }, [activeTab, instanceRouteId, navigate, serverId])
+
+  return null
+}
+
+function InstanceTabNavigation({
+  instanceRouteId,
+  navigateToTab,
+}: {
+  instanceRouteId: string
+  navigateToTab: (tab: InstanceTab, serverId: string) => void
+}) {
+  const activeTab = useRouterState({
+    select: (state) => instanceTabFromPathname(state.location.pathname),
+  })
+  return instanceItems.map((item) => (
+    <SidebarMenuItem key={item.value}>
+      <SidebarMenuButton
+        tooltip={item.title}
+        isActive={activeTab === item.value}
+        type="button"
+        className="data-active:bg-primary/10 data-active:text-primary"
+        onClick={() => navigateToTab(item.value, instanceRouteId)}
+      >
+        <item.icon />
+        <span>{item.title}</span>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  ))
+}
+
 function AccountNavigation({
-  activeSection,
   canManageAccess,
   isPlatformAdmin,
   user,
 }: {
-  activeSection: GlobalSection
   canManageAccess: boolean
   isPlatformAdmin: boolean
   user: AuthenticatedUser
 }) {
   const navigate = useNavigate()
+  const activeSection = useRouterState({
+    select: (state) => globalSectionFromPathname(state.location.pathname),
+  })
   const { isMobile } = useSidebar()
   const [signingOut, setSigningOut] = React.useState(false)
   return (
@@ -486,4 +612,21 @@ function relayBadgeTone(
   if (status === "connected") return "text-emerald-400"
   if (status === "unreachable") return "text-amber-400"
   return "text-sidebar-foreground/35"
+}
+
+function globalSectionFromPathname(pathname: string): GlobalSection {
+  if (pathname === "/bricks") return "bricks"
+  if (pathname === "/access") return "access"
+  if (pathname === "/security") return "security"
+  if (pathname === "/settings" || pathname.startsWith("/settings/")) {
+    return "settings"
+  }
+  return null
+}
+
+function instanceTabFromPathname(pathname: string): InstanceTab | null {
+  if (globalSectionFromPathname(pathname)) return null
+  if (/\/files(?:\/|$)/.test(pathname)) return "files"
+  if (pathname.endsWith("/info")) return "info"
+  return "console"
 }
