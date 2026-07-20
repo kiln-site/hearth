@@ -15,6 +15,11 @@ export function getRouter() {
     defaultPreload: "intent",
     defaultPreloadStaleTime: 0,
     defaultStructuralSharing: true,
+    // The root route already owns Hearth's error and not-found UI. Keeping the
+    // router-wide boundary as well makes every completed navigation reset a
+    // component whose visual bounds are the entire document, which causes the
+    // whole app shell to be marked and painted as changed.
+    disableGlobalCatchBoundary: true,
   })
 
   setupRouterSsrQueryIntegration({ queryClient, router })
