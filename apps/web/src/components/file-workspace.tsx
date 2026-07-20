@@ -2847,6 +2847,13 @@ function FileViewer({
     ...relayFileActivityQueryOptions(instance.id),
     enabled: isHome,
   })
+  const selectedPinQuery = useQuery({
+    ...relayFileActivityQueryOptions(instance.id),
+    enabled: !isHome,
+    select: (nextActivity) =>
+      nextActivity.files.find((entry) => entry.path === selectedPath)?.pinned ??
+      false,
+  })
   const selectedPathIsReadable = Boolean(
     tree?.paths.includes(selectedPath) && !selectedPath.endsWith("/")
   )
@@ -2882,7 +2889,9 @@ function FileViewer({
   const pinMutationTargetsSelectedPath =
     pinFileMutation.variables?.data.path === selectedPath
   const loadingFile =
-    fileTreeLoading || (selectedPathIsReadable && fileQuery.isFetching)
+    fileTreeLoading ||
+    (!isHome && selectedPinQuery.isPending) ||
+    (selectedPathIsReadable && fileQuery.isFetching)
   const routeError =
     tree &&
     selectedPath &&
@@ -2907,7 +2916,6 @@ function FileViewer({
       availablePaths.has(entry.path)
     )
   }, [activityQuery.data, tree])
-  const selectedActivity = activity.find((entry) => entry.path === selectedPath)
   const activitySyncKey = React.useRef<string | null>(null)
 
   React.useEffect(() => {
@@ -2917,6 +2925,9 @@ function FileViewer({
     activitySyncKey.current = nextKey
     void queryClient.invalidateQueries({
       queryKey: queryKeys.relay.fileActivity(instance.id),
+      // Avoid refetching the active pin-only observer. The disabled home
+      // observer refetches this stale query when Files Home becomes active.
+      refetchType: "none",
     })
   }, [fileQuery.data, instance.id, queryClient, selectedPath])
 
@@ -2993,7 +3004,7 @@ function FileViewer({
         key={`${file.instanceId}:${file.path}`}
         canShare={canShare}
         canWrite={canWrite}
-        pinned={selectedActivity?.pinned ?? false}
+        pinned={selectedPinQuery.data ?? false}
         pinning={pinMutationTargetsSelectedPath && pinFileMutation.isPending}
         file={file}
         displayPath={selectedPath}
