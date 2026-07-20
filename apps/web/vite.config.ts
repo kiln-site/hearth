@@ -9,6 +9,10 @@ import viteReact from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
 
 const repositoryRoot = resolve(import.meta.dirname, "../..")
+const reactScanProductionShim = resolve(
+  import.meta.dirname,
+  "node_modules/react-scan/dist/rsc-shim.mjs"
+)
 
 const config = defineConfig(({ command }) => {
   const buildCommit = command === "serve" ? "" : resolveBuildCommit()
@@ -63,7 +67,14 @@ const config = defineConfig(({ command }) => {
       "import.meta.env.VITE_KILN_BUILD_SHA": JSON.stringify(buildCommit),
     },
     envDir: "../..",
-    resolve: { tsconfigPaths: true },
+    resolve: {
+      // Keep React Scan's instrumentation and toolbar out of production bundles.
+      alias:
+        command === "serve"
+          ? []
+          : [{ find: /^react-scan$/, replacement: reactScanProductionShim }],
+      tsconfigPaths: true,
+    },
     ssr: {
       external: ["better-sqlite3", "pg", "tedious"],
       ...(command === "serve" ? {} : { noExternal: true }),

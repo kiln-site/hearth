@@ -59,10 +59,11 @@
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^6",
     "auth": "^1.6.23",
+    "react-scan": "^0.5.7",
     "tailwindcss": "^4",
     "typescript": "^6",
     "vite": "catalog:",
-    "vitest": "catalog:",
-    "vite-plus": "catalog:"
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
   }
 }
