@@ -587,9 +587,11 @@ function ConsoleSelectionControl({
     uiStore.getSelectedSnapshot,
     uiStore.getSelectedSnapshot
   )
-  const [copied, setCopied] = React.useState(false)
+  const [copiedSelection, setCopiedSelection] =
+    React.useState<Set<string> | null>(null)
   const resetTimer = React.useRef<number | null>(null)
   const selectedCount = selected.size
+  const copied = copiedSelection === selected
 
   React.useEffect(() => {
     if (!active || selectedCount === 0) return
@@ -609,9 +611,9 @@ function ConsoleSelectionControl({
 
   async function handleCopy() {
     await copyToClipboard(uiStore.getSelectedText())
-    setCopied(true)
+    setCopiedSelection(selected)
     if (resetTimer.current) window.clearTimeout(resetTimer.current)
-    resetTimer.current = window.setTimeout(() => setCopied(false), 1800)
+    resetTimer.current = window.setTimeout(() => setCopiedSelection(null), 1800)
   }
 
   return (
@@ -1740,8 +1742,11 @@ function usePersistedCommand(
   React.useEffect(() => {
     const storedValue = window.sessionStorage.getItem(storageKey) ?? ""
     if (inputRef.current) inputRef.current.value = storedValue
-    syncSubmitAvailability(storedValue)
-  }, [inputRef, storageKey, syncSubmitAvailability])
+  }, [inputRef, storageKey])
+
+  React.useEffect(() => {
+    syncSubmitAvailability(inputRef.current?.value ?? "")
+  }, [inputRef, syncSubmitAvailability])
 
   const setValue = React.useCallback(
     (next: string) => {

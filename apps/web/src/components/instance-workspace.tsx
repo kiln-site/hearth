@@ -483,7 +483,18 @@ function InstancePowerControls({
     [instance.id, mutateRelayAction, onError]
   )
 
-  if (!observedState) return null
+  if (!observedState) {
+    if (!canControlPower) return null
+    return (
+      <div
+        className="col-start-2 row-start-1 flex items-center justify-end gap-1.5 xl:col-start-3"
+        aria-label="Loading server power controls"
+      >
+        <span className="hidden h-9 w-[4.75rem] animate-pulse bg-muted/35 md:block" />
+        <span className="size-10 animate-pulse bg-muted/35" />
+      </div>
+    )
+  }
   return (
     <ServerPowerControls
       action={action}
@@ -591,17 +602,23 @@ function createResourceHistoryStore(instanceId: string): ResourceHistoryStore {
   return {
     getSnapshot: () => points,
     record: (instance) => {
+      let cleared = false
       if (currentInstanceId !== instance.id) {
         currentInstanceId = instance.id
         points = []
+        cleared = true
       }
       const resources = instance.resources
-      if (!resources) return
+      if (!resources) {
+        if (cleared) for (const listener of listeners) listener()
+        return
+      }
       const timestamp = Date.parse(resources.sampledAt)
       if (
         !Number.isFinite(timestamp) ||
         points.at(-1)?.timestamp === timestamp
       ) {
+        if (cleared) for (const listener of listeners) listener()
         return
       }
       const point: ResourceHistoryPoint = {

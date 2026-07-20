@@ -91,12 +91,25 @@ export function AppSettingsPage() {
       ]),
   })
   const [pending, setPending] = React.useState<string | null>(null)
+  const pendingRef = React.useRef<string | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [notice, setNotice] = React.useState<string | null>(null)
-  async function act(id: string, action: "check" | "select" | "remove") {
-    setPending(`${action}:${id}`)
+  const beginOperation = React.useCallback((operation: string) => {
+    if (pendingRef.current !== null) return false
+    pendingRef.current = operation
+    setPending(operation)
     setError(null)
     setNotice(null)
+    return true
+  }, [])
+  const completeOperation = React.useCallback((operation: string) => {
+    if (pendingRef.current !== operation) return
+    pendingRef.current = null
+    setPending(null)
+  }, [])
+  async function act(id: string, action: "check" | "select" | "remove") {
+    const operation = `${action}:${id}`
+    if (!beginOperation(operation)) return
     try {
       if (action === "check")
         await checkRelayMutation.mutateAsync({ data: { id } })
@@ -109,7 +122,7 @@ export function AppSettingsPage() {
     } catch (cause) {
       setError(messageFrom(cause, `Could not ${action} Relay`))
     } finally {
-      setPending(null)
+      completeOperation(operation)
     }
   }
 
@@ -179,7 +192,13 @@ export function AppSettingsPage() {
 
         <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_21rem]">
           <RelayList relays={relays} pending={pending} onAction={act} />
-          <AddRelaySection onError={setError} onNotice={setNotice} />
+          <AddRelaySection
+            pending={pending}
+            onOperationStart={beginOperation}
+            onOperationEnd={completeOperation}
+            onError={setError}
+            onNotice={setNotice}
+          />
         </div>
       </div>
     </main>
@@ -297,9 +316,15 @@ function RelayList({
 }
 
 function AddRelaySection({
+  pending,
+  onOperationStart,
+  onOperationEnd,
   onError,
   onNotice,
 }: {
+  pending: string | null
+  onOperationStart: (operation: string) => boolean
+  onOperationEnd: (operation: string) => void
   onError: (error: string | null) => void
   onNotice: (notice: string | null) => void
 }) {
@@ -328,8 +353,8 @@ function AddRelaySection({
 
   async function createRelay(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    onError(null)
-    onNotice(null)
+    const operation = "add"
+    if (!onOperationStart(operation)) return
     try {
       const created = await addRelayMutation.mutateAsync({
         data: {
@@ -354,6 +379,8 @@ function AddRelaySection({
       })
     } catch (cause) {
       onError(messageFrom(cause, "Could not save Relay"))
+    } finally {
+      onOperationEnd(operation)
     }
   }
 
@@ -494,8 +521,8 @@ function AddRelaySection({
           Behind a reverse proxy, use HTTPS on public port 443. The proxy
           forwards traffic to Relay on its internal port, normally 4100.
         </p>
-        <Button className="w-full" disabled={addRelayMutation.isPending}>
-          {addRelayMutation.isPending ? (
+        <Button className="w-full" disabled={pending !== null}>
+          {pending === "add" ? (
             <LoaderCircle className="animate-spin" />
           ) : (
             <Check />

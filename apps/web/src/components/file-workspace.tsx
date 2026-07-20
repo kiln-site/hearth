@@ -2842,13 +2842,20 @@ function FileViewer({
     selectionStore.getSnapshot,
     selectionStore.getSnapshot
   )
-  const activityQuery = useQuery(relayFileActivityQueryOptions(instance.id))
+  const isHome = !selectedPath
+  const activityQuery = useQuery({
+    ...relayFileActivityQueryOptions(instance.id),
+    enabled: isHome,
+  })
   const selectedPathIsReadable = Boolean(
     tree?.paths.includes(selectedPath) && !selectedPath.endsWith("/")
   )
   const fileQuery = useQuery({
     ...relayFileQueryOptions(instance.id, selectedPath),
     enabled: selectedPathIsReadable,
+    refetchOnMount: "always",
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
   })
   const file = fileQuery.data?.path === selectedPath ? fileQuery.data : null
   const saveFileMutation = useMutation({
@@ -2875,7 +2882,7 @@ function FileViewer({
   const pinMutationTargetsSelectedPath =
     pinFileMutation.variables?.data.path === selectedPath
   const loadingFile =
-    fileTreeLoading || (selectedPathIsReadable && fileQuery.isPending)
+    fileTreeLoading || (selectedPathIsReadable && fileQuery.isFetching)
   const routeError =
     tree &&
     selectedPath &&
@@ -2901,7 +2908,6 @@ function FileViewer({
     )
   }, [activityQuery.data, tree])
   const selectedActivity = activity.find((entry) => entry.path === selectedPath)
-  const isHome = !selectedPath
   const activitySyncKey = React.useRef<string | null>(null)
 
   React.useEffect(() => {
@@ -2911,7 +2917,6 @@ function FileViewer({
     activitySyncKey.current = nextKey
     void queryClient.invalidateQueries({
       queryKey: queryKeys.relay.fileActivity(instance.id),
-      refetchType: "none",
     })
   }, [fileQuery.data, instance.id, queryClient, selectedPath])
 
@@ -2970,7 +2975,7 @@ function FileViewer({
     return (
       <FilesHome
         activity={activity}
-        loading={fileTreeLoading || activityQuery.isPending}
+        loading={fileTreeLoading || activityQuery.isFetching}
         error={
           fileTreeError ??
           queryErrorMessage(activityQuery.error, "Could not load recent files")
@@ -2982,10 +2987,10 @@ function FileViewer({
     )
   }
 
-  if (file && !selectedFileUnavailable) {
+  if (file && !selectedFileUnavailable && !loadingFile) {
     return (
       <StableEditor
-        key={`${file.instanceId}:${file.path}:${file.modifiedAt}`}
+        key={`${file.instanceId}:${file.path}`}
         canShare={canShare}
         canWrite={canWrite}
         pinned={selectedActivity?.pinned ?? false}

@@ -237,7 +237,8 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
           <InviteAccessSection
             assignableRoles={assignableRoles}
             instances={instances}
-            pending={pending !== null}
+            disabled={pending !== null}
+            pending={pending === "invite"}
             relayName={overview.relay.name}
             onInvite={invite}
           />
@@ -250,12 +251,14 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
 function InviteAccessSection({
   assignableRoles,
   instances,
+  disabled,
   pending,
   relayName,
   onInvite,
 }: {
   assignableRoles: ReadonlyArray<AccessRole>
   instances: Array<RelayInstance>
+  disabled: boolean
   pending: boolean
   relayName: string
   onInvite: (form: InvitationForm) => Promise<boolean>
@@ -333,7 +336,7 @@ function InviteAccessSection({
             {accessRoleDetails[form.role].description}
           </p>
         </Field>
-        <Button className="h-10 w-full" disabled={pending}>
+        <Button className="h-10 w-full" disabled={disabled}>
           {pending ? <LoaderCircle className="animate-spin" /> : <MailPlus />}
           Send invitation
         </Button>
