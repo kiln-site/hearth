@@ -4,6 +4,7 @@ import { createFileRoute } from "@tanstack/react-router"
 
 import { useInstanceWorkspace } from "@/components/instance-workspace"
 import { SettingsWorkspace } from "@/components/settings-workspace"
+import { useRelayConnection } from "@/components/relay-connection-status"
 import { pageTitle } from "@/lib/page-title"
 import { relaySnapshotQueryOptions } from "@/lib/query-options"
 import { selectInstanceSettings } from "@/lib/relay-selectors"
@@ -14,6 +15,7 @@ export const Route = createFileRoute("/_app/$serverId/info")({
 })
 
 function InfoRoute() {
+  const { status: relayStatus } = useRelayConnection()
   const { instance: workspaceInstance, permissions } = useInstanceWorkspace()
   const selectInfo = React.useMemo(
     () => selectInstanceSettings(workspaceInstance.id),
@@ -30,6 +32,7 @@ function InfoRoute() {
       instance={data.instance}
       node={data.node}
       canRename={permissions.settings}
+      relayConnected={relayStatus === "connected"}
     />
   )
 }

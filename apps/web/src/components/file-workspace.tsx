@@ -65,6 +65,7 @@ import {
 import { redactSensitiveText } from "@/lib/redaction"
 import { fileLanguageForPath } from "@/lib/file-language"
 import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
+import { useRelayConnection } from "@/components/relay-connection-status"
 import {
   queryKeys,
   relayFileActivityQueryOptions,
@@ -1646,6 +1647,7 @@ function FileTreePanel({
   tree,
   selectionStore,
   refreshing,
+  refreshDisabled,
   mobileOpen,
   onPathChange,
   onRefresh,
@@ -1661,6 +1663,7 @@ function FileTreePanel({
   tree: RelayFileTree
   selectionStore: FileSelectionStore
   refreshing: boolean
+  refreshDisabled: boolean
   mobileOpen: boolean
   onPathChange: (path: string) => void
   onRefresh: () => void
@@ -2041,6 +2044,7 @@ function FileTreePanel({
                   variant="ghost"
                   size="icon-sm"
                   aria-label="Refresh files"
+                  disabled={refreshDisabled}
                   onClick={onRefresh}
                 >
                   <RefreshCw className="size-[18px]" />
@@ -2048,7 +2052,11 @@ function FileTreePanel({
               )}
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>
-              {refreshing ? "Refreshing Files" : "Refresh Files"}
+              {refreshing
+                ? "Refreshing Files"
+                : refreshDisabled
+                  ? "Relay disconnected"
+                  : "Refresh Files"}
             </TooltipContent>
           </Tooltip>
           <Tooltip>
@@ -2680,6 +2688,8 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
   initialTreeCollapsed,
   initialTreeWidth,
 }: FileWorkspaceSurfaceProps) {
+  const { status: relayStatus } = useRelayConnection()
+  const relayConnected = relayStatus === "connected"
   const queryClient = useQueryClient()
   const [preferencesStore] = React.useState(createFileEditorPreferencesStore)
   const [mobileTreeOpen, setMobileTreeOpen] = React.useState(false)
@@ -2765,6 +2775,7 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
           tree={tree}
           selectionStore={selectionStore}
           refreshing={refreshTreeMutation.isPending}
+          refreshDisabled={!relayConnected}
           mobileOpen={mobileTreeOpen}
           onPathChange={onPathChange}
           onRefresh={handleRefresh}
@@ -2786,8 +2797,8 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
       )}
       <div className="relative flex min-h-0 min-w-0 flex-1 pb-11 md:pb-0">
         <FileViewer
-          canShare={canShare}
-          canWrite={canWrite}
+          canShare={canShare && relayConnected}
+          canWrite={canWrite && relayConnected}
           fileTreeError={
             queryErrorMessage(treeQuery.error, "Could not load files") ??
             queryErrorMessage(
@@ -2803,6 +2814,7 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
           selectionStore={selectionStore}
           tree={tree}
           treeCollapsed={displayedTreeCollapsed}
+          relayConnected={relayConnected}
         />
       </div>
     </div>
@@ -2821,6 +2833,7 @@ interface FileViewerProps {
   selectionStore: FileSelectionStore
   tree: RelayFileTree | null
   treeCollapsed: boolean
+  relayConnected: boolean
 }
 
 function FileViewer({
@@ -2835,6 +2848,7 @@ function FileViewer({
   selectionStore,
   tree,
   treeCollapsed,
+  relayConnected,
 }: FileViewerProps) {
   const queryClient = useQueryClient()
   const selectedPath = React.useSyncExternalStore(
@@ -2859,7 +2873,7 @@ function FileViewer({
   )
   const fileQuery = useQuery({
     ...relayFileQueryOptions(instance.id, selectedPath),
-    enabled: selectedPathIsReadable,
+    enabled: selectedPathIsReadable && relayConnected,
     refetchOnMount: "always",
     refetchOnReconnect: false,
     refetchOnWindowFocus: false,
@@ -2890,7 +2904,7 @@ function FileViewer({
     pinFileMutation.variables?.data.path === selectedPath
   const loadingFile =
     fileTreeLoading ||
-    (!isHome && selectedPinQuery.isPending) ||
+    (!isHome && selectedPinQuery.isPending && relayConnected) ||
     (selectedPathIsReadable && fileQuery.isFetching)
   const routeError =
     tree &&
@@ -2901,6 +2915,11 @@ function FileViewer({
   const error =
     routeError ??
     fileTreeError ??
+    (selectedPath && !relayConnected
+      ? file
+        ? "Relay disconnected. Showing a cached read-only copy."
+        : "Unable to connect to Relay. This file is not cached."
+      : null) ??
     queryErrorMessage(fileQuery.error, "Could not read file") ??
     queryErrorMessage(
       pinMutationTargetsSelectedPath ? pinFileMutation.error : null,
@@ -2908,7 +2927,7 @@ function FileViewer({
     )
   const selectedFileUnavailable =
     Boolean(tree && selectedPath && !selectedPathIsReadable) ||
-    (selectedPathIsReadable && fileQuery.isError)
+    (selectedPathIsReadable && !file && (!relayConnected || fileQuery.isError))
   const activity = React.useMemo(() => {
     if (!tree || !activityQuery.data) return []
     const availablePaths = new Set(tree.paths)

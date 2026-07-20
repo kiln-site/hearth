@@ -129,7 +129,7 @@ const relayWarningAt = new Map<string, number>()
 export const getRelaySnapshot = createServerFn({ method: "POST" }).handler(
   async () => {
     const { relay, user } = await activeRelayAccess()
-    return authorizedRelaySnapshot(relay, user)
+    return authorizedRelaySnapshot(relay, user, true)
   }
 )
 
@@ -211,6 +211,7 @@ export const getRelayTree = createServerFn({ method: "GET" })
       cachedRelayJsonEffect({
         bypass: data.fresh,
         decode: relayFileTreeSchema.parse,
+        fallbackOnError: !data.fresh,
         path: `/v1/instances/${encodeURIComponent(data.instanceId)}/tree`,
         policy: relayCachePolicy.tree(relay.id, data.instanceId),
         relay,
@@ -539,12 +540,14 @@ async function relayRequestRaw(
 
 async function authorizedRelaySnapshot(
   relay: RelayEndpoint,
-  user: AuthenticatedUser
+  user: AuthenticatedUser,
+  fallbackOnError = false
 ) {
   const snapshot = await runAppEffect(
     "relay.snapshot",
     cachedRelayJsonEffect({
       decode: relaySnapshotSchema.parse,
+      fallbackOnError,
       path: "/v1/snapshot",
       policy: relayCachePolicy.snapshot(relay.id),
       relay,

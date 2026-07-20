@@ -25,7 +25,7 @@ export const AppFrame = React.memo(function AppFrame({
       <SidebarInset className="h-dvh min-w-0 overflow-hidden">
         <div
           data-slot="app-content"
-          className="flex min-h-0 flex-1 flex-col overflow-hidden"
+          className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
         >
           {children}
         </div>

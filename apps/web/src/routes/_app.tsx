@@ -19,6 +19,10 @@ import { Button } from "@workspace/ui/components/button"
 import { AppFrame } from "@/components/app-frame"
 import { AppSidebar } from "@/components/app-sidebar"
 import type { GlobalSection, InstanceTab } from "@/components/app-sidebar"
+import {
+  RelayConnectionNotice,
+  RelayConnectionProvider,
+} from "@/components/relay-connection-status"
 import { getAuthState } from "@/server/auth"
 import {
   accessCapabilitiesQueryOptions,
@@ -78,11 +82,12 @@ function AppLayout() {
     accessCapabilitiesQueryOptions()
   )
   const { data: uiPreferences } = useSuspenseQuery(uiPreferencesQueryOptions())
-  const { data: sidebarInstances } = useQuery({
+  const snapshotQuery = useQuery({
     ...relaySnapshotQueryOptions(),
-    enabled: connectionQuery.data.status === "connected",
+    enabled: connectionQuery.data.status !== "unconfigured",
     select: selectSidebarInstances,
   })
+  const sidebarInstances = snapshotQuery.data
   const connection = connectionQuery.data
   const user = Route.useRouteContext({
     select: (context) => context.user,
@@ -173,8 +178,8 @@ function AppLayout() {
     },
     [instance, navigateToInstanceTab]
   )
-  const handleRetry = React.useCallback(() => {
-    void connectionQuery.refetch()
+  const handleRetry = React.useCallback(async () => {
+    await connectionQuery.refetch()
   }, [connectionQuery.refetch])
   const handleConfigure = React.useCallback(() => {
     void navigate({ to: "/settings" })
@@ -183,8 +188,7 @@ function AppLayout() {
     () => ({
       activeSection,
       activeTab,
-      canManageAccess:
-        connection.status === "connected" && capabilities.canManageAccess,
+      canManageAccess: capabilities.canManageAccess,
       instance,
       instances,
       isPlatformAdmin: capabilities.isPlatformAdmin,
@@ -210,7 +214,20 @@ function AppLayout() {
   )
   const content = React.useMemo(() => {
     if (activeSection) return <Outlet />
-    if (connection.status !== "connected") {
+    if (connection.status === "unconfigured") {
+      return (
+        <RelayUnavailableState
+          connection={connection}
+          canConfigure={capabilities.isPlatformAdmin}
+          onRetry={handleRetry}
+          onConfigure={handleConfigure}
+        />
+      )
+    }
+    if (!sidebarInstances && snapshotQuery.isPending) {
+      return <div className="min-h-0 flex-1 bg-background" />
+    }
+    if (!sidebarInstances && connection.status === "unreachable") {
       return (
         <RelayUnavailableState
           connection={connection}
@@ -234,20 +251,32 @@ function AppLayout() {
     handleRetry,
     instance,
     sidebarInstances,
+    snapshotQuery.isPending,
   ])
   const navigationDismiss = React.useMemo(
     () => <MobileSidebarNavigationDismiss />,
     []
   )
 
+  const relayConnectionValue = React.useMemo(
+    () => ({
+      retry: handleRetry,
+      status: connection.status,
+    }),
+    [connection.status, handleRetry]
+  )
+
   return (
-    <AppFrame
-      navigationDismiss={navigationDismiss}
-      sidebarDefaultOpen={uiPreferences.sidebarOpen}
-      sidebarProps={sidebarProps}
-    >
-      {content}
-    </AppFrame>
+    <RelayConnectionProvider value={relayConnectionValue}>
+      <AppFrame
+        navigationDismiss={navigationDismiss}
+        sidebarDefaultOpen={uiPreferences.sidebarOpen}
+        sidebarProps={sidebarProps}
+      >
+        <RelayConnectionNotice />
+        {content}
+      </AppFrame>
+    </RelayConnectionProvider>
   )
 }
 
@@ -354,7 +383,7 @@ function RelayUnavailableState({
           </h1>
           <p className="mt-3 max-w-md text-sm leading-6 text-muted-foreground">
             {configured
-              ? "The dashboard is available, but live server controls are paused until the Relay can be reached. Your Relay and game servers continue independently."
+              ? "No last-known server data is available in this browser or Hearth's cache. Live navigation will return when the Relay can be reached."
               : "Hearth is ready. Add a Relay endpoint to discover and operate the game servers on another node."}
           </p>
           <div className="mt-7 flex flex-col gap-2 sm:flex-row">

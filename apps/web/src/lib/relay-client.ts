@@ -20,21 +20,25 @@ export interface RelayEndpoint {
 
 export const relayCachePolicy = {
   brickCatalog: (relayId: string): CachePolicy => ({
+    fallbackTtlMs: 7 * 24 * 60 * 60_000,
     key: `relay:${relayId}:bricks`,
     name: "Relay Brick catalog",
     ttlMs: 5 * 60_000,
   }),
   networking: (relayId: string): CachePolicy => ({
+    fallbackTtlMs: 7 * 24 * 60 * 60_000,
     key: `relay:${relayId}:networking`,
     name: "Relay networking",
     ttlMs: 1_000,
   }),
   snapshot: (relayId: string): CachePolicy => ({
+    fallbackTtlMs: 7 * 24 * 60 * 60_000,
     key: `relay:${relayId}:snapshot`,
     name: "Relay snapshot",
     ttlMs: 1_000,
   }),
   tree: (relayId: string, instanceId: string): CachePolicy => ({
+    fallbackTtlMs: 24 * 60 * 60_000,
     key: `relay:${relayId}:instance:${instanceId}:tree`,
     name: "Relay file tree",
     ttlMs: 5_000,
@@ -133,6 +137,7 @@ export const cachedRelayJsonEffect = Effect.fn("relay.cachedJson")(function* <
 >(options: {
   bypass?: boolean
   decode: (input: unknown) => TResult
+  fallbackOnError?: boolean
   path: string
   policy: CachePolicy
   relay: RelayEndpoint
@@ -140,6 +145,7 @@ export const cachedRelayJsonEffect = Effect.fn("relay.cachedJson")(function* <
   return yield* readThroughCache({
     bypass: options.bypass,
     decode: options.decode,
+    fallbackOnError: options.fallbackOnError,
     load: relayJsonEffect(options.relay, options.path, options.decode),
     policy: options.policy,
   })

@@ -75,6 +75,7 @@ interface InstanceWorkspaceContextValue {
   }
   instance: InstanceWorkspaceInstance
   permissions: InstanceWorkspacePermissions
+  relayConnected: boolean
 }
 
 const InstanceWorkspaceContext =
@@ -96,6 +97,7 @@ export function InstanceWorkspace({
   title,
   fileTreePreferences,
   permissions,
+  relayConnected,
 }: {
   children: React.ReactNode
   instance: InstanceWorkspaceInstance
@@ -105,14 +107,16 @@ export function InstanceWorkspace({
     width: number | null
   }
   permissions: InstanceWorkspacePermissions
+  relayConnected: boolean
 }) {
   const contextValue = React.useMemo(
     () => ({
       fileTreePreferences,
       instance,
       permissions,
+      relayConnected,
     }),
-    [fileTreePreferences, instance, permissions]
+    [fileTreePreferences, instance, permissions, relayConnected]
   )
 
   return (
@@ -121,6 +125,7 @@ export function InstanceWorkspace({
         instance={instance}
         title={title}
         canControlPower={permissions.power}
+        relayConnected={relayConnected}
       />
 
       <div
@@ -141,10 +146,12 @@ function InstanceWorkspaceHeader({
   instance,
   title,
   canControlPower,
+  relayConnected,
 }: {
   instance: InstanceWorkspaceInstance
   title: "Console" | "Files" | "Info"
   canControlPower: boolean
+  relayConnected: boolean
 }) {
   const [error, setError] = React.useState<string | null>(null)
 
@@ -157,6 +164,7 @@ function InstanceWorkspaceHeader({
           canControlPower={canControlPower}
           instance={instance}
           onError={setError}
+          relayConnected={relayConnected}
         />
       </div>
     </header>
@@ -276,12 +284,14 @@ function ServerPowerControls({
   canControlPower,
   instance,
   onAction,
+  relayConnected,
 }: {
   action: ServerAction | null
   canControlPower: boolean
   instance: Pick<InstanceWorkspaceInstance, "id" | "name"> &
     Pick<InstanceRuntime, "observedState">
   onAction: (action: ServerAction) => Promise<void>
+  relayConnected: boolean
 }) {
   const [serverActionsOpen, setServerActionsOpen] = React.useState(false)
   const [confirmKill, setConfirmKill] = React.useState(false)
@@ -291,8 +301,10 @@ function ServerPowerControls({
   const isStarting = instance.observedState === "starting"
   const isStopping = instance.observedState === "stopping"
   const powerIsOn = isRunning || isStarting
-  const startUnavailable = powerIsOn || isStopping || action !== null
-  const stopUnavailable = !powerIsOn || isStopping || action !== null
+  const startUnavailable =
+    !relayConnected || powerIsOn || isStopping || action !== null
+  const stopUnavailable =
+    !relayConnected || !powerIsOn || isStopping || action !== null
 
   function runAction(nextAction: ServerAction) {
     setServerActionsOpen(false)
@@ -310,7 +322,7 @@ function ServerPowerControls({
             ? "hidden h-9 gap-1.5 !border-red-500/65 !bg-red-600 px-3 text-xs !text-white shadow-none hover:!border-red-400 hover:!bg-red-500 disabled:!border-red-500/35 disabled:!bg-red-600/45 disabled:!text-white/70 md:inline-flex"
             : "hidden h-9 gap-1.5 !border-blue-500/65 !bg-blue-600 px-3 text-xs !text-white shadow-none hover:!border-blue-400 hover:!bg-blue-500 md:inline-flex"
         }
-        disabled={action !== null || isStopping}
+        disabled={!relayConnected || action !== null || isStopping}
         onClick={() => runAction(powerIsOn ? "stop" : "start")}
       >
         {action === "start" || action === "stop" || isStopping ? (
@@ -343,7 +355,7 @@ function ServerPowerControls({
                 size="icon-lg"
                 className="bg-card shadow-none"
                 aria-label="Server actions"
-                disabled={action !== null}
+                disabled={!relayConnected || action !== null}
               >
                 {action !== null ? (
                   <LoaderCircle className="animate-spin" />
@@ -415,14 +427,14 @@ function ServerPowerControls({
               />
               <PowerActionButton
                 description="Gracefully stop and start"
-                disabled={!isRunning}
+                disabled={!relayConnected || !isRunning}
                 icon={<RotateCw className="size-3.5" />}
                 label="Restart"
                 onClick={() => runAction("restart")}
               />
               <PowerActionButton
                 description="Terminate immediately"
-                disabled={!powerIsOn || isStopping}
+                disabled={!relayConnected || !powerIsOn || isStopping}
                 icon={<OctagonX className="size-3.5" />}
                 label="Kill"
                 tone="kill"
@@ -440,10 +452,12 @@ function InstancePowerControls({
   canControlPower,
   instance,
   onError,
+  relayConnected,
 }: {
   canControlPower: boolean
   instance: InstanceWorkspaceInstance
   onError: (error: string | null) => void
+  relayConnected: boolean
 }) {
   const queryClient = useQueryClient()
   const selectObservedState = React.useMemo(
@@ -468,6 +482,7 @@ function InstancePowerControls({
 
   const handleAction = React.useCallback(
     async (nextAction: ServerAction) => {
+      if (!relayConnected) return
       setAction(nextAction)
       onError(null)
       try {
@@ -480,7 +495,7 @@ function InstancePowerControls({
         setAction(null)
       }
     },
-    [instance.id, mutateRelayAction, onError]
+    [instance.id, mutateRelayAction, onError, relayConnected]
   )
 
   if (!observedState) {
@@ -501,6 +516,7 @@ function InstancePowerControls({
       canControlPower={canControlPower}
       instance={{ id: instance.id, name: instance.name, observedState }}
       onAction={handleAction}
+      relayConnected={relayConnected}
     />
   )
 }

@@ -7,6 +7,8 @@ import { CacheError } from "@/effect/errors"
 import { invalidateCached, readThroughCache } from "./cache"
 
 const policy = { key: "example", name: "Example", ttlMs: 1_000 }
+const fallbackPolicy = { ...policy, fallbackTtlMs: 60_000 }
+const fallbackKey = `${policy.key}:last-known`
 
 function decodeString(input: unknown): string {
   if (typeof input !== "string") throw new Error("Expected a string")
@@ -123,12 +125,55 @@ describe("readThroughCache", () => {
     }).pipe(Effect.provide(cache.layer))
   })
 
+  it.effect("returns last-known data when the source is unavailable", () => {
+    const cache = testCache()
+    cache.values.set(fallbackKey, JSON.stringify("last-known"))
+    return Effect.gen(function* () {
+      const result = yield* readThroughCache({
+        decode: decodeString,
+        fallbackOnError: true,
+        load: Effect.fail("Relay unavailable"),
+        policy: fallbackPolicy,
+      })
+      assert.strictEqual(result, "last-known")
+      assert.strictEqual(cache.state.sets, 0)
+      assert.strictEqual(cache.values.has(policy.key), false)
+    }).pipe(Effect.provide(cache.layer))
+  })
+
+  it.effect("updates fresh and last-known data after a source load", () => {
+    const cache = testCache()
+    return Effect.gen(function* () {
+      const result = yield* readThroughCache({
+        decode: decodeString,
+        fallbackOnError: true,
+        load: Effect.succeed("fresh"),
+        policy: fallbackPolicy,
+      })
+      assert.strictEqual(result, "fresh")
+      assert.strictEqual(cache.state.sets, 2)
+      assert.strictEqual(cache.values.get(policy.key), JSON.stringify("fresh"))
+      assert.strictEqual(cache.values.get(fallbackKey), JSON.stringify("fresh"))
+    }).pipe(Effect.provide(cache.layer))
+  })
+
   it.effect("removes an invalidated value", () => {
     const cache = testCache({ initial: JSON.stringify("cached") })
     return Effect.gen(function* () {
       yield* invalidateCached(policy)
       assert.strictEqual(cache.values.has(policy.key), false)
       assert.strictEqual(cache.state.removes, 1)
+    }).pipe(Effect.provide(cache.layer))
+  })
+
+  it.effect("removes fresh and last-known values together", () => {
+    const cache = testCache({ initial: JSON.stringify("fresh") })
+    cache.values.set(fallbackKey, JSON.stringify("last-known"))
+    return Effect.gen(function* () {
+      yield* invalidateCached(fallbackPolicy)
+      assert.strictEqual(cache.values.has(policy.key), false)
+      assert.strictEqual(cache.values.has(fallbackKey), false)
+      assert.strictEqual(cache.state.removes, 2)
     }).pipe(Effect.provide(cache.layer))
   })
 })

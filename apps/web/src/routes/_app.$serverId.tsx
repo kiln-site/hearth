@@ -4,6 +4,7 @@ import { createFileRoute, useRouterState } from "@tanstack/react-router"
 
 import type { InstanceTab } from "@/components/app-sidebar"
 import { InstanceRouteFrame } from "@/components/instance-route-frame"
+import { useRelayConnection } from "@/components/relay-connection-status"
 import type { AccessPermission } from "@/lib/permissions"
 import { roleHasPermission } from "@/lib/permissions"
 import {
@@ -18,6 +19,7 @@ export const Route = createFileRoute("/_app/$serverId")({
 })
 
 function InstanceRouteLayout() {
+  const { status: relayStatus } = useRelayConnection()
   const serverId = Route.useParams({
     select: (params) => params.serverId,
   })
@@ -79,6 +81,7 @@ function InstanceRouteLayout() {
       title={title}
       fileTreePreferences={fileTreePreferences}
       permissions={permissions}
+      relayConnected={relayStatus === "connected"}
     />
   )
 }

@@ -1,9 +1,5 @@
 import * as React from "react"
-import {
-  useMutation,
-  useQueryClient,
-  useSuspenseQuery,
-} from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
 import {
   Boxes,
@@ -33,6 +29,7 @@ import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
 
 import { GlobalPageToolbar } from "@/components/global-page-toolbar"
+import { useRelayConnection } from "@/components/relay-connection-status"
 import { ServerTypeIcon } from "@/components/server-type-icon"
 import { updateBrickVariable } from "@/lib/brick-variables"
 import type { PersistedRelay } from "@/lib/relay-registry"
@@ -60,9 +57,40 @@ type DeploymentForm = {
 }
 
 export function BricksPage() {
+  const studioQuery = useQuery(brickStudioQueryOptions())
+  if (!studioQuery.data) {
+    return (
+      <main className="h-full min-h-0 overflow-y-auto bg-background text-foreground">
+        <GlobalPageToolbar label="Infrastructure / Bricks" />
+        <div className="grid min-h-[24rem] place-items-center px-6 text-center">
+          <div className="max-w-sm">
+            {studioQuery.isPending ? (
+              <LoaderCircle className="mx-auto size-5 animate-spin text-primary" />
+            ) : (
+              <CircleAlert className="mx-auto size-5 text-amber-300" />
+            )}
+            <p className="mt-3 text-sm font-semibold">
+              {studioQuery.isPending
+                ? "Loading Brick studio"
+                : "Brick studio unavailable"}
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {studioQuery.error?.message ??
+                "Hearth has no cached Brick catalog for this Relay yet."}
+            </p>
+          </div>
+        </div>
+      </main>
+    )
+  }
+  return <BrickStudio studio={studioQuery.data} />
+}
+
+function BrickStudio({ studio }: { studio: Studio }) {
+  const { status: relayStatus } = useRelayConnection()
+  const relayConnected = relayStatus === "connected"
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { data: studio } = useSuspenseQuery(brickStudioQueryOptions())
   const createInstanceMutation = useMutation({
     mutationFn: createBrickInstance,
     onSuccess: async (instance) => {
@@ -186,7 +214,10 @@ export function BricksPage() {
     <main className="h-full min-h-0 overflow-y-auto bg-background text-foreground">
       <GlobalPageToolbar label="Infrastructure / Bricks" />
 
-      <div className="mx-auto max-w-7xl px-5 py-9 lg:px-8">
+      <fieldset
+        disabled={!relayConnected}
+        className="mx-auto block max-w-7xl border-0 px-5 py-9 lg:px-8"
+      >
         <div className="grid gap-7 xl:grid-cols-[minmax(0,1fr)_23rem]">
           <div className="min-w-0">
             <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
@@ -321,7 +352,7 @@ export function BricksPage() {
             </section>
           </aside>
         </div>
-      </div>
+      </fieldset>
     </main>
   )
 }

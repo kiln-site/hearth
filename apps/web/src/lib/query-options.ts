@@ -35,6 +35,8 @@ export const queryKeys = {
   bricks: ["bricks", "studio"] as const,
   relay: {
     connection: ["relay", "connection"] as const,
+    console: (instanceId: string) =>
+      ["relay", "instances", instanceId, "console"] as const,
     file: (instanceId: string, path: string) =>
       ["relay", "instances", instanceId, "files", "content", path] as const,
     fileActivity: (instanceId: string) =>

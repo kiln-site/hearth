@@ -1,5 +1,5 @@
 import * as React from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import type {
   RelayConsole,
@@ -18,6 +18,7 @@ import {
   Search,
   Share2,
   TriangleAlert,
+  WifiOff,
   WrapText,
   X,
 } from "lucide-react"
@@ -38,7 +39,8 @@ import {
 
 import { openRelayConsoleStream } from "@/lib/relay-console-stream"
 import { redactSensitiveText } from "@/lib/redaction"
-import { relaySnapshotQueryOptions } from "@/lib/query-options"
+import { queryKeys, relaySnapshotQueryOptions } from "@/lib/query-options"
+import { useRelayConnection } from "@/components/relay-connection-status"
 import { selectInstanceObservedState } from "@/lib/relay-selectors"
 import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
 import {
@@ -100,6 +102,7 @@ interface ConsoleUiStore {
 }
 
 interface ConsoleStreamSnapshot {
+  connection: "connecting" | "live" | "unavailable"
   consoleData: RelayConsole | null
   loading: boolean
 }
@@ -112,7 +115,11 @@ interface ConsoleStreamStore {
 }
 
 function createConsoleStreamStore(): ConsoleStreamStore {
-  let snapshot: ConsoleStreamSnapshot = { consoleData: null, loading: true }
+  let snapshot: ConsoleStreamSnapshot = {
+    connection: "connecting",
+    consoleData: null,
+    loading: true,
+  }
   const listeners = new Set<() => void>()
   return {
     getHasLinesSnapshot: () => Boolean(snapshot.consoleData?.lines.length),
@@ -120,6 +127,7 @@ function createConsoleStreamStore(): ConsoleStreamStore {
     setSnapshot: (nextSnapshot) => {
       if (
         snapshot.consoleData === nextSnapshot.consoleData &&
+        snapshot.connection === nextSnapshot.connection &&
         snapshot.loading === nextSnapshot.loading
       ) {
         return
@@ -270,6 +278,8 @@ function ConsoleWorkspaceSession({
   canShare: boolean
   canWrite: boolean
 }) {
+  const { status: relayStatus } = useRelayConnection()
+  const relayConnected = relayStatus === "connected"
   const [uiStore] = React.useState(createConsoleUiStore)
   const [streamStore] = React.useState(createConsoleStreamStore)
 
@@ -277,17 +287,19 @@ function ConsoleWorkspaceSession({
     <section className="flex min-h-0 flex-1 flex-col bg-card">
       <ConsoleStreamController
         instanceId={instance.id}
+        relayConnected={relayConnected}
         streamStore={streamStore}
       />
       <ConsoleToolbar
         active={active}
-        canShare={canShare}
+        canShare={canShare && relayConnected}
         instance={instance}
         streamStore={streamStore}
         uiStore={uiStore}
       />
       <ConsoleLogViewportController
         active={active}
+        relayConnected={relayConnected}
         streamStore={streamStore}
         uiStore={uiStore}
       />
@@ -296,6 +308,8 @@ function ConsoleWorkspaceSession({
         active={active}
         canWrite={canWrite}
         instance={instance}
+        relayConnected={relayConnected}
+        streamStore={streamStore}
       />
     </section>
   )
@@ -303,12 +317,14 @@ function ConsoleWorkspaceSession({
 
 function ConsoleStreamController({
   instanceId,
+  relayConnected,
   streamStore,
 }: {
   instanceId: string
+  relayConnected: boolean
   streamStore: ConsoleStreamStore
 }) {
-  const snapshot = useRelayConsoleStream(instanceId)
+  const snapshot = useRelayConsoleStream(instanceId, relayConnected)
   React.useLayoutEffect(
     () => streamStore.setSnapshot(snapshot),
     [snapshot, streamStore]
@@ -318,14 +334,16 @@ function ConsoleStreamController({
 
 function ConsoleLogViewportController({
   active,
+  relayConnected,
   streamStore,
   uiStore,
 }: {
   active: boolean
+  relayConnected: boolean
   streamStore: ConsoleStreamStore
   uiStore: ConsoleUiStore
 }) {
-  const { consoleData, loading } = React.useSyncExternalStore(
+  const { connection, consoleData, loading } = React.useSyncExternalStore(
     streamStore.subscribe,
     streamStore.getSnapshot,
     streamStore.getSnapshot
@@ -360,6 +378,7 @@ function ConsoleLogViewportController({
     <ConsoleLogViewport
       active={active}
       consoleData={consoleData}
+      connection={relayConnected ? connection : "unavailable"}
       filteredLines={filteredLines}
       loading={loading}
       uiStore={uiStore}
@@ -743,6 +762,7 @@ function ConsoleTimestampButton({ uiStore }: { uiStore: ConsoleUiStore }) {
 
 interface ConsoleLogViewportProps {
   active: boolean
+  connection: ConsoleStreamSnapshot["connection"]
   consoleData: RelayConsole | null
   filteredLines: Array<RelayConsoleLine>
   loading: boolean
@@ -751,6 +771,7 @@ interface ConsoleLogViewportProps {
 
 function ConsoleLogViewport({
   active,
+  connection,
   consoleData,
   filteredLines,
   loading,
@@ -872,6 +893,17 @@ function ConsoleLogViewport({
         </div>
       ) : null}
 
+      {connection !== "live" && consoleData ? (
+        <div className="pointer-events-none absolute top-3 left-1/2 z-20 -translate-x-1/2">
+          <div className="flex items-center gap-1.5 border border-amber-400/20 bg-stone-950/90 px-2.5 py-1.5 font-mono text-[9px] text-amber-200 shadow-lg shadow-black/35 backdrop-blur-sm">
+            <WifiOff className="size-3" />
+            {connection === "connecting"
+              ? "RECONNECTING · OUTPUT MAY BE DELAYED"
+              : "LIVE OUTPUT PAUSED · SHOWING LAST RECEIVED LINES"}
+          </div>
+        </div>
+      ) : null}
+
       {loading && !consoleData ? (
         <div className="absolute inset-0 grid place-items-center bg-card/70 backdrop-blur-[2px]">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -880,7 +912,19 @@ function ConsoleLogViewport({
           </div>
         </div>
       ) : null}
-      {!loading && filteredLines.length === 0 ? (
+      {!loading && !consoleData && connection === "unavailable" ? (
+        <div className="absolute inset-0 grid place-items-center text-center">
+          <div className="max-w-xs">
+            <WifiOff className="mx-auto size-5 text-amber-300" />
+            <p className="mt-3 text-sm font-semibold">Console unavailable</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              Unable to connect to Relay. Last received output will appear here
+              when available.
+            </p>
+          </div>
+        </div>
+      ) : null}
+      {!loading && consoleData && filteredLines.length === 0 ? (
         <div className="absolute inset-0 grid place-items-center text-center">
           <div>
             <p className="text-sm font-semibold">No matching output</p>
@@ -960,11 +1004,21 @@ const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
   active,
   canWrite,
   instance,
+  relayConnected,
+  streamStore,
 }: {
   active: boolean
   canWrite: boolean
   instance: InstanceWorkspaceInstance
+  relayConnected: boolean
+  streamStore: ConsoleStreamStore
 }) {
+  const { connection } = React.useSyncExternalStore(
+    streamStore.subscribe,
+    streamStore.getSnapshot,
+    streamStore.getSnapshot
+  )
+  const consoleAvailable = relayConnected && connection === "live"
   const selectObservedState = React.useMemo(
     () => selectInstanceObservedState(instance.id),
     [instance.id]
@@ -976,7 +1030,7 @@ const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
   const command = useConsoleCommand(
     instance.id,
     active,
-    observedState === "running"
+    consoleAvailable && observedState === "running"
   )
 
   return (
@@ -1000,9 +1054,11 @@ const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
                   onBlur={command.stopCompletions}
                   onKeyDown={command.keyDown}
                   placeholder={
-                    command.running
-                      ? "Send a server command…"
-                      : "Server is offline"
+                    !consoleAvailable
+                      ? "Relay disconnected — commands paused"
+                      : command.running
+                        ? "Send a server command…"
+                        : "Server is offline"
                   }
                   role="combobox"
                   aria-label="Server command"
@@ -1620,19 +1676,35 @@ async function copyToClipboard(value: string) {
   }
 }
 
-function useRelayConsoleStream(instanceId: string) {
+function useRelayConsoleStream(instanceId: string, relayConnected: boolean) {
+  const queryClient = useQueryClient()
   const [consoleData, setConsoleData] = React.useState<RelayConsole | null>(
-    null
+    () => queryClient.getQueryData(queryKeys.relay.console(instanceId)) ?? null
   )
-  const [loading, setLoading] = React.useState(true)
+  const [loading, setLoading] = React.useState(() => !consoleData)
+  const [connection, setConnection] = React.useState<
+    ConsoleStreamSnapshot["connection"]
+  >(relayConnected ? "connecting" : "unavailable")
 
   React.useEffect(() => {
+    if (!relayConnected) {
+      setConnection("unavailable")
+      setLoading(false)
+      return
+    }
+
     let cancelled = false
     const lifecycle = new AbortController()
     let activeIterator: ReturnType<typeof openRelayConsoleStream> | null = null
     let flushTimer: number | null = null
     const pending: Array<RelayConsoleLine> = []
-    const seen = new Set<string>()
+    const seen = new Set(
+      queryClient
+        .getQueryData<RelayConsole>(queryKeys.relay.console(instanceId))
+        ?.lines.map((line) => line.id) ?? []
+    )
+    setConnection("connecting")
+    setLoading(!queryClient.getQueryData(queryKeys.relay.console(instanceId)))
 
     function flush() {
       flushTimer = null
@@ -1643,11 +1715,15 @@ function useRelayConsoleStream(instanceId: string) {
         return true
       })
       if (fresh.length === 0) return
-      setConsoleData((current) => ({
-        instanceId,
-        lines: [...(current?.lines ?? []), ...fresh].slice(-5_000),
-        truncated: Boolean(current?.truncated) || seen.size > 5_000,
-      }))
+      setConsoleData((current) => {
+        const next = {
+          instanceId,
+          lines: [...(current?.lines ?? []), ...fresh].slice(-5_000),
+          truncated: Boolean(current?.truncated) || seen.size > 5_000,
+        }
+        queryClient.setQueryData(queryKeys.relay.console(instanceId), next)
+        return next
+      })
     }
 
     function append(line: RelayConsoleLine) {
@@ -1671,14 +1747,19 @@ function useRelayConsoleStream(instanceId: string) {
             if (result.done) throw new Error("Console stream closed")
             if (result.value.type === "ready") {
               setLoading(false)
-              setConsoleData(
-                (current) =>
-                  current ?? {
-                    instanceId,
-                    lines: [],
-                    truncated: false,
-                  }
-              )
+              setConnection("live")
+              setConsoleData((current) => {
+                const next = current ?? {
+                  instanceId,
+                  lines: [],
+                  truncated: false,
+                }
+                queryClient.setQueryData(
+                  queryKeys.relay.console(instanceId),
+                  next
+                )
+                return next
+              })
               retryDelay = 400
             } else {
               append(result.value.line)
@@ -1688,6 +1769,7 @@ function useRelayConsoleStream(instanceId: string) {
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           if (cancelled) break
           setLoading(false)
+          setConnection("unavailable")
           await waitForRetry(retryDelay, lifecycle.signal)
           retryDelay = Math.min(retryDelay * 2, 5_000)
         }
@@ -1701,9 +1783,9 @@ function useRelayConsoleStream(instanceId: string) {
       if (flushTimer !== null) window.clearTimeout(flushTimer)
       if (activeIterator) void activeIterator.return(undefined)
     }
-  }, [instanceId])
+  }, [instanceId, queryClient, relayConnected])
 
-  return { consoleData, loading }
+  return { connection, consoleData, loading }
 }
 
 function waitForRetry(delay: number, signal: AbortSignal): Promise<void> {
