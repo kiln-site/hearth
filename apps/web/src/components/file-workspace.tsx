@@ -448,7 +448,8 @@ function Editor({
       await onSave(value)
       savedValueRef.current = value
       setSavedValue(value)
-      setDirty(false)
+      const nextDirty = valueRef.current !== value
+      setDirty((current) => (current === nextDirty ? current : nextDirty))
     } catch (cause) {
       setSaveError(cause instanceof Error ? cause.message : "Save failed")
     } finally {
