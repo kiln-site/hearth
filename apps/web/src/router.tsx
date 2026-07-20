@@ -14,6 +14,7 @@ export function getRouter() {
     scrollRestoration: true,
     defaultPreload: "intent",
     defaultPreloadStaleTime: 0,
+    defaultStructuralSharing: true,
   })
 
   setupRouterSsrQueryIntegration({ queryClient, router })

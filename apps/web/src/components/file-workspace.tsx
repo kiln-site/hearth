@@ -326,8 +326,10 @@ function Editor({
   error,
   canShare,
   canWrite,
+  fontSize,
   pinned,
   pinning,
+  onFontSizeChange,
   onSave,
   onPinnedChange,
   treeCollapsed,
@@ -340,8 +342,10 @@ function Editor({
   error: string | null
   canShare: boolean
   canWrite: boolean
+  fontSize: number
   pinned: boolean
   pinning: boolean
+  onFontSizeChange: (fontSize: number) => void
   onSave: (content: string) => Promise<void>
   onPinnedChange: (pinned: boolean) => void
   treeCollapsed: boolean
@@ -360,8 +364,6 @@ function Editor({
   const [mobileActionsOpen, setMobileActionsOpen] = React.useState(false)
   const [searchOpen, setSearchOpen] = React.useState(false)
   const searchStore = React.useMemo(createEditorSearchStore, [])
-  const [fontSize, setFontSize] = React.useState(defaultFileEditorFontSize)
-  const [fontSizeReady, setFontSizeReady] = React.useState(false)
   const [reviewChanges, setReviewChanges] = React.useState(true)
   const [wrapLines, setWrapLines] = React.useState(true)
   const editorRef = React.useRef<SyntaxCodeEditorHandle>(null)
@@ -371,34 +373,6 @@ function Editor({
   const resetShareTimer = React.useRef<number | null>(null)
   const resetCopyTimer = React.useRef<number | null>(null)
   const sectionRef = React.useRef<HTMLElement>(null)
-
-  React.useEffect(() => {
-    let storedFontSize = defaultFileEditorFontSize
-    try {
-      const storedValue = Number.parseInt(
-        window.localStorage.getItem(fileEditorFontSizeStorageKey) ?? "",
-        10
-      )
-      if (fileEditorFontSizes.includes(storedValue))
-        storedFontSize = storedValue
-    } catch {
-      // Keep the default when browser storage is unavailable.
-    }
-    setFontSize(storedFontSize)
-    setFontSizeReady(true)
-  }, [])
-
-  React.useEffect(() => {
-    if (!fontSizeReady) return
-    try {
-      window.localStorage.setItem(
-        fileEditorFontSizeStorageKey,
-        String(fontSize)
-      )
-    } catch {
-      // The editor remains usable when browser storage is unavailable.
-    }
-  }, [fontSize, fontSizeReady])
 
   const loading = queryLoading
 
@@ -581,7 +555,7 @@ function Editor({
                 </EditorTooltip>
                 <EditorFontSizeButton
                   fontSize={fontSize}
-                  onFontSizeChange={setFontSize}
+                  onFontSizeChange={onFontSizeChange}
                 />
                 <EditorTooltip
                   content={wrapLines ? "Disable Line Wrap" : "Enable Line Wrap"}
@@ -761,7 +735,7 @@ function Editor({
                       </div>
                       <EditorFontSizeControl
                         fontSize={fontSize}
-                        onFontSizeChange={setFontSize}
+                        onFontSizeChange={onFontSizeChange}
                       />
                     </div>
                     {canShare ? (
@@ -2088,6 +2062,42 @@ function UnavailablePreview({
 const StableEditor = React.memo(Editor)
 const StableFileTreePanel = React.memo(FileTreePanel)
 
+function useFileEditorFontSize() {
+  const [fontSize, setFontSize] = React.useState(defaultFileEditorFontSize)
+  const [ready, setReady] = React.useState(false)
+
+  React.useEffect(() => {
+    let storedFontSize = defaultFileEditorFontSize
+    try {
+      const storedValue = Number.parseInt(
+        window.localStorage.getItem(fileEditorFontSizeStorageKey) ?? "",
+        10
+      )
+      if (fileEditorFontSizes.includes(storedValue)) {
+        storedFontSize = storedValue
+      }
+    } catch {
+      // Keep the default when browser storage is unavailable.
+    }
+    setFontSize(storedFontSize)
+    setReady(true)
+  }, [])
+
+  React.useEffect(() => {
+    if (!ready) return
+    try {
+      window.localStorage.setItem(
+        fileEditorFontSizeStorageKey,
+        String(fontSize)
+      )
+    } catch {
+      // The editor remains usable when browser storage is unavailable.
+    }
+  }, [fontSize, ready])
+
+  return [fontSize, setFontSize] as const
+}
+
 interface FileWorkspaceProps {
   instance: InstanceWorkspaceInstance
   active: boolean
@@ -2116,15 +2126,16 @@ function useFileWorkspaceState({
 }: FileWorkspaceProps) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const [fontSize, setFontSize] = useFileEditorFontSize()
   const normalizedRoutePath = routeFilePath?.replace(/^\/+/, "") ?? ""
   const normalizedRoutePathRef = React.useRef(normalizedRoutePath)
   React.useLayoutEffect(() => {
     normalizedRoutePathRef.current = normalizedRoutePath
   }, [normalizedRoutePath])
-  const [optimisticPath, setOptimisticPath] = React.useState<string | null>(
-    null
-  )
-  const selectedPath = optimisticPath ?? normalizedRoutePath
+  const selectedPath = normalizedRoutePath
+  const [navigationPendingPath, setNavigationPendingPath] = React.useState<
+    string | null
+  >(null)
   const [mobileTreeOpen, setMobileTreeOpen] = React.useState(false)
   const [navigationError, setNavigationError] = React.useState<{
     routePath: string
@@ -2190,6 +2201,8 @@ function useFileWorkspaceState({
   })
   const loadingFile =
     treeQuery.isPending ||
+    (navigationPendingPath !== null &&
+      navigationPendingPath !== selectedPath) ||
     (selectedPathIsReadable &&
       (fileQuery.isFetching ||
         (file?.path !== selectedPath && !fileQuery.isError)))
@@ -2256,31 +2269,6 @@ function useFileWorkspaceState({
     [handleTreeCollapsedChange]
   )
 
-  const handleHome = React.useCallback(async () => {
-    const routePath = normalizedRoutePathRef.current
-    pendingRoutePath.current = null
-    setOptimisticPath("")
-    setNavigationError(null)
-    if (!routePath) {
-      setOptimisticPath(null)
-      return
-    }
-    try {
-      await navigate({
-        to: "/$serverId/files/$",
-        params: { serverId: instance.shortId, _splat: "" },
-      })
-      setOptimisticPath(null)
-    } catch (cause) {
-      setOptimisticPath(null)
-      setNavigationError({
-        routePath,
-        message:
-          cause instanceof Error ? cause.message : "Could not navigate home",
-      })
-    }
-  }, [instance.shortId, navigate])
-
   React.useLayoutEffect(() => {
     if (!openTreeOnEntry) {
       handledTreeEntry.current = false
@@ -2309,17 +2297,18 @@ function useFileWorkspaceState({
   const handlePathChange = React.useCallback(
     async (path: string) => {
       const routePath = normalizedRoutePathRef.current
-      setOptimisticPath(path)
+      if (routePath === path) return
+
+      pendingRoutePath.current = path
+      setNavigationPendingPath(path)
       setNavigationError(null)
-      if (active && routePath !== path) {
-        pendingRoutePath.current = path
+      if (active) {
         try {
-          await queryClient
-            .ensureQueryData(relayFileQueryOptions(instance.id, path))
-            .catch(() => undefined)
-          // Keep the file-data and route commits separate. Combining them can
-          // make the editor toolbar's composed Radix refs update recursively.
-          await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+          if (path) {
+            await queryClient
+              .ensureQueryData(relayFileQueryOptions(instance.id, path))
+              .catch(() => undefined)
+          }
           if (pendingRoutePath.current !== path) return
           await navigate({
             to: "/$serverId/files/$",
@@ -2328,7 +2317,6 @@ function useFileWorkspaceState({
           })
         } catch (cause) {
           if (pendingRoutePath.current !== path) return
-          setOptimisticPath(null)
           setNavigationError({
             routePath,
             message:
@@ -2339,21 +2327,19 @@ function useFileWorkspaceState({
         } finally {
           if (pendingRoutePath.current === path) {
             pendingRoutePath.current = null
-            setOptimisticPath(null)
+            setNavigationPendingPath(null)
           }
         }
       } else {
-        setOptimisticPath(null)
+        pendingRoutePath.current = null
+        setNavigationPendingPath(null)
       }
     },
-    [
-      active,
-      instance.id,
-      instance.shortId,
-      navigate,
-      queryClient,
-    ]
+    [active, instance.id, instance.shortId, navigate, queryClient]
   )
+  const handleHome = React.useCallback(() => {
+    void handlePathChange("")
+  }, [handlePathChange])
 
   const closeMobileTree = React.useCallback(() => {
     setMobileTreeOpen(false)
@@ -2370,27 +2356,33 @@ function useFileWorkspaceState({
     fileRef.current = file
   }, [file])
   const saveFile = saveFileMutation.mutateAsync
-  const handleSave = React.useCallback(async (content: string) => {
-    const currentFile = fileRef.current
-    if (!currentFile) return
-    await saveFile({
-      data: {
-        instanceId: instance.id,
-        path: currentFile.path,
-        content,
-        expectedModifiedAt: currentFile.modifiedAt,
-      },
-    })
-  }, [instance.id, saveFile])
+  const handleSave = React.useCallback(
+    async (content: string) => {
+      const currentFile = fileRef.current
+      if (!currentFile) return
+      await saveFile({
+        data: {
+          instanceId: instance.id,
+          path: currentFile.path,
+          content,
+          expectedModifiedAt: currentFile.modifiedAt,
+        },
+      })
+    },
+    [instance.id, saveFile]
+  )
 
   const updatePinned = pinFileMutation.mutate
-  const handlePinnedChange = React.useCallback((pinned: boolean) => {
-    const currentFile = fileRef.current
-    if (!currentFile) return
-    updatePinned({
-      data: { instanceId: instance.id, path: currentFile.path, pinned },
-    })
-  }, [instance.id, updatePinned])
+  const handlePinnedChange = React.useCallback(
+    (pinned: boolean) => {
+      const currentFile = fileRef.current
+      if (!currentFile) return
+      updatePinned({
+        data: { instanceId: instance.id, path: currentFile.path, pinned },
+      })
+    },
+    [instance.id, updatePinned]
+  )
 
   return {
     activity,
@@ -2401,6 +2393,7 @@ function useFileWorkspaceState({
     displayedTreeCollapsed,
     error,
     file,
+    fontSize,
     handleHome,
     handlePathChange,
     handlePinnedChange,
@@ -2421,6 +2414,7 @@ function useFileWorkspaceState({
     selectedActivity,
     selectedFileUnavailable,
     selectedPath,
+    setFontSize,
     setMobileTreeOpen,
     tree,
     treeQuery,
@@ -2437,6 +2431,7 @@ function FileWorkspaceView({
   displayedTreeCollapsed,
   error,
   file,
+  fontSize,
   handleHome,
   handlePathChange,
   handlePinnedChange,
@@ -2457,6 +2452,7 @@ function FileWorkspaceView({
   selectedActivity,
   selectedFileUnavailable,
   selectedPath,
+  setFontSize,
   setMobileTreeOpen,
   tree,
   treeQuery,
@@ -2519,6 +2515,7 @@ function FileWorkspaceView({
               key={`${file.instanceId}:${file.path}:${file.modifiedAt}`}
               canShare={canShare}
               canWrite={canWrite}
+              fontSize={fontSize}
               pinned={selectedActivity?.pinned ?? false}
               pinning={
                 pinMutationTargetsSelectedPath && pinFileMutation.isPending
@@ -2528,6 +2525,7 @@ function FileWorkspaceView({
               instance={instance}
               loading={loadingFile}
               error={error}
+              onFontSizeChange={setFontSize}
               onSave={handleSave}
               onPinnedChange={handlePinnedChange}
               treeCollapsed={displayedTreeCollapsed}

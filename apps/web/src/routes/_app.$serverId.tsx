@@ -1,9 +1,9 @@
 import * as React from "react"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
-import { Outlet, createFileRoute, useRouterState } from "@tanstack/react-router"
+import { createFileRoute, useRouterState } from "@tanstack/react-router"
 
 import type { InstanceTab } from "@/components/app-sidebar"
-import { InstanceWorkspace } from "@/components/instance-workspace"
+import { InstanceRouteFrame } from "@/components/instance-route-frame"
 import type { AccessPermission } from "@/lib/permissions"
 import { roleHasPermission } from "@/lib/permissions"
 import {
@@ -18,7 +18,9 @@ export const Route = createFileRoute("/_app/$serverId")({
 })
 
 function InstanceRouteLayout() {
-  const { serverId } = Route.useParams()
+  const serverId = Route.useParams({
+    select: (params) => params.serverId,
+  })
   const activeTab = useRouterState({
     select: (state): InstanceTab =>
       instanceTabFromPathname(state.location.pathname),
@@ -72,14 +74,12 @@ function InstanceRouteLayout() {
   if (!instance) return null
 
   return (
-    <InstanceWorkspace
+    <InstanceRouteFrame
       instance={instance}
       title={title}
       fileTreePreferences={fileTreePreferences}
       permissions={permissions}
-    >
-      <Outlet />
-    </InstanceWorkspace>
+    />
   )
 }
 

@@ -13,16 +13,12 @@ import {
   useRouterState,
 } from "@tanstack/react-router"
 import { Cable, CircleAlert, RefreshCw, Settings } from "lucide-react"
-import {
-  SidebarInset,
-  SidebarProvider,
-  useSidebar,
-} from "@workspace/ui/components/sidebar"
+import { useSidebar } from "@workspace/ui/components/sidebar"
 import { Button } from "@workspace/ui/components/button"
 
+import { AppFrame } from "@/components/app-frame"
 import { AppSidebar } from "@/components/app-sidebar"
 import type { GlobalSection, InstanceTab } from "@/components/app-sidebar"
-import { PanelFooter } from "@/components/panel-footer"
 import { getAuthState } from "@/server/auth"
 import {
   accessCapabilitiesQueryOptions,
@@ -212,36 +208,46 @@ function AppLayout() {
       user,
     ]
   )
+  const content = React.useMemo(() => {
+    if (activeSection) return <Outlet />
+    if (connection.status !== "connected") {
+      return (
+        <RelayUnavailableState
+          connection={connection}
+          canConfigure={capabilities.isPlatformAdmin}
+          onRetry={handleRetry}
+          onConfigure={handleConfigure}
+        />
+      )
+    }
+    if (!sidebarInstances) {
+      return <div className="min-h-0 flex-1 bg-background" />
+    }
+    if (instance && activeTab) return <Outlet />
+    return <EmptyServerState canProvision={capabilities.isPlatformAdmin} />
+  }, [
+    activeSection,
+    activeTab,
+    capabilities.isPlatformAdmin,
+    connection,
+    handleConfigure,
+    handleRetry,
+    instance,
+    sidebarInstances,
+  ])
+  const navigationDismiss = React.useMemo(
+    () => <MobileSidebarNavigationDismiss />,
+    []
+  )
 
   return (
-    <SidebarProvider defaultOpen={uiPreferences.sidebarOpen}>
-      <MobileSidebarNavigationDismiss />
-      <AppSidebar {...sidebarProps} />
-      <SidebarInset className="h-dvh min-w-0 overflow-hidden">
-        <div
-          data-slot="app-content"
-          className="flex min-h-0 flex-1 flex-col overflow-hidden"
-        >
-          {activeSection ? (
-            <Outlet />
-          ) : connection.status !== "connected" ? (
-            <RelayUnavailableState
-              connection={connection}
-              canConfigure={capabilities.isPlatformAdmin}
-              onRetry={handleRetry}
-              onConfigure={handleConfigure}
-            />
-          ) : !sidebarInstances ? (
-            <div className="min-h-0 flex-1 bg-background" />
-          ) : instance && activeTab ? (
-            <Outlet />
-          ) : (
-            <EmptyServerState canProvision={capabilities.isPlatformAdmin} />
-          )}
-        </div>
-        <PanelFooter />
-      </SidebarInset>
-    </SidebarProvider>
+    <AppFrame
+      navigationDismiss={navigationDismiss}
+      sidebarDefaultOpen={uiPreferences.sidebarOpen}
+      sidebarProps={sidebarProps}
+    >
+      {content}
+    </AppFrame>
   )
 }
 
