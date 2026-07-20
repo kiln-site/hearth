@@ -74,8 +74,8 @@ export async function createPersistedRelay(input: {
   const id = randomUUID()
   await databasePool.execute(
     `INSERT INTO ${databaseTable("relay")}
-      (id, name, hostname, port, use_tls, token_ciphertext, enabled, is_primary)
-     VALUES (?, ?, ?, ?, ?, ?, TRUE, FALSE)`,
+      (id, name, hostname, port, use_tls, token_ciphertext, enabled)
+     VALUES (?, ?, ?, ?, ?, ?, TRUE)`,
     [
       id,
       input.name,
@@ -167,16 +167,11 @@ export async function checkPersistedRelay(id: string): Promise<PersistedRelay> {
   return checked
 }
 
-export async function resolvePrimaryRelayUrl(): Promise<string | null> {
-  const relay = await resolvePrimaryRelay()
-  return relay ? relayUrl(relay) : null
+export async function resolveDefaultRelay(): Promise<PersistedRelay | null> {
+  return runAppEffect("relays.resolveDefault", resolveDefaultRelayEffect())
 }
 
-export async function resolvePrimaryRelay(): Promise<PersistedRelay | null> {
-  return runAppEffect("relays.resolvePrimary", resolvePrimaryRelayEffect())
-}
-
-export const resolvePrimaryRelayEffect = Effect.fn("relays.resolvePrimary")(
+export const resolveDefaultRelayEffect = Effect.fn("relays.resolveDefault")(
   function* () {
     return (
       (yield* listPersistedRelaysEffect()).find((item) => item.enabled) ?? null

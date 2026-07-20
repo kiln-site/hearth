@@ -48,11 +48,14 @@ import {
   relayJsonEffect,
 } from "@/lib/relay-client"
 import type { RelayEndpoint } from "@/lib/relay-client"
-import { resolvePrimaryRelayEffect } from "@/lib/relay-registry"
+import type { RelayFleetSnapshot, RelayReachability } from "@/lib/relay-fleet"
+import type { PersistedRelay } from "@/lib/relay-registry"
+import { listPersistedRelays } from "@/lib/relay-registry"
 import { resolveMclogsApiUrl } from "@/lib/mclogs"
 
 const instanceInputSchema = z.object({
   instanceId: z.string().min(1),
+  relayId: z.uuid(),
 })
 
 const treeInputSchema = instanceInputSchema.extend({
@@ -105,12 +108,11 @@ const consoleShareInputSchema = instanceInputSchema.extend({
   redactSensitive: z.boolean().default(false),
 })
 
-const mclogsUploadInputSchema = z.object({
+const mclogsUploadInputSchema = instanceInputSchema.extend({
   content: z
     .string()
     .min(1)
     .max(10 * 1024 * 1024),
-  instanceId: z.string().min(1),
   path: z.string().min(1),
   implementation: z.string().min(1),
   version: z.string().min(1),
@@ -128,8 +130,8 @@ const relayWarningAt = new Map<string, number>()
 
 export const getRelaySnapshot = createServerFn({ method: "POST" }).handler(
   async () => {
-    const { relay, user } = await activeRelayAccess()
-    return authorizedRelaySnapshot(relay, user, true)
+    const user = await requireAuthenticatedUser()
+    return authorizedFleetSnapshot(user, true)
   }
 )
 
@@ -137,10 +139,9 @@ export const getRelayConnectionState = createServerFn({
   method: "GET",
 }).handler(async () => {
   const user = await requireAuthenticatedUser()
-  const { resolvePrimaryRelay } = await import("@/lib/relay-registry")
-  const relay = await resolvePrimaryRelay()
+  const relays = (await listPersistedRelays()).filter((relay) => relay.enabled)
 
-  if (!relay) {
+  if (relays.length === 0) {
     return {
       status: "unconfigured" as const,
       message: "No Relay has been configured yet.",
@@ -148,21 +149,47 @@ export const getRelayConnectionState = createServerFn({
     }
   }
 
-  const publicRelay = { id: relay.id, name: relay.name }
-  try {
-    return {
-      status: "connected" as const,
-      relay: publicRelay,
-      snapshot: await authorizedRelaySnapshot(relay, user),
-    }
-  } catch (cause) {
-    warnRelayUnavailable(relay.id, cause)
+  const entries = await Promise.all(
+    relays.map(async (relay) => {
+      try {
+        return {
+          relay,
+          snapshot: await authorizedRelaySnapshot(relay, user),
+          status: "connected" as const,
+        }
+      } catch (cause) {
+        warnRelayUnavailable(relay.id, cause)
+        return {
+          relay,
+          snapshot: await authorizedRelaySnapshot(relay, user, true).catch(
+            () => null
+          ),
+          status: "unreachable" as const,
+        }
+      }
+    })
+  )
+  const connectedCount = entries.filter(
+    (entry) => entry.status === "connected"
+  ).length
+  const snapshot = mergeRelaySnapshots(entries)
+  const relay = publicFleetRelay(relays, connectedCount)
+  if (connectedCount === 0) {
     return {
       status: "unreachable" as const,
       message:
-        "The active Relay is configured, but Hearth cannot reach it right now.",
-      relay: publicRelay,
+        relays.length === 1
+          ? "The Relay is configured, but Hearth cannot reach it right now."
+          : "Hearth cannot reach any configured Relay right now.",
+      relay,
+      relays: entries.map(publicRelayState),
     }
+  }
+  return {
+    status: "connected" as const,
+    relay,
+    relays: entries.map(publicRelayState),
+    snapshot,
   }
 })
 
@@ -171,13 +198,13 @@ function warnRelayUnavailable(relayId: string, cause: unknown) {
   const lastWarning = relayWarningAt.get(relayId) ?? 0
   if (now - lastWarning < relayWarningIntervalMs) return
   relayWarningAt.set(relayId, now)
-  console.warn(`[Kiln Relay] Could not reach active Relay ${relayId}:`, cause)
+  console.warn(`[Kiln Relay] Could not reach Relay ${relayId}:`, cause)
 }
 
 export const updateInstanceName = createServerFn({ method: "POST" })
   .validator(instanceNameInputSchema)
   .handler(async ({ data }) => {
-    const { relay, user } = await activeRelayAccess()
+    const { relay, user } = await instanceRelayAccess(data.relayId)
     await requireRelayPermission({
       user,
       relayId: relay.id,
@@ -199,7 +226,7 @@ export const updateInstanceName = createServerFn({ method: "POST" })
 export const getRelayTree = createServerFn({ method: "GET" })
   .validator(treeInputSchema)
   .handler(async ({ data }) => {
-    const { relay, user } = await activeRelayAccess()
+    const { relay, user } = await instanceRelayAccess(data.relayId)
     await requireRelayPermission({
       user,
       relayId: relay.id,
@@ -222,7 +249,7 @@ export const getRelayTree = createServerFn({ method: "GET" })
 export const getRelayFile = createServerFn({ method: "GET" })
   .validator(fileInputSchema)
   .handler(async ({ data }) => {
-    const { relay, user } = await activeRelayAccess()
+    const { relay, user } = await instanceRelayAccess(data.relayId)
     await requireRelayPermission({
       user,
       relayId: relay.id,
@@ -244,8 +271,8 @@ export const getRelayFile = createServerFn({ method: "GET" })
 export const saveRelayFile = createServerFn({ method: "POST" })
   .validator(saveFileInputSchema)
   .handler(async ({ data }) => {
-    const { instanceId, path, ...input } = data
-    const { relay, user } = await activeRelayAccess()
+    const { instanceId, path, relayId, ...input } = data
+    const { relay, user } = await instanceRelayAccess(relayId)
     await requireRelayPermission({
       user,
       relayId: relay.id,
@@ -268,7 +295,7 @@ export const saveRelayFile = createServerFn({ method: "POST" })
 export const getRelayFileActivity = createServerFn({ method: "GET" })
   .validator(instanceInputSchema)
   .handler(async ({ data }) => {
-    const { relay, user } = await activeRelayAccess()
+    const { relay, user } = await instanceRelayAccess(data.relayId)
     await requireRelayPermission({
       user,
       relayId: relay.id,
@@ -283,7 +310,7 @@ export const getRelayFileActivity = createServerFn({ method: "GET" })
 export const updateRelayFilePin = createServerFn({ method: "POST" })
   .validator(filePinInputSchema)
   .handler(async ({ data }) => {
-    const { relay, user } = await activeRelayAccess()
+    const { relay, user } = await instanceRelayAccess(data.relayId)
     await requireRelayPermission({
       user,
       relayId: relay.id,
@@ -317,7 +344,7 @@ export const performRelayAction = createServerFn({ method: "POST" })
   .validator(actionInputSchema)
   .handler(async ({ data }) => {
     const { instanceId, action } = data
-    const { relay, user } = await activeRelayAccess()
+    const { relay, user } = await instanceRelayAccess(data.relayId)
     await requireRelayPermission({
       user,
       relayId: relay.id,
@@ -348,7 +375,8 @@ export const getRelayConsole = createServerFn({ method: "POST" })
         `/v1/instances/${encodeURIComponent(data.instanceId)}/console?limit=3000`,
         undefined,
         "instance.console.read",
-        data.instanceId
+        data.instanceId,
+        data.relayId
       )
     )
   )
@@ -361,7 +389,8 @@ export const sendRelayCommand = createServerFn({ method: "POST" })
         `/v1/instances/${encodeURIComponent(data.instanceId)}/console`,
         { method: "POST", body: JSON.stringify({ command: data.command }) },
         "instance.console.write",
-        data.instanceId
+        data.instanceId,
+        data.relayId
       )
     )
   )
@@ -377,7 +406,8 @@ export const completeRelayCommand = createServerFn({ method: "POST" })
           body: JSON.stringify({ input: data.input, cursor: data.cursor }),
         },
         "instance.console.write",
-        data.instanceId
+        data.instanceId,
+        data.relayId
       )
     )
   )
@@ -385,7 +415,7 @@ export const completeRelayCommand = createServerFn({ method: "POST" })
 export const uploadToMclogs = createServerFn({ method: "POST" })
   .validator(mclogsUploadInputSchema)
   .handler(async ({ data }) => {
-    await authorize("instance.logs.share", data.instanceId)
+    await authorize("instance.logs.share", data.instanceId, data.relayId)
     return uploadLog(data)
   })
 
@@ -397,7 +427,8 @@ export const uploadLatestLogToMclogs = createServerFn({ method: "POST" })
         `/v1/instances/${encodeURIComponent(data.instanceId)}/latest-log`,
         undefined,
         "instance.logs.share",
-        data.instanceId
+        data.instanceId,
+        data.relayId
       )
     )
     return uploadLog({
@@ -514,9 +545,10 @@ async function relayRequest(
   path: string,
   init: RequestInit | undefined,
   permission: AccessPermission,
-  instanceId?: string
+  instanceId: string,
+  relayId: string
 ): Promise<unknown> {
-  const { relay, user } = await activeRelayAccess()
+  const { relay, user } = await instanceRelayAccess(relayId)
   await requireRelayPermission({
     user,
     relayId: relay.id,
@@ -573,8 +605,12 @@ async function relayFetch(
   return runAppEffect("relay.fetch", relayFetchEffect(relay, path, init))
 }
 
-async function authorize(permission: AccessPermission, instanceId?: string) {
-  const { relay, user } = await activeRelayAccess()
+async function authorize(
+  permission: AccessPermission,
+  instanceId: string,
+  relayId: string
+) {
+  const { relay, user } = await instanceRelayAccess(relayId)
   await requireRelayPermission({
     user,
     relayId: relay.id,
@@ -583,25 +619,120 @@ async function authorize(permission: AccessPermission, instanceId?: string) {
   })
 }
 
-async function activeRelayAccess() {
-  return runAppEffect("relay.activeAccess", activeRelayAccessEffect())
-}
-
-const activeRelayAccessEffect = Effect.fn("relay.activeAccess")(function* () {
-  const user = yield* Effect.tryPromise({
-    try: requireAuthenticatedUser,
-    catch: (cause) =>
-      AuthenticationError.make({ message: "Authentication required", cause }),
+async function instanceRelayAccess(relayId: string) {
+  const user = await requireAuthenticatedUser().catch((cause) => {
+    throw AuthenticationError.make({
+      message: "Authentication required",
+      cause,
+    })
   })
-  const relay = yield* resolvePrimaryRelayEffect()
+  const relay = (await listPersistedRelays()).find(
+    (item) => item.enabled && item.id === relayId
+  )
   if (!relay) {
-    return yield* ResourceNotFoundError.make({
+    throw ResourceNotFoundError.make({
       resource: "relay",
-      message: "No active Relay is configured",
+      message: "No Relay owns this instance",
     })
   }
   return { relay, user }
-})
+}
+
+async function authorizedFleetSnapshot(
+  user: AuthenticatedUser,
+  fallbackOnError: boolean
+): Promise<RelayFleetSnapshot> {
+  const relays = (await listPersistedRelays()).filter((relay) => relay.enabled)
+  const entries = await Promise.all(
+    relays.map(async (relay) => {
+      try {
+        return {
+          relay,
+          snapshot: await authorizedRelaySnapshot(relay, user),
+          status: "connected" as const,
+        }
+      } catch (cause) {
+        if (!fallbackOnError) throw cause
+        return {
+          relay,
+          snapshot: await authorizedRelaySnapshot(relay, user, true).catch(
+            () => null
+          ),
+          status: "unreachable" as const,
+        }
+      }
+    })
+  )
+  return mergeRelaySnapshots(entries)
+}
+
+function mergeRelaySnapshots(
+  entries: Array<{
+    relay: PersistedRelay
+    snapshot: Awaited<ReturnType<typeof authorizedRelaySnapshot>> | null
+    status: RelayReachability
+  }>
+): RelayFleetSnapshot {
+  const instances = entries.flatMap(({ relay, snapshot, status }) =>
+    (snapshot?.instances ?? []).map((instance) => ({
+      ...instance,
+      relayId: relay.id,
+      relayName: relay.name,
+      relayStatus: status,
+    }))
+  )
+  const shortIdCounts = new Map<string, number>()
+  for (const instance of instances) {
+    shortIdCounts.set(
+      instance.shortId,
+      (shortIdCounts.get(instance.shortId) ?? 0) + 1
+    )
+  }
+  return {
+    nodes: entries.flatMap(({ relay, snapshot, status }) =>
+      snapshot
+        ? [
+            {
+              ...snapshot.node,
+              relayId: relay.id,
+              relayName: relay.name,
+              relayStatus: status,
+            },
+          ]
+        : []
+    ),
+    instances: instances.map((instance) => ({
+      ...instance,
+      routeId:
+        shortIdCounts.get(instance.shortId) === 1
+          ? instance.shortId
+          : `${instance.relayId.slice(0, 8)}-${instance.shortId}`,
+    })),
+  }
+}
+
+function publicFleetRelay(
+  relays: Array<PersistedRelay>,
+  connectedCount: number
+) {
+  const relay = relays[0]
+  if (relays.length === 1 && relay) return { id: relay.id, name: relay.name }
+  return {
+    id: "relay-fleet",
+    name: `${connectedCount}/${relays.length} Relays connected`,
+  }
+}
+
+function publicRelayState(entry: {
+  relay: PersistedRelay
+  status: RelayReachability
+}) {
+  return {
+    id: entry.relay.id,
+    name: entry.relay.name,
+    status: entry.status,
+  }
+}
 
 function redactSensitiveText(value: string): string {
   return value

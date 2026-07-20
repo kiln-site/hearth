@@ -113,8 +113,14 @@ const RelayRow = React.memo(function RelayRow({
   const queryClient = useQueryClient()
   const [pending, setPending] = React.useState<"check" | "remove" | null>(null)
   const [error, setError] = React.useState<string | null>(null)
-  const checkMutation = useMutation({ mutationFn: checkRelay })
-  const removeMutation = useMutation({ mutationFn: removeRelay })
+  const checkMutation = useMutation({
+    mutationFn: checkRelay,
+    onSuccess: () => invalidateRelayQueries(queryClient),
+  })
+  const removeMutation = useMutation({
+    mutationFn: removeRelay,
+    onSuccess: () => invalidateRelayQueries(queryClient),
+  })
 
   async function refresh(event: React.MouseEvent) {
     event.stopPropagation()
@@ -122,7 +128,6 @@ const RelayRow = React.memo(function RelayRow({
     setError(null)
     try {
       await checkMutation.mutateAsync({ data: { id: relay.id } })
-      await invalidateRelayQueries(queryClient)
     } catch (cause) {
       setError(messageFrom(cause, "Could not check Relay"))
     } finally {
@@ -138,7 +143,6 @@ const RelayRow = React.memo(function RelayRow({
     try {
       await removeMutation.mutateAsync({ data: { id: relay.id } })
       onRemoved(relay.id)
-      await invalidateRelayQueries(queryClient)
     } catch (cause) {
       setError(messageFrom(cause, "Could not remove Relay"))
     } finally {
@@ -255,13 +259,15 @@ function EmptyRelayList() {
   )
 }
 
-function RelayEditor({
-  relay,
-  onStartAdding,
-}: {
+interface RelayEditorProps {
   relay: PersistedRelay | null
   onStartAdding: () => void
-}) {
+}
+
+const RelayEditor = React.memo(function RelayEditor({
+  relay,
+  onStartAdding,
+}: RelayEditorProps) {
   const queryClient = useQueryClient()
   const formRef = React.useRef<HTMLFormElement>(null)
   const keyRef = React.useRef<HTMLInputElement>(null)
@@ -271,8 +277,14 @@ function RelayEditor({
     tone: "error" | "success"
     message: string
   } | null>(null)
-  const addMutation = useMutation({ mutationFn: addRelay })
-  const updateMutation = useMutation({ mutationFn: updateRelay })
+  const addMutation = useMutation({
+    mutationFn: addRelay,
+    onSuccess: () => invalidateRelayQueries(queryClient),
+  })
+  const updateMutation = useMutation({
+    mutationFn: updateRelay,
+    onSuccess: () => invalidateRelayQueries(queryClient),
+  })
 
   async function save(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -297,7 +309,6 @@ function RelayEditor({
           ? `${saved.name} was saved, but Hearth could not connect.`
           : `${saved.name} is saved and connected.`,
       })
-      await invalidateRelayQueries(queryClient)
       if (!relay) formRef.current?.reset()
     } catch (cause) {
       setFeedback({
@@ -485,7 +496,7 @@ function RelayEditor({
       </div>
     </section>
   )
-}
+}, relayEditorPropsEqual)
 
 function Field({
   label,
@@ -518,6 +529,23 @@ async function invalidateRelayQueries(
     queryClient.invalidateQueries({ queryKey: queryKeys.relay.snapshot }),
     queryClient.invalidateQueries({ queryKey: queryKeys.access.capabilities }),
   ])
+}
+
+function relayEditorPropsEqual(
+  previous: RelayEditorProps,
+  next: RelayEditorProps
+): boolean {
+  if (previous.onStartAdding !== next.onStartAdding) return false
+  if (previous.relay === next.relay) return true
+  if (!previous.relay || !next.relay) return false
+  return (
+    previous.relay.id === next.relay.id &&
+    previous.relay.name === next.relay.name &&
+    previous.relay.hostname === next.relay.hostname &&
+    previous.relay.port === next.relay.port &&
+    previous.relay.tokenConfigured === next.relay.tokenConfigured &&
+    previous.relay.useTls === next.relay.useTls
+  )
 }
 
 function messageFrom(cause: unknown, fallback: string): string {

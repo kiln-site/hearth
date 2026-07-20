@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test"
 import type { RelayInstance, RelaySnapshot } from "@workspace/contracts"
 
+import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 import {
   selectInstanceRuntime,
   selectInstanceSettings,
@@ -28,11 +29,15 @@ const instance = {
   version: "1.21.11",
 } as RelayInstance
 
-function snapshotWithCpu(percent: number): RelaySnapshot {
+function snapshotWithCpu(percent: number): RelayFleetSnapshot {
   return {
     instances: [
       {
         ...instance,
+        relayId: "relay-one",
+        relayName: "Relay one",
+        relayStatus: "connected",
+        routeId: "aaaaaaaa",
         resources: {
           ...instance.resources!,
           sampledAt: `2026-07-20T12:00:0${percent}.000Z`,
@@ -40,7 +45,14 @@ function snapshotWithCpu(percent: number): RelaySnapshot {
         },
       },
     ],
-    node: {} as RelaySnapshot["node"],
+    nodes: [
+      {
+        ...({} as RelaySnapshot["node"]),
+        relayId: "relay-one",
+        relayName: "Relay one",
+        relayStatus: "connected",
+      },
+    ],
   }
 }
 

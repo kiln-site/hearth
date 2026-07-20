@@ -258,7 +258,7 @@ export function ConsoleWorkspace({
 }) {
   return (
     <ConsoleWorkspaceSession
-      key={instance.id}
+      key={`${instance.relayId}:${instance.id}`}
       instance={instance}
       active={active}
       canShare={canShare}
@@ -287,6 +287,7 @@ function ConsoleWorkspaceSession({
     <section className="flex min-h-0 flex-1 flex-col bg-card">
       <ConsoleStreamController
         instanceId={instance.id}
+        relayId={instance.relayId}
         relayConnected={relayConnected}
         streamStore={streamStore}
       />
@@ -317,14 +318,16 @@ function ConsoleWorkspaceSession({
 
 function ConsoleStreamController({
   instanceId,
+  relayId,
   relayConnected,
   streamStore,
 }: {
   instanceId: string
+  relayId: string
   relayConnected: boolean
   streamStore: ConsoleStreamStore
 }) {
-  const snapshot = useRelayConsoleStream(instanceId, relayConnected)
+  const snapshot = useRelayConsoleStream(relayId, instanceId, relayConnected)
   React.useLayoutEffect(
     () => streamStore.setSnapshot(snapshot),
     [snapshot, streamStore]
@@ -550,6 +553,7 @@ function ConsoleShareButton({
       const result = await uploadLatestLogToMclogs({
         data: {
           instanceId: instance.id,
+          relayId: instance.relayId,
           implementation: instance.implementation,
           version: instance.version,
           redactSensitive: uiStore.getRedactSensitiveSnapshot(),
@@ -1020,8 +1024,8 @@ const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
   )
   const consoleAvailable = relayConnected && connection === "live"
   const selectObservedState = React.useMemo(
-    () => selectInstanceObservedState(instance.id),
-    [instance.id]
+    () => selectInstanceObservedState(instance.id, instance.relayId),
+    [instance.id, instance.relayId]
   )
   const { data: observedState } = useQuery({
     ...relaySnapshotQueryOptions(),
@@ -1029,6 +1033,7 @@ const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
   })
   const command = useConsoleCommand(
     instance.id,
+    instance.relayId,
     active,
     consoleAvailable && observedState === "running"
   )
@@ -1172,6 +1177,7 @@ const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
 
 function useConsoleCommand(
   instanceId: string,
+  relayId: string,
   active: boolean,
   running: boolean
 ) {
@@ -1263,7 +1269,7 @@ function useConsoleCommand(
     })
     try {
       const result = await completeRelayCommand({
-        data: { instanceId, input, cursor },
+        data: { instanceId, relayId, input, cursor },
       })
       if (completionRequest.current !== requestId) return
       if (!result.supported) {
@@ -1426,7 +1432,7 @@ function useConsoleCommand(
     setSending(true)
     try {
       await sendRelayCommand({
-        data: { instanceId, command },
+        data: { instanceId, relayId, command },
       })
       setError(null)
     } catch (cause) {
@@ -1676,10 +1682,16 @@ async function copyToClipboard(value: string) {
   }
 }
 
-function useRelayConsoleStream(instanceId: string, relayConnected: boolean) {
+function useRelayConsoleStream(
+  relayId: string,
+  instanceId: string,
+  relayConnected: boolean
+) {
   const queryClient = useQueryClient()
   const [consoleData, setConsoleData] = React.useState<RelayConsole | null>(
-    () => queryClient.getQueryData(queryKeys.relay.console(instanceId)) ?? null
+    () =>
+      queryClient.getQueryData(queryKeys.relay.console(relayId, instanceId)) ??
+      null
   )
   const [loading, setLoading] = React.useState(() => !consoleData)
   const [connection, setConnection] = React.useState<
@@ -1700,11 +1712,15 @@ function useRelayConsoleStream(instanceId: string, relayConnected: boolean) {
     const pending: Array<RelayConsoleLine> = []
     const seen = new Set(
       queryClient
-        .getQueryData<RelayConsole>(queryKeys.relay.console(instanceId))
+        .getQueryData<RelayConsole>(
+          queryKeys.relay.console(relayId, instanceId)
+        )
         ?.lines.map((line) => line.id) ?? []
     )
     setConnection("connecting")
-    setLoading(!queryClient.getQueryData(queryKeys.relay.console(instanceId)))
+    setLoading(
+      !queryClient.getQueryData(queryKeys.relay.console(relayId, instanceId))
+    )
 
     function flush() {
       flushTimer = null
@@ -1721,7 +1737,10 @@ function useRelayConsoleStream(instanceId: string, relayConnected: boolean) {
           lines: [...(current?.lines ?? []), ...fresh].slice(-5_000),
           truncated: Boolean(current?.truncated) || seen.size > 5_000,
         }
-        queryClient.setQueryData(queryKeys.relay.console(instanceId), next)
+        queryClient.setQueryData(
+          queryKeys.relay.console(relayId, instanceId),
+          next
+        )
         return next
       })
     }
@@ -1738,7 +1757,11 @@ function useRelayConsoleStream(instanceId: string, relayConnected: boolean) {
       let retryDelay = 400
       while (!cancelled) {
         try {
-          const stream = openRelayConsoleStream(instanceId, lifecycle.signal)
+          const stream = openRelayConsoleStream(
+            relayId,
+            instanceId,
+            lifecycle.signal
+          )
           activeIterator = stream
           // Cancellation changes from the effect cleanup while next() awaits.
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
@@ -1755,7 +1778,7 @@ function useRelayConsoleStream(instanceId: string, relayConnected: boolean) {
                   truncated: false,
                 }
                 queryClient.setQueryData(
-                  queryKeys.relay.console(instanceId),
+                  queryKeys.relay.console(relayId, instanceId),
                   next
                 )
                 return next
@@ -1783,7 +1806,7 @@ function useRelayConsoleStream(instanceId: string, relayConnected: boolean) {
       if (flushTimer !== null) window.clearTimeout(flushTimer)
       if (activeIterator) void activeIterator.return(undefined)
     }
-  }, [instanceId, queryClient, relayConnected])
+  }, [instanceId, queryClient, relayConnected, relayId])
 
   return { connection, consoleData, loading }
 }

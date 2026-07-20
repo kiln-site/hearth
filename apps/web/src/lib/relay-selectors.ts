@@ -1,19 +1,24 @@
-import type {
-  RelayInstance,
-  RelayNode,
-  RelaySnapshot,
-} from "@workspace/contracts"
+import type { RelayInstance, RelayNode } from "@workspace/contracts"
 
 import type { RelayConnection } from "@/lib/query-options"
+import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 
 export type RelayConnectionSummary =
   | Exclude<RelayConnection, { status: "connected" }>
-  | Pick<Extract<RelayConnection, { status: "connected" }>, "relay" | "status">
+  | Pick<
+      Extract<RelayConnection, { status: "connected" }>,
+      "relay" | "relays" | "status"
+    >
 
 export type SidebarInstance = Pick<
   RelayInstance,
   "id" | "implementation" | "name" | "observedState" | "shortId" | "version"
->
+> & {
+  relayId: string
+  relayName: string
+  relayStatus: "connected" | "unreachable"
+  routeId: string
+}
 
 export type InstanceWorkspaceInstance = Pick<
   RelayInstance,
@@ -26,7 +31,12 @@ export type InstanceWorkspaceInstance = Pick<
   | "service"
   | "shortId"
   | "version"
->
+> & {
+  relayId: string
+  relayName: string
+  relayStatus: "connected" | "unreachable"
+  routeId: string
+}
 
 export type InstanceRuntime = Pick<
   RelayInstance,
@@ -46,7 +56,7 @@ export type InstanceSettingsInstance = Pick<
   | "service"
   | "shortId"
   | "version"
->
+> & { relayId: string }
 
 export type RelayNodeSummary = Pick<RelayNode, "id" | "name">
 
@@ -59,25 +69,33 @@ export function selectRelayConnectionSummary(
   connection: RelayConnection
 ): RelayConnectionSummary {
   return connection.status === "connected"
-    ? { relay: connection.relay, status: connection.status }
+    ? {
+        relay: connection.relay,
+        relays: connection.relays,
+        status: connection.status,
+      }
     : connection
 }
 
 export function selectSidebarInstances(
-  snapshot: RelaySnapshot
+  snapshot: RelayFleetSnapshot
 ): Array<SidebarInstance> {
   return snapshot.instances.map((instance) => ({
     id: instance.id,
     implementation: instance.implementation,
     name: instance.name,
     observedState: instance.observedState,
+    relayId: instance.relayId,
+    relayName: instance.relayName,
+    relayStatus: instance.relayStatus,
+    routeId: instance.routeId,
     shortId: instance.shortId,
     version: instance.version,
   }))
 }
 
 export function selectInstanceWorkspaceInstance(identifier: string) {
-  return (snapshot: RelaySnapshot): InstanceWorkspaceInstance | null => {
+  return (snapshot: RelayFleetSnapshot): InstanceWorkspaceInstance | null => {
     const instance = findRelayInstance(snapshot.instances, identifier)
     if (!instance) return null
     return {
@@ -87,6 +105,10 @@ export function selectInstanceWorkspaceInstance(identifier: string) {
       implementation: instance.implementation,
       javaVersion: instance.javaVersion,
       name: instance.name,
+      relayId: instance.relayId,
+      relayName: instance.relayName,
+      relayStatus: instance.relayStatus,
+      routeId: instance.routeId,
       service: instance.service,
       shortId: instance.shortId,
       version: instance.version,
@@ -94,9 +116,11 @@ export function selectInstanceWorkspaceInstance(identifier: string) {
   }
 }
 
-export function selectInstanceRuntime(instanceId: string) {
-  return (snapshot: RelaySnapshot): InstanceRuntime | null => {
-    const instance = snapshot.instances.find((item) => item.id === instanceId)
+export function selectInstanceRuntime(instanceId: string, relayId?: string) {
+  return (snapshot: RelayFleetSnapshot): InstanceRuntime | null => {
+    const instance = snapshot.instances.find(
+      (item) => item.id === instanceId && (!relayId || item.relayId === relayId)
+    )
     return instance
       ? {
           id: instance.id,
@@ -108,9 +132,11 @@ export function selectInstanceRuntime(instanceId: string) {
   }
 }
 
-export function selectInstanceSettings(instanceId: string) {
-  return (snapshot: RelaySnapshot): InstanceSettingsData | null => {
-    const instance = snapshot.instances.find((item) => item.id === instanceId)
+export function selectInstanceSettings(instanceId: string, relayId?: string) {
+  return (snapshot: RelayFleetSnapshot): InstanceSettingsData | null => {
+    const instance = snapshot.instances.find(
+      (item) => item.id === instanceId && (!relayId || item.relayId === relayId)
+    )
     if (!instance) return null
     return {
       instance: {
@@ -122,27 +148,42 @@ export function selectInstanceSettings(instanceId: string) {
         implementation: instance.implementation,
         javaVersion: instance.javaVersion,
         name: instance.name,
+        relayId: instance.relayId,
         service: instance.service,
         shortId: instance.shortId,
         version: instance.version,
       },
-      node: { id: snapshot.node.id, name: snapshot.node.name },
+      node: (() => {
+        const node = snapshot.nodes.find(
+          (item) => item.relayId === instance.relayId
+        )
+        return {
+          id: node?.id ?? instance.relayId,
+          name: node?.name ?? instance.relayName,
+        }
+      })(),
     }
   }
 }
 
-export function selectInstanceObservedState(instanceId: string) {
-  return (snapshot: RelaySnapshot) =>
-    snapshot.instances.find((instance) => instance.id === instanceId)
-      ?.observedState ?? null
+export function selectInstanceObservedState(
+  instanceId: string,
+  relayId?: string
+) {
+  return (snapshot: RelayFleetSnapshot) =>
+    snapshot.instances.find(
+      (instance) =>
+        instance.id === instanceId && (!relayId || instance.relayId === relayId)
+    )?.observedState ?? null
 }
 
 export function findRelayInstance<
-  T extends { id: string; name: string; shortId: string },
+  T extends { id: string; name: string; routeId?: string; shortId: string },
 >(instances: Array<T>, identifier: string | null | undefined): T | undefined {
   if (!identifier) return undefined
   return instances.find(
     (instance) =>
+      instance.routeId === identifier ||
       instance.shortId === identifier ||
       instance.id === identifier ||
       instance.name === identifier

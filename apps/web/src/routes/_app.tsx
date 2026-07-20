@@ -114,6 +114,11 @@ function AppLayout() {
   const rememberedInstance = findRelayInstance(instances, selectedInstanceId)
   const instance: SidebarInstance | undefined =
     routeInstance ?? rememberedInstance ?? instances.at(0)
+  const selectedRelayStatus = activeSection
+    ? connection.status
+    : connection.status === "unreachable"
+      ? "unreachable"
+      : (instance?.relayStatus ?? connection.status)
 
   const rememberInstance = React.useCallback((instanceId: string) => {
     setSelectedInstanceId(instanceId)
@@ -155,18 +160,18 @@ function AppLayout() {
   }, [instances, serverId])
 
   React.useEffect(() => {
-    if (routeInstance?.id) rememberInstance(routeInstance.id)
-  }, [rememberInstance, routeInstance?.id])
+    if (routeInstance?.routeId) rememberInstance(routeInstance.routeId)
+  }, [rememberInstance, routeInstance?.routeId])
 
   React.useEffect(() => {
-    if (!activeTab || !instance || instance.shortId === serverId) return
-    void navigateToInstanceTab(activeTab, instance.shortId, true)
+    if (!activeTab || !instance || instance.routeId === serverId) return
+    void navigateToInstanceTab(activeTab, instance.routeId, true)
   }, [activeTab, instance, navigateToInstanceTab, serverId])
 
   const handleInstanceChange = React.useCallback(
     (shortId: string) => {
       const nextInstance = findRelayInstance(instances, shortId)
-      if (nextInstance) rememberInstance(nextInstance.id)
+      if (nextInstance) rememberInstance(nextInstance.routeId)
       void navigateToInstanceTab(activeTab ?? "console", shortId)
     },
     [activeTab, instances, navigateToInstanceTab, rememberInstance]
@@ -174,7 +179,7 @@ function AppLayout() {
   const handleTabChange = React.useCallback(
     (tab: InstanceTab) => {
       if (!instance) return
-      void navigateToInstanceTab(tab, instance.shortId)
+      void navigateToInstanceTab(tab, instance.routeId)
     },
     [instance, navigateToInstanceTab]
   )
@@ -195,7 +200,8 @@ function AppLayout() {
       onInstanceChange: handleInstanceChange,
       onTabChange: handleTabChange,
       relayName: connection.relay?.name,
-      relayStatus: connection.status,
+      relayCount: connection.relays?.length ?? (connection.relay ? 1 : 0),
+      relayStatus: selectedRelayStatus,
       user,
     }),
     [
@@ -203,12 +209,14 @@ function AppLayout() {
       activeTab,
       capabilities.canManageAccess,
       capabilities.isPlatformAdmin,
-      connection.relay?.name,
-      connection.status,
+      connection.relay,
+      connection.relays?.length,
       handleInstanceChange,
       handleTabChange,
       instance,
+      instance?.relayId,
       instances,
+      selectedRelayStatus,
       user,
     ]
   )
@@ -261,9 +269,9 @@ function AppLayout() {
   const relayConnectionValue = React.useMemo(
     () => ({
       retry: handleRetry,
-      status: connection.status,
+      status: selectedRelayStatus,
     }),
-    [connection.status, handleRetry]
+    [selectedRelayStatus, handleRetry]
   )
 
   return (
@@ -399,7 +407,7 @@ function RelayUnavailableState({
           </div>
         </div>
         <div className="border-t border-border/70 bg-muted/10 px-5 py-3 font-mono text-[9px] leading-4 text-muted-foreground">
-          Hearth checks the active Relay automatically. No page reload is
+          Hearth checks configured Relays automatically. No page reload is
           required.
         </div>
       </section>

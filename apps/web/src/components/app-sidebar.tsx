@@ -74,6 +74,7 @@ interface AppSidebarProps {
   canManageAccess: boolean
   isPlatformAdmin: boolean
   relayStatus: "connected" | "unconfigured" | "unreachable"
+  relayCount: number
   relayName?: string
   onInstanceChange: (id: string) => void
   onTabChange: (tab: InstanceTab) => void
@@ -88,6 +89,7 @@ export const AppSidebar = React.memo(function AppSidebar({
   canManageAccess,
   isPlatformAdmin,
   relayStatus,
+  relayCount,
   relayName,
   onInstanceChange,
   onTabChange,
@@ -117,6 +119,7 @@ export const AppSidebar = React.memo(function AppSidebar({
           instanceCount={instances.length}
           isPlatformAdmin={isPlatformAdmin}
           relayName={relayName}
+          relayCount={relayCount}
           relayStatus={relayStatus}
         />
 
@@ -148,12 +151,14 @@ function InfrastructureNavigation({
   instanceCount,
   isPlatformAdmin,
   relayName,
+  relayCount,
   relayStatus,
 }: {
   activeSection: GlobalSection
   instanceCount: number
   isPlatformAdmin: boolean
   relayName?: string
+  relayCount: number
   relayStatus: "connected" | "unconfigured" | "unreachable"
 }) {
   const navigate = useNavigate()
@@ -215,7 +220,7 @@ function InfrastructureNavigation({
               <span>Relays</span>
             </SidebarMenuButton>
             <SidebarMenuBadge className={relayBadgeTone(relayStatus)}>
-              {relayStatus === "unconfigured" ? "0" : "1"}
+              {relayCount}
             </SidebarMenuBadge>
           </SidebarMenuItem>
         </SidebarMenu>
@@ -284,10 +289,10 @@ function InstanceNavigation({
                 <DropdownMenuSeparator />
                 {instances.map((item) => (
                   <DropdownMenuItem
-                    key={item.id}
+                    key={`${item.relayId}:${item.id}`}
                     className={`gap-2.5 border-l-2 py-2 ${statusBorderTone(item.observedState)}`}
                     aria-label={`${item.name}, ${item.implementation} ${item.version}, ${item.observedState}`}
-                    onSelect={() => onInstanceChange(item.shortId)}
+                    onSelect={() => onInstanceChange(item.routeId)}
                   >
                     <ServerTypeIcon
                       implementation={item.implementation}
@@ -302,7 +307,8 @@ function InstanceNavigation({
                         {item.implementation} {item.version} · {item.shortId}
                       </span>
                     </span>
-                    {item.id === instance.id ? (
+                    {item.id === instance.id &&
+                    item.relayId === instance.relayId ? (
                       <span className="font-mono text-[9px] text-primary">
                         ACTIVE
                       </span>

@@ -67,7 +67,7 @@ function FilesRoute() {
       }
     >
       <FileWorkspace
-        key={instance.id}
+        key={`${instance.relayId}:${instance.id}`}
         instance={instance}
         active
         routeFilePath={filePath}

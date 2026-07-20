@@ -814,6 +814,7 @@ function EditorShareButton({
         data: {
           content: redactSensitiveText(sessionStore.getValue()),
           instanceId: instance.id,
+          relayId: instance.relayId,
           path: file.path,
           implementation: instance.implementation,
           version: instance.version,
@@ -1093,6 +1094,7 @@ function EditorMobileOverflowMenu({
         data: {
           content: redactSensitiveText(sessionStore.getValue()),
           instanceId: instance.id,
+          relayId: instance.relayId,
           path: file.path,
           implementation: instance.implementation,
           version: instance.version,
@@ -2701,13 +2703,24 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
   const handledTreeEntry = React.useRef(false)
   const openingTreeForRouteEntry = openTreeOnEntry && !handledTreeEntry.current
   const displayedTreeCollapsed = treeCollapsed && !openingTreeForRouteEntry
-  const treeQuery = useQuery(relayTreeQueryOptions(instance.id))
+  const treeQuery = useQuery(
+    relayTreeQueryOptions(instance.relayId, instance.id)
+  )
   const tree = treeQuery.data ?? null
   const refreshTreeMutation = useMutation({
     mutationFn: () =>
-      getRelayTree({ data: { instanceId: instance.id, fresh: true } }),
+      getRelayTree({
+        data: {
+          instanceId: instance.id,
+          relayId: instance.relayId,
+          fresh: true,
+        },
+      }),
     onSuccess: (nextTree) => {
-      queryClient.setQueryData(queryKeys.relay.tree(instance.id), nextTree)
+      queryClient.setQueryData(
+        queryKeys.relay.tree(instance.relayId, instance.id),
+        nextTree
+      )
     },
   })
 
@@ -2858,11 +2871,11 @@ function FileViewer({
   )
   const isHome = !selectedPath
   const activityQuery = useQuery({
-    ...relayFileActivityQueryOptions(instance.id),
+    ...relayFileActivityQueryOptions(instance.relayId, instance.id),
     enabled: isHome,
   })
   const selectedPinQuery = useQuery({
-    ...relayFileActivityQueryOptions(instance.id),
+    ...relayFileActivityQueryOptions(instance.relayId, instance.id),
     enabled: !isHome,
     select: (nextActivity) =>
       nextActivity.files.find((entry) => entry.path === selectedPath)?.pinned ??
@@ -2872,7 +2885,7 @@ function FileViewer({
     tree?.paths.includes(selectedPath) && !selectedPath.endsWith("/")
   )
   const fileQuery = useQuery({
-    ...relayFileQueryOptions(instance.id, selectedPath),
+    ...relayFileQueryOptions(instance.relayId, instance.id, selectedPath),
     enabled: selectedPathIsReadable && relayConnected,
     refetchOnMount: "always",
     refetchOnReconnect: false,
@@ -2883,11 +2896,18 @@ function FileViewer({
     mutationFn: saveRelayFile,
     onSuccess: (nextFile, variables) => {
       queryClient.setQueryData(
-        queryKeys.relay.file(variables.data.instanceId, variables.data.path),
+        queryKeys.relay.file(
+          variables.data.relayId,
+          variables.data.instanceId,
+          variables.data.path
+        ),
         nextFile
       )
       void queryClient.invalidateQueries({
-        queryKey: queryKeys.relay.fileActivity(variables.data.instanceId),
+        queryKey: queryKeys.relay.fileActivity(
+          variables.data.relayId,
+          variables.data.instanceId
+        ),
       })
     },
   })
@@ -2895,7 +2915,7 @@ function FileViewer({
     mutationFn: updateRelayFilePin,
     onSuccess: (nextActivity) => {
       queryClient.setQueryData(
-        queryKeys.relay.fileActivity(instance.id),
+        queryKeys.relay.fileActivity(instance.relayId, instance.id),
         nextActivity
       )
     },
@@ -2943,12 +2963,12 @@ function FileViewer({
     if (activitySyncKey.current === nextKey) return
     activitySyncKey.current = nextKey
     void queryClient.invalidateQueries({
-      queryKey: queryKeys.relay.fileActivity(instance.id),
+      queryKey: queryKeys.relay.fileActivity(instance.relayId, instance.id),
       // Avoid refetching the active pin-only observer. The disabled home
       // observer refetches this stale query when Files Home becomes active.
       refetchType: "none",
     })
-  }, [fileQuery.data, instance.id, queryClient, selectedPath])
+  }, [fileQuery.data, instance.id, instance.relayId, queryClient, selectedPath])
 
   React.useEffect(() => {
     if (isHome) {
@@ -2981,13 +3001,14 @@ function FileViewer({
       await saveFile({
         data: {
           instanceId: instance.id,
+          relayId: instance.relayId,
           path: currentFile.path,
           content,
           expectedModifiedAt: currentFile.modifiedAt,
         },
       })
     },
-    [instance.id, saveFile]
+    [instance.id, instance.relayId, saveFile]
   )
   const updatePinned = pinFileMutation.mutate
   const handlePinnedChange = React.useCallback(
@@ -2995,10 +3016,15 @@ function FileViewer({
       const currentFile = fileRef.current
       if (!currentFile) return
       updatePinned({
-        data: { instanceId: instance.id, path: currentFile.path, pinned },
+        data: {
+          instanceId: instance.id,
+          relayId: instance.relayId,
+          path: currentFile.path,
+          pinned,
+        },
       })
     },
-    [instance.id, updatePinned]
+    [instance.id, instance.relayId, updatePinned]
   )
 
   if (isHome) {

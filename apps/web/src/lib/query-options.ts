@@ -1,6 +1,6 @@
 import { queryOptions } from "@tanstack/react-query"
 import type { QueryClient } from "@tanstack/react-query"
-import type { RelayInstance, RelaySnapshot } from "@workspace/contracts"
+import type { RelayInstance } from "@workspace/contracts"
 
 import {
   getAccessCapabilities,
@@ -17,6 +17,7 @@ import {
   getRelayTree,
 } from "@/server/relay"
 import { getRelays } from "@/server/relays"
+import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 
 export type RelayConnection = Awaited<
   ReturnType<typeof getRelayConnectionState>
@@ -35,29 +36,37 @@ export const queryKeys = {
   bricks: ["bricks", "studio"] as const,
   relay: {
     connection: ["relay", "connection"] as const,
-    console: (instanceId: string) =>
-      ["relay", "instances", instanceId, "console"] as const,
-    file: (instanceId: string, path: string) =>
-      ["relay", "instances", instanceId, "files", "content", path] as const,
-    fileActivity: (instanceId: string) =>
-      ["relay", "instances", instanceId, "files", "activity"] as const,
+    console: (relayId: string, instanceId: string) =>
+      ["relay", relayId, "instances", instanceId, "console"] as const,
+    file: (relayId: string, instanceId: string, path: string) =>
+      [
+        "relay",
+        relayId,
+        "instances",
+        instanceId,
+        "files",
+        "content",
+        path,
+      ] as const,
+    fileActivity: (relayId: string, instanceId: string) =>
+      ["relay", relayId, "instances", instanceId, "files", "activity"] as const,
     snapshot: ["relay", "snapshot"] as const,
-    tree: (instanceId: string) =>
-      ["relay", "instances", instanceId, "files", "tree"] as const,
+    tree: (relayId: string, instanceId: string) =>
+      ["relay", relayId, "instances", instanceId, "files", "tree"] as const,
   },
   relays: ["relays"] as const,
   uiPreferences: ["ui", "preferences"] as const,
 }
 
 export function replaceRelaySnapshotInstance(
-  snapshot: RelaySnapshot | undefined,
+  snapshot: RelayFleetSnapshot | undefined,
   updated: RelayInstance
-): RelaySnapshot | undefined {
+): RelayFleetSnapshot | undefined {
   return snapshot
     ? {
         ...snapshot,
         instances: snapshot.instances.map((instance) =>
-          instance.id === updated.id ? updated : instance
+          instance.id === updated.id ? { ...instance, ...updated } : instance
         ),
       }
     : snapshot
@@ -141,26 +150,33 @@ export function brickStudioQueryOptions() {
   })
 }
 
-export function relayTreeQueryOptions(instanceId: string) {
+export function relayTreeQueryOptions(relayId: string, instanceId: string) {
   return queryOptions({
-    queryKey: queryKeys.relay.tree(instanceId),
-    queryFn: () => getRelayTree({ data: { instanceId } }),
+    queryKey: queryKeys.relay.tree(relayId, instanceId),
+    queryFn: () => getRelayTree({ data: { instanceId, relayId } }),
     staleTime: 15_000,
   })
 }
 
-export function relayFileQueryOptions(instanceId: string, path: string) {
+export function relayFileQueryOptions(
+  relayId: string,
+  instanceId: string,
+  path: string
+) {
   return queryOptions({
-    queryKey: queryKeys.relay.file(instanceId, path),
-    queryFn: () => getRelayFile({ data: { instanceId, path } }),
+    queryKey: queryKeys.relay.file(relayId, instanceId, path),
+    queryFn: () => getRelayFile({ data: { instanceId, path, relayId } }),
     staleTime: 15_000,
   })
 }
 
-export function relayFileActivityQueryOptions(instanceId: string) {
+export function relayFileActivityQueryOptions(
+  relayId: string,
+  instanceId: string
+) {
   return queryOptions({
-    queryKey: queryKeys.relay.fileActivity(instanceId),
-    queryFn: () => getRelayFileActivity({ data: { instanceId } }),
+    queryKey: queryKeys.relay.fileActivity(relayId, instanceId),
+    queryFn: () => getRelayFileActivity({ data: { instanceId, relayId } }),
     staleTime: 15_000,
   })
 }

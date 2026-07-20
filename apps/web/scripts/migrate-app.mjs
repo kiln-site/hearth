@@ -27,9 +27,9 @@ try {
   const [columns] = await connection.query(
     `SHOW COLUMNS FROM ${databaseTable("relay")} LIKE 'is_primary'`
   )
-  if (columns.length === 0) {
+  if (columns.length > 0) {
     await connection.query(
-      `ALTER TABLE ${databaseTable("relay")} ADD COLUMN is_primary BOOLEAN NOT NULL DEFAULT FALSE AFTER enabled`
+      `ALTER TABLE ${databaseTable("relay")} DROP COLUMN is_primary`
     )
   }
   await ensureRelayMetadataSchema(connection)
@@ -42,8 +42,8 @@ try {
     if (relay) {
       await connection.execute(
         `INSERT INTO ${databaseTable("relay")}
-        (id, name, hostname, port, use_tls, token_ciphertext, enabled, is_primary)
-       VALUES (?, ?, ?, ?, ?, ?, TRUE, TRUE)`,
+        (id, name, hostname, port, use_tls, token_ciphertext, enabled)
+       VALUES (?, ?, ?, ?, ?, ?, TRUE)`,
         [
           randomUUID(),
           relay.name,

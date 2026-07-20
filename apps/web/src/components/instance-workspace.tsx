@@ -1,6 +1,5 @@
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import type { RelaySnapshot } from "@workspace/contracts"
 import {
   Check,
   CircleStop,
@@ -35,6 +34,7 @@ import {
   relaySnapshotQueryOptions,
   replaceRelaySnapshotInstance,
 } from "@/lib/query-options"
+import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 import {
   selectInstanceObservedState,
   selectInstanceRuntime,
@@ -159,7 +159,10 @@ function InstanceWorkspaceHeader({
     <header className="shrink-0 border-b bg-background/90 backdrop-blur-xl">
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-3 px-3 py-3 sm:px-5 lg:min-h-20 lg:py-2 xl:grid-cols-[minmax(0,1fr)_39rem_auto] xl:gap-x-5">
         <InstanceIdentity error={error} instance={instance} title={title} />
-        <LiveResourceMeters instanceId={instance.id} />
+        <LiveResourceMeters
+          instanceId={instance.id}
+          relayId={instance.relayId}
+        />
         <InstancePowerControls
           canControlPower={canControlPower}
           instance={instance}
@@ -461,8 +464,8 @@ function InstancePowerControls({
 }) {
   const queryClient = useQueryClient()
   const selectObservedState = React.useMemo(
-    () => selectInstanceObservedState(instance.id),
-    [instance.id]
+    () => selectInstanceObservedState(instance.id, instance.relayId),
+    [instance.id, instance.relayId]
   )
   const { data: observedState } = useQuery({
     ...relaySnapshotQueryOptions(),
@@ -471,7 +474,7 @@ function InstancePowerControls({
   const relayActionMutation = useMutation({
     mutationFn: performRelayAction,
     onSuccess: (updated) => {
-      queryClient.setQueryData<RelaySnapshot>(
+      queryClient.setQueryData<RelayFleetSnapshot>(
         queryKeys.relay.snapshot,
         (snapshot) => replaceRelaySnapshotInstance(snapshot, updated)
       )
@@ -487,7 +490,11 @@ function InstancePowerControls({
       onError(null)
       try {
         await mutateRelayAction({
-          data: { instanceId: instance.id, action: nextAction },
+          data: {
+            instanceId: instance.id,
+            relayId: instance.relayId,
+            action: nextAction,
+          },
         })
       } catch (cause) {
         onError(cause instanceof Error ? cause.message : "Relay action failed")
@@ -495,7 +502,7 @@ function InstancePowerControls({
         setAction(null)
       }
     },
-    [instance.id, mutateRelayAction, onError, relayConnected]
+    [instance.id, instance.relayId, mutateRelayAction, onError, relayConnected]
   )
 
   if (!observedState) {
@@ -661,7 +668,13 @@ function createResourceHistoryStore(instanceId: string): ResourceHistoryStore {
   }
 }
 
-function LiveResourceMeters({ instanceId }: { instanceId: string }) {
+function LiveResourceMeters({
+  instanceId,
+  relayId,
+}: {
+  instanceId: string
+  relayId: string
+}) {
   const [historyStore] = React.useState(() =>
     createResourceHistoryStore(instanceId)
   )
@@ -671,17 +684,22 @@ function LiveResourceMeters({ instanceId }: { instanceId: string }) {
       className="hidden min-w-0 md:col-span-2 md:block xl:col-span-1 xl:col-start-2 xl:row-start-1"
       aria-label="Server resource usage"
     >
-      <ResourceHistoryRecorder instanceId={instanceId} store={historyStore} />
+      <ResourceHistoryRecorder
+        instanceId={instanceId}
+        relayId={relayId}
+        store={historyStore}
+      />
       <div className="grid h-14 min-w-0 grid-cols-[repeat(3,minmax(0,1fr))_minmax(0,1.25fr)_5.5rem] divide-x divide-border/60 border border-border/80 bg-card/40 px-1.5 py-2 xl:grid-cols-[repeat(3,minmax(0,1fr))_minmax(0,1.15fr)_5.75rem]">
         {RESOURCE_IDS.map((resourceId) => (
           <LiveResourceMeter
             key={resourceId}
             instanceId={instanceId}
+            relayId={relayId}
             resourceId={resourceId}
             historyStore={historyStore}
           />
         ))}
-        <InstanceUptimeMeter instanceId={instanceId} />
+        <InstanceUptimeMeter instanceId={instanceId} relayId={relayId} />
       </div>
     </div>
   )
@@ -689,14 +707,16 @@ function LiveResourceMeters({ instanceId }: { instanceId: string }) {
 
 function ResourceHistoryRecorder({
   instanceId,
+  relayId,
   store,
 }: {
   instanceId: string
+  relayId: string
   store: ResourceHistoryStore
 }) {
   const selectRuntime = React.useMemo(
-    () => selectInstanceRuntime(instanceId),
-    [instanceId]
+    () => selectInstanceRuntime(instanceId, relayId),
+    [instanceId, relayId]
   )
   const { data: instance } = useQuery({
     ...relaySnapshotQueryOptions(),
@@ -712,19 +732,23 @@ function ResourceHistoryRecorder({
 
 function LiveResourceMeter({
   instanceId,
+  relayId,
   resourceId,
   historyStore,
 }: {
   instanceId: string
+  relayId: string
   resourceId: ResourceId
   historyStore: ResourceHistoryStore
 }) {
   const selectResource = React.useMemo(
-    () => (snapshot: RelaySnapshot) => {
-      const instance = snapshot.instances.find((item) => item.id === instanceId)
+    () => (snapshot: RelayFleetSnapshot) => {
+      const instance = snapshot.instances.find(
+        (item) => item.id === instanceId && item.relayId === relayId
+      )
       return instance ? resourceItem(instance, resourceId) : null
     },
-    [instanceId, resourceId]
+    [instanceId, relayId, resourceId]
   )
   const { data: resource } = useQuery({
     ...relaySnapshotQueryOptions(),
@@ -765,10 +789,18 @@ function LiveResourceMeter({
   )
 }
 
-function InstanceUptimeMeter({ instanceId }: { instanceId: string }) {
+function InstanceUptimeMeter({
+  instanceId,
+  relayId,
+}: {
+  instanceId: string
+  relayId: string
+}) {
   const selectRuntime = React.useMemo(
-    () => (snapshot: RelaySnapshot) => {
-      const instance = snapshot.instances.find((item) => item.id === instanceId)
+    () => (snapshot: RelayFleetSnapshot) => {
+      const instance = snapshot.instances.find(
+        (item) => item.id === instanceId && item.relayId === relayId
+      )
       return instance
         ? {
             id: instance.id,
@@ -778,7 +810,7 @@ function InstanceUptimeMeter({ instanceId }: { instanceId: string }) {
           }
         : null
     },
-    [instanceId]
+    [instanceId, relayId]
   )
   const { data: instance } = useQuery({
     ...relaySnapshotQueryOptions(),

@@ -1,14 +1,13 @@
-import {
-  relayConsoleStreamEventSchema,
-} from "@workspace/contracts"
+import { relayConsoleStreamEventSchema } from "@workspace/contracts"
 import type { RelayConsoleStreamEvent } from "@workspace/contracts"
 
 export async function* openRelayConsoleStream(
+  relayId: string,
   instanceId: string,
   signal: AbortSignal
 ): AsyncGenerator<RelayConsoleStreamEvent> {
   const response = await fetch(
-    `/api/console/${encodeURIComponent(instanceId)}`,
+    `/api/console/${encodeURIComponent(instanceId)}?relayId=${encodeURIComponent(relayId)}`,
     {
       cache: "no-store",
       headers: { Accept: "application/x-ndjson" },
@@ -20,7 +19,9 @@ export async function* openRelayConsoleStream(
     const problem = (await response.json().catch(() => null)) as {
       error?: string
     } | null
-    throw new Error(problem?.error ?? `Console stream returned HTTP ${response.status}`)
+    throw new Error(
+      problem?.error ?? `Console stream returned HTTP ${response.status}`
+    )
   }
   if (!response.body) throw new Error("Console stream returned an empty body")
 

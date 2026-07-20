@@ -18,8 +18,9 @@ function InfoRoute() {
   const { status: relayStatus } = useRelayConnection()
   const { instance: workspaceInstance, permissions } = useInstanceWorkspace()
   const selectInfo = React.useMemo(
-    () => selectInstanceSettings(workspaceInstance.id),
-    [workspaceInstance.id]
+    () =>
+      selectInstanceSettings(workspaceInstance.id, workspaceInstance.relayId),
+    [workspaceInstance.id, workspaceInstance.relayId]
   )
   const { data } = useQuery({
     ...relaySnapshotQueryOptions(),
@@ -28,7 +29,7 @@ function InfoRoute() {
   if (!data) return null
   return (
     <SettingsWorkspace
-      key={data.instance.id}
+      key={`${data.instance.relayId}:${data.instance.id}`}
       instance={data.instance}
       node={data.node}
       canRename={permissions.settings}

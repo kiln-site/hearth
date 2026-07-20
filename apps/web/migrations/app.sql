@@ -6,7 +6,6 @@ CREATE TABLE IF NOT EXISTS kiln_relay (
   use_tls BOOLEAN NOT NULL DEFAULT TRUE,
   token_ciphertext TEXT NULL,
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
-  is_primary BOOLEAN NOT NULL DEFAULT FALSE,
   last_connected_at TIMESTAMP(3) NULL,
   last_error VARCHAR(512) NULL,
   managed_ember_count INT UNSIGNED NULL,

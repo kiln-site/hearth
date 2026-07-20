@@ -64,7 +64,7 @@ interface PendingInvitationRow extends RowDataPacket {
 export const getAccessCapabilities = createServerFn({ method: "GET" }).handler(
   async () => {
     const user = await requireAuthenticatedUser()
-    const relay = await activeRelay()
+    const relay = await defaultRelay()
     const grants =
       relay && !isPlatformAdmin(user)
         ? await listUserGrants(user.id, relay.id)
@@ -88,7 +88,7 @@ export const getAccessCapabilities = createServerFn({ method: "GET" }).handler(
 export const getAccessOverview = createServerFn({ method: "GET" }).handler(
   async () => {
     const user = await requireAuthenticatedUser()
-    const relay = await requiredActiveRelay()
+    const relay = await requiredDefaultRelay()
     await requireRelayPermission({
       user,
       relayId: relay.id,
@@ -145,7 +145,7 @@ export const createAccessInvitation = createServerFn({ method: "POST" })
   .validator(invitationSchema)
   .handler(async ({ data }) => {
     const user = await requireAuthenticatedUser()
-    const relay = await requiredActiveRelay()
+    const relay = await requiredDefaultRelay()
     await requireRelayPermission({
       user,
       relayId: relay.id,
@@ -296,7 +296,7 @@ export const updateAccessGrant = createServerFn({ method: "POST" })
   .validator(updateGrantSchema)
   .handler(async ({ data }) => {
     const user = await requireAuthenticatedUser()
-    const relay = await requiredActiveRelay()
+    const relay = await requiredDefaultRelay()
     await requireRelayPermission({
       user,
       relayId: relay.id,
@@ -322,7 +322,7 @@ export const removeAccessGrant = createServerFn({ method: "POST" })
   .validator(grantIdSchema)
   .handler(async ({ data }) => {
     const user = await requireAuthenticatedUser()
-    const relay = await requiredActiveRelay()
+    const relay = await requiredDefaultRelay()
     await requireRelayPermission({
       user,
       relayId: relay.id,
@@ -347,7 +347,7 @@ export const revokeAccessInvitation = createServerFn({ method: "POST" })
   .validator(invitationIdSchema)
   .handler(async ({ data }) => {
     const user = await requireAuthenticatedUser()
-    const relay = await requiredActiveRelay()
+    const relay = await requiredDefaultRelay()
     await requireRelayPermission({
       user,
       relayId: relay.id,
@@ -375,14 +375,14 @@ export const revokeAccessInvitation = createServerFn({ method: "POST" })
     return { revoked: true }
   })
 
-async function activeRelay() {
-  const { resolvePrimaryRelay } = await import("@/lib/relay-registry")
-  return resolvePrimaryRelay()
+async function defaultRelay() {
+  const { resolveDefaultRelay } = await import("@/lib/relay-registry")
+  return resolveDefaultRelay()
 }
 
-async function requiredActiveRelay() {
-  const relay = await activeRelay()
-  if (!relay) throw new Error("No active Relay is configured")
+async function requiredDefaultRelay() {
+  const relay = await defaultRelay()
+  if (!relay) throw new Error("No Relay is configured")
   return relay
 }
 

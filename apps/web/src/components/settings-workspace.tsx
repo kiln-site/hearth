@@ -1,6 +1,5 @@
 import * as React from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
-import type { RelaySnapshot } from "@workspace/contracts"
 import {
   Box,
   Check,
@@ -21,6 +20,7 @@ import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
 
 import { queryKeys, replaceRelaySnapshotInstance } from "@/lib/query-options"
+import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 import type {
   InstanceSettingsInstance,
   RelayNodeSummary,
@@ -168,7 +168,7 @@ function InstanceNameForm({
   const updateNameMutation = useMutation({
     mutationFn: updateInstanceName,
     onSuccess: (updated) => {
-      queryClient.setQueryData<RelaySnapshot>(
+      queryClient.setQueryData<RelayFleetSnapshot>(
         queryKeys.relay.snapshot,
         (snapshot) => replaceRelaySnapshotInstance(snapshot, updated)
       )
@@ -189,7 +189,11 @@ function InstanceNameForm({
     setError(null)
     try {
       await updateNameMutation.mutateAsync({
-        data: { instanceId: instance.id, name: nextName },
+        data: {
+          instanceId: instance.id,
+          relayId: instance.relayId,
+          name: nextName,
+        },
       })
       setDraftName(null)
       setSaved(true)
