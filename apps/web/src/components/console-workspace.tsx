@@ -305,7 +305,7 @@ function ConsoleToolbar({
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search console"
           aria-label="Search console"
-          className="h-9 border-border/80 bg-background pl-8 text-xs shadow-none"
+          className="h-9 border-border/80 bg-background pl-8 text-base shadow-none sm:text-xs"
         />
         {query ? (
           <button
