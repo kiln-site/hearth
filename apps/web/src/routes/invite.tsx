@@ -8,14 +8,14 @@ import { invitationPreviewQueryOptions } from "@/lib/query-options"
 import { getAuthState } from "@/server/auth"
 
 export const Route = createFileRoute("/invite")({
-  head: () => ({ meta: [{ title: pageTitle("Invitation") }] }),
   validateSearch: z.object({ token: z.string().min(32) }),
-  beforeLoad: async () => getAuthState(),
   loaderDeps: ({ search }) => ({ token: search.token }),
+  beforeLoad: async () => getAuthState(),
   loader: ({ context, deps }) =>
     context.queryClient.ensureQueryData(
       invitationPreviewQueryOptions(deps.token)
     ),
+  head: () => ({ meta: [{ title: pageTitle("Invitation") }] }),
   component: InviteRoute,
 })
 

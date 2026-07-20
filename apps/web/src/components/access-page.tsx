@@ -26,19 +26,55 @@ import { accessRoleDetails, accessRoles } from "@/lib/permissions"
 import { accessOverviewQueryOptions, queryKeys } from "@/lib/query-options"
 import {
   createAccessInvitation,
+  getAccessOverview,
   removeAccessGrant,
   revokeAccessInvitation,
   updateAccessGrant,
 } from "@/server/access"
 
+type AccessOverview = Awaited<ReturnType<typeof getAccessOverview>>
+
+const invitationExpiryFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeZone: "UTC",
+})
+
 export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
   const queryClient = useQueryClient()
   const { data: overview } = useSuspenseQuery(accessOverviewQueryOptions())
-  const inviteMutation = useMutation({ mutationFn: createAccessInvitation })
-  const updateGrantMutation = useMutation({ mutationFn: updateAccessGrant })
-  const removeGrantMutation = useMutation({ mutationFn: removeAccessGrant })
+  const inviteMutation = useMutation({
+    mutationFn: createAccessInvitation,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.access.overview }),
+  })
+  const updateGrantMutation = useMutation({
+    mutationFn: updateAccessGrant,
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.access.overview,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.access.capabilities,
+        }),
+      ]),
+  })
+  const removeGrantMutation = useMutation({
+    mutationFn: removeAccessGrant,
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.access.overview,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.access.capabilities,
+        }),
+      ]),
+  })
   const revokeInvitationMutation = useMutation({
     mutationFn: revokeAccessInvitation,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.access.overview }),
   })
   const [pending, setPending] = React.useState<string | null>(null)
   const [error, setError] = React.useState<string | null>(null)
@@ -52,12 +88,6 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
   const assignableRoles = overview.canManageOwners
     ? accessRoles
     : accessRoles.filter((role) => role !== "owner")
-
-  async function refreshOverview() {
-    await queryClient.invalidateQueries({
-      queryKey: queryKeys.access.overview,
-    })
-  }
 
   async function invite(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -82,7 +112,6 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
       )
       setInviteLink(result.inviteUrl)
       setForm((value) => ({ ...value, email: "" }))
-      await refreshOverview()
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Could not send invitation"
@@ -97,7 +126,6 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
     setError(null)
     try {
       await updateGrantMutation.mutateAsync({ data: { id, role } })
-      await refreshOverview()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not update role")
     } finally {
@@ -110,7 +138,6 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
     setError(null)
     try {
       await removeGrantMutation.mutateAsync({ data: { id } })
-      await refreshOverview()
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Could not remove access"
@@ -125,7 +152,6 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
     setError(null)
     try {
       await revokeInvitationMutation.mutateAsync({ data: { id } })
-      await refreshOverview()
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Could not revoke invitation"
@@ -190,140 +216,22 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
 
         <div className="mt-7 grid gap-5 lg:grid-cols-[1fr_21rem]">
           <div className="space-y-5">
-            <section className="overflow-hidden rounded-xl border bg-card/40">
-              <div className="flex items-center gap-3 border-b px-4 py-3">
-                <Users className="size-4 text-primary" />
-                <div>
-                  <h2 className="text-sm font-semibold">Active access</h2>
-                  <p className="text-[10px] text-muted-foreground">
-                    Roles translate into explicit console, file, power,
-                    settings, and member permissions.
-                  </p>
-                </div>
-              </div>
-              <div className="divide-y">
-                {overview.grants.length ? (
-                  overview.grants.map((grant) => {
-                    const instance = instances.find(
-                      (item) => item.id === grant.resourceId
-                    )
-                    return (
-                      <div
-                        key={grant.id}
-                        className="flex flex-col gap-3 px-4 py-3.5 sm:flex-row sm:items-center"
-                      >
-                        <div className="grid size-8 shrink-0 place-items-center rounded-lg border bg-background text-muted-foreground">
-                          {grant.resourceType === "relay" ? (
-                            <ShieldCheck className="size-3.5" />
-                          ) : (
-                            <Server className="size-3.5" />
-                          )}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-xs font-semibold">
-                            {grant.name}{" "}
-                            <span className="font-normal text-muted-foreground">
-                              · {grant.email}
-                            </span>
-                          </p>
-                          <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground">
-                            {grant.resourceType === "relay"
-                              ? `All instances on ${overview.relay.name}`
-                              : (instance?.name ?? grant.resourceId)}
-                          </p>
-                        </div>
-                        <select
-                          aria-label={`Role for ${grant.email}`}
-                          value={grant.role}
-                          disabled={pending !== null}
-                          className="h-8 rounded-md border border-input bg-background px-2 text-[11px] outline-none focus:border-ring"
-                          onChange={(event) =>
-                            void changeRole(
-                              grant.id,
-                              event.target.value as AccessRole
-                            )
-                          }
-                        >
-                          {assignableRoles.map((role) => (
-                            <option key={role} value={role}>
-                              {accessRoleDetails[role].label}
-                            </option>
-                          ))}
-                        </select>
-                        <Button
-                          type="button"
-                          size="icon-sm"
-                          variant="ghost"
-                          aria-label={`Remove ${grant.email}`}
-                          disabled={pending !== null}
-                          onClick={() => void removeGrant(grant.id)}
-                        >
-                          {pending === `grant:${grant.id}` ? (
-                            <LoaderCircle className="animate-spin" />
-                          ) : (
-                            <Trash2 />
-                          )}
-                        </Button>
-                      </div>
-                    )
-                  })
-                ) : (
-                  <p className="px-4 py-8 text-center text-xs text-muted-foreground">
-                    No scoped members yet. Platform admins still retain access.
-                  </p>
-                )}
-              </div>
-            </section>
+            <AccessGrantList
+              grants={overview.grants}
+              instances={instances}
+              relayName={overview.relay.name}
+              assignableRoles={assignableRoles}
+              pending={pending}
+              onRoleChange={changeRole}
+              onRemove={removeGrant}
+            />
 
-            {overview.invitations.length ? (
-              <section className="overflow-hidden rounded-xl border bg-card/40">
-                <div className="flex items-center gap-3 border-b px-4 py-3">
-                  <Clock3 className="size-4 text-primary" />
-                  <h2 className="text-sm font-semibold">Pending invitations</h2>
-                </div>
-                <div className="divide-y">
-                  {overview.invitations.map((invitation) => {
-                    const instance = instances.find(
-                      (item) => item.id === invitation.instanceId
-                    )
-                    return (
-                      <div
-                        key={invitation.id}
-                        className="flex items-center gap-3 px-4 py-3.5"
-                      >
-                        <MailPlus className="size-4 shrink-0 text-muted-foreground" />
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-xs font-medium">
-                            {invitation.email}
-                          </p>
-                          <p className="mt-1 font-mono text-[9px] text-muted-foreground">
-                            {instance?.name ?? "Entire Relay"} ·{" "}
-                            {invitation.role} · expires{" "}
-                            {new Date(
-                              invitation.expiresAt
-                            ).toLocaleDateString()}
-                          </p>
-                        </div>
-                        <Button
-                          type="button"
-                          size="icon-sm"
-                          variant="ghost"
-                          aria-label={`Revoke invitation for ${invitation.email}`}
-                          disabled={pending !== null}
-                          onClick={() => void revokeInvitation(invitation.id)}
-                        >
-                          {pending === `invite:${invitation.id}` ? (
-                            <LoaderCircle className="animate-spin" />
-                          ) : (
-                            <Trash2 />
-                          )}
-                        </Button>
-                      </div>
-                    )
-                  })}
-                </div>
-              </section>
-            ) : null}
+            <PendingInvitationList
+              invitations={overview.invitations}
+              instances={instances}
+              pending={pending}
+              onRevoke={revokeInvitation}
+            />
           </div>
 
           <section className="h-fit rounded-xl border bg-card/45 p-4 lg:sticky lg:top-5">
@@ -407,6 +315,185 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
       </div>
     </main>
   )
+}
+
+function AccessGrantList({
+  grants,
+  instances,
+  relayName,
+  assignableRoles,
+  pending,
+  onRoleChange,
+  onRemove,
+}: {
+  grants: AccessOverview["grants"]
+  instances: Array<RelayInstance>
+  relayName: string
+  assignableRoles: ReadonlyArray<AccessRole>
+  pending: string | null
+  onRoleChange: (id: string, role: AccessRole) => Promise<void>
+  onRemove: (id: string) => Promise<void>
+}) {
+  return (
+    <section className="overflow-hidden rounded-xl border bg-card/40">
+      <div className="flex items-center gap-3 border-b px-4 py-3">
+        <Users className="size-4 text-primary" />
+        <div>
+          <h2 className="text-sm font-semibold">Active access</h2>
+          <p className="text-[10px] text-muted-foreground">
+            Roles translate into explicit console, file, power, settings, and
+            member permissions.
+          </p>
+        </div>
+      </div>
+      <div className="divide-y">
+        {grants.length ? (
+          grants.map((grant) => {
+            const instance = instances.find(
+              (item) => item.id === grant.resourceId
+            )
+            return (
+              <div
+                key={grant.id}
+                className="flex flex-col gap-3 px-4 py-3.5 sm:flex-row sm:items-center"
+              >
+                <div className="grid size-8 shrink-0 place-items-center rounded-lg border bg-background text-muted-foreground">
+                  {grant.resourceType === "relay" ? (
+                    <ShieldCheck className="size-3.5" />
+                  ) : (
+                    <Server className="size-3.5" />
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-semibold">
+                    {grant.name}{" "}
+                    <span className="font-normal text-muted-foreground">
+                      · {grant.email}
+                    </span>
+                  </p>
+                  <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground">
+                    {grant.resourceType === "relay"
+                      ? `All instances on ${relayName}`
+                      : (instance?.name ?? grant.resourceId)}
+                  </p>
+                </div>
+                <select
+                  aria-label={`Role for ${grant.email}`}
+                  value={grant.role}
+                  disabled={pending !== null}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-[11px] outline-none focus:border-ring"
+                  onChange={(event) =>
+                    void onRoleChange(
+                      grant.id,
+                      event.target.value as AccessRole
+                    )
+                  }
+                >
+                  {assignableRoles.map((role) => (
+                    <option key={role} value={role}>
+                      {accessRoleDetails[role].label}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label={`Remove ${grant.email}`}
+                  disabled={pending !== null}
+                  onClick={() => void onRemove(grant.id)}
+                >
+                  {pending === `grant:${grant.id}` ? (
+                    <LoaderCircle className="animate-spin" />
+                  ) : (
+                    <Trash2 />
+                  )}
+                </Button>
+              </div>
+            )
+          })
+        ) : (
+          <p className="px-4 py-8 text-center text-xs text-muted-foreground">
+            No scoped members yet. Platform admins still retain access.
+          </p>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function PendingInvitationList({
+  invitations,
+  instances,
+  pending,
+  onRevoke,
+}: {
+  invitations: AccessOverview["invitations"]
+  instances: Array<RelayInstance>
+  pending: string | null
+  onRevoke: (id: string) => Promise<void>
+}) {
+  if (!invitations.length) return null
+
+  return (
+    <section className="overflow-hidden rounded-xl border bg-card/40">
+      <div className="flex items-center gap-3 border-b px-4 py-3">
+        <Clock3 className="size-4 text-primary" />
+        <h2 className="text-sm font-semibold">Pending invitations</h2>
+      </div>
+      <div className="divide-y">
+        {invitations.map((invitation) => {
+          const instance = instances.find(
+            (item) => item.id === invitation.instanceId
+          )
+          return (
+            <div
+              key={invitation.id}
+              className="flex items-center gap-3 px-4 py-3.5"
+            >
+              <MailPlus className="size-4 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-medium">
+                  {invitation.email}
+                </p>
+                <p className="mt-1 font-mono text-[9px] text-muted-foreground">
+                  {instance?.name ?? "Entire Relay"} · {invitation.role} ·
+                  expires <InvitationExpiry value={invitation.expiresAt} />
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="ghost"
+                aria-label={`Revoke invitation for ${invitation.email}`}
+                disabled={pending !== null}
+                onClick={() => void onRevoke(invitation.id)}
+              >
+                {pending === `invite:${invitation.id}` ? (
+                  <LoaderCircle className="animate-spin" />
+                ) : (
+                  <Trash2 />
+                )}
+              </Button>
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+function InvitationExpiry({ value }: { value: string }) {
+  return React.useSyncExternalStore(
+    subscribeToBrowserLocale,
+    () => invitationExpiryFormatter.format(new Date(value)),
+    () => "—"
+  )
+}
+
+function subscribeToBrowserLocale(): () => void {
+  // Locale has no browser change event; this store only defers formatting until hydration.
+  return () => undefined
 }
 
 function Field({

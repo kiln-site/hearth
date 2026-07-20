@@ -18,6 +18,10 @@ import { GlobalPageToolbar } from "@/components/global-page-toolbar"
 import { authClient } from "@/lib/auth-client"
 import type { AuthenticatedUser } from "@/lib/auth-session"
 
+const securityDateFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+})
+
 interface SetupState {
   backupCodes: Array<string>
   totpURI: string
@@ -417,7 +421,5 @@ function readTotpSecret(uri: string): string {
 
 function formatDate(value?: Date | string | null): string {
   if (!value) return "recently"
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(
-    new Date(value)
-  )
+  return securityDateFormatter.format(new Date(value))
 }

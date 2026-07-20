@@ -163,9 +163,10 @@ const setFilePinnedEffect = Effect.fn("files.activity.setPinned")(function* (
             LIMIT ${pinnedFileLimit}`,
           [relayId, instanceId]
         )
-        const staleHashes = pinnedFiles
-          .filter((file) => !validPaths.has(file.path))
-          .map((file) => file.path_hash)
+        const staleHashes: Array<string> = []
+        for (const file of pinnedFiles) {
+          if (!validPaths.has(file.path)) staleHashes.push(file.path_hash)
+        }
         if (staleHashes.length) {
           await transaction.execute(
             `DELETE FROM ${databaseTable("file_activity")}

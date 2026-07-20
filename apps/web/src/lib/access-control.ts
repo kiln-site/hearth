@@ -143,14 +143,15 @@ export const allowedInstanceIdsEffect = Effect.fn("access.allowedInstanceIds")(
     ) {
       return new Set(instanceIds)
     }
-    return new Set(
-      grants
-        .filter(
-          (grant) =>
-            grant.resourceType === "instance" &&
-            roleHasPermission(grant.role, "instance.read")
-        )
-        .map((grant) => grant.resourceId)
-    )
+    const allowedInstanceIds = new Set<string>()
+    for (const grant of grants) {
+      if (
+        grant.resourceType === "instance" &&
+        roleHasPermission(grant.role, "instance.read")
+      ) {
+        allowedInstanceIds.add(grant.resourceId)
+      }
+    }
+    return allowedInstanceIds
   }
 )

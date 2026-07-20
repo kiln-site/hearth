@@ -8,7 +8,6 @@ import { getInvitationPreview } from "@/server/access"
 import { getAuthState } from "@/server/auth"
 
 export const Route = createFileRoute("/")({
-  head: () => ({ meta: [{ title: pageTitle("Sign In") }] }),
   validateSearch: z.object({
     email: z.string().optional(),
     forgot: z.union([z.literal(true), z.literal("true")]).optional(),
@@ -60,6 +59,7 @@ export const Route = createFileRoute("/")({
       },
     })
   },
+  head: () => ({ meta: [{ title: pageTitle("Sign In") }] }),
   component: LoginRoute,
 })
 

@@ -1,5 +1,6 @@
 import { queryOptions } from "@tanstack/react-query"
 import type { QueryClient } from "@tanstack/react-query"
+import type { RelayInstance, RelaySnapshot } from "@workspace/contracts"
 
 import {
   getAccessCapabilities,
@@ -44,6 +45,20 @@ export const queryKeys = {
   },
   relays: ["relays"] as const,
   uiPreferences: ["ui", "preferences"] as const,
+}
+
+export function replaceRelaySnapshotInstance(
+  snapshot: RelaySnapshot | undefined,
+  updated: RelayInstance
+): RelaySnapshot | undefined {
+  return snapshot
+    ? {
+        ...snapshot,
+        instances: snapshot.instances.map((instance) =>
+          instance.id === updated.id ? updated : instance
+        ),
+      }
+    : snapshot
 }
 
 export function relayConnectionQueryOptions(queryClient: QueryClient) {

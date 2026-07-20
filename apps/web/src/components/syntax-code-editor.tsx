@@ -24,18 +24,8 @@ import {
   searchPanelOpen,
   setSearchQuery,
 } from "@codemirror/search"
-import {
-  getOriginalDoc,
-  unifiedMergeView,
-  updateOriginalDoc,
-} from "@codemirror/merge"
-import {
-  ChangeSet,
-  Compartment,
-  EditorState,
-  Prec,
-  Text,
-} from "@codemirror/state"
+import { unifiedMergeView } from "@codemirror/merge"
+import { Compartment, EditorState, Prec } from "@codemirror/state"
 import type { Extension, StateCommand } from "@codemirror/state"
 import {
   Decoration,
@@ -508,18 +498,22 @@ export const SyntaxCodeEditor = React.forwardRef<
   const initialFontSize = React.useRef(fontSize)
   const initialPath = React.useRef(path)
   const initialReadOnly = React.useRef(readOnly)
+  const initialRedactSensitive = React.useRef(redactSensitive)
+  const initialWrapLines = React.useRef(wrapLines)
   const syncing = React.useRef(false)
-  const contentAttributes = React.useRef(new Compartment())
-  const editability = React.useRef(new Compartment())
-  const indentation = React.useRef(new Compartment())
-  const languageMode = React.useRef(new Compartment())
-  const mergeReview = React.useRef(new Compartment())
-  const redaction = React.useRef(new Compartment())
-  const textScale = React.useRef(new Compartment())
-  const wrapping = React.useRef(new Compartment())
+  const [contentAttributes] = React.useState(() => new Compartment())
+  const [editability] = React.useState(() => new Compartment())
+  const [indentation] = React.useState(() => new Compartment())
+  const [languageMode] = React.useState(() => new Compartment())
+  const [mergeReview] = React.useState(() => new Compartment())
+  const [redaction] = React.useState(() => new Compartment())
+  const [textScale] = React.useState(() => new Compartment())
+  const [wrapping] = React.useState(() => new Compartment())
 
-  onChangeRef.current = onChange
-  onSearchOpenChangeRef.current = onSearchOpenChange
+  React.useLayoutEffect(() => {
+    onChangeRef.current = onChange
+    onSearchOpenChangeRef.current = onSearchOpenChange
+  }, [onChange, onSearchOpenChange])
 
   React.useImperativeHandle(
     ref,
@@ -560,24 +554,24 @@ export const SyntaxCodeEditor = React.forwardRef<
           highlightActiveLine(),
           highlightActiveLineGutter(),
           bracketMatching(),
-          languageMode.current.of(languageForPath(initialPath.current)),
+          languageMode.of(languageForPath(initialPath.current)),
           syntaxHighlighting(kilnHighlightStyle),
           kilnEditorTheme,
-          contentAttributes.current.of(
-            contentAttributesFor(initialAriaLabel.current)
-          ),
-          editability.current.of(
+          contentAttributes.of(contentAttributesFor(initialAriaLabel.current)),
+          editability.of(
             editabilityFor(initialReadOnly.current, initialDisabled.current)
           ),
-          indentation.current.of(indentationFor(initialValue.current)),
-          mergeReview.current.of(
+          indentation.of(indentationFor(initialValue.current)),
+          mergeReview.of(
             initialShowChanges.current
               ? createMergeReview(initialOriginalValue.current)
               : mergeGutterSpacer
           ),
-          redaction.current.of(redactSensitive ? redactSensitiveExtension : []),
-          textScale.current.of(textScaleFor(initialFontSize.current)),
-          wrapping.current.of(wrapLines ? EditorView.lineWrapping : []),
+          redaction.of(
+            initialRedactSensitive.current ? redactSensitiveExtension : []
+          ),
+          textScale.of(textScaleFor(initialFontSize.current)),
+          wrapping.of(initialWrapLines.current ? EditorView.lineWrapping : []),
           EditorView.updateListener.of((update) => {
             if (update.docChanged && !syncing.current) {
               onChangeRef.current(update.state.doc.toString())
@@ -597,25 +591,42 @@ export const SyntaxCodeEditor = React.forwardRef<
       nextView.destroy()
       view.current = null
     }
-  }, [])
+  }, [
+    contentAttributes,
+    editability,
+    indentation,
+    languageMode,
+    mergeReview,
+    redaction,
+    textScale,
+    wrapping,
+  ])
 
   React.useLayoutEffect(() => {
     const editor = view.current
     if (!editor) return
     editor.dispatch({
       effects: [
-        contentAttributes.current.reconfigure(contentAttributesFor(ariaLabel)),
-        editability.current.reconfigure(editabilityFor(readOnly, disabled)),
-        languageMode.current.reconfigure(languageForPath(path)),
+        contentAttributes.reconfigure(contentAttributesFor(ariaLabel)),
+        editability.reconfigure(editabilityFor(readOnly, disabled)),
+        languageMode.reconfigure(languageForPath(path)),
       ],
     })
-  }, [ariaLabel, disabled, path, readOnly])
+  }, [
+    ariaLabel,
+    contentAttributes,
+    disabled,
+    editability,
+    languageMode,
+    path,
+    readOnly,
+  ])
 
   React.useLayoutEffect(() => {
     view.current?.dispatch({
-      effects: textScale.current.reconfigure(textScaleFor(fontSize)),
+      effects: textScale.reconfigure(textScaleFor(fontSize)),
     })
-  }, [fontSize])
+  }, [fontSize, textScale])
 
   React.useLayoutEffect(() => {
     const editor = view.current
@@ -633,55 +644,36 @@ export const SyntaxCodeEditor = React.forwardRef<
     const editor = view.current
     if (!editor || disabled) return
     editor.dispatch({
-      effects: indentation.current.reconfigure(
+      effects: indentation.reconfigure(
         indentationFor(editor.state.doc.sliceString(0, indentationScanLimit))
       ),
     })
-  }, [disabled, path])
+  }, [disabled, indentation, path])
 
   React.useLayoutEffect(() => {
     view.current?.dispatch({
-      effects: redaction.current.reconfigure(
+      effects: redaction.reconfigure(
         redactSensitive ? redactSensitiveExtension : []
       ),
     })
-  }, [redactSensitive])
+  }, [redactSensitive, redaction])
 
   React.useLayoutEffect(() => {
     view.current?.dispatch({
-      effects: wrapping.current.reconfigure(
-        wrapLines ? EditorView.lineWrapping : []
-      ),
+      effects: wrapping.reconfigure(wrapLines ? EditorView.lineWrapping : []),
     })
-  }, [wrapLines])
+  }, [wrapLines, wrapping])
 
   React.useLayoutEffect(() => {
     const editor = view.current
     if (!editor) return
 
     editor.dispatch({
-      effects: mergeReview.current.reconfigure(
+      effects: mergeReview.reconfigure(
         showChanges ? createMergeReview(originalValue) : mergeGutterSpacer
       ),
     })
-  }, [showChanges])
-
-  React.useLayoutEffect(() => {
-    const editor = view.current
-    if (!editor || !showChanges) return
-
-    const currentOriginal = getOriginalDoc(editor.state)
-    const nextOriginal = Text.of(originalValue.split(/\r?\n/))
-    if (currentOriginal.eq(nextOriginal)) return
-
-    const changes = ChangeSet.of(
-      { from: 0, to: currentOriginal.length, insert: nextOriginal },
-      currentOriginal.length
-    )
-    editor.dispatch({
-      effects: updateOriginalDoc.of({ doc: nextOriginal, changes }),
-    })
-  }, [originalValue, showChanges])
+  }, [mergeReview, originalValue, showChanges])
 
   React.useLayoutEffect(() => {
     const editor = view.current

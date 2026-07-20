@@ -10,14 +10,13 @@ export const Route = createFileRoute("/_app/$serverId/info")({
 })
 
 function InfoRoute() {
-  const { instance, node, onInstanceUpdate, permissions } =
-    useInstanceWorkspace()
+  const { instance, node, permissions } = useInstanceWorkspace()
   return (
     <SettingsWorkspace
+      key={instance.id}
       instance={instance}
       node={node}
       canRename={permissions.settings}
-      onInstanceUpdate={onInstanceUpdate}
     />
   )
 }

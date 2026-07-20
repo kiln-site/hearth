@@ -51,6 +51,12 @@ const LEVELS: Array<RelayConsoleLevel> = [
   "debug",
   "trace",
 ]
+const consoleTimestampFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+})
 
 interface CommandCompletions {
   cursor: number
@@ -74,9 +80,29 @@ export function ConsoleWorkspace({
   canShare: boolean
   canWrite: boolean
 }) {
-  const [consoleData, setConsoleData] = React.useState<RelayConsole | null>(
-    null
+  return (
+    <ConsoleWorkspaceSession
+      key={instance.id}
+      instance={instance}
+      active={active}
+      canShare={canShare}
+      canWrite={canWrite}
+    />
   )
+}
+
+function ConsoleWorkspaceSession({
+  instance,
+  active,
+  canShare,
+  canWrite,
+}: {
+  instance: RelayInstance
+  active: boolean
+  canShare: boolean
+  canWrite: boolean
+}) {
+  const { consoleData, loading } = useRelayConsoleStream(instance.id)
   const [query, setQuery] = React.useState("")
   const [levels, setLevels] = React.useState<Set<RelayConsoleLevel>>(
     () => new Set(LEVELS)
@@ -84,156 +110,14 @@ export function ConsoleWorkspace({
   const [showTimestamps, setShowTimestamps] = React.useState(false)
   const [redactSensitive, setRedactSensitive] = React.useState(true)
   const [wrapLines, setWrapLines] = React.useState(true)
-  const [autoScroll, setAutoScroll] = React.useState(true)
-  const [, setConnectionState] = React.useState<
-    "connecting" | "live" | "reconnecting"
-  >("connecting")
   const [selected, setSelected] = React.useState<Set<string>>(() => new Set())
-  const [lastSelected, setLastSelected] = React.useState<number | null>(null)
-  const [loading, setLoading] = React.useState(true)
-  const [commandError, setCommandError] = React.useState<string | null>(null)
-  const [command, setCommand] = usePersistedCommand(instance.id)
-  const { navigateHistory, recordCommand } = useCommandHistory(instance.id)
-  const [sending, setSending] = React.useState(false)
-  const [commandCompletions, setCommandCompletions] =
-    React.useState<CommandCompletions | null>(null)
   const [copyState, setCopyState] = React.useState<"idle" | "copied">("idle")
   const [shareState, setShareState] = React.useState<
     "idle" | "uploading" | "copied" | "error"
   >("idle")
-  const parentRef = React.useRef<HTMLDivElement>(null)
-  const commandInputRef = React.useRef<HTMLInputElement>(null)
-  const completionListRef = React.useRef<HTMLDivElement>(null)
   const copyTimer = React.useRef<number | null>(null)
   const shareTimer = React.useRef<number | null>(null)
-  const completionSessionActive = React.useRef(false)
-  const completionRequest = React.useRef(0)
-  const completionPending = React.useRef<{
-    cursor: number
-    input: string
-  }>({ cursor: -1, input: "" })
-  const programmaticScroll = React.useRef(false)
-  const selectedCompletionIndex =
-    commandCompletions?.status === "ready"
-      ? commandCompletions.selectedIndex
-      : null
-
-  React.useEffect(() => {
-    let cancelled = false
-    const lifecycle = new AbortController()
-    let activeIterator: ReturnType<typeof openRelayConsoleStream> | null = null
-    let flushTimer: number | null = null
-    const pending: Array<RelayConsoleLine> = []
-    const seen = new Set<string>()
-
-    setConsoleData(null)
-    setSelected(new Set())
-    setLastSelected(null)
-    setLoading(true)
-    setConnectionState("connecting")
-
-    function flush() {
-      flushTimer = null
-      if (cancelled || pending.length === 0) return
-      const fresh = pending.splice(0).filter((line) => {
-        if (seen.has(line.id)) return false
-        seen.add(line.id)
-        return true
-      })
-      if (fresh.length === 0) return
-      setConsoleData((current) => ({
-        instanceId: instance.id,
-        lines: [...(current?.lines ?? []), ...fresh].slice(-5_000),
-        truncated: Boolean(current?.truncated) || seen.size > 5_000,
-      }))
-    }
-
-    function append(line: RelayConsoleLine) {
-      pending.push(line)
-      if (pending.length >= 100) flush()
-      else if (flushTimer === null) {
-        flushTimer = window.setTimeout(flush, 40)
-      }
-    }
-
-    async function connect() {
-      let retryDelay = 400
-      while (!cancelled) {
-        try {
-          setConnectionState((current) =>
-            current === "connecting" ? "connecting" : "reconnecting"
-          )
-          const stream = openRelayConsoleStream(instance.id, lifecycle.signal)
-          activeIterator = stream
-          // Cancellation changes from the effect cleanup while next() awaits.
-          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-          while (!cancelled) {
-            const result = await activeIterator.next()
-            if (result.done) throw new Error("Console stream closed")
-            if (result.value.type === "ready") {
-              setLoading(false)
-              setConnectionState("live")
-              setConsoleData(
-                (current) =>
-                  current ?? {
-                    instanceId: instance.id,
-                    lines: [],
-                    truncated: false,
-                  }
-              )
-              retryDelay = 400
-            } else {
-              append(result.value.line)
-            }
-          }
-        } catch {
-          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-          if (cancelled) break
-          setLoading(false)
-          setConnectionState("reconnecting")
-          await waitForRetry(retryDelay, lifecycle.signal)
-          retryDelay = Math.min(retryDelay * 2, 5_000)
-        }
-      }
-    }
-
-    void connect()
-    return () => {
-      cancelled = true
-      lifecycle.abort()
-      if (flushTimer !== null) window.clearTimeout(flushTimer)
-      if (activeIterator) void activeIterator.return(undefined)
-    }
-  }, [instance.id])
-
-  React.useEffect(() => {
-    if (active) commandInputRef.current?.focus()
-  }, [active, instance.id])
-
-  React.useEffect(() => {
-    completionSessionActive.current = false
-    completionRequest.current += 1
-    completionPending.current = { cursor: -1, input: "" }
-    setCommandCompletions(null)
-  }, [instance.id])
-
-  React.useEffect(() => {
-    if (selectedCompletionIndex === null) return
-    let scrollFrame = 0
-    const selectionFrame = window.requestAnimationFrame(() => {
-      scrollFrame = window.requestAnimationFrame(() => {
-        const selectedOption =
-          completionListRef.current?.querySelector<HTMLElement>(
-            `#console-completion-${selectedCompletionIndex}`
-          )
-        selectedOption?.scrollIntoView({ block: "nearest", inline: "nearest" })
-      })
-    })
-    return () => {
-      window.cancelAnimationFrame(selectionFrame)
-      window.cancelAnimationFrame(scrollFrame)
-    }
-  }, [selectedCompletionIndex])
+  const lastSelected = React.useRef<number | null>(null)
 
   React.useEffect(
     () => () => {
@@ -245,7 +129,7 @@ export function ConsoleWorkspace({
 
   const clearSelection = React.useCallback(() => {
     setSelected(new Set())
-    setLastSelected(null)
+    lastSelected.current = null
     setCopyState("idle")
   }, [])
 
@@ -262,43 +146,18 @@ export function ConsoleWorkspace({
 
   const filteredLines = React.useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
-    return [...(consoleData?.lines ?? [])]
-      .map((line) => ({
-        ...line,
-        text: redactSensitive ? redactSensitiveText(line.text) : line.text,
-      }))
-      .filter(
-        (line) =>
-          levels.has(line.level) &&
-          (!normalizedQuery ||
-            line.text.toLowerCase().includes(normalizedQuery))
-      )
+    const filtered: Array<RelayConsoleLine> = []
+    for (const line of consoleData?.lines ?? []) {
+      const text = redactSensitive ? redactSensitiveText(line.text) : line.text
+      if (
+        levels.has(line.level) &&
+        (!normalizedQuery || text.toLowerCase().includes(normalizedQuery))
+      ) {
+        filtered.push({ ...line, text })
+      }
+    }
+    return filtered
   }, [consoleData?.lines, levels, query, redactSensitive])
-
-  const rowVirtualizer = useVirtualizer({
-    count: filteredLines.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 30,
-    getItemKey: (index) => filteredLines[index]?.id ?? index,
-    overscan: 18,
-    anchorTo: "end",
-    followOnAppend: true,
-  })
-
-  React.useLayoutEffect(() => {
-    if (!active) return
-    rowVirtualizer.measure()
-  }, [active, rowVirtualizer, wrapLines])
-
-  React.useLayoutEffect(() => {
-    if (!active || !autoScroll || filteredLines.length === 0 || loading) return
-    programmaticScroll.current = true
-    rowVirtualizer.scrollToIndex(filteredLines.length - 1, { align: "end" })
-    const frame = window.requestAnimationFrame(() => {
-      programmaticScroll.current = false
-    })
-    return () => window.cancelAnimationFrame(frame)
-  }, [active, autoScroll, filteredLines.length, loading, rowVirtualizer])
 
   function toggleLevel(level: RelayConsoleLevel | "all") {
     if (level === "all") {
@@ -315,28 +174,11 @@ export function ConsoleWorkspace({
     })
   }
 
-  function toggleLine(line: RelayConsoleLine, index: number, shift: boolean) {
-    setCopyState("idle")
-    setSelected((current) => {
-      const next = new Set(current)
-      if (shift && lastSelected !== null) {
-        const start = Math.min(lastSelected, index)
-        const end = Math.max(lastSelected, index)
-        for (let cursor = start; cursor <= end; cursor++) {
-          const selectedLine = filteredLines.at(cursor)
-          if (selectedLine) next.add(selectedLine.id)
-        }
-      } else if (next.has(line.id)) next.delete(line.id)
-      else next.add(line.id)
-      return next
-    })
-    setLastSelected(index)
-  }
-
   async function copySelected() {
-    const lines = filteredLines
-      .filter((line) => selected.has(line.id))
-      .map((line) => line.text)
+    const lines: Array<string> = []
+    for (const line of filteredLines) {
+      if (selected.has(line.id)) lines.push(line.text)
+    }
     await copyToClipboard(lines.join("\n"))
     setCopyState("copied")
     if (copyTimer.current) window.clearTimeout(copyTimer.current)
@@ -363,6 +205,374 @@ export function ConsoleWorkspace({
     shareTimer.current = window.setTimeout(() => setShareState("idle"), 2_800)
   }
 
+  const allLevels = levels.size === LEVELS.length
+
+  return (
+    <section className="flex min-h-0 flex-1 flex-col bg-card">
+      <ConsoleToolbar
+        allLevels={allLevels}
+        canShare={canShare}
+        clearSelection={clearSelection}
+        consoleData={consoleData}
+        copySelected={copySelected}
+        copyState={copyState}
+        levels={levels}
+        query={query}
+        redactSensitive={redactSensitive}
+        selectedCount={selected.size}
+        setQuery={setQuery}
+        setRedactSensitive={setRedactSensitive}
+        setShowTimestamps={setShowTimestamps}
+        setWrapLines={setWrapLines}
+        shareLatestLog={shareLatestLog}
+        shareState={shareState}
+        showTimestamps={showTimestamps}
+        toggleLevel={toggleLevel}
+        wrapLines={wrapLines}
+      />
+      <ConsoleLogViewport
+        active={active}
+        consoleData={consoleData}
+        filteredLines={filteredLines}
+        lastSelected={lastSelected}
+        loading={loading}
+        query={query}
+        selected={selected}
+        setCopyState={setCopyState}
+        setSelected={setSelected}
+        showTimestamps={showTimestamps}
+        wrapLines={wrapLines}
+      />
+
+      <ConsoleCommandBar
+        active={active}
+        canWrite={canWrite}
+        instance={instance}
+      />
+    </section>
+  )
+}
+
+interface ConsoleToolbarProps {
+  allLevels: boolean
+  canShare: boolean
+  clearSelection: () => void
+  consoleData: RelayConsole | null
+  copySelected: () => Promise<void>
+  copyState: "idle" | "copied"
+  levels: Set<RelayConsoleLevel>
+  query: string
+  redactSensitive: boolean
+  selectedCount: number
+  setQuery: React.Dispatch<React.SetStateAction<string>>
+  setRedactSensitive: React.Dispatch<React.SetStateAction<boolean>>
+  setShowTimestamps: React.Dispatch<React.SetStateAction<boolean>>
+  setWrapLines: React.Dispatch<React.SetStateAction<boolean>>
+  shareLatestLog: () => Promise<void>
+  shareState: "idle" | "uploading" | "copied" | "error"
+  showTimestamps: boolean
+  toggleLevel: (level: RelayConsoleLevel | "all") => void
+  wrapLines: boolean
+}
+
+function ConsoleToolbar({
+  allLevels,
+  canShare,
+  clearSelection,
+  consoleData,
+  copySelected,
+  copyState,
+  levels,
+  query,
+  redactSensitive,
+  selectedCount,
+  setQuery,
+  setRedactSensitive,
+  setShowTimestamps,
+  setWrapLines,
+  shareLatestLog,
+  shareState,
+  showTimestamps,
+  toggleLevel,
+  wrapLines,
+}: ConsoleToolbarProps) {
+  return (
+    <div className="flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b px-3 py-2.5 sm:px-4">
+      <div className="relative min-w-[12rem] flex-1 sm:max-w-sm">
+        <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search console"
+          aria-label="Search console"
+          className="h-9 border-border/80 bg-background pl-8 text-xs shadow-none"
+        />
+        {query ? (
+          <button
+            type="button"
+            aria-label="Clear console search"
+            className="absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            onClick={() => setQuery("")}
+          >
+            <X className="size-3.5" />
+          </button>
+        ) : null}
+      </div>
+      <Popover>
+        <ConsoleTooltip content="Filter Log Level">
+          <PopoverTrigger asChild>
+            <Button
+              variant={allLevels ? "ghost" : "secondary"}
+              size="icon"
+              className="relative size-9 shrink-0"
+              aria-label={
+                allLevels
+                  ? "Filter console levels"
+                  : `Filter console levels, ${levels.size} active`
+              }
+            >
+              <ListFilter />
+              {!allLevels ? (
+                <span
+                  className="absolute top-1 right-1 size-1.5 bg-primary"
+                  aria-hidden="true"
+                />
+              ) : null}
+            </Button>
+          </PopoverTrigger>
+        </ConsoleTooltip>
+        <PopoverContent
+          align="start"
+          side="bottom"
+          sideOffset={7}
+          className="w-52 p-1"
+        >
+          <div className="flex items-center justify-between border-b px-2 py-2">
+            <p className="text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+              Console levels
+            </p>
+            <span className="font-mono text-[9px] text-muted-foreground/75 tabular-nums">
+              {levels.size}/{LEVELS.length}
+            </span>
+          </div>
+          <ConsoleLevelFilter
+            active={allLevels}
+            label="All levels"
+            onClick={() => toggleLevel("all")}
+          />
+          <div className="my-1 border-t" />
+          {LEVELS.map((level) => (
+            <ConsoleLevelFilter
+              key={level}
+              active={levels.has(level)}
+              level={level}
+              label={level}
+              onClick={() => toggleLevel(level)}
+            />
+          ))}
+        </PopoverContent>
+      </Popover>
+      <div className="ml-auto flex items-center gap-1.5">
+        <ConsoleTooltip content={shareTooltip(shareState)}>
+          <Button
+            variant={
+              shareState === "copied"
+                ? "secondary"
+                : shareState === "error"
+                  ? "destructive"
+                  : "ghost"
+            }
+            size="sm"
+            className="h-8 gap-1.5 px-2.5 text-[11px]"
+            disabled={shareState === "uploading" || !consoleData?.lines.length}
+            onClick={shareLatestLog}
+          >
+            {shareState === "uploading" ? (
+              <LoaderCircle className="animate-spin" />
+            ) : shareState === "copied" ? (
+              <Check />
+            ) : shareState === "error" ? (
+              <TriangleAlert />
+            ) : (
+              <Share2 />
+            )}
+            {shareLabel(shareState)}
+          </Button>
+        </ConsoleTooltip>
+        <Popover open={selectedCount > 0}>
+          <PopoverAnchor asChild>
+            <span className="inline-flex">
+              <ConsoleTooltip
+                content={
+                  copyState === "copied"
+                    ? "Selected Lines Copied"
+                    : "Copy Selected Lines"
+                }
+              >
+                <Button
+                  variant={copyState === "copied" ? "secondary" : "ghost"}
+                  size="icon"
+                  className="size-8"
+                  aria-label={
+                    selectedCount > 0
+                      ? `Copy ${selectedCount} Selected ${selectedCount === 1 ? "Line" : "Lines"}`
+                      : "Copy Selected Lines"
+                  }
+                  disabled={selectedCount === 0}
+                  onClick={copySelected}
+                >
+                  {copyState === "copied" ? <Check /> : <Copy />}
+                </Button>
+              </ConsoleTooltip>
+            </span>
+          </PopoverAnchor>
+          <PopoverContent
+            align="center"
+            side="bottom"
+            sideOffset={7}
+            className="flex w-auto min-w-36 items-center gap-2 px-2.5 py-2"
+            onOpenAutoFocus={(event) => event.preventDefault()}
+            onEscapeKeyDown={clearSelection}
+          >
+            <span
+              className="font-mono text-[10px] whitespace-nowrap text-muted-foreground"
+              aria-live="polite"
+            >
+              {copyState === "copied"
+                ? `${selectedCount} ${selectedCount === 1 ? "line" : "lines"} copied`
+                : `${selectedCount} ${selectedCount === 1 ? "line" : "lines"} selected`}
+            </span>
+            <ConsoleTooltip content="Clear Selection">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
+                aria-label="Clear selected console lines"
+                onClick={clearSelection}
+              >
+                <X className="size-3.5" />
+              </Button>
+            </ConsoleTooltip>
+          </PopoverContent>
+        </Popover>
+        <ConsoleTooltip content={redactSensitive ? "Show IPs" : "Censor IPs"}>
+          <Button
+            variant={redactSensitive ? "secondary" : "ghost"}
+            size="icon"
+            className="size-8"
+            aria-label={redactSensitive ? "Show IPs" : "Censor IPs"}
+            aria-pressed={redactSensitive}
+            onClick={() => setRedactSensitive((value) => !value)}
+          >
+            <EyeOff />
+          </Button>
+        </ConsoleTooltip>
+        {canShare ? (
+          <ConsoleTooltip
+            content={wrapLines ? "Disable Line Wrap" : "Enable Line Wrap"}
+          >
+            <Button
+              variant={wrapLines ? "secondary" : "ghost"}
+              size="icon"
+              className="size-8"
+              aria-label={wrapLines ? "Disable Line Wrap" : "Enable Line Wrap"}
+              aria-pressed={wrapLines}
+              onClick={() => setWrapLines((value) => !value)}
+            >
+              <WrapText />
+            </Button>
+          </ConsoleTooltip>
+        ) : null}
+        <ConsoleTooltip
+          content={showTimestamps ? "Hide Timestamps" : "Show Timestamps"}
+        >
+          <Button
+            variant={showTimestamps ? "secondary" : "ghost"}
+            size="icon"
+            className="size-8"
+            aria-label={showTimestamps ? "Hide timestamps" : "Show timestamps"}
+            onClick={() => setShowTimestamps((value) => !value)}
+          >
+            <Clock3 />
+          </Button>
+        </ConsoleTooltip>
+      </div>
+    </div>
+  )
+}
+
+interface ConsoleLogViewportProps {
+  active: boolean
+  consoleData: RelayConsole | null
+  filteredLines: Array<RelayConsoleLine>
+  lastSelected: React.RefObject<number | null>
+  loading: boolean
+  query: string
+  selected: Set<string>
+  setCopyState: React.Dispatch<React.SetStateAction<"idle" | "copied">>
+  setSelected: React.Dispatch<React.SetStateAction<Set<string>>>
+  showTimestamps: boolean
+  wrapLines: boolean
+}
+
+function ConsoleLogViewport({
+  active,
+  consoleData,
+  filteredLines,
+  lastSelected,
+  loading,
+  query,
+  selected,
+  setCopyState,
+  setSelected,
+  showTimestamps,
+  wrapLines,
+}: ConsoleLogViewportProps) {
+  const [autoScroll, setAutoScroll] = React.useState(true)
+  const parentRef = React.useRef<HTMLDivElement>(null)
+  const programmaticScroll = React.useRef(false)
+  const rowVirtualizer = useVirtualizer({
+    count: filteredLines.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 30,
+    getItemKey: (index) => filteredLines[index]?.id ?? index,
+    overscan: 18,
+    anchorTo: "end",
+    followOnAppend: true,
+  })
+
+  React.useLayoutEffect(() => {
+    if (active) rowVirtualizer.measure()
+  }, [active, rowVirtualizer, wrapLines])
+
+  React.useLayoutEffect(() => {
+    if (!active || !autoScroll || filteredLines.length === 0 || loading) return
+    programmaticScroll.current = true
+    rowVirtualizer.scrollToIndex(filteredLines.length - 1, { align: "end" })
+    const frame = window.requestAnimationFrame(() => {
+      programmaticScroll.current = false
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [active, autoScroll, filteredLines.length, loading, rowVirtualizer])
+
+  function toggleLine(line: RelayConsoleLine, index: number, shift: boolean) {
+    setCopyState("idle")
+    setSelected((current) => {
+      const next = new Set(current)
+      if (shift && lastSelected.current !== null) {
+        const start = Math.min(lastSelected.current, index)
+        const end = Math.max(lastSelected.current, index)
+        for (let cursor = start; cursor <= end; cursor++) {
+          const selectedLine = filteredLines.at(cursor)
+          if (selectedLine) next.add(selectedLine.id)
+        }
+      } else if (next.has(line.id)) next.delete(line.id)
+      else next.add(line.id)
+      return next
+    })
+    lastSelected.current = index
+  }
+
   function resumeAutoScroll() {
     setAutoScroll(true)
     programmaticScroll.current = true
@@ -374,60 +584,310 @@ export function ConsoleWorkspace({
     })
   }
 
-  function navigateCommandHistory(
-    event: React.KeyboardEvent<HTMLInputElement>
-  ) {
-    if (
-      (event.key !== "ArrowUp" && event.key !== "ArrowDown") ||
-      event.nativeEvent.isComposing ||
-      event.altKey ||
-      event.ctrlKey ||
-      event.metaKey
-    ) {
-      return
-    }
+  return (
+    <div className="relative min-h-0 flex-1 bg-[oklch(0.135_0.008_48)]">
+      <div
+        ref={parentRef}
+        className={`absolute inset-0 overscroll-contain font-mono text-[11px] selection:bg-primary/25 sm:text-[12px] ${wrapLines ? "overflow-x-hidden overflow-y-auto" : "overflow-auto"}`}
+        onScroll={(event) => {
+          if (programmaticScroll.current) return
+          const viewport = event.currentTarget
+          const distanceFromBottom =
+            viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+          if (distanceFromBottom <= 8) {
+            if (!autoScroll) setAutoScroll(true)
+            return
+          }
+          if (autoScroll && distanceFromBottom > 72) setAutoScroll(false)
+        }}
+      >
+        <div
+          className={wrapLines ? "relative w-full" : "relative min-w-max"}
+          style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+        >
+          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+            const line = filteredLines.at(virtualRow.index)
+            if (!line) return null
+            const isSelected = selected.has(line.id)
+            return (
+              <div
+                role="button"
+                tabIndex={0}
+                key={line.id}
+                ref={rowVirtualizer.measureElement}
+                data-index={virtualRow.index}
+                className={`absolute left-0 flex min-h-[30px] border-l-2 pr-5 text-left transition-colors ${wrapLines ? "w-full items-start py-1.5 whitespace-pre-wrap" : "h-[30px] min-w-full items-center whitespace-nowrap"} ${lineTone(line.level, isSelected)}`}
+                style={{
+                  transform: `translateY(${virtualRow.start}px)`,
+                  width: wrapLines ? "100%" : "max(100%, max-content)",
+                }}
+                onClick={(event) =>
+                  toggleLine(line, virtualRow.index, event.shiftKey)
+                }
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault()
+                    toggleLine(line, virtualRow.index, event.shiftKey)
+                  }
+                }}
+              >
+                {showTimestamps ? (
+                  <ConsoleTimestamp timestamp={line.timestamp} />
+                ) : null}
+                <span
+                  className={`min-w-0 flex-1 leading-[18px] ${wrapLines ? "break-words" : ""} ${showTimestamps ? "" : "ml-3"} ${lineTextTone(line.level)}`}
+                >
+                  {renderConsoleText(line.text, query)}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
 
-    const nextCommand = navigateHistory(
-      event.key === "ArrowUp" ? "previous" : "next",
-      event.currentTarget.value
-    )
-    if (nextCommand === undefined) return
+      {!autoScroll ? (
+        <div className="absolute right-4 bottom-4 z-20">
+          <ConsoleTooltip content="Jump to the latest output and resume following.">
+            <Button
+              size="icon-lg"
+              className="shadow-xl shadow-black/35"
+              aria-label="Jump to latest output"
+              onClick={resumeAutoScroll}
+            >
+              <ArrowDown />
+            </Button>
+          </ConsoleTooltip>
+        </div>
+      ) : null}
 
-    event.preventDefault()
-    setCommandCompletions(null)
-    setCommand(nextCommand)
-    window.requestAnimationFrame(() => {
-      const input = commandInputRef.current
-      if (!input) return
-      input.setSelectionRange(input.value.length, input.value.length)
-      if (completionSessionActive.current) {
-        void requestCommandCompletion(nextCommand, nextCommand.length)
-      }
+      {loading && !consoleData ? (
+        <div className="absolute inset-0 grid place-items-center bg-card/70 backdrop-blur-[2px]">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <LoaderCircle className="size-4 animate-spin text-primary" />
+            Opening live console stream
+          </div>
+        </div>
+      ) : null}
+      {!loading && filteredLines.length === 0 ? (
+        <div className="absolute inset-0 grid place-items-center text-center">
+          <div>
+            <p className="text-sm font-semibold">No matching output</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Adjust the search or log-level filters.
+            </p>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function ConsoleCommandBar({
+  active,
+  canWrite,
+  instance,
+}: {
+  active: boolean
+  canWrite: boolean
+  instance: RelayInstance
+}) {
+  const command = useConsoleCommand(instance, active)
+
+  return (
+    <div className="shrink-0 border-t bg-background/80 px-3 py-3 sm:px-4">
+      {canWrite ? (
+        <form className="flex items-center gap-2" onSubmit={command.submit}>
+          <span className="hidden font-mono text-xs font-semibold text-primary sm:inline">
+            &gt;
+          </span>
+          <Popover
+            open={Boolean(command.completions)}
+            onOpenChange={(open) => {
+              if (!open) command.stopCompletions()
+            }}
+          >
+            <PopoverAnchor asChild>
+              <div className="min-w-0 flex-1">
+                <Input
+                  ref={command.inputRef}
+                  value={command.value}
+                  onChange={command.change}
+                  onBlur={command.stopCompletions}
+                  onKeyDown={command.keyDown}
+                  placeholder={
+                    command.running
+                      ? "Send a server command…"
+                      : "Server is offline"
+                  }
+                  role="combobox"
+                  aria-label="Server command"
+                  aria-autocomplete="list"
+                  aria-controls="console-command-completions"
+                  aria-expanded={Boolean(command.completions)}
+                  aria-invalid={Boolean(command.error)}
+                  aria-keyshortcuts="Tab ArrowUp ArrowDown Escape"
+                  aria-activedescendant={
+                    command.completions?.status === "ready"
+                      ? `console-completion-${command.completions.selectedIndex}`
+                      : undefined
+                  }
+                  disabled={!command.running}
+                  title={command.error ?? undefined}
+                  autoFocus
+                  autoComplete="off"
+                  className="h-10 border-border/80 bg-card font-mono text-xs shadow-none"
+                />
+              </div>
+            </PopoverAnchor>
+            <PopoverContent
+              ref={command.completionListRef}
+              id="console-command-completions"
+              role="listbox"
+              align="start"
+              side="top"
+              sideOffset={7}
+              className="max-h-[13.25rem] w-[var(--radix-popover-trigger-width)] min-w-64 overflow-y-scroll p-1 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:bg-muted-foreground/55 [&::-webkit-scrollbar-thumb:hover]:bg-muted-foreground/75 [&::-webkit-scrollbar-track]:bg-foreground/10"
+              style={{
+                scrollbarColor:
+                  "color-mix(in oklab, var(--muted-foreground) 55%, transparent) color-mix(in oklab, var(--foreground) 10%, transparent)",
+                scrollbarGutter: "stable",
+              }}
+              aria-busy={command.completions?.status === "loading"}
+              onOpenAutoFocus={(event) => event.preventDefault()}
+              onCloseAutoFocus={(event) => event.preventDefault()}
+            >
+              {command.completions?.status === "loading" ? (
+                <div
+                  role="status"
+                  className="flex items-center gap-2 px-2.5 py-2 font-mono text-xs text-muted-foreground"
+                >
+                  <LoaderCircle className="size-3.5 animate-spin text-primary/75" />
+                  Waiting for completions…
+                </div>
+              ) : command.completions?.status === "empty" ? (
+                <div
+                  role="status"
+                  className="px-2.5 py-2 font-mono text-xs text-muted-foreground"
+                >
+                  No completions
+                </div>
+              ) : command.completions?.status === "unavailable" ? (
+                <div
+                  role="status"
+                  className="px-2.5 py-2 font-mono text-xs text-muted-foreground"
+                >
+                  Completions unavailable
+                </div>
+              ) : (
+                command.completions?.suggestions.map((suggestion, index) => (
+                  <button
+                    id={`console-completion-${index}`}
+                    role="option"
+                    aria-selected={index === command.completions?.selectedIndex}
+                    type="button"
+                    key={suggestion.value}
+                    className={`block w-full px-2.5 py-2 text-left font-mono text-xs ${
+                      index === command.completions?.selectedIndex
+                        ? "bg-popover-accent text-popover-accent-foreground"
+                        : "text-muted-foreground hover:bg-muted/55 hover:text-foreground"
+                    }`}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onPointerMove={() => command.selectCompletion(index)}
+                    onClick={() => command.applyCompletion(suggestion.value)}
+                  >
+                    {suggestion.label}
+                  </button>
+                ))
+              )}
+            </PopoverContent>
+          </Popover>
+          <Button
+            type="submit"
+            size="sm"
+            className="h-10 gap-1.5 px-4 text-xs"
+            disabled={
+              !command.running || !command.value.trim() || command.sending
+            }
+          >
+            {command.sending ? (
+              <LoaderCircle className="animate-spin" />
+            ) : (
+              <CornerDownLeft />
+            )}
+            Send
+          </Button>
+        </form>
+      ) : (
+        <div className="flex h-10 items-center gap-2 font-mono text-[10px] text-muted-foreground">
+          <EyeOff className="size-3.5" /> Read-only console access
+        </div>
+      )}
+    </div>
+  )
+}
+
+function useConsoleCommand(instance: RelayInstance, active: boolean) {
+  const [error, setError] = React.useState<string | null>(null)
+  const [value, setValue] = usePersistedCommand(instance.id)
+  const { navigateHistory, recordCommand } = useCommandHistory(instance.id)
+  const [sending, setSending] = React.useState(false)
+  const [completions, setCompletions] =
+    React.useState<CommandCompletions | null>(null)
+  const inputRef = React.useRef<HTMLInputElement>(null)
+  const completionListRef = React.useRef<HTMLDivElement>(null)
+  const completionSessionActive = React.useRef(false)
+  const completionRequest = React.useRef(0)
+  const completionPending = React.useRef({ cursor: -1, input: "" })
+  const selectedCompletionIndex =
+    completions?.status === "ready" ? completions.selectedIndex : null
+  const running = instance.observedState === "running"
+
+  React.useEffect(() => {
+    if (active) inputRef.current?.focus()
+  }, [active, instance.id])
+
+  React.useEffect(() => {
+    if (selectedCompletionIndex === null) return
+    let scrollFrame = 0
+    const selectionFrame = window.requestAnimationFrame(() => {
+      scrollFrame = window.requestAnimationFrame(() => {
+        const selectedOption =
+          completionListRef.current?.querySelector<HTMLElement>(
+            `#console-completion-${selectedCompletionIndex}`
+          )
+        selectedOption?.scrollIntoView({ block: "nearest", inline: "nearest" })
+      })
     })
-  }
+    return () => {
+      window.cancelAnimationFrame(selectionFrame)
+      window.cancelAnimationFrame(scrollFrame)
+    }
+  }, [selectedCompletionIndex])
 
-  function stopCommandCompletions() {
+  function stopCompletions() {
     completionSessionActive.current = false
     completionRequest.current += 1
     completionPending.current = { cursor: -1, input: "" }
-    setCommandCompletions(null)
+    setCompletions(null)
   }
 
-  function applyCommandCompletion(suggestion: string) {
-    if (!commandCompletions || commandCompletions.status !== "ready") return
-    const prefix = commandCompletions.input.slice(0, commandCompletions.cursor)
-    const suffix = commandCompletions.input.slice(commandCompletions.cursor)
+  function applyCompletion(suggestion: string) {
+    if (!completions || completions.status !== "ready") return
+    const prefix = completions.input.slice(0, completions.cursor)
+    const suffix = completions.input.slice(completions.cursor)
     const completedPrefix = mergeCommandCompletion(prefix, suggestion)
-    setCommandCompletions(null)
-    setCommand(`${completedPrefix}${suffix}`)
+    setCompletions(null)
+    setValue(`${completedPrefix}${suffix}`)
     window.requestAnimationFrame(() => {
-      const input = commandInputRef.current
-      input?.focus()
-      input?.setSelectionRange(completedPrefix.length, completedPrefix.length)
+      inputRef.current?.focus()
+      inputRef.current?.setSelectionRange(
+        completedPrefix.length,
+        completedPrefix.length
+      )
     })
   }
 
-  async function requestCommandCompletion(
+  async function requestCompletion(
     input: string,
     cursor: number,
     activateSession = false
@@ -441,7 +901,7 @@ export function ConsoleWorkspace({
     const requestId = completionRequest.current + 1
     completionRequest.current = requestId
     completionPending.current = { cursor, input }
-    setCommandCompletions({
+    setCompletions({
       cursor,
       input,
       selectedIndex: 0,
@@ -455,15 +915,15 @@ export function ConsoleWorkspace({
       if (completionRequest.current !== requestId) return
       if (!result.supported) {
         completionSessionActive.current = false
-        setCommandCompletions(null)
+        setCompletions(null)
         return
       }
       if (activateSession) completionSessionActive.current = true
 
-      const currentInput = commandInputRef.current
+      const currentInput = inputRef.current
       if (!currentInput || currentInput.value !== input) {
         if (activateSession && currentInput) {
-          void requestCommandCompletion(
+          void requestCompletion(
             currentInput.value,
             currentInput.selectionStart ?? currentInput.value.length
           )
@@ -478,11 +938,11 @@ export function ConsoleWorkspace({
         suggestionValues.unshift(result.completedPrefix)
       }
       const prefix = input.slice(0, cursor)
-      const suggestions = suggestionValues.map((value) => ({
-        label: commandCompletionLabel(prefix, value),
-        value,
+      const suggestions = suggestionValues.map((suggestion) => ({
+        label: commandCompletionLabel(prefix, suggestion),
+        value: suggestion,
       }))
-      setCommandCompletions({
+      setCompletions({
         cursor,
         input,
         selectedIndex: 0,
@@ -492,7 +952,7 @@ export function ConsoleWorkspace({
     } catch {
       if (completionRequest.current === requestId) {
         if (activateSession) completionSessionActive.current = false
-        setCommandCompletions({
+        setCompletions({
           cursor,
           input,
           selectedIndex: 0,
@@ -510,43 +970,68 @@ export function ConsoleWorkspace({
     }
   }
 
-  function handleCommandKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
-    if (event.nativeEvent.isComposing) return
-
+  function navigate(event: React.KeyboardEvent<HTMLInputElement>) {
     if (
-      event.key === "Escape" &&
-      (completionSessionActive.current || commandCompletions)
+      (event.key !== "ArrowUp" && event.key !== "ArrowDown") ||
+      event.nativeEvent.isComposing ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey
     ) {
-      event.preventDefault()
-      stopCommandCompletions()
       return
     }
+    const nextCommand = navigateHistory(
+      event.key === "ArrowUp" ? "previous" : "next",
+      event.currentTarget.value
+    )
+    if (nextCommand === undefined) return
+    event.preventDefault()
+    setCompletions(null)
+    setValue(nextCommand)
+    window.requestAnimationFrame(() => {
+      const input = inputRef.current
+      if (!input) return
+      input.setSelectionRange(input.value.length, input.value.length)
+      if (completionSessionActive.current) {
+        void requestCompletion(nextCommand, nextCommand.length)
+      }
+    })
+  }
 
-    if (commandCompletions?.status === "ready") {
+  function keyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.nativeEvent.isComposing) return
+    if (
+      event.key === "Escape" &&
+      (completionSessionActive.current || completions)
+    ) {
+      event.preventDefault()
+      stopCompletions()
+      return
+    }
+    if (completions?.status === "ready") {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault()
         const direction = event.key === "ArrowDown" ? 1 : -1
-        setCommandCompletions((current) => {
-          if (!current) return current
-          return {
-            ...current,
-            selectedIndex: Math.min(
-              Math.max(current.selectedIndex + direction, 0),
-              current.suggestions.length - 1
-            ),
-          }
-        })
+        setCompletions((current) =>
+          current
+            ? {
+                ...current,
+                selectedIndex: Math.min(
+                  Math.max(current.selectedIndex + direction, 0),
+                  current.suggestions.length - 1
+                ),
+              }
+            : current
+        )
         return
       }
       if (event.key === "Tab" || event.key === "Enter") {
         event.preventDefault()
-        const suggestion =
-          commandCompletions.suggestions[commandCompletions.selectedIndex]
-        applyCommandCompletion(suggestion.value)
+        const suggestion = completions.suggestions[completions.selectedIndex]
+        applyCompletion(suggestion.value)
         return
       }
     }
-
     if (
       event.key === "Tab" &&
       !event.altKey &&
@@ -555,511 +1040,72 @@ export function ConsoleWorkspace({
       running
     ) {
       event.preventDefault()
-      void requestCommandCompletion(
+      void requestCompletion(
         event.currentTarget.value,
         event.currentTarget.selectionStart ?? event.currentTarget.value.length,
         true
       )
       return
     }
-
-    navigateCommandHistory(event)
+    navigate(event)
   }
 
-  async function submitCommand(event: React.FormEvent) {
-    event.preventDefault()
-    const value = command.trim()
-    if (!value || sending) return
-    stopCommandCompletions()
-    recordCommand(value)
-    setCommand("")
-    window.requestAnimationFrame(() => commandInputRef.current?.focus())
-    setSending(true)
-
-    try {
-      await sendRelayCommand({
-        data: { instanceId: instance.id, command: value },
-      })
-      setCommandError(null)
-    } catch (cause) {
-      setCommandError(cause instanceof Error ? cause.message : "Command failed")
-      setCommand(value)
-    } finally {
-      setSending(false)
-      window.requestAnimationFrame(() => commandInputRef.current?.focus())
+  function change(event: React.ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget.value
+    const cursor = event.currentTarget.selectionStart ?? input.length
+    setError(null)
+    setValue(input)
+    if (completionSessionActive.current) {
+      void requestCompletion(input, cursor)
+    } else {
+      setCompletions(null)
     }
   }
 
-  const allLevels = levels.size === LEVELS.length
-  const running = instance.observedState === "running"
+  async function submit(event: React.FormEvent) {
+    event.preventDefault()
+    const command = value.trim()
+    if (!command || sending) return
+    stopCompletions()
+    recordCommand(command)
+    setValue("")
+    window.requestAnimationFrame(() => inputRef.current?.focus())
+    setSending(true)
+    try {
+      await sendRelayCommand({
+        data: { instanceId: instance.id, command },
+      })
+      setError(null)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Command failed")
+      setValue(command)
+    } finally {
+      setSending(false)
+      window.requestAnimationFrame(() => inputRef.current?.focus())
+    }
+  }
 
-  return (
-    <section className="flex min-h-0 flex-1 flex-col bg-card">
-      <div className="flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b px-3 py-2.5 sm:px-4">
-        <div className="relative min-w-[12rem] flex-1 sm:max-w-sm">
-          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search console"
-            aria-label="Search console"
-            className="h-9 border-border/80 bg-background pl-8 text-xs shadow-none"
-          />
-          {query ? (
-            <button
-              type="button"
-              aria-label="Clear console search"
-              className="absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              onClick={() => setQuery("")}
-            >
-              <X className="size-3.5" />
-            </button>
-          ) : null}
-        </div>
-        <Popover>
-          <ConsoleTooltip content="Filter Log Level">
-            <PopoverTrigger asChild>
-              <Button
-                variant={allLevels ? "ghost" : "secondary"}
-                size="icon"
-                className="relative size-9 shrink-0"
-                aria-label={
-                  allLevels
-                    ? "Filter console levels"
-                    : `Filter console levels, ${levels.size} active`
-                }
-              >
-                <ListFilter />
-                {!allLevels ? (
-                  <span
-                    className="absolute top-1 right-1 size-1.5 bg-primary"
-                    aria-hidden="true"
-                  />
-                ) : null}
-              </Button>
-            </PopoverTrigger>
-          </ConsoleTooltip>
-          <PopoverContent
-            align="start"
-            side="bottom"
-            sideOffset={7}
-            className="w-52 p-1"
-          >
-            <div className="flex items-center justify-between border-b px-2 py-2">
-              <p className="text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
-                Console levels
-              </p>
-              <span className="font-mono text-[9px] text-muted-foreground/75 tabular-nums">
-                {levels.size}/{LEVELS.length}
-              </span>
-            </div>
-            <ConsoleLevelFilter
-              active={allLevels}
-              label="All levels"
-              onClick={() => toggleLevel("all")}
-            />
-            <div className="my-1 border-t" />
-            {LEVELS.map((level) => (
-              <ConsoleLevelFilter
-                key={level}
-                active={levels.has(level)}
-                level={level}
-                label={level}
-                onClick={() => toggleLevel(level)}
-              />
-            ))}
-          </PopoverContent>
-        </Popover>
-        <div className="ml-auto flex items-center gap-1.5">
-          <ConsoleTooltip
-            content={
-              shareState === "uploading"
-                ? "Uploading to mclo.gs"
-                : shareState === "copied"
-                  ? "Link Copied"
-                  : shareState === "error"
-                    ? "Retry mclo.gs Upload"
-                    : "Upload to mclo.gs"
-            }
-          >
-            <Button
-              variant={
-                shareState === "copied"
-                  ? "secondary"
-                  : shareState === "error"
-                    ? "destructive"
-                    : "ghost"
-              }
-              size="sm"
-              className="h-8 gap-1.5 px-2.5 text-[11px]"
-              disabled={
-                shareState === "uploading" || !consoleData?.lines.length
-              }
-              onClick={shareLatestLog}
-            >
-              {shareState === "uploading" ? (
-                <LoaderCircle className="animate-spin" />
-              ) : shareState === "copied" ? (
-                <Check />
-              ) : shareState === "error" ? (
-                <TriangleAlert />
-              ) : (
-                <Share2 />
-              )}
-              {shareState === "uploading"
-                ? "Uploading"
-                : shareState === "copied"
-                  ? "Link copied"
-                  : shareState === "error"
-                    ? "Try again"
-                    : "mclo.gs"}
-            </Button>
-          </ConsoleTooltip>
-          <Popover open={selected.size > 0}>
-            <PopoverAnchor asChild>
-              <span className="inline-flex">
-                <ConsoleTooltip
-                  content={
-                    copyState === "copied"
-                      ? "Selected Lines Copied"
-                      : "Copy Selected Lines"
-                  }
-                >
-                  <Button
-                    variant={copyState === "copied" ? "secondary" : "ghost"}
-                    size="icon"
-                    className="size-8"
-                    aria-label={
-                      selected.size > 0
-                        ? `Copy ${selected.size} Selected ${selected.size === 1 ? "Line" : "Lines"}`
-                        : "Copy Selected Lines"
-                    }
-                    disabled={selected.size === 0}
-                    onClick={copySelected}
-                  >
-                    {copyState === "copied" ? <Check /> : <Copy />}
-                  </Button>
-                </ConsoleTooltip>
-              </span>
-            </PopoverAnchor>
-            <PopoverContent
-              align="center"
-              side="bottom"
-              sideOffset={7}
-              className="flex w-auto min-w-36 items-center gap-2 px-2.5 py-2"
-              onOpenAutoFocus={(event) => event.preventDefault()}
-              onEscapeKeyDown={clearSelection}
-            >
-              <span
-                className="font-mono text-[10px] whitespace-nowrap text-muted-foreground"
-                aria-live="polite"
-              >
-                {copyState === "copied"
-                  ? `${selected.size} ${selected.size === 1 ? "line" : "lines"} copied`
-                  : `${selected.size} ${selected.size === 1 ? "line" : "lines"} selected`}
-              </span>
-              <ConsoleTooltip content="Clear Selection">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
-                  aria-label="Clear selected console lines"
-                  onClick={clearSelection}
-                >
-                  <X className="size-3.5" />
-                </Button>
-              </ConsoleTooltip>
-            </PopoverContent>
-          </Popover>
-          <ConsoleTooltip content={redactSensitive ? "Show IPs" : "Censor IPs"}>
-            <Button
-              variant={redactSensitive ? "secondary" : "ghost"}
-              size="icon"
-              className="size-8"
-              aria-label={redactSensitive ? "Show IPs" : "Censor IPs"}
-              aria-pressed={redactSensitive}
-              onClick={() => setRedactSensitive((value) => !value)}
-            >
-              <EyeOff />
-            </Button>
-          </ConsoleTooltip>
-          {canShare ? (
-            <ConsoleTooltip
-              content={wrapLines ? "Disable Line Wrap" : "Enable Line Wrap"}
-            >
-              <Button
-                variant={wrapLines ? "secondary" : "ghost"}
-                size="icon"
-                className="size-8"
-                aria-label={
-                  wrapLines ? "Disable Line Wrap" : "Enable Line Wrap"
-                }
-                aria-pressed={wrapLines}
-                onClick={() => setWrapLines((value) => !value)}
-              >
-                <WrapText />
-              </Button>
-            </ConsoleTooltip>
-          ) : null}
-          <ConsoleTooltip
-            content={showTimestamps ? "Hide Timestamps" : "Show Timestamps"}
-          >
-            <Button
-              variant={showTimestamps ? "secondary" : "ghost"}
-              size="icon"
-              className="size-8"
-              aria-label={
-                showTimestamps ? "Hide timestamps" : "Show timestamps"
-              }
-              onClick={() => setShowTimestamps((value) => !value)}
-            >
-              <Clock3 />
-            </Button>
-          </ConsoleTooltip>
-        </div>
-      </div>
+  function selectCompletion(index: number) {
+    setCompletions((current) =>
+      current ? { ...current, selectedIndex: index } : current
+    )
+  }
 
-      <div className="relative min-h-0 flex-1 bg-[oklch(0.135_0.008_48)]">
-        <div
-          ref={parentRef}
-          className={`absolute inset-0 overscroll-contain font-mono text-[11px] selection:bg-primary/25 sm:text-[12px] ${wrapLines ? "overflow-x-hidden overflow-y-auto" : "overflow-auto"}`}
-          onScroll={(event) => {
-            if (programmaticScroll.current) return
-            const viewport = event.currentTarget
-            const distanceFromBottom =
-              viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
-            if (distanceFromBottom <= 8) {
-              if (!autoScroll) setAutoScroll(true)
-              return
-            }
-            if (autoScroll && distanceFromBottom > 72) setAutoScroll(false)
-          }}
-        >
-          <div
-            className={wrapLines ? "relative w-full" : "relative min-w-max"}
-            style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
-          >
-            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-              const line = filteredLines.at(virtualRow.index)
-              if (!line) return null
-              const isSelected = selected.has(line.id)
-              return (
-                <div
-                  role="button"
-                  tabIndex={0}
-                  key={line.id}
-                  ref={rowVirtualizer.measureElement}
-                  data-index={virtualRow.index}
-                  className={`absolute left-0 flex min-h-[30px] border-l-2 pr-5 text-left transition-colors ${wrapLines ? "w-full items-start py-1.5 whitespace-pre-wrap" : "h-[30px] min-w-full items-center whitespace-nowrap"} ${lineTone(line.level, isSelected)}`}
-                  style={{
-                    transform: `translateY(${virtualRow.start}px)`,
-                    width: wrapLines ? "100%" : "max(100%, max-content)",
-                  }}
-                  onClick={(event) =>
-                    toggleLine(line, virtualRow.index, event.shiftKey)
-                  }
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault()
-                      toggleLine(line, virtualRow.index, event.shiftKey)
-                    }
-                  }}
-                >
-                  {showTimestamps ? (
-                    <span className="mr-2 ml-3 w-[3.25rem] shrink-0 text-[9px] text-muted-foreground/65 tabular-nums">
-                      {formatTimestamp(line.timestamp)}
-                    </span>
-                  ) : null}
-                  <span
-                    className={`min-w-0 flex-1 leading-[18px] ${wrapLines ? "break-words" : ""} ${showTimestamps ? "" : "ml-3"} ${lineTextTone(line.level)}`}
-                  >
-                    {renderConsoleText(line.text, query)}
-                  </span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-
-        {!autoScroll ? (
-          <div className="absolute right-4 bottom-4 z-20">
-            <ConsoleTooltip content="Jump to the latest output and resume following.">
-              <Button
-                size="icon-lg"
-                className="shadow-xl shadow-black/35"
-                aria-label="Jump to latest output"
-                onClick={resumeAutoScroll}
-              >
-                <ArrowDown />
-              </Button>
-            </ConsoleTooltip>
-          </div>
-        ) : null}
-
-        {loading && !consoleData ? (
-          <div className="absolute inset-0 grid place-items-center bg-card/70 backdrop-blur-[2px]">
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <LoaderCircle className="size-4 animate-spin text-primary" />
-              Opening live console stream
-            </div>
-          </div>
-        ) : null}
-        {!loading && filteredLines.length === 0 ? (
-          <div className="absolute inset-0 grid place-items-center text-center">
-            <div>
-              <p className="text-sm font-semibold">No matching output</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Adjust the search or log-level filters.
-              </p>
-            </div>
-          </div>
-        ) : null}
-      </div>
-
-      <div className="shrink-0 border-t bg-background/80 px-3 py-3 sm:px-4">
-        {canWrite ? (
-          <form className="flex items-center gap-2" onSubmit={submitCommand}>
-            <span className="hidden font-mono text-xs font-semibold text-primary sm:inline">
-              &gt;
-            </span>
-            <Popover
-              open={Boolean(commandCompletions)}
-              onOpenChange={(open) => {
-                if (!open) stopCommandCompletions()
-              }}
-            >
-              <PopoverAnchor asChild>
-                <div className="min-w-0 flex-1">
-                  <Input
-                    ref={commandInputRef}
-                    value={command}
-                    onChange={(event) => {
-                      const input = event.currentTarget.value
-                      const cursor =
-                        event.currentTarget.selectionStart ?? input.length
-                      setCommandError(null)
-                      setCommand(input)
-                      if (completionSessionActive.current) {
-                        void requestCommandCompletion(input, cursor)
-                      } else {
-                        setCommandCompletions(null)
-                      }
-                    }}
-                    onBlur={stopCommandCompletions}
-                    onKeyDown={handleCommandKeyDown}
-                    placeholder={
-                      running ? "Send a server command…" : "Server is offline"
-                    }
-                    role="combobox"
-                    aria-label="Server command"
-                    aria-autocomplete="list"
-                    aria-controls="console-command-completions"
-                    aria-expanded={Boolean(commandCompletions)}
-                    aria-invalid={Boolean(commandError)}
-                    aria-keyshortcuts="Tab ArrowUp ArrowDown Escape"
-                    aria-activedescendant={
-                      commandCompletions?.status === "ready"
-                        ? `console-completion-${commandCompletions.selectedIndex}`
-                        : undefined
-                    }
-                    disabled={!running}
-                    title={commandError ?? undefined}
-                    autoFocus
-                    autoComplete="off"
-                    className="h-10 border-border/80 bg-card font-mono text-xs shadow-none"
-                  />
-                </div>
-              </PopoverAnchor>
-              <PopoverContent
-                ref={completionListRef}
-                id="console-command-completions"
-                role="listbox"
-                align="start"
-                side="top"
-                sideOffset={7}
-                className="max-h-[13.25rem] w-[var(--radix-popover-trigger-width)] min-w-64 overflow-y-scroll p-1 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:bg-muted-foreground/55 [&::-webkit-scrollbar-thumb:hover]:bg-muted-foreground/75 [&::-webkit-scrollbar-track]:bg-foreground/10"
-                style={{
-                  scrollbarColor:
-                    "color-mix(in oklab, var(--muted-foreground) 55%, transparent) color-mix(in oklab, var(--foreground) 10%, transparent)",
-                  scrollbarGutter: "stable",
-                }}
-                aria-busy={commandCompletions?.status === "loading"}
-                onOpenAutoFocus={(event) => event.preventDefault()}
-                onCloseAutoFocus={(event) => event.preventDefault()}
-              >
-                {commandCompletions?.status === "loading" ? (
-                  <div
-                    role="status"
-                    className="flex items-center gap-2 px-2.5 py-2 font-mono text-xs text-muted-foreground"
-                  >
-                    <LoaderCircle className="size-3.5 animate-spin text-primary/75" />
-                    Waiting for completions…
-                  </div>
-                ) : commandCompletions?.status === "empty" ? (
-                  <div
-                    role="status"
-                    className="px-2.5 py-2 font-mono text-xs text-muted-foreground"
-                  >
-                    No completions
-                  </div>
-                ) : commandCompletions?.status === "unavailable" ? (
-                  <div
-                    role="status"
-                    className="px-2.5 py-2 font-mono text-xs text-muted-foreground"
-                  >
-                    Completions unavailable
-                  </div>
-                ) : (
-                  commandCompletions?.suggestions.map((suggestion, index) => (
-                    <button
-                      id={`console-completion-${index}`}
-                      role="option"
-                      aria-selected={index === commandCompletions.selectedIndex}
-                      type="button"
-                      key={suggestion.value}
-                      className={`block w-full px-2.5 py-2 text-left font-mono text-xs ${
-                        index === commandCompletions.selectedIndex
-                          ? "bg-popover-accent text-popover-accent-foreground"
-                          : "text-muted-foreground hover:bg-muted/55 hover:text-foreground"
-                      }`}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onPointerMove={() =>
-                        setCommandCompletions((current) =>
-                          current
-                            ? { ...current, selectedIndex: index }
-                            : current
-                        )
-                      }
-                      onClick={() => applyCommandCompletion(suggestion.value)}
-                    >
-                      {suggestion.label}
-                    </button>
-                  ))
-                )}
-              </PopoverContent>
-            </Popover>
-            <Button
-              type="submit"
-              size="sm"
-              className="h-10 gap-1.5 px-4 text-xs"
-              disabled={!running || !command.trim() || sending}
-            >
-              {sending ? (
-                <LoaderCircle className="animate-spin" />
-              ) : (
-                <CornerDownLeft />
-              )}
-              Send
-            </Button>
-          </form>
-        ) : (
-          <div className="flex h-10 items-center gap-2 font-mono text-[10px] text-muted-foreground">
-            <EyeOff className="size-3.5" /> Read-only console access
-          </div>
-        )}
-      </div>
-    </section>
-  )
+  return {
+    applyCompletion,
+    change,
+    completionListRef,
+    completions,
+    error,
+    inputRef,
+    keyDown,
+    running,
+    selectCompletion,
+    sending,
+    stopCompletions,
+    submit,
+    value,
+  }
 }
 
 function ConsoleLevelFilter({
@@ -1109,6 +1155,22 @@ function consoleLevelFilterTone(level: RelayConsoleLevel): string {
   return "bg-violet-400/90"
 }
 
+function shareTooltip(
+  state: "idle" | "uploading" | "copied" | "error"
+): string {
+  if (state === "uploading") return "Uploading to mclo.gs"
+  if (state === "copied") return "Link Copied"
+  if (state === "error") return "Retry mclo.gs Upload"
+  return "Upload to mclo.gs"
+}
+
+function shareLabel(state: "idle" | "uploading" | "copied" | "error"): string {
+  if (state === "uploading") return "Uploading"
+  if (state === "copied") return "Link copied"
+  if (state === "error") return "Try again"
+  return "mclo.gs"
+}
+
 function ConsoleTooltip({
   content,
   children,
@@ -1142,14 +1204,28 @@ function lineTextTone(level: RelayConsoleLevel): string {
   return "text-foreground/88"
 }
 
+function ConsoleTimestamp({ timestamp }: { timestamp: string | null }) {
+  const formattedTimestamp = React.useSyncExternalStore(
+    subscribeToBrowserLocale,
+    () => formatTimestamp(timestamp),
+    () => "--:--:--"
+  )
+
+  return (
+    <span className="mr-2 ml-3 w-[3.25rem] shrink-0 text-[9px] text-muted-foreground/65 tabular-nums">
+      {formattedTimestamp}
+    </span>
+  )
+}
+
+function subscribeToBrowserLocale(): () => void {
+  // Locale has no browser change event; this store only defers formatting until hydration.
+  return () => undefined
+}
+
 function formatTimestamp(timestamp: string | null): string {
   if (!timestamp) return "--:--:--"
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).format(new Date(timestamp))
+  return consoleTimestampFormatter.format(new Date(timestamp))
 }
 
 function renderConsoleText(text: string, query: string): React.ReactNode {
@@ -1238,6 +1314,92 @@ async function copyToClipboard(value: string) {
     document.execCommand("copy")
     textarea.remove()
   }
+}
+
+function useRelayConsoleStream(instanceId: string) {
+  const [consoleData, setConsoleData] = React.useState<RelayConsole | null>(
+    null
+  )
+  const [loading, setLoading] = React.useState(true)
+
+  React.useEffect(() => {
+    let cancelled = false
+    const lifecycle = new AbortController()
+    let activeIterator: ReturnType<typeof openRelayConsoleStream> | null = null
+    let flushTimer: number | null = null
+    const pending: Array<RelayConsoleLine> = []
+    const seen = new Set<string>()
+
+    function flush() {
+      flushTimer = null
+      if (cancelled || pending.length === 0) return
+      const fresh = pending.splice(0).filter((line) => {
+        if (seen.has(line.id)) return false
+        seen.add(line.id)
+        return true
+      })
+      if (fresh.length === 0) return
+      setConsoleData((current) => ({
+        instanceId,
+        lines: [...(current?.lines ?? []), ...fresh].slice(-5_000),
+        truncated: Boolean(current?.truncated) || seen.size > 5_000,
+      }))
+    }
+
+    function append(line: RelayConsoleLine) {
+      pending.push(line)
+      if (pending.length >= 100) flush()
+      else if (flushTimer === null) {
+        flushTimer = window.setTimeout(flush, 40)
+      }
+    }
+
+    async function connect() {
+      let retryDelay = 400
+      while (!cancelled) {
+        try {
+          const stream = openRelayConsoleStream(instanceId, lifecycle.signal)
+          activeIterator = stream
+          // Cancellation changes from the effect cleanup while next() awaits.
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+          while (!cancelled) {
+            const result = await activeIterator.next()
+            if (result.done) throw new Error("Console stream closed")
+            if (result.value.type === "ready") {
+              setLoading(false)
+              setConsoleData(
+                (current) =>
+                  current ?? {
+                    instanceId,
+                    lines: [],
+                    truncated: false,
+                  }
+              )
+              retryDelay = 400
+            } else {
+              append(result.value.line)
+            }
+          }
+        } catch {
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+          if (cancelled) break
+          setLoading(false)
+          await waitForRetry(retryDelay, lifecycle.signal)
+          retryDelay = Math.min(retryDelay * 2, 5_000)
+        }
+      }
+    }
+
+    void connect()
+    return () => {
+      cancelled = true
+      lifecycle.abort()
+      if (flushTimer !== null) window.clearTimeout(flushTimer)
+      if (activeIterator) void activeIterator.return(undefined)
+    }
+  }, [instanceId])
+
+  return { consoleData, loading }
 }
 
 function waitForRetry(delay: number, signal: AbortSignal): Promise<void> {
