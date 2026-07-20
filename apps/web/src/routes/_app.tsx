@@ -12,7 +12,6 @@ import {
   useParams,
   useRouterState,
 } from "@tanstack/react-router"
-import type { RelayInstance } from "@workspace/contracts"
 import { Cable, CircleAlert, RefreshCw, Settings } from "lucide-react"
 import {
   SidebarInset,
@@ -31,7 +30,15 @@ import {
   relaySnapshotQueryOptions,
   uiPreferencesQueryOptions,
 } from "@/lib/query-options"
-import type { RelayConnection } from "@/lib/query-options"
+import {
+  findRelayInstance,
+  selectRelayConnectionSummary,
+  selectSidebarInstances,
+} from "@/lib/relay-selectors"
+import type {
+  RelayConnectionSummary,
+  SidebarInstance,
+} from "@/lib/relay-selectors"
 
 const tabRoutes = {
   console: "/$serverId/console",
@@ -39,7 +46,7 @@ const tabRoutes = {
 } as const
 
 const selectedInstanceStorageKey = "kiln:selected-instance-id"
-const emptyInstances: Array<RelayInstance> = []
+const emptyInstances: Array<SidebarInstance> = []
 
 export const Route = createFileRoute("/_app")({
   staleTime: Infinity,
@@ -67,16 +74,18 @@ export const Route = createFileRoute("/_app")({
 
 function AppLayout() {
   const queryClient = useQueryClient()
-  const connectionQuery = useSuspenseQuery(
-    relayConnectionQueryOptions(queryClient)
-  )
+  const connectionQuery = useSuspenseQuery({
+    ...relayConnectionQueryOptions(queryClient),
+    select: selectRelayConnectionSummary,
+  })
   const { data: capabilities } = useSuspenseQuery(
     accessCapabilitiesQueryOptions()
   )
   const { data: uiPreferences } = useSuspenseQuery(uiPreferencesQueryOptions())
-  const { data: snapshot } = useQuery({
+  const { data: sidebarInstances } = useQuery({
     ...relaySnapshotQueryOptions(),
     enabled: connectionQuery.data.status === "connected",
+    select: selectSidebarInstances,
   })
   const connection = connectionQuery.data
   const { user } = Route.useRouteContext()
@@ -105,10 +114,10 @@ function AppLayout() {
       : pathname.endsWith("/info")
         ? "info"
         : "console"
-  const instances = snapshot?.instances ?? emptyInstances
-  const routeInstance = findInstance(instances, serverId)
-  const rememberedInstance = findInstance(instances, selectedInstanceId)
-  const instance: RelayInstance | undefined =
+  const instances = sidebarInstances ?? emptyInstances
+  const routeInstance = findRelayInstance(instances, serverId)
+  const rememberedInstance = findRelayInstance(instances, selectedInstanceId)
+  const instance: SidebarInstance | undefined =
     routeInstance ?? rememberedInstance ?? instances.at(0)
 
   const rememberInstance = React.useCallback((instanceId: string) => {
@@ -143,7 +152,7 @@ function AppLayout() {
   React.useEffect(() => {
     if (serverId) return
 
-    const storedInstance = findInstance(
+    const storedInstance = findRelayInstance(
       instances,
       window.localStorage.getItem(selectedInstanceStorageKey)
     )
@@ -175,7 +184,7 @@ function AppLayout() {
         relayStatus={connection.status}
         relayName={connection.relay?.name}
         onInstanceChange={(shortId) => {
-          const nextInstance = findInstance(instances, shortId)
+          const nextInstance = findRelayInstance(instances, shortId)
           if (nextInstance) rememberInstance(nextInstance.id)
           void navigateToInstanceTab(activeTab ?? "console", shortId)
         }}
@@ -198,7 +207,7 @@ function AppLayout() {
               onRetry={() => void connectionQuery.refetch()}
               onConfigure={() => void navigate({ to: "/settings" })}
             />
-          ) : !snapshot ? (
+          ) : !sidebarInstances ? (
             <div className="min-h-0 flex-1 bg-background" />
           ) : instance && activeTab ? (
             <Outlet />
@@ -209,19 +218,6 @@ function AppLayout() {
         <PanelFooter />
       </SidebarInset>
     </SidebarProvider>
-  )
-}
-
-function findInstance(
-  instances: Array<RelayInstance>,
-  identifier: string | null | undefined
-): RelayInstance | undefined {
-  if (!identifier) return undefined
-  return instances.find(
-    (item) =>
-      item.shortId === identifier ||
-      item.id === identifier ||
-      item.name === identifier
   )
 }
 
@@ -256,7 +252,7 @@ function RelayUnavailableState({
   onRetry,
   onConfigure,
 }: {
-  connection: Exclude<RelayConnection, { status: "connected" }>
+  connection: Exclude<RelayConnectionSummary, { status: "connected" }>
   canConfigure: boolean
   onRetry: () => void
   onConfigure: () => void

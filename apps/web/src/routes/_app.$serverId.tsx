@@ -1,7 +1,6 @@
 import * as React from "react"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { Outlet, createFileRoute, useRouterState } from "@tanstack/react-router"
-import type { RelayInstance } from "@workspace/contracts"
 
 import type { InstanceTab } from "@/components/app-sidebar"
 import { InstanceWorkspace } from "@/components/instance-workspace"
@@ -12,6 +11,7 @@ import {
   relaySnapshotQueryOptions,
   uiPreferencesQueryOptions,
 } from "@/lib/query-options"
+import { selectInstanceWorkspaceInstance } from "@/lib/relay-selectors"
 
 export const Route = createFileRoute("/_app/$serverId")({
   component: InstanceRouteLayout,
@@ -22,12 +22,18 @@ function InstanceRouteLayout() {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
-  const { data: snapshot } = useQuery(relaySnapshotQueryOptions())
+  const selectInstance = React.useMemo(
+    () => selectInstanceWorkspaceInstance(serverId),
+    [serverId]
+  )
+  const { data: instance } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectInstance,
+  })
   const { data: capabilities } = useSuspenseQuery(
     accessCapabilitiesQueryOptions()
   )
   const { data: uiPreferences } = useSuspenseQuery(uiPreferencesQueryOptions())
-  const instance = findInstance(snapshot?.instances ?? [], serverId)
   const instanceId = instance?.id
 
   const activeTab: InstanceTab = /\/files(?:\/|$)/.test(pathname)
@@ -67,29 +73,16 @@ function InstanceRouteLayout() {
     }
   }, [capabilities.grants, capabilities.isPlatformAdmin, instanceId])
 
-  if (!snapshot || !instance) return null
+  if (!instance) return null
 
   return (
     <InstanceWorkspace
       instance={instance}
-      node={snapshot.node}
       title={title}
       fileTreePreferences={fileTreePreferences}
       permissions={permissions}
     >
       <Outlet />
     </InstanceWorkspace>
-  )
-}
-
-function findInstance(
-  instances: Array<RelayInstance>,
-  identifier: string
-): RelayInstance | undefined {
-  return instances.find(
-    (item) =>
-      item.shortId === identifier ||
-      item.id === identifier ||
-      item.name === identifier
   )
 }

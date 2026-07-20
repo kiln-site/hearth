@@ -522,21 +522,19 @@ function SidebarMenuButton({
     return button
   }
 
-  if (typeof tooltip === "string") {
-    tooltip = {
-      children: tooltip,
-    }
-  }
+  const tooltipProps =
+    typeof tooltip === "string" ? { children: tooltip } : tooltip
+  const forceVisible = tooltipProps.hidden === false
+
+  // Expanded sidebar labels already describe their controls. Avoid mounting a
+  // Radix tooltip root for every item because the shared provider updates all
+  // tooltip subscribers whenever one trigger changes hover state.
+  if (!forceVisible && (state !== "collapsed" || isMobile)) return button
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>{button}</TooltipTrigger>
-      <TooltipContent
-        side="right"
-        align="center"
-        hidden={state !== "collapsed" || isMobile}
-        {...tooltip}
-      />
+      <TooltipContent side="right" align="center" {...tooltipProps} />
     </Tooltip>
   )
 }

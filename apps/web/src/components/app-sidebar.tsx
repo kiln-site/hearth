@@ -13,7 +13,6 @@ import {
   TerminalSquare,
   UserRoundCog,
 } from "lucide-react"
-import type { RelayInstance } from "@workspace/contracts"
 import { useNavigate } from "@tanstack/react-router"
 
 import { Avatar, AvatarFallback } from "@workspace/ui/components/avatar"
@@ -51,6 +50,7 @@ import { ServerTypeIcon } from "@/components/server-type-icon"
 import { authClient } from "@/lib/auth-client"
 import type { AuthenticatedUser } from "@/lib/auth-session"
 import { disableDevelopmentBypass } from "@/server/auth"
+import type { SidebarInstance } from "@/lib/relay-selectors"
 
 export type InstanceTab = "console" | "files" | "info"
 export type GlobalSection = "access" | "bricks" | "security" | "settings" | null
@@ -78,8 +78,8 @@ export function AppSidebar({
   onInstanceChange,
   onTabChange,
 }: {
-  instances: Array<RelayInstance>
-  instance?: RelayInstance
+  instances: Array<SidebarInstance>
+  instance?: SidebarInstance
   user: AuthenticatedUser
   activeTab: InstanceTab | null
   activeSection: GlobalSection
@@ -230,8 +230,8 @@ function InstanceNavigation({
   onTabChange,
 }: {
   activeTab: InstanceTab | null
-  instance: RelayInstance
-  instances: Array<RelayInstance>
+  instance: SidebarInstance
+  instances: Array<SidebarInstance>
   onInstanceChange: (id: string) => void
   onTabChange: (tab: InstanceTab) => void
 }) {
@@ -462,7 +462,7 @@ function initials(name: string): string {
     .join("")
 }
 
-function statusBorderTone(state: RelayInstance["observedState"]): string {
+function statusBorderTone(state: SidebarInstance["observedState"]): string {
   if (state === "running") return "border-l-emerald-400/80"
   if (state === "failed") return "border-l-red-400/80"
   if (state === "starting" || state === "provisioning") {

@@ -1,10 +1,10 @@
 import * as React from "react"
+import { useQuery } from "@tanstack/react-query"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import type {
   RelayConsole,
   RelayConsoleLevel,
   RelayConsoleLine,
-  RelayInstance,
 } from "@workspace/contracts"
 import {
   ArrowDown,
@@ -38,6 +38,9 @@ import {
 
 import { openRelayConsoleStream } from "@/lib/relay-console-stream"
 import { redactSensitiveText } from "@/lib/redaction"
+import { relaySnapshotQueryOptions } from "@/lib/query-options"
+import { selectInstanceObservedState } from "@/lib/relay-selectors"
+import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
 import {
   completeRelayCommand,
   sendRelayCommand,
@@ -75,7 +78,7 @@ export function ConsoleWorkspace({
   canShare,
   canWrite,
 }: {
-  instance: RelayInstance
+  instance: InstanceWorkspaceInstance
   active: boolean
   canShare: boolean
   canWrite: boolean
@@ -97,7 +100,7 @@ function ConsoleWorkspaceSession({
   canShare,
   canWrite,
 }: {
-  instance: RelayInstance
+  instance: InstanceWorkspaceInstance
   active: boolean
   canShare: boolean
   canWrite: boolean
@@ -118,6 +121,8 @@ function ConsoleWorkspaceSession({
   const copyTimer = React.useRef<number | null>(null)
   const shareTimer = React.useRef<number | null>(null)
   const lastSelected = React.useRef<number | null>(null)
+  const filteredLinesRef = React.useRef<Array<RelayConsoleLine>>([])
+  const selectedRef = React.useRef(selected)
 
   React.useEffect(
     () => () => {
@@ -159,7 +164,12 @@ function ConsoleWorkspaceSession({
     return filtered
   }, [consoleData?.lines, levels, query, redactSensitive])
 
-  function toggleLevel(level: RelayConsoleLevel | "all") {
+  React.useLayoutEffect(() => {
+    filteredLinesRef.current = filteredLines
+    selectedRef.current = selected
+  }, [filteredLines, selected])
+
+  const toggleLevel = React.useCallback((level: RelayConsoleLevel | "all") => {
     if (level === "all") {
       setLevels(new Set(LEVELS))
       return
@@ -172,20 +182,20 @@ function ConsoleWorkspaceSession({
       else next.add(level)
       return next
     })
-  }
+  }, [])
 
-  async function copySelected() {
+  const copySelected = React.useCallback(async () => {
     const lines: Array<string> = []
-    for (const line of filteredLines) {
-      if (selected.has(line.id)) lines.push(line.text)
+    for (const line of filteredLinesRef.current) {
+      if (selectedRef.current.has(line.id)) lines.push(line.text)
     }
     await copyToClipboard(lines.join("\n"))
     setCopyState("copied")
     if (copyTimer.current) window.clearTimeout(copyTimer.current)
     copyTimer.current = window.setTimeout(() => setCopyState("idle"), 1_800)
-  }
+  }, [])
 
-  async function shareLatestLog() {
+  const shareLatestLog = React.useCallback(async () => {
     setShareState("uploading")
     try {
       const result = await uploadLatestLogToMclogs({
@@ -203,7 +213,7 @@ function ConsoleWorkspaceSession({
     }
     if (shareTimer.current) window.clearTimeout(shareTimer.current)
     shareTimer.current = window.setTimeout(() => setShareState("idle"), 2_800)
-  }
+  }, [instance.id, instance.implementation, instance.version, redactSensitive])
 
   const allLevels = levels.size === LEVELS.length
 
@@ -213,7 +223,7 @@ function ConsoleWorkspaceSession({
         allLevels={allLevels}
         canShare={canShare}
         clearSelection={clearSelection}
-        consoleData={consoleData}
+        hasLines={Boolean(consoleData?.lines.length)}
         copySelected={copySelected}
         copyState={copyState}
         levels={levels}
@@ -257,7 +267,7 @@ interface ConsoleToolbarProps {
   allLevels: boolean
   canShare: boolean
   clearSelection: () => void
-  consoleData: RelayConsole | null
+  hasLines: boolean
   copySelected: () => Promise<void>
   copyState: "idle" | "copied"
   levels: Set<RelayConsoleLevel>
@@ -275,11 +285,11 @@ interface ConsoleToolbarProps {
   wrapLines: boolean
 }
 
-function ConsoleToolbar({
+const ConsoleToolbar = React.memo(function ConsoleToolbar({
   allLevels,
   canShare,
   clearSelection,
-  consoleData,
+  hasLines,
   copySelected,
   copyState,
   levels,
@@ -384,7 +394,7 @@ function ConsoleToolbar({
             }
             size="sm"
             className="h-8 gap-1.5 px-2.5 text-[11px]"
-            disabled={shareState === "uploading" || !consoleData?.lines.length}
+            disabled={shareState === "uploading" || !hasLines}
             onClick={shareLatestLog}
           >
             {shareState === "uploading" ? (
@@ -499,7 +509,7 @@ function ConsoleToolbar({
       </div>
     </div>
   )
-}
+})
 
 interface ConsoleLogViewportProps {
   active: boolean
@@ -682,16 +692,28 @@ function ConsoleLogViewport({
   )
 }
 
-function ConsoleCommandBar({
+const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
   active,
   canWrite,
   instance,
 }: {
   active: boolean
   canWrite: boolean
-  instance: RelayInstance
+  instance: InstanceWorkspaceInstance
 }) {
-  const command = useConsoleCommand(instance, active)
+  const selectObservedState = React.useMemo(
+    () => selectInstanceObservedState(instance.id),
+    [instance.id]
+  )
+  const { data: observedState } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectObservedState,
+  })
+  const command = useConsoleCommand(
+    instance.id,
+    active,
+    observedState === "running"
+  )
 
   return (
     <div className="shrink-0 border-t bg-background/80 px-3 py-3 sm:px-4">
@@ -824,12 +846,16 @@ function ConsoleCommandBar({
       )}
     </div>
   )
-}
+})
 
-function useConsoleCommand(instance: RelayInstance, active: boolean) {
+function useConsoleCommand(
+  instanceId: string,
+  active: boolean,
+  running: boolean
+) {
   const [error, setError] = React.useState<string | null>(null)
-  const [value, setValue] = usePersistedCommand(instance.id)
-  const { navigateHistory, recordCommand } = useCommandHistory(instance.id)
+  const [value, setValue] = usePersistedCommand(instanceId)
+  const { navigateHistory, recordCommand } = useCommandHistory(instanceId)
   const [sending, setSending] = React.useState(false)
   const [completions, setCompletions] =
     React.useState<CommandCompletions | null>(null)
@@ -840,11 +866,9 @@ function useConsoleCommand(instance: RelayInstance, active: boolean) {
   const completionPending = React.useRef({ cursor: -1, input: "" })
   const selectedCompletionIndex =
     completions?.status === "ready" ? completions.selectedIndex : null
-  const running = instance.observedState === "running"
-
   React.useEffect(() => {
     if (active) inputRef.current?.focus()
-  }, [active, instance.id])
+  }, [active, instanceId])
 
   React.useEffect(() => {
     if (selectedCompletionIndex === null) return
@@ -910,7 +934,7 @@ function useConsoleCommand(instance: RelayInstance, active: boolean) {
     })
     try {
       const result = await completeRelayCommand({
-        data: { instanceId: instance.id, input, cursor },
+        data: { instanceId, input, cursor },
       })
       if (completionRequest.current !== requestId) return
       if (!result.supported) {
@@ -1073,7 +1097,7 @@ function useConsoleCommand(instance: RelayInstance, active: boolean) {
     setSending(true)
     try {
       await sendRelayCommand({
-        data: { instanceId: instance.id, command },
+        data: { instanceId, command },
       })
       setError(null)
     } catch (cause) {

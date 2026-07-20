@@ -11,7 +11,6 @@ import type {
   RelayFileActivityEntry,
   RelayFileContent,
   RelayFileTree,
-  RelayInstance,
 } from "@workspace/contracts"
 import {
   ALargeSmall,
@@ -69,6 +68,7 @@ import {
 } from "@/components/file-tree-loading-panel"
 import { redactSensitiveText } from "@/lib/redaction"
 import { fileLanguageForPath } from "@/lib/file-language"
+import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
 import {
   queryKeys,
   relayFileActivityQueryOptions,
@@ -106,6 +106,29 @@ const olderFileDateFormatter = new Intl.DateTimeFormat(undefined, {
   day: "numeric",
   year: "numeric",
 })
+
+interface EditorSearchStore {
+  getSnapshot: () => string
+  setQuery: (query: string) => void
+  subscribe: (listener: () => void) => () => void
+}
+
+function createEditorSearchStore(): EditorSearchStore {
+  let query = ""
+  const listeners = new Set<() => void>()
+  return {
+    getSnapshot: () => query,
+    setQuery: (nextQuery) => {
+      if (query === nextQuery) return
+      query = nextQuery
+      for (const listener of listeners) listener()
+    },
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+  }
+}
 
 function persistFileTreeWidth(width: number) {
   document.cookie = `${fileTreeWidthCookieName}=${width}; path=/; max-age=${fileTreeCookieMaxAge}; SameSite=Lax`
@@ -312,7 +335,7 @@ function Editor({
 }: {
   file: RelayFileContent
   displayPath: string
-  instance: RelayInstance
+  instance: InstanceWorkspaceInstance
   loading: boolean
   error: string | null
   canShare: boolean
@@ -324,8 +347,8 @@ function Editor({
   treeCollapsed: boolean
   onTreeExpand: () => void
 }) {
-  const [value, setValue] = React.useState(file.content)
   const [savedValue, setSavedValue] = React.useState(file.content)
+  const [dirty, setDirty] = React.useState(false)
   const [saving, setSaving] = React.useState(false)
   const [saveError, setSaveError] = React.useState<string | null>(null)
   const [shareState, setShareState] = React.useState<
@@ -336,12 +359,14 @@ function Editor({
   const [desktopActionsOpen, setDesktopActionsOpen] = React.useState(false)
   const [mobileActionsOpen, setMobileActionsOpen] = React.useState(false)
   const [searchOpen, setSearchOpen] = React.useState(false)
-  const [searchQuery, setSearchQuery] = React.useState("")
+  const searchStore = React.useMemo(createEditorSearchStore, [])
   const [fontSize, setFontSize] = React.useState(defaultFileEditorFontSize)
   const [fontSizeReady, setFontSizeReady] = React.useState(false)
   const [reviewChanges, setReviewChanges] = React.useState(true)
   const [wrapLines, setWrapLines] = React.useState(true)
   const editorRef = React.useRef<SyntaxCodeEditorHandle>(null)
+  const valueRef = React.useRef(file.content)
+  const savedValueRef = React.useRef(file.content)
   const searchInputRef = React.useRef<HTMLInputElement>(null)
   const resetShareTimer = React.useRef<number | null>(null)
   const resetCopyTimer = React.useRef<number | null>(null)
@@ -409,13 +434,21 @@ function Editor({
     return () => observer.disconnect()
   }, [file.path])
 
-  const dirty = value !== savedValue
+  const handleDocumentValueChange = React.useCallback((value: string) => {
+    valueRef.current = value
+    const nextDirty = value !== savedValueRef.current
+    setDirty((current) => (current === nextDirty ? current : nextDirty))
+  }, [])
+
   async function handleSave() {
     setSaving(true)
     setSaveError(null)
     try {
+      const value = valueRef.current
       await onSave(value)
+      savedValueRef.current = value
       setSavedValue(value)
+      setDirty(false)
     } catch (cause) {
       setSaveError(cause instanceof Error ? cause.message : "Save failed")
     } finally {
@@ -428,7 +461,9 @@ function Editor({
     try {
       const result = await uploadToMclogs({
         data: {
-          content: redactSensitive ? redactSensitiveText(value) : value,
+          content: redactSensitive
+            ? redactSensitiveText(valueRef.current)
+            : valueRef.current,
           instanceId: instance.id,
           path: file.path,
           implementation: instance.implementation,
@@ -447,7 +482,9 @@ function Editor({
   }
 
   async function handleCopy() {
-    await copyToClipboard(redactSensitive ? redactSensitiveText(value) : value)
+    await copyToClipboard(
+      redactSensitive ? redactSensitiveText(valueRef.current) : valueRef.current
+    )
     setCopyState("copied")
     if (resetCopyTimer.current) window.clearTimeout(resetCopyTimer.current)
     resetCopyTimer.current = window.setTimeout(() => setCopyState("idle"), 1800)
@@ -814,74 +851,29 @@ function Editor({
           }}
           onInteractOutside={(event) => event.preventDefault()}
         >
-          <div className="flex items-center gap-1.5">
-            <div className="relative min-w-0 flex-1">
-              <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                ref={searchInputRef}
-                value={searchQuery}
-                aria-label="Find in file"
-                className="h-8 bg-background/70 pr-2 pl-8 font-mono text-base shadow-none md:text-xs"
-                placeholder="Find in file…"
-                spellCheck={false}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key !== "Enter") return
-                  event.preventDefault()
-                  if (event.shiftKey) editorRef.current?.findPrevious()
-                  else editorRef.current?.findNext()
-                }}
-              />
-            </div>
-            <div className="flex shrink-0 items-center">
-              <div className="flex h-10 w-9 flex-col gap-px">
-                <button
-                  type="button"
-                  className="grid min-h-0 flex-1 place-items-center text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground focus-visible:z-10 focus-visible:ring-1 focus-visible:ring-ring/60 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-35"
-                  aria-label="Previous match"
-                  disabled={!searchQuery}
-                  onClick={() => editorRef.current?.findPrevious()}
-                >
-                  <ChevronUp className="size-[18px]" />
-                </button>
-                <button
-                  type="button"
-                  className="grid min-h-0 flex-1 place-items-center text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground focus-visible:z-10 focus-visible:ring-1 focus-visible:ring-ring/60 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-35"
-                  aria-label="Next match"
-                  disabled={!searchQuery}
-                  onClick={() => editorRef.current?.findNext()}
-                >
-                  <ChevronDown className="size-[18px]" />
-                </button>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-8"
-                aria-label="Close file search"
-                onClick={() => setSearchOpen(false)}
-              >
-                <X className="size-[18px]" />
-              </Button>
-            </div>
-          </div>
+          <EditorSearchContent
+            editorRef={editorRef}
+            inputRef={searchInputRef}
+            store={searchStore}
+            onClose={() => setSearchOpen(false)}
+          />
         </PopoverContent>
       </Popover>
 
       <div className="editor-grid relative min-h-[360px] min-w-0 flex-1 overflow-hidden">
-        <SyntaxCodeEditor
-          ref={editorRef}
+        <EditorDocument
+          editorRef={editorRef}
           ariaLabel={`Edit ${formatName(file.path)}`}
-          value={value}
+          initialValue={file.content}
           originalValue={savedValue}
-          onChange={setValue}
+          onValueChange={handleDocumentValueChange}
           onSearchOpenChange={setSearchOpen}
           path={file.path}
           disabled={loading}
           redactSensitive={redactSensitive}
           readOnly={file.readOnly || !canWrite}
           searchOpen={searchOpen}
-          searchQuery={searchQuery}
+          searchStore={searchStore}
           fontSize={fontSize}
           showChanges={reviewChanges}
           wrapLines={wrapLines}
@@ -911,6 +903,119 @@ function Editor({
         </div>
       </div>
     </section>
+  )
+}
+
+function EditorDocument({
+  editorRef,
+  initialValue,
+  onValueChange,
+  searchStore,
+  ...props
+}: Omit<
+  React.ComponentProps<typeof SyntaxCodeEditor>,
+  "onChange" | "ref" | "searchQuery" | "value"
+> & {
+  editorRef: React.RefObject<SyntaxCodeEditorHandle | null>
+  initialValue: string
+  onValueChange: (value: string) => void
+  searchStore: EditorSearchStore
+}) {
+  const [value, setValue] = React.useState(initialValue)
+  const searchQuery = React.useSyncExternalStore(
+    searchStore.subscribe,
+    searchStore.getSnapshot,
+    searchStore.getSnapshot
+  )
+
+  const handleChange = React.useCallback(
+    (nextValue: string) => {
+      setValue(nextValue)
+      onValueChange(nextValue)
+    },
+    [onValueChange]
+  )
+
+  return (
+    <SyntaxCodeEditor
+      ref={editorRef}
+      {...props}
+      searchQuery={searchQuery}
+      value={value}
+      onChange={handleChange}
+    />
+  )
+}
+
+function EditorSearchContent({
+  editorRef,
+  inputRef,
+  onClose,
+  store,
+}: {
+  editorRef: React.RefObject<SyntaxCodeEditorHandle | null>
+  inputRef: React.RefObject<HTMLInputElement | null>
+  onClose: () => void
+  store: EditorSearchStore
+}) {
+  const query = React.useSyncExternalStore(
+    store.subscribe,
+    store.getSnapshot,
+    store.getSnapshot
+  )
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <div className="relative min-w-0 flex-1">
+        <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          ref={inputRef}
+          value={query}
+          aria-label="Find in file"
+          className="h-8 bg-background/70 pr-2 pl-8 font-mono text-base shadow-none md:text-xs"
+          placeholder="Find in file…"
+          spellCheck={false}
+          onChange={(event) => store.setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter") return
+            event.preventDefault()
+            if (event.shiftKey) editorRef.current?.findPrevious()
+            else editorRef.current?.findNext()
+          }}
+        />
+      </div>
+      <div className="flex shrink-0 items-center">
+        <div className="flex h-10 w-9 flex-col gap-px">
+          <button
+            type="button"
+            className="grid min-h-0 flex-1 place-items-center text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground focus-visible:z-10 focus-visible:ring-1 focus-visible:ring-ring/60 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-35"
+            aria-label="Previous match"
+            disabled={!query}
+            onClick={() => editorRef.current?.findPrevious()}
+          >
+            <ChevronUp className="size-[18px]" />
+          </button>
+          <button
+            type="button"
+            className="grid min-h-0 flex-1 place-items-center text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground focus-visible:z-10 focus-visible:ring-1 focus-visible:ring-ring/60 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-35"
+            aria-label="Next match"
+            disabled={!query}
+            onClick={() => editorRef.current?.findNext()}
+          >
+            <ChevronDown className="size-[18px]" />
+          </button>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8"
+          aria-label="Close file search"
+          onClick={onClose}
+        >
+          <X className="size-[18px]" />
+        </Button>
+      </div>
+    </div>
   )
 }
 
@@ -1132,7 +1237,7 @@ function FileTreePanel({
   onCollapsedChange,
   initialWidth,
 }: {
-  instance: RelayInstance
+  instance: InstanceWorkspaceInstance
   tree: RelayFileTree
   selectedPath: string
   refreshing: boolean
@@ -1980,7 +2085,7 @@ function UnavailablePreview({
 }
 
 interface FileWorkspaceProps {
-  instance: RelayInstance
+  instance: InstanceWorkspaceInstance
   active: boolean
   routeFilePath?: string
   canShare: boolean
