@@ -13,7 +13,6 @@ import {
   TerminalSquare,
   UserRoundCog,
 } from "lucide-react"
-import type { RelayInstance } from "@workspace/contracts"
 import { useNavigate } from "@tanstack/react-router"
 
 import { Avatar, AvatarFallback } from "@workspace/ui/components/avatar"
@@ -51,6 +50,7 @@ import { ServerTypeIcon } from "@/components/server-type-icon"
 import { authClient } from "@/lib/auth-client"
 import type { AuthenticatedUser } from "@/lib/auth-session"
 import { disableDevelopmentBypass } from "@/server/auth"
+import type { SidebarInstance } from "@/lib/relay-selectors"
 
 export type InstanceTab = "console" | "files" | "info"
 export type GlobalSection = "access" | "bricks" | "security" | "settings" | null
@@ -65,7 +65,21 @@ const instanceItems: Array<{
   { title: "Info", value: "info", icon: SlidersHorizontal },
 ]
 
-export function AppSidebar({
+interface AppSidebarProps {
+  instances: Array<SidebarInstance>
+  instance?: SidebarInstance
+  user: AuthenticatedUser
+  activeTab: InstanceTab | null
+  activeSection: GlobalSection
+  canManageAccess: boolean
+  isPlatformAdmin: boolean
+  relayStatus: "connected" | "unconfigured" | "unreachable"
+  relayName?: string
+  onInstanceChange: (id: string) => void
+  onTabChange: (tab: InstanceTab) => void
+}
+
+export const AppSidebar = React.memo(function AppSidebar({
   instances,
   instance,
   user,
@@ -77,19 +91,7 @@ export function AppSidebar({
   relayName,
   onInstanceChange,
   onTabChange,
-}: {
-  instances: Array<RelayInstance>
-  instance?: RelayInstance
-  user: AuthenticatedUser
-  activeTab: InstanceTab | null
-  activeSection: GlobalSection
-  canManageAccess: boolean
-  isPlatformAdmin: boolean
-  relayStatus: "connected" | "unconfigured" | "unreachable"
-  relayName?: string
-  onInstanceChange: (id: string) => void
-  onTabChange: (tab: InstanceTab) => void
-}) {
+}: AppSidebarProps) {
   return (
     <Sidebar collapsible="icon" className="border-sidebar-border/80">
       <SidebarHeader className="gap-1 px-2 pt-3">
@@ -139,7 +141,7 @@ export function AppSidebar({
       />
     </Sidebar>
   )
-}
+})
 
 function InfrastructureNavigation({
   activeSection,
@@ -230,8 +232,8 @@ function InstanceNavigation({
   onTabChange,
 }: {
   activeTab: InstanceTab | null
-  instance: RelayInstance
-  instances: Array<RelayInstance>
+  instance: SidebarInstance
+  instances: Array<SidebarInstance>
   onInstanceChange: (id: string) => void
   onTabChange: (tab: InstanceTab) => void
 }) {
@@ -462,7 +464,7 @@ function initials(name: string): string {
     .join("")
 }
 
-function statusBorderTone(state: RelayInstance["observedState"]): string {
+function statusBorderTone(state: SidebarInstance["observedState"]): string {
   if (state === "running") return "border-l-emerald-400/80"
   if (state === "failed") return "border-l-red-400/80"
   if (state === "starting" || state === "provisioning") {

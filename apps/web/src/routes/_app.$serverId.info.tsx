@@ -1,8 +1,12 @@
+import * as React from "react"
+import { useQuery } from "@tanstack/react-query"
 import { createFileRoute } from "@tanstack/react-router"
 
 import { useInstanceWorkspace } from "@/components/instance-workspace"
 import { SettingsWorkspace } from "@/components/settings-workspace"
 import { pageTitle } from "@/lib/page-title"
+import { relaySnapshotQueryOptions } from "@/lib/query-options"
+import { selectInstanceSettings } from "@/lib/relay-selectors"
 
 export const Route = createFileRoute("/_app/$serverId/info")({
   head: () => ({ meta: [{ title: pageTitle("Info") }] }),
@@ -10,12 +14,21 @@ export const Route = createFileRoute("/_app/$serverId/info")({
 })
 
 function InfoRoute() {
-  const { instance, node, permissions } = useInstanceWorkspace()
+  const { instance: workspaceInstance, permissions } = useInstanceWorkspace()
+  const selectInfo = React.useMemo(
+    () => selectInstanceSettings(workspaceInstance.id),
+    [workspaceInstance.id]
+  )
+  const { data } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectInfo,
+  })
+  if (!data) return null
   return (
     <SettingsWorkspace
-      key={instance.id}
-      instance={instance}
-      node={node}
+      key={data.instance.id}
+      instance={data.instance}
+      node={data.node}
       canRename={permissions.settings}
     />
   )

@@ -33,6 +33,11 @@ import {
 } from "@/server/access"
 
 type AccessOverview = Awaited<ReturnType<typeof getAccessOverview>>
+type InvitationForm = {
+  email: string
+  resource: string
+  role: AccessRole
+}
 
 const invitationExpiryFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -80,17 +85,11 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
   const [error, setError] = React.useState<string | null>(null)
   const [message, setMessage] = React.useState<string | null>(null)
   const [inviteLink, setInviteLink] = React.useState<string | null>(null)
-  const [form, setForm] = React.useState({
-    email: "",
-    resource: "relay",
-    role: "operator" as AccessRole,
-  })
   const assignableRoles = overview.canManageOwners
     ? accessRoles
     : accessRoles.filter((role) => role !== "owner")
 
-  async function invite(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
+  async function invite(form: InvitationForm) {
     setPending("invite")
     setError(null)
     setMessage(null)
@@ -111,11 +110,12 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
           : `Invitation sent to ${form.email}`
       )
       setInviteLink(result.inviteUrl)
-      setForm((value) => ({ ...value, email: "" }))
+      return true
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Could not send invitation"
       )
+      return false
     } finally {
       setPending(null)
     }
@@ -234,86 +234,114 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
             />
           </div>
 
-          <section className="h-fit rounded-xl border bg-card/45 p-4 lg:sticky lg:top-5">
-            <div className="flex items-center gap-2">
-              <MailPlus className="size-4 text-primary" />
-              <h2 className="text-sm font-semibold">Invite someone</h2>
-            </div>
-            <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
-              The link is bound to this email, expires in seven days, and
-              requires email verification.
-            </p>
-            <form className="mt-5 space-y-4" onSubmit={invite}>
-              <Field label="Email address">
-                <Input
-                  type="email"
-                  autoComplete="email"
-                  value={form.email}
-                  onChange={(event) =>
-                    setForm((value) => ({
-                      ...value,
-                      email: event.target.value,
-                    }))
-                  }
-                  placeholder="operator@example.com"
-                  required
-                />
-              </Field>
-              <Field label="Access scope">
-                <select
-                  value={form.resource}
-                  onChange={(event) =>
-                    setForm((value) => ({
-                      ...value,
-                      resource: event.target.value,
-                    }))
-                  }
-                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-xs outline-none focus:border-ring"
-                >
-                  <option value="relay">
-                    Entire Relay · {overview.relay.name}
-                  </option>
-                  {instances.map((instance) => (
-                    <option key={instance.id} value={instance.id}>
-                      Instance · {instance.name}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Role">
-                <select
-                  value={form.role}
-                  onChange={(event) =>
-                    setForm((value) => ({
-                      ...value,
-                      role: event.target.value as AccessRole,
-                    }))
-                  }
-                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-xs outline-none focus:border-ring"
-                >
-                  {assignableRoles.map((role) => (
-                    <option key={role} value={role}>
-                      {accessRoleDetails[role].label}
-                    </option>
-                  ))}
-                </select>
-                <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
-                  {accessRoleDetails[form.role].description}
-                </p>
-              </Field>
-              <Button className="h-10 w-full" disabled={pending !== null}>
-                {pending === "invite" ? (
-                  <LoaderCircle className="animate-spin" />
-                ) : (
-                  <MailPlus />
-                )}
-                Send invitation
-              </Button>
-            </form>
-          </section>
+          <InviteAccessSection
+            assignableRoles={assignableRoles}
+            instances={instances}
+            disabled={pending !== null}
+            pending={pending === "invite"}
+            relayName={overview.relay.name}
+            onInvite={invite}
+          />
         </div>
       </div>
     </main>
+  )
+}
+
+function InviteAccessSection({
+  assignableRoles,
+  instances,
+  disabled,
+  pending,
+  relayName,
+  onInvite,
+}: {
+  assignableRoles: ReadonlyArray<AccessRole>
+  instances: Array<RelayInstance>
+  disabled: boolean
+  pending: boolean
+  relayName: string
+  onInvite: (form: InvitationForm) => Promise<boolean>
+}) {
+  const [form, setForm] = React.useState<InvitationForm>({
+    email: "",
+    resource: "relay",
+    role: "operator",
+  })
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (await onInvite(form)) {
+      setForm((value) => ({ ...value, email: "" }))
+    }
+  }
+
+  return (
+    <section className="h-fit rounded-xl border bg-card/45 p-4 lg:sticky lg:top-5">
+      <div className="flex items-center gap-2">
+        <MailPlus className="size-4 text-primary" />
+        <h2 className="text-sm font-semibold">Invite someone</h2>
+      </div>
+      <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
+        The link is bound to this email, expires in seven days, and requires
+        email verification.
+      </p>
+      <form className="mt-5 space-y-4" onSubmit={(event) => void submit(event)}>
+        <Field label="Email address">
+          <Input
+            type="email"
+            autoComplete="email"
+            value={form.email}
+            onChange={(event) =>
+              setForm((value) => ({ ...value, email: event.target.value }))
+            }
+            placeholder="operator@example.com"
+            required
+          />
+        </Field>
+        <Field label="Access scope">
+          <select
+            value={form.resource}
+            onChange={(event) =>
+              setForm((value) => ({ ...value, resource: event.target.value }))
+            }
+            className="h-9 w-full rounded-md border border-input bg-background px-3 text-xs outline-none focus:border-ring"
+          >
+            <option value="relay">Entire Relay · {relayName}</option>
+            {instances.map((instance) => (
+              <option key={instance.id} value={instance.id}>
+                Instance · {instance.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Role">
+          <select
+            value={form.role}
+            onChange={(event) =>
+              setForm((value) => ({
+                ...value,
+                role: event.target.value as AccessRole,
+              }))
+            }
+            className="h-9 w-full rounded-md border border-input bg-background px-3 text-xs outline-none focus:border-ring"
+          >
+            {assignableRoles.map((role) => (
+              <option key={role} value={role}>
+                {accessRoleDetails[role].label}
+              </option>
+            ))}
+          </select>
+          <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
+            {accessRoleDetails[form.role].description}
+          </p>
+        </Field>
+        <Button className="h-10 w-full" disabled={disabled}>
+          {pending ? <LoaderCircle className="animate-spin" /> : <MailPlus />}
+          Send invitation
+        </Button>
+      </form>
+    </section>
   )
 }
 

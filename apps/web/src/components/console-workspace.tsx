@@ -1,10 +1,10 @@
 import * as React from "react"
+import { useQuery } from "@tanstack/react-query"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import type {
   RelayConsole,
   RelayConsoleLevel,
   RelayConsoleLine,
-  RelayInstance,
 } from "@workspace/contracts"
 import {
   ArrowDown,
@@ -38,6 +38,9 @@ import {
 
 import { openRelayConsoleStream } from "@/lib/relay-console-stream"
 import { redactSensitiveText } from "@/lib/redaction"
+import { relaySnapshotQueryOptions } from "@/lib/query-options"
+import { selectInstanceObservedState } from "@/lib/relay-selectors"
+import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
 import {
   completeRelayCommand,
   sendRelayCommand,
@@ -69,13 +72,178 @@ interface CommandCompletions {
   }>
 }
 
+interface ConsoleFilterSnapshot {
+  levels: Set<RelayConsoleLevel>
+  query: string
+  redactSensitive: boolean
+}
+
+interface ConsoleUiStore {
+  clearSelection: () => void
+  getFilterSnapshot: () => ConsoleFilterSnapshot
+  getLevelsSnapshot: () => Set<RelayConsoleLevel>
+  getLineSelectedSnapshot: (lineId: string) => boolean
+  getQuerySnapshot: () => string
+  getRedactSensitiveSnapshot: () => boolean
+  getSelectedSnapshot: () => Set<string>
+  getSelectedText: () => string
+  getShowTimestampsSnapshot: () => boolean
+  getWrapLinesSnapshot: () => boolean
+  setFilteredLines: (lines: Array<RelayConsoleLine>) => void
+  setQuery: (query: string) => void
+  subscribe: (listener: () => void) => () => void
+  toggleLevel: (level: RelayConsoleLevel | "all") => void
+  toggleLine: (line: RelayConsoleLine, index: number, shift: boolean) => void
+  toggleRedactSensitive: () => void
+  toggleShowTimestamps: () => void
+  toggleWrapLines: () => void
+}
+
+interface ConsoleStreamSnapshot {
+  consoleData: RelayConsole | null
+  loading: boolean
+}
+
+interface ConsoleStreamStore {
+  getHasLinesSnapshot: () => boolean
+  getSnapshot: () => ConsoleStreamSnapshot
+  setSnapshot: (snapshot: ConsoleStreamSnapshot) => void
+  subscribe: (listener: () => void) => () => void
+}
+
+function createConsoleStreamStore(): ConsoleStreamStore {
+  let snapshot: ConsoleStreamSnapshot = { consoleData: null, loading: true }
+  const listeners = new Set<() => void>()
+  return {
+    getHasLinesSnapshot: () => Boolean(snapshot.consoleData?.lines.length),
+    getSnapshot: () => snapshot,
+    setSnapshot: (nextSnapshot) => {
+      if (
+        snapshot.consoleData === nextSnapshot.consoleData &&
+        snapshot.loading === nextSnapshot.loading
+      ) {
+        return
+      }
+      snapshot = nextSnapshot
+      for (const listener of listeners) listener()
+    },
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+  }
+}
+
+function createConsoleUiStore(): ConsoleUiStore {
+  let query = ""
+  let levels = new Set(LEVELS)
+  let redactSensitive = true
+  let showTimestamps = false
+  let wrapLines = true
+  let selected = new Set<string>()
+  let filteredLines: Array<RelayConsoleLine> = []
+  let lastSelected: number | null = null
+  let filterSnapshot: ConsoleFilterSnapshot = {
+    levels,
+    query,
+    redactSensitive,
+  }
+  const listeners = new Set<() => void>()
+  const notify = () => {
+    for (const listener of listeners) listener()
+  }
+  const updateFilterSnapshot = () => {
+    filterSnapshot = { levels, query, redactSensitive }
+    notify()
+  }
+
+  return {
+    clearSelection: () => {
+      if (selected.size === 0) return
+      selected = new Set()
+      lastSelected = null
+      notify()
+    },
+    getFilterSnapshot: () => filterSnapshot,
+    getLevelsSnapshot: () => levels,
+    getLineSelectedSnapshot: (lineId) => selected.has(lineId),
+    getQuerySnapshot: () => query,
+    getRedactSensitiveSnapshot: () => redactSensitive,
+    getSelectedSnapshot: () => selected,
+    getSelectedText: () => {
+      const lines: Array<string> = []
+      for (const line of filteredLines) {
+        if (selected.has(line.id)) lines.push(line.text)
+      }
+      return lines.join("\n")
+    },
+    getShowTimestampsSnapshot: () => showTimestamps,
+    getWrapLinesSnapshot: () => wrapLines,
+    setFilteredLines: (lines) => {
+      filteredLines = lines
+    },
+    setQuery: (nextQuery) => {
+      if (query === nextQuery) return
+      query = nextQuery
+      updateFilterSnapshot()
+    },
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    toggleLevel: (level) => {
+      if (level === "all") {
+        levels = new Set(LEVELS)
+      } else if (levels.size === LEVELS.length) {
+        levels = new Set([level])
+      } else {
+        const next = new Set(levels)
+        if (next.has(level) && next.size === 1) levels = new Set(LEVELS)
+        else {
+          if (next.has(level)) next.delete(level)
+          else next.add(level)
+          levels = next
+        }
+      }
+      updateFilterSnapshot()
+    },
+    toggleLine: (line, index, shift) => {
+      const next = new Set(selected)
+      if (shift && lastSelected !== null) {
+        const start = Math.min(lastSelected, index)
+        const end = Math.max(lastSelected, index)
+        for (let cursor = start; cursor <= end; cursor++) {
+          const selectedLine = filteredLines.at(cursor)
+          if (selectedLine) next.add(selectedLine.id)
+        }
+      } else if (next.has(line.id)) next.delete(line.id)
+      else next.add(line.id)
+      selected = next
+      lastSelected = index
+      notify()
+    },
+    toggleRedactSensitive: () => {
+      redactSensitive = !redactSensitive
+      updateFilterSnapshot()
+    },
+    toggleShowTimestamps: () => {
+      showTimestamps = !showTimestamps
+      notify()
+    },
+    toggleWrapLines: () => {
+      wrapLines = !wrapLines
+      notify()
+    },
+  }
+}
+
 export function ConsoleWorkspace({
   instance,
   active,
   canShare,
   canWrite,
 }: {
-  instance: RelayInstance
+  instance: InstanceWorkspaceInstance
   active: boolean
   canShare: boolean
   canWrite: boolean
@@ -97,151 +265,31 @@ function ConsoleWorkspaceSession({
   canShare,
   canWrite,
 }: {
-  instance: RelayInstance
+  instance: InstanceWorkspaceInstance
   active: boolean
   canShare: boolean
   canWrite: boolean
 }) {
-  const { consoleData, loading } = useRelayConsoleStream(instance.id)
-  const [query, setQuery] = React.useState("")
-  const [levels, setLevels] = React.useState<Set<RelayConsoleLevel>>(
-    () => new Set(LEVELS)
-  )
-  const [showTimestamps, setShowTimestamps] = React.useState(false)
-  const [redactSensitive, setRedactSensitive] = React.useState(true)
-  const [wrapLines, setWrapLines] = React.useState(true)
-  const [selected, setSelected] = React.useState<Set<string>>(() => new Set())
-  const [copyState, setCopyState] = React.useState<"idle" | "copied">("idle")
-  const [shareState, setShareState] = React.useState<
-    "idle" | "uploading" | "copied" | "error"
-  >("idle")
-  const copyTimer = React.useRef<number | null>(null)
-  const shareTimer = React.useRef<number | null>(null)
-  const lastSelected = React.useRef<number | null>(null)
-
-  React.useEffect(
-    () => () => {
-      if (copyTimer.current) window.clearTimeout(copyTimer.current)
-      if (shareTimer.current) window.clearTimeout(shareTimer.current)
-    },
-    []
-  )
-
-  const clearSelection = React.useCallback(() => {
-    setSelected(new Set())
-    lastSelected.current = null
-    setCopyState("idle")
-  }, [])
-
-  React.useEffect(() => {
-    if (!active || selected.size === 0) return
-
-    function handleEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") clearSelection()
-    }
-
-    window.addEventListener("keydown", handleEscape, { capture: true })
-    return () => window.removeEventListener("keydown", handleEscape, true)
-  }, [active, clearSelection, selected.size])
-
-  const filteredLines = React.useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase()
-    const filtered: Array<RelayConsoleLine> = []
-    for (const line of consoleData?.lines ?? []) {
-      const text = redactSensitive ? redactSensitiveText(line.text) : line.text
-      if (
-        levels.has(line.level) &&
-        (!normalizedQuery || text.toLowerCase().includes(normalizedQuery))
-      ) {
-        filtered.push({ ...line, text })
-      }
-    }
-    return filtered
-  }, [consoleData?.lines, levels, query, redactSensitive])
-
-  function toggleLevel(level: RelayConsoleLevel | "all") {
-    if (level === "all") {
-      setLevels(new Set(LEVELS))
-      return
-    }
-    setLevels((current) => {
-      if (current.size === LEVELS.length) return new Set([level])
-      const next = new Set(current)
-      if (next.has(level) && next.size === 1) return new Set(LEVELS)
-      if (next.has(level)) next.delete(level)
-      else next.add(level)
-      return next
-    })
-  }
-
-  async function copySelected() {
-    const lines: Array<string> = []
-    for (const line of filteredLines) {
-      if (selected.has(line.id)) lines.push(line.text)
-    }
-    await copyToClipboard(lines.join("\n"))
-    setCopyState("copied")
-    if (copyTimer.current) window.clearTimeout(copyTimer.current)
-    copyTimer.current = window.setTimeout(() => setCopyState("idle"), 1_800)
-  }
-
-  async function shareLatestLog() {
-    setShareState("uploading")
-    try {
-      const result = await uploadLatestLogToMclogs({
-        data: {
-          instanceId: instance.id,
-          implementation: instance.implementation,
-          version: instance.version,
-          redactSensitive,
-        },
-      })
-      await copyToClipboard(result.url)
-      setShareState("copied")
-    } catch {
-      setShareState("error")
-    }
-    if (shareTimer.current) window.clearTimeout(shareTimer.current)
-    shareTimer.current = window.setTimeout(() => setShareState("idle"), 2_800)
-  }
-
-  const allLevels = levels.size === LEVELS.length
+  const [uiStore] = React.useState(createConsoleUiStore)
+  const [streamStore] = React.useState(createConsoleStreamStore)
 
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-card">
-      <ConsoleToolbar
-        allLevels={allLevels}
-        canShare={canShare}
-        clearSelection={clearSelection}
-        consoleData={consoleData}
-        copySelected={copySelected}
-        copyState={copyState}
-        levels={levels}
-        query={query}
-        redactSensitive={redactSensitive}
-        selectedCount={selected.size}
-        setQuery={setQuery}
-        setRedactSensitive={setRedactSensitive}
-        setShowTimestamps={setShowTimestamps}
-        setWrapLines={setWrapLines}
-        shareLatestLog={shareLatestLog}
-        shareState={shareState}
-        showTimestamps={showTimestamps}
-        toggleLevel={toggleLevel}
-        wrapLines={wrapLines}
+      <ConsoleStreamController
+        instanceId={instance.id}
+        streamStore={streamStore}
       />
-      <ConsoleLogViewport
+      <ConsoleToolbar
         active={active}
-        consoleData={consoleData}
-        filteredLines={filteredLines}
-        lastSelected={lastSelected}
-        loading={loading}
-        query={query}
-        selected={selected}
-        setCopyState={setCopyState}
-        setSelected={setSelected}
-        showTimestamps={showTimestamps}
-        wrapLines={wrapLines}
+        canShare={canShare}
+        instance={instance}
+        streamStore={streamStore}
+        uiStore={uiStore}
+      />
+      <ConsoleLogViewportController
+        active={active}
+        streamStore={streamStore}
+        uiStore={uiStore}
       />
 
       <ConsoleCommandBar
@@ -253,251 +301,443 @@ function ConsoleWorkspaceSession({
   )
 }
 
-interface ConsoleToolbarProps {
-  allLevels: boolean
-  canShare: boolean
-  clearSelection: () => void
-  consoleData: RelayConsole | null
-  copySelected: () => Promise<void>
-  copyState: "idle" | "copied"
-  levels: Set<RelayConsoleLevel>
-  query: string
-  redactSensitive: boolean
-  selectedCount: number
-  setQuery: React.Dispatch<React.SetStateAction<string>>
-  setRedactSensitive: React.Dispatch<React.SetStateAction<boolean>>
-  setShowTimestamps: React.Dispatch<React.SetStateAction<boolean>>
-  setWrapLines: React.Dispatch<React.SetStateAction<boolean>>
-  shareLatestLog: () => Promise<void>
-  shareState: "idle" | "uploading" | "copied" | "error"
-  showTimestamps: boolean
-  toggleLevel: (level: RelayConsoleLevel | "all") => void
-  wrapLines: boolean
+function ConsoleStreamController({
+  instanceId,
+  streamStore,
+}: {
+  instanceId: string
+  streamStore: ConsoleStreamStore
+}) {
+  const snapshot = useRelayConsoleStream(instanceId)
+  React.useLayoutEffect(
+    () => streamStore.setSnapshot(snapshot),
+    [snapshot, streamStore]
+  )
+  return null
 }
 
-function ConsoleToolbar({
-  allLevels,
+function ConsoleLogViewportController({
+  active,
+  streamStore,
+  uiStore,
+}: {
+  active: boolean
+  streamStore: ConsoleStreamStore
+  uiStore: ConsoleUiStore
+}) {
+  const { consoleData, loading } = React.useSyncExternalStore(
+    streamStore.subscribe,
+    streamStore.getSnapshot,
+    streamStore.getSnapshot
+  )
+  const filters = React.useSyncExternalStore(
+    uiStore.subscribe,
+    uiStore.getFilterSnapshot,
+    uiStore.getFilterSnapshot
+  )
+  const filteredLines = React.useMemo(() => {
+    const normalizedQuery = filters.query.trim().toLowerCase()
+    const filtered: Array<RelayConsoleLine> = []
+    for (const line of consoleData?.lines ?? []) {
+      const text = filters.redactSensitive
+        ? redactSensitiveText(line.text)
+        : line.text
+      if (
+        filters.levels.has(line.level) &&
+        (!normalizedQuery || text.toLowerCase().includes(normalizedQuery))
+      ) {
+        filtered.push({ ...line, text })
+      }
+    }
+    return filtered
+  }, [consoleData?.lines, filters])
+
+  React.useLayoutEffect(() => {
+    uiStore.setFilteredLines(filteredLines)
+  }, [filteredLines, uiStore])
+
+  return (
+    <ConsoleLogViewport
+      active={active}
+      consoleData={consoleData}
+      filteredLines={filteredLines}
+      loading={loading}
+      uiStore={uiStore}
+    />
+  )
+}
+
+interface ConsoleToolbarProps {
+  active: boolean
+  canShare: boolean
+  instance: InstanceWorkspaceInstance
+  streamStore: ConsoleStreamStore
+  uiStore: ConsoleUiStore
+}
+
+const ConsoleToolbar = React.memo(function ConsoleToolbar({
+  active,
   canShare,
-  clearSelection,
-  consoleData,
-  copySelected,
-  copyState,
-  levels,
-  query,
-  redactSensitive,
-  selectedCount,
-  setQuery,
-  setRedactSensitive,
-  setShowTimestamps,
-  setWrapLines,
-  shareLatestLog,
-  shareState,
-  showTimestamps,
-  toggleLevel,
-  wrapLines,
+  instance,
+  streamStore,
+  uiStore,
 }: ConsoleToolbarProps) {
   return (
     <div className="flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b px-3 py-2.5 sm:px-4">
-      <div className="relative min-w-[12rem] flex-1 sm:max-w-sm">
-        <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search console"
-          aria-label="Search console"
-          className="h-9 border-border/80 bg-background pl-8 text-base shadow-none sm:text-xs"
-        />
-        {query ? (
-          <button
-            type="button"
-            aria-label="Clear console search"
-            className="absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-            onClick={() => setQuery("")}
-          >
-            <X className="size-3.5" />
-          </button>
-        ) : null}
-      </div>
-      <Popover>
-        <ConsoleTooltip content="Filter Log Level">
-          <PopoverTrigger asChild>
-            <Button
-              variant={allLevels ? "ghost" : "secondary"}
-              size="icon"
-              className="relative size-9 shrink-0"
-              aria-label={
-                allLevels
-                  ? "Filter console levels"
-                  : `Filter console levels, ${levels.size} active`
-              }
-            >
-              <ListFilter />
-              {!allLevels ? (
-                <span
-                  className="absolute top-1 right-1 size-1.5 bg-primary"
-                  aria-hidden="true"
-                />
-              ) : null}
-            </Button>
-          </PopoverTrigger>
-        </ConsoleTooltip>
-        <PopoverContent
-          align="start"
-          side="bottom"
-          sideOffset={7}
-          className="w-52 p-1"
-        >
-          <div className="flex items-center justify-between border-b px-2 py-2">
-            <p className="text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
-              Console levels
-            </p>
-            <span className="font-mono text-[9px] text-muted-foreground/75 tabular-nums">
-              {levels.size}/{LEVELS.length}
-            </span>
-          </div>
-          <ConsoleLevelFilter
-            active={allLevels}
-            label="All levels"
-            onClick={() => toggleLevel("all")}
-          />
-          <div className="my-1 border-t" />
-          {LEVELS.map((level) => (
-            <ConsoleLevelFilter
-              key={level}
-              active={levels.has(level)}
-              level={level}
-              label={level}
-              onClick={() => toggleLevel(level)}
-            />
-          ))}
-        </PopoverContent>
-      </Popover>
+      <ConsoleSearchControl uiStore={uiStore} />
+      <ConsoleLevelMenu uiStore={uiStore} />
       <div className="ml-auto flex items-center gap-1.5">
-        <ConsoleTooltip content={shareTooltip(shareState)}>
-          <Button
-            variant={
-              shareState === "copied"
-                ? "secondary"
-                : shareState === "error"
-                  ? "destructive"
-                  : "ghost"
-            }
-            size="sm"
-            className="h-8 gap-1.5 px-2.5 text-[11px]"
-            disabled={shareState === "uploading" || !consoleData?.lines.length}
-            onClick={shareLatestLog}
-          >
-            {shareState === "uploading" ? (
-              <LoaderCircle className="animate-spin" />
-            ) : shareState === "copied" ? (
-              <Check />
-            ) : shareState === "error" ? (
-              <TriangleAlert />
-            ) : (
-              <Share2 />
-            )}
-            {shareLabel(shareState)}
-          </Button>
-        </ConsoleTooltip>
-        <Popover open={selectedCount > 0}>
-          <PopoverAnchor asChild>
-            <span className="inline-flex">
-              <ConsoleTooltip
-                content={
-                  copyState === "copied"
-                    ? "Selected Lines Copied"
-                    : "Copy Selected Lines"
-                }
-              >
-                <Button
-                  variant={copyState === "copied" ? "secondary" : "ghost"}
-                  size="icon"
-                  className="size-8"
-                  aria-label={
-                    selectedCount > 0
-                      ? `Copy ${selectedCount} Selected ${selectedCount === 1 ? "Line" : "Lines"}`
-                      : "Copy Selected Lines"
-                  }
-                  disabled={selectedCount === 0}
-                  onClick={copySelected}
-                >
-                  {copyState === "copied" ? <Check /> : <Copy />}
-                </Button>
-              </ConsoleTooltip>
-            </span>
-          </PopoverAnchor>
-          <PopoverContent
-            align="center"
-            side="bottom"
-            sideOffset={7}
-            className="flex w-auto min-w-36 items-center gap-2 px-2.5 py-2"
-            onOpenAutoFocus={(event) => event.preventDefault()}
-            onEscapeKeyDown={clearSelection}
-          >
-            <span
-              className="font-mono text-[10px] whitespace-nowrap text-muted-foreground"
-              aria-live="polite"
-            >
-              {copyState === "copied"
-                ? `${selectedCount} ${selectedCount === 1 ? "line" : "lines"} copied`
-                : `${selectedCount} ${selectedCount === 1 ? "line" : "lines"} selected`}
-            </span>
-            <ConsoleTooltip content="Clear Selection">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
-                aria-label="Clear selected console lines"
-                onClick={clearSelection}
-              >
-                <X className="size-3.5" />
-              </Button>
-            </ConsoleTooltip>
-          </PopoverContent>
-        </Popover>
-        <ConsoleTooltip content={redactSensitive ? "Show IPs" : "Censor IPs"}>
-          <Button
-            variant={redactSensitive ? "secondary" : "ghost"}
-            size="icon"
-            className="size-8"
-            aria-label={redactSensitive ? "Show IPs" : "Censor IPs"}
-            aria-pressed={redactSensitive}
-            onClick={() => setRedactSensitive((value) => !value)}
-          >
-            <EyeOff />
-          </Button>
-        </ConsoleTooltip>
-        {canShare ? (
-          <ConsoleTooltip
-            content={wrapLines ? "Disable Line Wrap" : "Enable Line Wrap"}
-          >
-            <Button
-              variant={wrapLines ? "secondary" : "ghost"}
-              size="icon"
-              className="size-8"
-              aria-label={wrapLines ? "Disable Line Wrap" : "Enable Line Wrap"}
-              aria-pressed={wrapLines}
-              onClick={() => setWrapLines((value) => !value)}
-            >
-              <WrapText />
-            </Button>
-          </ConsoleTooltip>
-        ) : null}
-        <ConsoleTooltip
-          content={showTimestamps ? "Hide Timestamps" : "Show Timestamps"}
-        >
-          <Button
-            variant={showTimestamps ? "secondary" : "ghost"}
-            size="icon"
-            className="size-8"
-            aria-label={showTimestamps ? "Hide timestamps" : "Show timestamps"}
-            onClick={() => setShowTimestamps((value) => !value)}
-          >
-            <Clock3 />
-          </Button>
-        </ConsoleTooltip>
+        <ConsoleShareButton
+          canShare={canShare}
+          instance={instance}
+          streamStore={streamStore}
+          uiStore={uiStore}
+        />
+        <ConsoleSelectionControl active={active} uiStore={uiStore} />
+        <ConsoleRedactButton uiStore={uiStore} />
+        {canShare ? <ConsoleWrapButton uiStore={uiStore} /> : null}
+        <ConsoleTimestampButton uiStore={uiStore} />
       </div>
     </div>
+  )
+})
+
+function ConsoleSearchControl({ uiStore }: { uiStore: ConsoleUiStore }) {
+  const query = React.useSyncExternalStore(
+    uiStore.subscribe,
+    uiStore.getQuerySnapshot,
+    uiStore.getQuerySnapshot
+  )
+  return (
+    <div className="relative min-w-[12rem] flex-1 sm:max-w-sm">
+      <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        value={query}
+        onChange={(event) => uiStore.setQuery(event.target.value)}
+        placeholder="Search console"
+        aria-label="Search console"
+        className="h-9 border-border/80 bg-background pl-8 text-base shadow-none sm:text-xs"
+      />
+      {query ? (
+        <button
+          type="button"
+          aria-label="Clear console search"
+          className="absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+          onClick={() => uiStore.setQuery("")}
+        >
+          <X className="size-3.5" />
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+function ConsoleLevelMenu({ uiStore }: { uiStore: ConsoleUiStore }) {
+  const levels = React.useSyncExternalStore(
+    uiStore.subscribe,
+    uiStore.getLevelsSnapshot,
+    uiStore.getLevelsSnapshot
+  )
+  const allLevels = levels.size === LEVELS.length
+  return (
+    <Popover>
+      <ConsoleTooltip content="Filter Log Level">
+        <PopoverTrigger asChild>
+          <Button
+            variant={allLevels ? "ghost" : "secondary"}
+            size="icon"
+            className="relative size-9 shrink-0"
+            aria-label={
+              allLevels
+                ? "Filter console levels"
+                : `Filter console levels, ${levels.size} active`
+            }
+          >
+            <ListFilter />
+            {!allLevels ? (
+              <span
+                className="absolute top-1 right-1 size-1.5 bg-primary"
+                aria-hidden="true"
+              />
+            ) : null}
+          </Button>
+        </PopoverTrigger>
+      </ConsoleTooltip>
+      <PopoverContent
+        align="start"
+        side="bottom"
+        sideOffset={7}
+        className="w-52 p-1"
+      >
+        <div className="flex items-center justify-between border-b px-2 py-2">
+          <p className="text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+            Console levels
+          </p>
+          <span className="font-mono text-[9px] text-muted-foreground/75 tabular-nums">
+            {levels.size}/{LEVELS.length}
+          </span>
+        </div>
+        <ConsoleLevelFilter
+          active={allLevels}
+          label="All levels"
+          onClick={() => uiStore.toggleLevel("all")}
+        />
+        <div className="my-1 border-t" />
+        {LEVELS.map((level) => (
+          <ConsoleLevelFilter
+            key={level}
+            active={levels.has(level)}
+            level={level}
+            label={level}
+            onClick={() => uiStore.toggleLevel(level)}
+          />
+        ))}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function ConsoleShareButton({
+  canShare,
+  instance,
+  streamStore,
+  uiStore,
+}: {
+  canShare: boolean
+  instance: InstanceWorkspaceInstance
+  streamStore: ConsoleStreamStore
+  uiStore: ConsoleUiStore
+}) {
+  const [state, setState] = React.useState<
+    "idle" | "uploading" | "copied" | "error"
+  >("idle")
+  const resetTimer = React.useRef<number | null>(null)
+  const hasLines = React.useSyncExternalStore(
+    streamStore.subscribe,
+    streamStore.getHasLinesSnapshot,
+    streamStore.getHasLinesSnapshot
+  )
+  React.useEffect(
+    () => () => {
+      if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    },
+    []
+  )
+  if (!canShare) return null
+
+  async function handleShare() {
+    setState("uploading")
+    try {
+      const result = await uploadLatestLogToMclogs({
+        data: {
+          instanceId: instance.id,
+          implementation: instance.implementation,
+          version: instance.version,
+          redactSensitive: uiStore.getRedactSensitiveSnapshot(),
+        },
+      })
+      await copyToClipboard(result.url)
+      setState("copied")
+    } catch {
+      setState("error")
+    }
+    if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    resetTimer.current = window.setTimeout(() => setState("idle"), 2800)
+  }
+
+  return (
+    <ConsoleTooltip content={shareTooltip(state)}>
+      <Button
+        variant={
+          state === "copied"
+            ? "secondary"
+            : state === "error"
+              ? "destructive"
+              : "ghost"
+        }
+        size="sm"
+        className="h-8 gap-1.5 px-2.5 text-[11px]"
+        disabled={state === "uploading" || !hasLines}
+        onClick={handleShare}
+      >
+        {state === "uploading" ? (
+          <LoaderCircle className="animate-spin" />
+        ) : state === "copied" ? (
+          <Check />
+        ) : state === "error" ? (
+          <TriangleAlert />
+        ) : (
+          <Share2 />
+        )}
+        {shareLabel(state)}
+      </Button>
+    </ConsoleTooltip>
+  )
+}
+
+function ConsoleSelectionControl({
+  active,
+  uiStore,
+}: {
+  active: boolean
+  uiStore: ConsoleUiStore
+}) {
+  const selected = React.useSyncExternalStore(
+    uiStore.subscribe,
+    uiStore.getSelectedSnapshot,
+    uiStore.getSelectedSnapshot
+  )
+  const [copiedSelection, setCopiedSelection] =
+    React.useState<Set<string> | null>(null)
+  const resetTimer = React.useRef<number | null>(null)
+  const selectedCount = selected.size
+  const copied = copiedSelection === selected
+
+  React.useEffect(() => {
+    if (!active || selectedCount === 0) return
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") uiStore.clearSelection()
+    }
+    window.addEventListener("keydown", handleEscape, { capture: true })
+    return () => window.removeEventListener("keydown", handleEscape, true)
+  }, [active, selectedCount, uiStore])
+
+  React.useEffect(
+    () => () => {
+      if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    },
+    []
+  )
+
+  async function handleCopy() {
+    await copyToClipboard(uiStore.getSelectedText())
+    setCopiedSelection(selected)
+    if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    resetTimer.current = window.setTimeout(() => setCopiedSelection(null), 1800)
+  }
+
+  return (
+    <Popover open={selectedCount > 0}>
+      <PopoverAnchor asChild>
+        <span className="inline-flex">
+          <ConsoleTooltip
+            content={copied ? "Selected Lines Copied" : "Copy Selected Lines"}
+          >
+            <Button
+              variant={copied ? "secondary" : "ghost"}
+              size="icon"
+              className="size-8"
+              aria-label={
+                selectedCount > 0
+                  ? `Copy ${selectedCount} Selected ${selectedCount === 1 ? "Line" : "Lines"}`
+                  : "Copy Selected Lines"
+              }
+              disabled={selectedCount === 0}
+              onClick={handleCopy}
+            >
+              {copied ? <Check /> : <Copy />}
+            </Button>
+          </ConsoleTooltip>
+        </span>
+      </PopoverAnchor>
+      <PopoverContent
+        align="center"
+        side="bottom"
+        sideOffset={7}
+        className="flex w-auto min-w-36 items-center gap-2 px-2.5 py-2"
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        onEscapeKeyDown={uiStore.clearSelection}
+      >
+        <span
+          className="font-mono text-[10px] whitespace-nowrap text-muted-foreground"
+          aria-live="polite"
+        >
+          {copied
+            ? `${selectedCount} ${selectedCount === 1 ? "line" : "lines"} copied`
+            : `${selectedCount} ${selectedCount === 1 ? "line" : "lines"} selected`}
+        </span>
+        <ConsoleTooltip content="Clear Selection">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
+            aria-label="Clear selected console lines"
+            onClick={uiStore.clearSelection}
+          >
+            <X className="size-3.5" />
+          </Button>
+        </ConsoleTooltip>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function ConsoleRedactButton({ uiStore }: { uiStore: ConsoleUiStore }) {
+  const redactSensitive = React.useSyncExternalStore(
+    uiStore.subscribe,
+    uiStore.getRedactSensitiveSnapshot,
+    uiStore.getRedactSensitiveSnapshot
+  )
+  return (
+    <ConsoleTooltip content={redactSensitive ? "Show IPs" : "Censor IPs"}>
+      <Button
+        variant={redactSensitive ? "secondary" : "ghost"}
+        size="icon"
+        className="size-8"
+        aria-label={redactSensitive ? "Show IPs" : "Censor IPs"}
+        aria-pressed={redactSensitive}
+        onClick={uiStore.toggleRedactSensitive}
+      >
+        <EyeOff />
+      </Button>
+    </ConsoleTooltip>
+  )
+}
+
+function ConsoleWrapButton({ uiStore }: { uiStore: ConsoleUiStore }) {
+  const wrapLines = React.useSyncExternalStore(
+    uiStore.subscribe,
+    uiStore.getWrapLinesSnapshot,
+    uiStore.getWrapLinesSnapshot
+  )
+  return (
+    <ConsoleTooltip
+      content={wrapLines ? "Disable Line Wrap" : "Enable Line Wrap"}
+    >
+      <Button
+        variant={wrapLines ? "secondary" : "ghost"}
+        size="icon"
+        className="size-8"
+        aria-label={wrapLines ? "Disable Line Wrap" : "Enable Line Wrap"}
+        aria-pressed={wrapLines}
+        onClick={uiStore.toggleWrapLines}
+      >
+        <WrapText />
+      </Button>
+    </ConsoleTooltip>
+  )
+}
+
+function ConsoleTimestampButton({ uiStore }: { uiStore: ConsoleUiStore }) {
+  const showTimestamps = React.useSyncExternalStore(
+    uiStore.subscribe,
+    uiStore.getShowTimestampsSnapshot,
+    uiStore.getShowTimestampsSnapshot
+  )
+  return (
+    <ConsoleTooltip
+      content={showTimestamps ? "Hide Timestamps" : "Show Timestamps"}
+    >
+      <Button
+        variant={showTimestamps ? "secondary" : "ghost"}
+        size="icon"
+        className="size-8"
+        aria-label={showTimestamps ? "Hide timestamps" : "Show timestamps"}
+        onClick={uiStore.toggleShowTimestamps}
+      >
+        <Clock3 />
+      </Button>
+    </ConsoleTooltip>
   )
 }
 
@@ -505,30 +745,33 @@ interface ConsoleLogViewportProps {
   active: boolean
   consoleData: RelayConsole | null
   filteredLines: Array<RelayConsoleLine>
-  lastSelected: React.RefObject<number | null>
   loading: boolean
-  query: string
-  selected: Set<string>
-  setCopyState: React.Dispatch<React.SetStateAction<"idle" | "copied">>
-  setSelected: React.Dispatch<React.SetStateAction<Set<string>>>
-  showTimestamps: boolean
-  wrapLines: boolean
+  uiStore: ConsoleUiStore
 }
 
 function ConsoleLogViewport({
   active,
   consoleData,
   filteredLines,
-  lastSelected,
   loading,
-  query,
-  selected,
-  setCopyState,
-  setSelected,
-  showTimestamps,
-  wrapLines,
+  uiStore,
 }: ConsoleLogViewportProps) {
   const [autoScroll, setAutoScroll] = React.useState(true)
+  const query = React.useSyncExternalStore(
+    uiStore.subscribe,
+    uiStore.getQuerySnapshot,
+    uiStore.getQuerySnapshot
+  )
+  const showTimestamps = React.useSyncExternalStore(
+    uiStore.subscribe,
+    uiStore.getShowTimestampsSnapshot,
+    uiStore.getShowTimestampsSnapshot
+  )
+  const wrapLines = React.useSyncExternalStore(
+    uiStore.subscribe,
+    uiStore.getWrapLinesSnapshot,
+    uiStore.getWrapLinesSnapshot
+  )
   const parentRef = React.useRef<HTMLDivElement>(null)
   const programmaticScroll = React.useRef(false)
   const rowVirtualizer = useVirtualizer({
@@ -540,6 +783,13 @@ function ConsoleLogViewport({
     anchorTo: "end",
     followOnAppend: true,
   })
+  const rowVirtualizerRef = React.useRef(rowVirtualizer)
+  React.useLayoutEffect(() => {
+    rowVirtualizerRef.current = rowVirtualizer
+  }, [rowVirtualizer])
+  const measureRow = React.useCallback((element: Element | null) => {
+    rowVirtualizerRef.current.measureElement(element)
+  }, [])
 
   React.useLayoutEffect(() => {
     if (active) rowVirtualizer.measure()
@@ -554,24 +804,6 @@ function ConsoleLogViewport({
     })
     return () => window.cancelAnimationFrame(frame)
   }, [active, autoScroll, filteredLines.length, loading, rowVirtualizer])
-
-  function toggleLine(line: RelayConsoleLine, index: number, shift: boolean) {
-    setCopyState("idle")
-    setSelected((current) => {
-      const next = new Set(current)
-      if (shift && lastSelected.current !== null) {
-        const start = Math.min(lastSelected.current, index)
-        const end = Math.max(lastSelected.current, index)
-        for (let cursor = start; cursor <= end; cursor++) {
-          const selectedLine = filteredLines.at(cursor)
-          if (selectedLine) next.add(selectedLine.id)
-        }
-      } else if (next.has(line.id)) next.delete(line.id)
-      else next.add(line.id)
-      return next
-    })
-    lastSelected.current = index
-  }
 
   function resumeAutoScroll() {
     setAutoScroll(true)
@@ -608,38 +840,18 @@ function ConsoleLogViewport({
           {rowVirtualizer.getVirtualItems().map((virtualRow) => {
             const line = filteredLines.at(virtualRow.index)
             if (!line) return null
-            const isSelected = selected.has(line.id)
             return (
-              <div
-                role="button"
-                tabIndex={0}
+              <ConsoleLogRow
                 key={line.id}
-                ref={rowVirtualizer.measureElement}
-                data-index={virtualRow.index}
-                className={`absolute left-0 flex min-h-[30px] border-l-2 pr-5 text-left transition-colors ${wrapLines ? "w-full items-start py-1.5 whitespace-pre-wrap" : "h-[30px] min-w-full items-center whitespace-nowrap"} ${lineTone(line.level, isSelected)}`}
-                style={{
-                  transform: `translateY(${virtualRow.start}px)`,
-                  width: wrapLines ? "100%" : "max(100%, max-content)",
-                }}
-                onClick={(event) =>
-                  toggleLine(line, virtualRow.index, event.shiftKey)
-                }
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault()
-                    toggleLine(line, virtualRow.index, event.shiftKey)
-                  }
-                }}
-              >
-                {showTimestamps ? (
-                  <ConsoleTimestamp timestamp={line.timestamp} />
-                ) : null}
-                <span
-                  className={`min-w-0 flex-1 leading-[18px] ${wrapLines ? "break-words" : ""} ${showTimestamps ? "" : "ml-3"} ${lineTextTone(line.level)}`}
-                >
-                  {renderConsoleText(line.text, query)}
-                </span>
-              </div>
+                index={virtualRow.index}
+                line={line}
+                measureElement={measureRow}
+                query={query}
+                showTimestamps={showTimestamps}
+                start={virtualRow.start}
+                uiStore={uiStore}
+                wrapLines={wrapLines}
+              />
             )
           })}
         </div>
@@ -682,16 +894,90 @@ function ConsoleLogViewport({
   )
 }
 
-function ConsoleCommandBar({
+const ConsoleLogRow = React.memo(function ConsoleLogRow({
+  index,
+  line,
+  measureElement,
+  query,
+  showTimestamps,
+  start,
+  uiStore,
+  wrapLines,
+}: {
+  index: number
+  line: RelayConsoleLine
+  measureElement: (element: Element | null) => void
+  query: string
+  showTimestamps: boolean
+  start: number
+  uiStore: ConsoleUiStore
+  wrapLines: boolean
+}) {
+  const getSelectedSnapshot = React.useCallback(
+    () => uiStore.getLineSelectedSnapshot(line.id),
+    [line.id, uiStore]
+  )
+  const selected = React.useSyncExternalStore(
+    uiStore.subscribe,
+    getSelectedSnapshot,
+    getSelectedSnapshot
+  )
+
+  function toggle(shift: boolean) {
+    uiStore.toggleLine(line, index, shift)
+  }
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      ref={measureElement}
+      data-index={index}
+      className={`absolute left-0 flex min-h-[30px] border-l-2 pr-5 text-left transition-colors ${wrapLines ? "w-full items-start py-1.5 whitespace-pre-wrap" : "h-[30px] min-w-full items-center whitespace-nowrap"} ${lineTone(line.level, selected)}`}
+      style={{
+        transform: `translateY(${start}px)`,
+        width: wrapLines ? "100%" : "max(100%, max-content)",
+      }}
+      onClick={(event) => toggle(event.shiftKey)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault()
+          toggle(event.shiftKey)
+        }
+      }}
+    >
+      {showTimestamps ? <ConsoleTimestamp timestamp={line.timestamp} /> : null}
+      <span
+        className={`min-w-0 flex-1 leading-[18px] ${wrapLines ? "break-words" : ""} ${showTimestamps ? "" : "ml-3"} ${lineTextTone(line.level)}`}
+      >
+        {renderConsoleText(line.text, query)}
+      </span>
+    </div>
+  )
+})
+
+const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
   active,
   canWrite,
   instance,
 }: {
   active: boolean
   canWrite: boolean
-  instance: RelayInstance
+  instance: InstanceWorkspaceInstance
 }) {
-  const command = useConsoleCommand(instance, active)
+  const selectObservedState = React.useMemo(
+    () => selectInstanceObservedState(instance.id),
+    [instance.id]
+  )
+  const { data: observedState } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectObservedState,
+  })
+  const command = useConsoleCommand(
+    instance.id,
+    active,
+    observedState === "running"
+  )
 
   return (
     <div className="shrink-0 border-t bg-background/80 px-3 py-3 sm:px-4">
@@ -710,7 +996,6 @@ function ConsoleCommandBar({
               <div className="min-w-0 flex-1">
                 <Input
                   ref={command.inputRef}
-                  value={command.value}
                   onChange={command.change}
                   onBlur={command.stopCompletions}
                   onKeyDown={command.keyDown}
@@ -802,11 +1087,14 @@ function ConsoleCommandBar({
             </PopoverContent>
           </Popover>
           <Button
+            ref={command.sendButtonRef}
             type="submit"
             size="sm"
             className="h-10 gap-1.5 px-4 text-xs"
             disabled={
-              !command.running || !command.value.trim() || command.sending
+              !command.running ||
+              !command.inputRef.current?.value.trim() ||
+              command.sending
             }
           >
             {command.sending ? (
@@ -824,27 +1112,36 @@ function ConsoleCommandBar({
       )}
     </div>
   )
-}
+})
 
-function useConsoleCommand(instance: RelayInstance, active: boolean) {
+function useConsoleCommand(
+  instanceId: string,
+  active: boolean,
+  running: boolean
+) {
   const [error, setError] = React.useState<string | null>(null)
-  const [value, setValue] = usePersistedCommand(instance.id)
-  const { navigateHistory, recordCommand } = useCommandHistory(instance.id)
+  const inputRef = React.useRef<HTMLInputElement>(null)
   const [sending, setSending] = React.useState(false)
+  const sendButtonRef = React.useRef<HTMLButtonElement>(null)
+  const setValue = usePersistedCommand(
+    instanceId,
+    inputRef,
+    sendButtonRef,
+    running,
+    sending
+  )
+  const { navigateHistory, recordCommand } = useCommandHistory(instanceId)
   const [completions, setCompletions] =
     React.useState<CommandCompletions | null>(null)
-  const inputRef = React.useRef<HTMLInputElement>(null)
   const completionListRef = React.useRef<HTMLDivElement>(null)
   const completionSessionActive = React.useRef(false)
   const completionRequest = React.useRef(0)
   const completionPending = React.useRef({ cursor: -1, input: "" })
   const selectedCompletionIndex =
     completions?.status === "ready" ? completions.selectedIndex : null
-  const running = instance.observedState === "running"
-
   React.useEffect(() => {
     if (active) inputRef.current?.focus()
-  }, [active, instance.id])
+  }, [active, instanceId])
 
   React.useEffect(() => {
     if (selectedCompletionIndex === null) return
@@ -910,7 +1207,7 @@ function useConsoleCommand(instance: RelayInstance, active: boolean) {
     })
     try {
       const result = await completeRelayCommand({
-        data: { instanceId: instance.id, input, cursor },
+        data: { instanceId, input, cursor },
       })
       if (completionRequest.current !== requestId) return
       if (!result.supported) {
@@ -1064,7 +1361,7 @@ function useConsoleCommand(instance: RelayInstance, active: boolean) {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
-    const command = value.trim()
+    const command = inputRef.current?.value.trim() ?? ""
     if (!command || sending) return
     stopCompletions()
     recordCommand(command)
@@ -1073,7 +1370,7 @@ function useConsoleCommand(instance: RelayInstance, active: boolean) {
     setSending(true)
     try {
       await sendRelayCommand({
-        data: { instanceId: instance.id, command },
+        data: { instanceId, command },
       })
       setError(null)
     } catch (cause) {
@@ -1100,11 +1397,11 @@ function useConsoleCommand(instance: RelayInstance, active: boolean) {
     inputRef,
     keyDown,
     running,
+    sendButtonRef,
     selectCompletion,
     sending,
     stopCompletions,
     submit,
-    value,
   }
 }
 
@@ -1230,29 +1527,28 @@ function formatTimestamp(timestamp: string | null): string {
 
 function renderConsoleText(text: string, query: string): React.ReactNode {
   const redactedPattern = /(\*{3}(?:\.\*{3}){3}|(?=[*:]*\*)[*:]{2,})/gu
-  return text.split(redactedPattern).map((part, index) => {
+  let offset = 0
+  return text.split(redactedPattern).map((part) => {
+    const start = offset
+    offset += part.length
     const isRedacted =
       /^\*{3}(?:\.\*{3}){3}$/u.test(part) || /^(?=[*:]*\*)[*:]{2,}$/u.test(part)
 
     if (isRedacted) {
       return (
-        <Tooltip key={`${part}-${index}`}>
-          <TooltipTrigger asChild>
-            <span
-              tabIndex={0}
-              className="cursor-help text-muted-foreground/75 transition-colors hover:text-foreground/85 focus-visible:ring-1 focus-visible:ring-ring/40 focus-visible:outline-none"
-            >
-              {part}
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="top" sideOffset={6}>
-            IP address redacted
-          </TooltipContent>
-        </Tooltip>
+        <span
+          key={`redacted-${start}`}
+          tabIndex={0}
+          title="IP address redacted"
+          aria-label="IP address redacted"
+          className="cursor-help text-muted-foreground/75 transition-colors hover:text-foreground/85 focus-visible:ring-1 focus-visible:ring-ring/40 focus-visible:outline-none"
+        >
+          {part}
+        </span>
       )
     }
     return (
-      <React.Fragment key={index}>
+      <React.Fragment key={`text-${start}`}>
         {renderConsoleSegment(part, query)}
       </React.Fragment>
     )
@@ -1261,11 +1557,14 @@ function renderConsoleText(text: string, query: string): React.ReactNode {
 
 function renderConsoleSegment(text: string, query: string): React.ReactNode {
   const urlPattern = /(https?:\/\/[^\s]+)/gu
-  return text.split(urlPattern).map((part, index) => {
+  let offset = 0
+  return text.split(urlPattern).map((part) => {
+    const start = offset
+    offset += part.length
     if (/^https?:\/\//u.test(part)) {
       return (
         <a
-          key={`${part}-${index}`}
+          key={`url-${start}`}
           href={part}
           target="_blank"
           rel="noreferrer"
@@ -1277,7 +1576,9 @@ function renderConsoleSegment(text: string, query: string): React.ReactNode {
       )
     }
     return (
-      <React.Fragment key={index}>{highlightText(part, query)}</React.Fragment>
+      <React.Fragment key={`text-${start}`}>
+        {highlightText(part, query)}
+      </React.Fragment>
     )
   })
 }
@@ -1287,18 +1588,21 @@ function highlightText(text: string, query: string): React.ReactNode {
   if (!normalized) return text
   const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")
   const parts = text.split(new RegExp(`(${escaped})`, "giu"))
-  return parts.map((part, index) =>
-    part.toLowerCase() === normalized.toLowerCase() ? (
+  let offset = 0
+  return parts.map((part) => {
+    const start = offset
+    offset += part.length
+    return part.toLowerCase() === normalized.toLowerCase() ? (
       <mark
-        key={index}
+        key={`match-${start}`}
         className="rounded-sm bg-amber-300 px-0.5 text-stone-950"
       >
         {part}
       </mark>
     ) : (
-      <React.Fragment key={index}>{part}</React.Fragment>
+      <React.Fragment key={`text-${start}`}>{part}</React.Fragment>
     )
-  )
+  })
 }
 
 async function copyToClipboard(value: string) {
@@ -1417,24 +1721,44 @@ function waitForRetry(delay: number, signal: AbortSignal): Promise<void> {
   })
 }
 
-function usePersistedCommand(instanceId: string) {
+function usePersistedCommand(
+  instanceId: string,
+  inputRef: React.RefObject<HTMLInputElement | null>,
+  sendButtonRef: React.RefObject<HTMLButtonElement | null>,
+  running: boolean,
+  sending: boolean
+) {
   const storageKey = `hearth:console-draft:${instanceId}`
-  const [value, setValueState] = React.useState("")
+
+  const syncSubmitAvailability = React.useCallback(
+    (value: string) => {
+      if (sendButtonRef.current) {
+        sendButtonRef.current.disabled = !running || sending || !value.trim()
+      }
+    },
+    [running, sendButtonRef, sending]
+  )
 
   React.useEffect(() => {
-    setValueState(window.sessionStorage.getItem(storageKey) ?? "")
-  }, [storageKey])
+    const storedValue = window.sessionStorage.getItem(storageKey) ?? ""
+    if (inputRef.current) inputRef.current.value = storedValue
+  }, [inputRef, storageKey])
+
+  React.useEffect(() => {
+    syncSubmitAvailability(inputRef.current?.value ?? "")
+  }, [inputRef, syncSubmitAvailability])
 
   const setValue = React.useCallback(
     (next: string) => {
-      setValueState(next)
+      if (inputRef.current) inputRef.current.value = next
+      syncSubmitAvailability(next)
       if (next) window.sessionStorage.setItem(storageKey, next)
       else window.sessionStorage.removeItem(storageKey)
     },
-    [storageKey]
+    [inputRef, storageKey, syncSubmitAvailability]
   )
 
-  return [value, setValue] as const
+  return setValue
 }
 
 const commandHistoryLimit = 100

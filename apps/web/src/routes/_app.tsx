@@ -12,18 +12,13 @@ import {
   useParams,
   useRouterState,
 } from "@tanstack/react-router"
-import type { RelayInstance } from "@workspace/contracts"
 import { Cable, CircleAlert, RefreshCw, Settings } from "lucide-react"
-import {
-  SidebarInset,
-  SidebarProvider,
-  useSidebar,
-} from "@workspace/ui/components/sidebar"
+import { useSidebar } from "@workspace/ui/components/sidebar"
 import { Button } from "@workspace/ui/components/button"
 
+import { AppFrame } from "@/components/app-frame"
 import { AppSidebar } from "@/components/app-sidebar"
 import type { GlobalSection, InstanceTab } from "@/components/app-sidebar"
-import { PanelFooter } from "@/components/panel-footer"
 import { getAuthState } from "@/server/auth"
 import {
   accessCapabilitiesQueryOptions,
@@ -31,7 +26,15 @@ import {
   relaySnapshotQueryOptions,
   uiPreferencesQueryOptions,
 } from "@/lib/query-options"
-import type { RelayConnection } from "@/lib/query-options"
+import {
+  findRelayInstance,
+  selectRelayConnectionSummary,
+  selectSidebarInstances,
+} from "@/lib/relay-selectors"
+import type {
+  RelayConnectionSummary,
+  SidebarInstance,
+} from "@/lib/relay-selectors"
 
 const tabRoutes = {
   console: "/$serverId/console",
@@ -39,7 +42,7 @@ const tabRoutes = {
 } as const
 
 const selectedInstanceStorageKey = "kiln:selected-instance-id"
-const emptyInstances: Array<RelayInstance> = []
+const emptyInstances: Array<SidebarInstance> = []
 
 export const Route = createFileRoute("/_app")({
   staleTime: Infinity,
@@ -67,48 +70,44 @@ export const Route = createFileRoute("/_app")({
 
 function AppLayout() {
   const queryClient = useQueryClient()
-  const connectionQuery = useSuspenseQuery(
-    relayConnectionQueryOptions(queryClient)
-  )
+  const connectionQuery = useSuspenseQuery({
+    ...relayConnectionQueryOptions(queryClient),
+    select: selectRelayConnectionSummary,
+  })
   const { data: capabilities } = useSuspenseQuery(
     accessCapabilitiesQueryOptions()
   )
   const { data: uiPreferences } = useSuspenseQuery(uiPreferencesQueryOptions())
-  const { data: snapshot } = useQuery({
+  const { data: sidebarInstances } = useQuery({
     ...relaySnapshotQueryOptions(),
     enabled: connectionQuery.data.status === "connected",
+    select: selectSidebarInstances,
   })
   const connection = connectionQuery.data
-  const { user } = Route.useRouteContext()
-  const navigate = useNavigate()
-  const pathname = useRouterState({
-    select: (state) => state.location.pathname,
+  const user = Route.useRouteContext({
+    select: (context) => context.user,
   })
-  const { serverId } = useParams({ strict: false })
+  const navigate = useNavigate()
+  const routeDestination = useRouterState({
+    select: (state) => appRouteDestination(state.location.pathname),
+  })
+  const serverId = useParams({
+    strict: false,
+    select: (params) => params.serverId,
+  })
   const [selectedInstanceId, setSelectedInstanceId] = React.useState<
     string | null
   >(null)
-  const activeSection: GlobalSection =
-    pathname === "/bricks"
-      ? "bricks"
-      : pathname === "/settings"
-        ? "settings"
-        : pathname === "/access"
-          ? "access"
-          : pathname === "/security"
-            ? "security"
-            : null
-  const activeTab: InstanceTab | null = activeSection
+  const activeSection: GlobalSection = isGlobalSection(routeDestination)
+    ? routeDestination
+    : null
+  const activeTab: InstanceTab | null = isGlobalSection(routeDestination)
     ? null
-    : /\/files(?:\/|$)/.test(pathname)
-      ? "files"
-      : pathname.endsWith("/info")
-        ? "info"
-        : "console"
-  const instances = snapshot?.instances ?? emptyInstances
-  const routeInstance = findInstance(instances, serverId)
-  const rememberedInstance = findInstance(instances, selectedInstanceId)
-  const instance: RelayInstance | undefined =
+    : routeDestination
+  const instances = sidebarInstances ?? emptyInstances
+  const routeInstance = findRelayInstance(instances, serverId)
+  const rememberedInstance = findRelayInstance(instances, selectedInstanceId)
+  const instance: SidebarInstance | undefined =
     routeInstance ?? rememberedInstance ?? instances.at(0)
 
   const rememberInstance = React.useCallback((instanceId: string) => {
@@ -143,7 +142,7 @@ function AppLayout() {
   React.useEffect(() => {
     if (serverId) return
 
-    const storedInstance = findInstance(
+    const storedInstance = findRelayInstance(
       instances,
       window.localStorage.getItem(selectedInstanceStorageKey)
     )
@@ -159,80 +158,133 @@ function AppLayout() {
     void navigateToInstanceTab(activeTab, instance.shortId, true)
   }, [activeTab, instance, navigateToInstanceTab, serverId])
 
+  const handleInstanceChange = React.useCallback(
+    (shortId: string) => {
+      const nextInstance = findRelayInstance(instances, shortId)
+      if (nextInstance) rememberInstance(nextInstance.id)
+      void navigateToInstanceTab(activeTab ?? "console", shortId)
+    },
+    [activeTab, instances, navigateToInstanceTab, rememberInstance]
+  )
+  const handleTabChange = React.useCallback(
+    (tab: InstanceTab) => {
+      if (!instance) return
+      void navigateToInstanceTab(tab, instance.shortId)
+    },
+    [instance, navigateToInstanceTab]
+  )
+  const handleRetry = React.useCallback(() => {
+    void connectionQuery.refetch()
+  }, [connectionQuery.refetch])
+  const handleConfigure = React.useCallback(() => {
+    void navigate({ to: "/settings" })
+  }, [navigate])
+  const sidebarProps = React.useMemo<React.ComponentProps<typeof AppSidebar>>(
+    () => ({
+      activeSection,
+      activeTab,
+      canManageAccess:
+        connection.status === "connected" && capabilities.canManageAccess,
+      instance,
+      instances,
+      isPlatformAdmin: capabilities.isPlatformAdmin,
+      onInstanceChange: handleInstanceChange,
+      onTabChange: handleTabChange,
+      relayName: connection.relay?.name,
+      relayStatus: connection.status,
+      user,
+    }),
+    [
+      activeSection,
+      activeTab,
+      capabilities.canManageAccess,
+      capabilities.isPlatformAdmin,
+      connection.relay?.name,
+      connection.status,
+      handleInstanceChange,
+      handleTabChange,
+      instance,
+      instances,
+      user,
+    ]
+  )
+  const content = React.useMemo(() => {
+    if (activeSection) return <Outlet />
+    if (connection.status !== "connected") {
+      return (
+        <RelayUnavailableState
+          connection={connection}
+          canConfigure={capabilities.isPlatformAdmin}
+          onRetry={handleRetry}
+          onConfigure={handleConfigure}
+        />
+      )
+    }
+    if (!sidebarInstances) {
+      return <div className="min-h-0 flex-1 bg-background" />
+    }
+    if (instance && activeTab) return <Outlet />
+    return <EmptyServerState canProvision={capabilities.isPlatformAdmin} />
+  }, [
+    activeSection,
+    activeTab,
+    capabilities.isPlatformAdmin,
+    connection,
+    handleConfigure,
+    handleRetry,
+    instance,
+    sidebarInstances,
+  ])
+  const navigationDismiss = React.useMemo(
+    () => <MobileSidebarNavigationDismiss />,
+    []
+  )
+
   return (
-    <SidebarProvider defaultOpen={uiPreferences.sidebarOpen}>
-      <MobileSidebarNavigationDismiss pathname={pathname} />
-      <AppSidebar
-        instances={instances}
-        instance={instance}
-        user={user}
-        activeTab={activeTab}
-        activeSection={activeSection}
-        canManageAccess={
-          connection.status === "connected" && capabilities.canManageAccess
-        }
-        isPlatformAdmin={capabilities.isPlatformAdmin}
-        relayStatus={connection.status}
-        relayName={connection.relay?.name}
-        onInstanceChange={(shortId) => {
-          const nextInstance = findInstance(instances, shortId)
-          if (nextInstance) rememberInstance(nextInstance.id)
-          void navigateToInstanceTab(activeTab ?? "console", shortId)
-        }}
-        onTabChange={(tab) => {
-          if (!instance) return
-          void navigateToInstanceTab(tab, instance.shortId)
-        }}
-      />
-      <SidebarInset className="h-dvh min-w-0 overflow-hidden">
-        <div
-          data-slot="app-content"
-          className="flex min-h-0 flex-1 flex-col overflow-hidden"
-        >
-          {activeSection ? (
-            <Outlet />
-          ) : connection.status !== "connected" ? (
-            <RelayUnavailableState
-              connection={connection}
-              canConfigure={capabilities.isPlatformAdmin}
-              onRetry={() => void connectionQuery.refetch()}
-              onConfigure={() => void navigate({ to: "/settings" })}
-            />
-          ) : !snapshot ? (
-            <div className="min-h-0 flex-1 bg-background" />
-          ) : instance && activeTab ? (
-            <Outlet />
-          ) : (
-            <EmptyServerState canProvision={capabilities.isPlatformAdmin} />
-          )}
-        </div>
-        <PanelFooter />
-      </SidebarInset>
-    </SidebarProvider>
+    <AppFrame
+      navigationDismiss={navigationDismiss}
+      sidebarDefaultOpen={uiPreferences.sidebarOpen}
+      sidebarProps={sidebarProps}
+    >
+      {content}
+    </AppFrame>
   )
 }
 
-function findInstance(
-  instances: Array<RelayInstance>,
-  identifier: string | null | undefined
-): RelayInstance | undefined {
-  if (!identifier) return undefined
-  return instances.find(
-    (item) =>
-      item.shortId === identifier ||
-      item.id === identifier ||
-      item.name === identifier
-  )
-}
-
-function MobileSidebarNavigationDismiss({ pathname }: { pathname: string }) {
+function MobileSidebarNavigationDismiss() {
   const { isMobile, setOpenMobile } = useSidebar()
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
 
   React.useEffect(() => {
     if (isMobile) setOpenMobile(false)
   }, [isMobile, pathname, setOpenMobile])
 
   return null
+}
+
+type AppRouteDestination = Exclude<GlobalSection, null> | InstanceTab
+
+function appRouteDestination(pathname: string): AppRouteDestination {
+  if (pathname === "/bricks") return "bricks"
+  if (pathname === "/settings") return "settings"
+  if (pathname === "/access") return "access"
+  if (pathname === "/security") return "security"
+  if (/\/files(?:\/|$)/.test(pathname)) return "files"
+  if (pathname.endsWith("/info")) return "info"
+  return "console"
+}
+
+function isGlobalSection(
+  destination: AppRouteDestination
+): destination is Exclude<GlobalSection, null> {
+  return (
+    destination === "bricks" ||
+    destination === "settings" ||
+    destination === "access" ||
+    destination === "security"
+  )
 }
 
 function EmptyServerState({ canProvision }: { canProvision: boolean }) {
@@ -256,7 +308,7 @@ function RelayUnavailableState({
   onRetry,
   onConfigure,
 }: {
-  connection: Exclude<RelayConnection, { status: "connected" }>
+  connection: Exclude<RelayConnectionSummary, { status: "connected" }>
   canConfigure: boolean
   onRetry: () => void
   onConfigure: () => void
