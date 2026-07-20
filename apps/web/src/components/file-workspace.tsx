@@ -1,11 +1,7 @@
 import * as React from "react"
-import {
-  keepPreviousData,
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query"
-import { useNavigate } from "@tanstack/react-router"
+import * as Sentry from "@sentry/tanstackstart-react"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useRouter } from "@tanstack/react-router"
 import { FileTree, useFileTree, useFileTreeSearch } from "@pierre/trees/react"
 import type {
   RelayFileActivityEntry,
@@ -111,6 +107,77 @@ interface EditorSearchStore {
   getSnapshot: () => string
   setQuery: (query: string) => void
   subscribe: (listener: () => void) => () => void
+}
+
+interface FileSelectionStore {
+  cancelNavigation: () => void
+  completeNavigation: (path: string, result: "loaded" | "unavailable") => void
+  getIsHomeSnapshot: () => boolean
+  getSnapshot: () => string
+  navigate: (path: string, from: string, to: string) => void
+  select: (path: string) => void
+  subscribe: (listener: () => void) => () => void
+}
+
+function createFileSelectionStore(initialPath: string): FileSelectionStore {
+  let path = initialPath
+  let navigation:
+    | {
+        path: string
+        span: ReturnType<typeof Sentry.startInactiveSpan>
+      }
+    | undefined
+  const listeners = new Set<() => void>()
+  const select = (nextPath: string) => {
+    if (path === nextPath) return
+    path = nextPath
+    for (const listener of listeners) listener()
+  }
+  return {
+    cancelNavigation: () => {
+      if (!navigation) return
+      navigation.span.setAttribute("kiln.file.result", "cancelled")
+      navigation.span.end()
+      navigation = undefined
+    },
+    completeNavigation: (completedPath, result) => {
+      if (navigation?.path !== completedPath) return
+      navigation.span.setAttribute("kiln.file.result", result)
+      navigation.span.end()
+      navigation = undefined
+    },
+    getIsHomeSnapshot: () => path === "",
+    getSnapshot: () => path,
+    navigate: (nextPath, from, to) => {
+      if (navigation) {
+        navigation.span.setAttribute("kiln.file.result", "superseded")
+        navigation.span.end()
+      }
+      Sentry.addBreadcrumb({
+        category: "navigation",
+        type: "navigation",
+        data: { from, to },
+      })
+      navigation = {
+        path: nextPath,
+        span: Sentry.startInactiveSpan({
+          name: to,
+          op: "navigation",
+          forceTransaction: true,
+          attributes: {
+            "sentry.source": "route",
+            "kiln.navigation.type": "file",
+          },
+        }),
+      }
+      select(nextPath)
+    },
+    select,
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+  }
 }
 
 function createEditorSearchStore(): EditorSearchStore {
@@ -1199,7 +1266,7 @@ function EditorTooltip({
 function FileTreePanel({
   instance,
   tree,
-  selectedPath,
+  selectionStore,
   refreshing,
   mobileOpen,
   onPathChange,
@@ -1214,7 +1281,7 @@ function FileTreePanel({
 }: {
   instance: InstanceWorkspaceInstance
   tree: RelayFileTree
-  selectedPath: string
+  selectionStore: FileSelectionStore
   refreshing: boolean
   mobileOpen: boolean
   onPathChange: (path: string) => void
@@ -1227,12 +1294,12 @@ function FileTreePanel({
   onCollapsedChange: (collapsed: boolean) => void
   initialWidth: number | null
 }) {
+  const selectedPath = selectionStore.getSnapshot()
   const initialPath =
     selectedPath && tree.paths.includes(selectedPath) ? selectedPath : undefined
   const selectionHandlers = React.useRef({
     onFileSelected,
     onPathChange,
-    selectedPath,
   })
   const previousTreePaths = React.useRef(tree.paths)
   const { model } = useFileTree({
@@ -1245,7 +1312,7 @@ function FileTreePanel({
       if (
         !selected ||
         selected.endsWith("/") ||
-        selected === handlers.selectedPath
+        selected === selectionStore.getSnapshot()
       ) {
         return
       }
@@ -1357,9 +1424,8 @@ function FileTreePanel({
     selectionHandlers.current = {
       onFileSelected,
       onPathChange,
-      selectedPath,
     }
-  }, [onFileSelected, onPathChange, selectedPath])
+  }, [onFileSelected, onPathChange])
 
   React.useLayoutEffect(() => {
     if (previousTreePaths.current === tree.paths) return
@@ -1382,21 +1448,6 @@ function FileTreePanel({
   React.useLayoutEffect(() => {
     if (!collapsed) applyFileTreeWidth(currentWidth.current)
   }, [collapsed])
-
-  React.useLayoutEffect(() => {
-    const currentSelection = model.getSelectedPaths()
-    if (selectedPath) {
-      if (
-        currentSelection.length !== 1 ||
-        currentSelection[0] !== selectedPath
-      ) {
-        for (const path of currentSelection) model.getItem(path)?.deselect()
-        model.getItem(selectedPath)?.select()
-      }
-      return
-    }
-    for (const path of currentSelection) model.getItem(path)?.deselect()
-  }, [model, selectedPath])
 
   React.useLayoutEffect(() => {
     const panel = panelRef.current
@@ -1548,7 +1599,10 @@ function FileTreePanel({
       <div
         className={`absolute inset-x-0 bottom-0 z-10 order-2 flex h-11 shrink-0 items-center overflow-hidden border-t bg-card px-1.5 md:relative md:inset-auto md:z-auto md:order-1 md:h-14 md:w-[var(--file-tree-width)] md:border-t-0 md:border-b md:px-2 ${collapsed ? "md:invisible" : ""}`}
       >
-        <FilesHomeButton active={!selectedPath} onClick={handleHomeClick} />
+        <FileTreeHomeButton
+          selectionStore={selectionStore}
+          onClick={handleHomeClick}
+        />
         <Button
           ref={mobileBrowseButtonRef}
           variant={mobileOpen ? "secondary" : "ghost"}
@@ -1668,6 +1722,7 @@ function FileTreePanel({
       <div
         className={`order-1 mb-11 min-h-0 flex-1 overflow-hidden bg-card py-1.5 md:order-2 md:mb-0 md:block md:w-[var(--file-tree-width)] md:shrink-0 ${mobileContentVisible ? "block" : "hidden"} ${collapsed ? "md:invisible" : ""}`}
       >
+        <FileTreeSelectionSync model={model} selectionStore={selectionStore} />
         <FileTree
           model={model}
           aria-label={`${instance.name} files`}
@@ -1759,6 +1814,52 @@ function FileTreePanel({
       </div>
     </aside>
   )
+}
+
+function FileTreeHomeButton({
+  selectionStore,
+  onClick,
+}: {
+  selectionStore: FileSelectionStore
+  onClick: () => void
+}) {
+  const isHome = React.useSyncExternalStore(
+    selectionStore.subscribe,
+    selectionStore.getIsHomeSnapshot,
+    selectionStore.getIsHomeSnapshot
+  )
+  return <FilesHomeButton active={isHome} onClick={onClick} />
+}
+
+function FileTreeSelectionSync({
+  model,
+  selectionStore,
+}: {
+  model: ReturnType<typeof useFileTree>["model"]
+  selectionStore: FileSelectionStore
+}) {
+  const selectedPath = React.useSyncExternalStore(
+    selectionStore.subscribe,
+    selectionStore.getSnapshot,
+    selectionStore.getSnapshot
+  )
+
+  React.useLayoutEffect(() => {
+    const currentSelection = model.getSelectedPaths()
+    if (selectedPath) {
+      if (
+        currentSelection.length !== 1 ||
+        currentSelection[0] !== selectedPath
+      ) {
+        for (const path of currentSelection) model.getItem(path)?.deselect()
+        model.getItem(selectedPath)?.select()
+      }
+      return
+    }
+    for (const path of currentSelection) model.getItem(path)?.deselect()
+  }, [model, selectedPath])
+
+  return null
 }
 
 function FileActionPreview({
@@ -1980,28 +2081,21 @@ function FilesHome({
   )
 }
 
-function UnavailablePreview({
-  path,
-  pathIsCopyable,
-  loading,
-  message,
-  canShare,
-  treeCollapsed,
-  onTreeExpand,
-}: {
-  path: string
-  pathIsCopyable: boolean
-  loading: boolean
-  message: string | null
-  canShare: boolean
-  treeCollapsed: boolean
-  onTreeExpand: () => void
-}) {
-  return (
-    <section
-      className="flex min-h-[360px] min-w-0 flex-1 flex-col bg-card"
-      aria-busy={loading}
-    >
+const UnavailablePreviewToolbar = React.memo(
+  function UnavailablePreviewToolbar({
+    path,
+    pathIsCopyable,
+    canShare,
+    treeCollapsed,
+    onTreeExpand,
+  }: {
+    path: string
+    pathIsCopyable: boolean
+    canShare: boolean
+    treeCollapsed: boolean
+    onTreeExpand: () => void
+  }) {
+    return (
       <div className={fileEditorHeaderClassName} data-file-toolbar>
         {treeCollapsed ? <FileTreeRevealButton onClick={onTreeExpand} /> : null}
         <div className={fileEditorHeaderContentClassName}>
@@ -2028,6 +2122,39 @@ function UnavailablePreview({
           </div>
         </div>
       </div>
+    )
+  }
+)
+
+function UnavailablePreview({
+  path,
+  pathIsCopyable,
+  loading,
+  message,
+  canShare,
+  treeCollapsed,
+  onTreeExpand,
+}: {
+  path: string
+  pathIsCopyable: boolean
+  loading: boolean
+  message: string | null
+  canShare: boolean
+  treeCollapsed: boolean
+  onTreeExpand: () => void
+}) {
+  return (
+    <section
+      className="flex min-h-[360px] min-w-0 flex-1 flex-col bg-card"
+      aria-busy={loading}
+    >
+      <UnavailablePreviewToolbar
+        path={path}
+        pathIsCopyable={pathIsCopyable}
+        canShare={canShare}
+        treeCollapsed={treeCollapsed}
+        onTreeExpand={onTreeExpand}
+      />
       {loading ? (
         <div className="flex min-h-0 flex-1">
           <div
@@ -2110,88 +2237,99 @@ interface FileWorkspaceProps {
 }
 
 export function FileWorkspace(props: FileWorkspaceProps) {
-  const state = useFileWorkspaceState(props)
-  return <FileWorkspaceView {...state} />
+  const normalizedRoutePath = props.routeFilePath?.replace(/^\/+/, "") ?? ""
+  const [selectionStore] = React.useState(() =>
+    createFileSelectionStore(normalizedRoutePath)
+  )
+  const lastRoutedPath = React.useRef(normalizedRoutePath)
+  const router = useRouter()
+
+  React.useLayoutEffect(() => {
+    if (lastRoutedPath.current === normalizedRoutePath) return
+    lastRoutedPath.current = normalizedRoutePath
+    selectionStore.select(normalizedRoutePath)
+  }, [normalizedRoutePath, selectionStore])
+
+  React.useEffect(
+    () => () => selectionStore.cancelNavigation(),
+    [selectionStore]
+  )
+
+  const handlePathChange = React.useCallback(
+    (path: string) => {
+      const currentPath = selectionStore.getSnapshot()
+      if (currentPath === path) return
+
+      const nextLocation = router.buildLocation({
+        to: "/$serverId/files/$",
+        params: { serverId: props.instance.shortId, _splat: path },
+      })
+      const nextUrl = new URL(nextLocation.href, window.location.href).href
+      selectionStore.navigate(path, window.location.href, nextUrl)
+      if (!props.active) return
+
+      // File selection is workspace state. Updating the address bar without
+      // notifying the route tree prevents an unchanged app shell from
+      // rendering, while preserving reloadable deep links.
+      const previousIgnoreSubscribers = router.history._ignoreSubscribers
+      router.history._ignoreSubscribers = true
+      try {
+        window.history.replaceState(window.history.state, "", nextLocation.href)
+      } finally {
+        router.history._ignoreSubscribers = previousIgnoreSubscribers
+      }
+    },
+    [props.active, props.instance.shortId, router, selectionStore]
+  )
+
+  return (
+    <StableFileWorkspaceSurface
+      instance={props.instance}
+      selectionStore={selectionStore}
+      canShare={props.canShare}
+      canWrite={props.canWrite}
+      onPathChange={handlePathChange}
+      openTreeOnEntry={props.openTreeOnEntry}
+      initialTreeCollapsed={props.initialTreeCollapsed}
+      initialTreeWidth={props.initialTreeWidth}
+    />
+  )
 }
 
-function useFileWorkspaceState({
+interface FileWorkspaceSurfaceProps {
+  instance: InstanceWorkspaceInstance
+  selectionStore: FileSelectionStore
+  canShare: boolean
+  canWrite: boolean
+  onPathChange: (path: string) => void
+  openTreeOnEntry: boolean
+  initialTreeCollapsed: boolean
+  initialTreeWidth: number | null
+}
+
+const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
   instance,
-  active,
-  routeFilePath,
+  selectionStore,
   canShare,
   canWrite,
+  onPathChange,
   openTreeOnEntry,
   initialTreeCollapsed,
   initialTreeWidth,
-}: FileWorkspaceProps) {
-  const navigate = useNavigate()
+}: FileWorkspaceSurfaceProps) {
   const queryClient = useQueryClient()
   const [fontSize, setFontSize] = useFileEditorFontSize()
-  const normalizedRoutePath = routeFilePath?.replace(/^\/+/, "") ?? ""
-  const normalizedRoutePathRef = React.useRef(normalizedRoutePath)
-  React.useLayoutEffect(() => {
-    normalizedRoutePathRef.current = normalizedRoutePath
-  }, [normalizedRoutePath])
-  const selectedPath = normalizedRoutePath
-  const [navigationPendingPath, setNavigationPendingPath] = React.useState<
-    string | null
-  >(null)
   const [mobileTreeOpen, setMobileTreeOpen] = React.useState(false)
-  const [navigationError, setNavigationError] = React.useState<{
-    routePath: string
-    message: string
-  } | null>(null)
   const [treeCollapsed, setTreeCollapsed] = React.useState(
     initialTreeCollapsed && !openTreeOnEntry
   )
   const [treeTransitionSuppressed, setTreeTransitionSuppressed] =
     React.useState(openTreeOnEntry)
-  const pendingRoutePath = React.useRef<string | null>(null)
   const handledTreeEntry = React.useRef(false)
   const openingTreeForRouteEntry = openTreeOnEntry && !handledTreeEntry.current
   const displayedTreeCollapsed = treeCollapsed && !openingTreeForRouteEntry
   const treeQuery = useQuery(relayTreeQueryOptions(instance.id))
-  const activityQuery = useQuery(relayFileActivityQueryOptions(instance.id))
   const tree = treeQuery.data ?? null
-  const activity = React.useMemo(() => {
-    if (!tree || !activityQuery.data) return []
-    const availablePaths = new Set(tree.paths)
-    return activityQuery.data.files.filter((entry) =>
-      availablePaths.has(entry.path)
-    )
-  }, [activityQuery.data, tree])
-  const selectedPathIsReadable = Boolean(
-    tree?.paths.includes(selectedPath) && !selectedPath.endsWith("/")
-  )
-  const fileQuery = useQuery({
-    ...relayFileQueryOptions(instance.id, selectedPath),
-    enabled: selectedPathIsReadable,
-    placeholderData: keepPreviousData,
-  })
-  const file = fileQuery.data ?? null
-  const saveFileMutation = useMutation({
-    mutationFn: saveRelayFile,
-    onSuccess: (nextFile, variables) => {
-      queryClient.setQueryData(
-        queryKeys.relay.file(variables.data.instanceId, variables.data.path),
-        nextFile
-      )
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.relay.fileActivity(variables.data.instanceId),
-      })
-    },
-  })
-  const pinFileMutation = useMutation({
-    mutationFn: updateRelayFilePin,
-    onSuccess: (nextActivity) => {
-      queryClient.setQueryData(
-        queryKeys.relay.fileActivity(instance.id),
-        nextActivity
-      )
-    },
-  })
-  const pinMutationTargetsSelectedPath =
-    pinFileMutation.variables?.data.path === selectedPath
   const refreshTreeMutation = useMutation({
     mutationFn: () =>
       getRelayTree({ data: { instanceId: instance.id, fresh: true } }),
@@ -2199,63 +2337,6 @@ function useFileWorkspaceState({
       queryClient.setQueryData(queryKeys.relay.tree(instance.id), nextTree)
     },
   })
-  const loadingFile =
-    treeQuery.isPending ||
-    (navigationPendingPath !== null &&
-      navigationPendingPath !== selectedPath) ||
-    (selectedPathIsReadable &&
-      (fileQuery.isFetching ||
-        (file?.path !== selectedPath && !fileQuery.isError)))
-  const routeError =
-    active &&
-    tree &&
-    normalizedRoutePath &&
-    (!tree.paths.includes(normalizedRoutePath) ||
-      normalizedRoutePath.endsWith("/"))
-      ? `Could not find /data/${normalizedRoutePath}`
-      : null
-  const currentNavigationError =
-    navigationError?.routePath === normalizedRoutePath
-      ? navigationError.message
-      : null
-  const error =
-    currentNavigationError ??
-    routeError ??
-    queryErrorMessage(treeQuery.error, "Could not load files") ??
-    queryErrorMessage(refreshTreeMutation.error, "Could not refresh files") ??
-    queryErrorMessage(fileQuery.error, "Could not read file") ??
-    queryErrorMessage(
-      pinMutationTargetsSelectedPath ? pinFileMutation.error : null,
-      "Could not update file pin"
-    )
-  const selectedFileUnavailable =
-    Boolean(tree && selectedPath && !selectedPathIsReadable) ||
-    (selectedPathIsReadable && fileQuery.isError && file?.path !== selectedPath)
-  const selectedActivity = activity.find((entry) => entry.path === selectedPath)
-  const isHome = !normalizedRoutePath && !selectedPath
-  const activitySyncKey = React.useRef<string | null>(null)
-
-  React.useEffect(() => {
-    if (
-      !fileQuery.data ||
-      fileQuery.isPlaceholderData ||
-      fileQuery.data.path !== selectedPath
-    ) {
-      return
-    }
-    const nextKey = `${fileQuery.data.path}:${fileQuery.data.modifiedAt}`
-    if (activitySyncKey.current === nextKey) return
-    activitySyncKey.current = nextKey
-    void queryClient.invalidateQueries({
-      queryKey: queryKeys.relay.fileActivity(instance.id),
-    })
-  }, [
-    fileQuery.data,
-    fileQuery.isPlaceholderData,
-    instance.id,
-    queryClient,
-    selectedPath,
-  ])
 
   const handleTreeCollapsedChange = React.useCallback(
     (nextCollapsed: boolean) => {
@@ -2294,52 +2375,9 @@ function useFileWorkspaceState({
     }
   }, [treeTransitionSuppressed])
 
-  const handlePathChange = React.useCallback(
-    async (path: string) => {
-      const routePath = normalizedRoutePathRef.current
-      if (routePath === path) return
-
-      pendingRoutePath.current = path
-      setNavigationPendingPath(path)
-      setNavigationError(null)
-      if (active) {
-        try {
-          if (path) {
-            await queryClient
-              .ensureQueryData(relayFileQueryOptions(instance.id, path))
-              .catch(() => undefined)
-          }
-          if (pendingRoutePath.current !== path) return
-          await navigate({
-            to: "/$serverId/files/$",
-            params: { serverId: instance.shortId, _splat: path },
-            replace: true,
-          })
-        } catch (cause) {
-          if (pendingRoutePath.current !== path) return
-          setNavigationError({
-            routePath,
-            message:
-              cause instanceof Error
-                ? cause.message
-                : "Could not open the selected file",
-          })
-        } finally {
-          if (pendingRoutePath.current === path) {
-            pendingRoutePath.current = null
-            setNavigationPendingPath(null)
-          }
-        }
-      } else {
-        pendingRoutePath.current = null
-        setNavigationPendingPath(null)
-      }
-    },
-    [active, instance.id, instance.shortId, navigate, queryClient]
-  )
   const handleHome = React.useCallback(() => {
-    void handlePathChange("")
-  }, [handlePathChange])
+    onPathChange("")
+  }, [onPathChange])
 
   const closeMobileTree = React.useCallback(() => {
     setMobileTreeOpen(false)
@@ -2347,9 +2385,192 @@ function useFileWorkspaceState({
 
   const refreshTree = refreshTreeMutation.mutate
   const handleRefresh = React.useCallback(() => {
-    setNavigationError(null)
     refreshTree()
   }, [refreshTree])
+
+  return (
+    <div
+      className="relative flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden md:flex-row"
+      data-file-workspace
+    >
+      {tree ? (
+        <StableFileTreePanel
+          key={instance.id}
+          instance={instance}
+          tree={tree}
+          selectionStore={selectionStore}
+          refreshing={refreshTreeMutation.isPending}
+          mobileOpen={mobileTreeOpen}
+          onPathChange={onPathChange}
+          onRefresh={handleRefresh}
+          onMobileOpenChange={setMobileTreeOpen}
+          onFileSelected={closeMobileTree}
+          onHome={handleHome}
+          collapsed={displayedTreeCollapsed}
+          animateCollapsedChange={
+            !openingTreeForRouteEntry && !treeTransitionSuppressed
+          }
+          onCollapsedChange={handleTreeCollapsedChange}
+          initialWidth={initialTreeWidth}
+        />
+      ) : (
+        <FileTreeLoadingPanel
+          collapsed={displayedTreeCollapsed}
+          width={initialTreeWidth}
+        />
+      )}
+      <div className="relative flex min-h-0 min-w-0 flex-1 pb-11 md:pb-0">
+        <FileViewer
+          canShare={canShare}
+          canWrite={canWrite}
+          fileTreeError={
+            queryErrorMessage(treeQuery.error, "Could not load files") ??
+            queryErrorMessage(
+              refreshTreeMutation.error,
+              "Could not refresh files"
+            )
+          }
+          fileTreeLoading={treeQuery.isPending}
+          fontSize={fontSize}
+          instance={instance}
+          onFontSizeChange={setFontSize}
+          onPathChange={onPathChange}
+          onTreeExpand={handleTreeExpand}
+          selectionStore={selectionStore}
+          tree={tree}
+          treeCollapsed={displayedTreeCollapsed}
+        />
+      </div>
+    </div>
+  )
+})
+
+interface FileViewerProps {
+  canShare: boolean
+  canWrite: boolean
+  fileTreeError: string | null
+  fileTreeLoading: boolean
+  fontSize: number
+  instance: InstanceWorkspaceInstance
+  onFontSizeChange: (fontSize: number) => void
+  onPathChange: (path: string) => void
+  onTreeExpand: () => void
+  selectionStore: FileSelectionStore
+  tree: RelayFileTree | null
+  treeCollapsed: boolean
+}
+
+function FileViewer({
+  canShare,
+  canWrite,
+  fileTreeError,
+  fileTreeLoading,
+  fontSize,
+  instance,
+  onFontSizeChange,
+  onPathChange,
+  onTreeExpand,
+  selectionStore,
+  tree,
+  treeCollapsed,
+}: FileViewerProps) {
+  const queryClient = useQueryClient()
+  const selectedPath = React.useSyncExternalStore(
+    selectionStore.subscribe,
+    selectionStore.getSnapshot,
+    selectionStore.getSnapshot
+  )
+  const activityQuery = useQuery(relayFileActivityQueryOptions(instance.id))
+  const selectedPathIsReadable = Boolean(
+    tree?.paths.includes(selectedPath) && !selectedPath.endsWith("/")
+  )
+  const fileQuery = useQuery({
+    ...relayFileQueryOptions(instance.id, selectedPath),
+    enabled: selectedPathIsReadable,
+  })
+  const file = fileQuery.data?.path === selectedPath ? fileQuery.data : null
+  const saveFileMutation = useMutation({
+    mutationFn: saveRelayFile,
+    onSuccess: (nextFile, variables) => {
+      queryClient.setQueryData(
+        queryKeys.relay.file(variables.data.instanceId, variables.data.path),
+        nextFile
+      )
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.relay.fileActivity(variables.data.instanceId),
+      })
+    },
+  })
+  const pinFileMutation = useMutation({
+    mutationFn: updateRelayFilePin,
+    onSuccess: (nextActivity) => {
+      queryClient.setQueryData(
+        queryKeys.relay.fileActivity(instance.id),
+        nextActivity
+      )
+    },
+  })
+  const pinMutationTargetsSelectedPath =
+    pinFileMutation.variables?.data.path === selectedPath
+  const loadingFile =
+    fileTreeLoading || (selectedPathIsReadable && fileQuery.isPending)
+  const routeError =
+    tree &&
+    selectedPath &&
+    (!tree.paths.includes(selectedPath) || selectedPath.endsWith("/"))
+      ? `Could not find /data/${selectedPath}`
+      : null
+  const error =
+    routeError ??
+    fileTreeError ??
+    queryErrorMessage(fileQuery.error, "Could not read file") ??
+    queryErrorMessage(
+      pinMutationTargetsSelectedPath ? pinFileMutation.error : null,
+      "Could not update file pin"
+    )
+  const selectedFileUnavailable =
+    Boolean(tree && selectedPath && !selectedPathIsReadable) ||
+    (selectedPathIsReadable && fileQuery.isError)
+  const activity = React.useMemo(() => {
+    if (!tree || !activityQuery.data) return []
+    const availablePaths = new Set(tree.paths)
+    return activityQuery.data.files.filter((entry) =>
+      availablePaths.has(entry.path)
+    )
+  }, [activityQuery.data, tree])
+  const selectedActivity = activity.find((entry) => entry.path === selectedPath)
+  const isHome = !selectedPath
+  const activitySyncKey = React.useRef<string | null>(null)
+
+  React.useEffect(() => {
+    if (!fileQuery.data || fileQuery.data.path !== selectedPath) return
+    const nextKey = `${fileQuery.data.path}:${fileQuery.data.modifiedAt}`
+    if (activitySyncKey.current === nextKey) return
+    activitySyncKey.current = nextKey
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.relay.fileActivity(instance.id),
+      refetchType: "none",
+    })
+  }, [fileQuery.data, instance.id, queryClient, selectedPath])
+
+  React.useEffect(() => {
+    if (isHome) {
+      selectionStore.completeNavigation(selectedPath, "loaded")
+      return
+    }
+    if (loadingFile) return
+    selectionStore.completeNavigation(
+      selectedPath,
+      file && !selectedFileUnavailable ? "loaded" : "unavailable"
+    )
+  }, [
+    file,
+    isHome,
+    loadingFile,
+    selectedFileUnavailable,
+    selectedPath,
+    selectionStore,
+  ])
 
   const fileRef = React.useRef(file)
   React.useLayoutEffect(() => {
@@ -2371,7 +2592,6 @@ function useFileWorkspaceState({
     },
     [instance.id, saveFile]
   )
-
   const updatePinned = pinFileMutation.mutate
   const handlePinnedChange = React.useCallback(
     (pinned: boolean) => {
@@ -2384,168 +2604,55 @@ function useFileWorkspaceState({
     [instance.id, updatePinned]
   )
 
-  return {
-    activity,
-    activityQuery,
-    canShare,
-    canWrite,
-    closeMobileTree,
-    displayedTreeCollapsed,
-    error,
-    file,
-    fontSize,
-    handleHome,
-    handlePathChange,
-    handlePinnedChange,
-    handleRefresh,
-    handleSave,
-    handleTreeCollapsedChange,
-    handleTreeExpand,
-    initialTreeWidth,
-    instance,
-    isHome,
-    loadingFile,
-    mobileTreeOpen,
-    normalizedRoutePath,
-    openingTreeForRouteEntry,
-    pinFileMutation,
-    pinMutationTargetsSelectedPath,
-    refreshTreeMutation,
-    selectedActivity,
-    selectedFileUnavailable,
-    selectedPath,
-    setFontSize,
-    setMobileTreeOpen,
-    tree,
-    treeQuery,
-    treeTransitionSuppressed,
+  if (isHome) {
+    return (
+      <FilesHome
+        activity={activity}
+        loading={fileTreeLoading || activityQuery.isPending}
+        error={
+          fileTreeError ??
+          queryErrorMessage(activityQuery.error, "Could not load recent files")
+        }
+        treeCollapsed={treeCollapsed}
+        onTreeExpand={onTreeExpand}
+        onOpen={onPathChange}
+      />
+    )
   }
-}
 
-function FileWorkspaceView({
-  activity,
-  activityQuery,
-  canShare,
-  canWrite,
-  closeMobileTree,
-  displayedTreeCollapsed,
-  error,
-  file,
-  fontSize,
-  handleHome,
-  handlePathChange,
-  handlePinnedChange,
-  handleRefresh,
-  handleSave,
-  handleTreeCollapsedChange,
-  handleTreeExpand,
-  initialTreeWidth,
-  instance,
-  isHome,
-  loadingFile,
-  mobileTreeOpen,
-  normalizedRoutePath,
-  openingTreeForRouteEntry,
-  pinFileMutation,
-  pinMutationTargetsSelectedPath,
-  refreshTreeMutation,
-  selectedActivity,
-  selectedFileUnavailable,
-  selectedPath,
-  setFontSize,
-  setMobileTreeOpen,
-  tree,
-  treeQuery,
-  treeTransitionSuppressed,
-}: ReturnType<typeof useFileWorkspaceState>) {
+  if (file && !selectedFileUnavailable) {
+    return (
+      <StableEditor
+        key={`${file.instanceId}:${file.path}:${file.modifiedAt}`}
+        canShare={canShare}
+        canWrite={canWrite}
+        fontSize={fontSize}
+        pinned={selectedActivity?.pinned ?? false}
+        pinning={pinMutationTargetsSelectedPath && pinFileMutation.isPending}
+        file={file}
+        displayPath={selectedPath}
+        instance={instance}
+        loading={false}
+        error={error}
+        onFontSizeChange={onFontSizeChange}
+        onSave={handleSave}
+        onPinnedChange={handlePinnedChange}
+        treeCollapsed={treeCollapsed}
+        onTreeExpand={onTreeExpand}
+      />
+    )
+  }
+
   return (
-    <div
-      className="relative flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden md:flex-row"
-      data-file-workspace
-    >
-      {tree ? (
-        <StableFileTreePanel
-          key={instance.id}
-          instance={instance}
-          tree={tree}
-          selectedPath={selectedPath}
-          refreshing={refreshTreeMutation.isPending}
-          mobileOpen={mobileTreeOpen}
-          onPathChange={handlePathChange}
-          onRefresh={handleRefresh}
-          onMobileOpenChange={setMobileTreeOpen}
-          onFileSelected={closeMobileTree}
-          onHome={handleHome}
-          collapsed={displayedTreeCollapsed}
-          animateCollapsedChange={
-            !openingTreeForRouteEntry && !treeTransitionSuppressed
-          }
-          onCollapsedChange={handleTreeCollapsedChange}
-          initialWidth={initialTreeWidth}
-        />
-      ) : (
-        <FileTreeLoadingPanel
-          collapsed={displayedTreeCollapsed}
-          width={initialTreeWidth}
-        />
-      )}
-      <div className="relative flex min-h-0 min-w-0 flex-1 pb-11 md:pb-0">
-        {isHome ? (
-          <FilesHome
-            activity={activity}
-            loading={treeQuery.isPending || activityQuery.isPending}
-            error={
-              queryErrorMessage(treeQuery.error, "Could not load files") ??
-              queryErrorMessage(
-                activityQuery.error,
-                "Could not load recent files"
-              )
-            }
-            treeCollapsed={displayedTreeCollapsed}
-            onTreeExpand={handleTreeExpand}
-            onOpen={(path) => void handlePathChange(path)}
-          />
-        ) : file ? (
-          <div
-            aria-hidden={selectedFileUnavailable}
-            inert={selectedFileUnavailable ? true : undefined}
-            className={`absolute inset-0 flex ${selectedFileUnavailable ? "invisible" : "visible"}`}
-          >
-            <StableEditor
-              key={`${file.instanceId}:${file.path}:${file.modifiedAt}`}
-              canShare={canShare}
-              canWrite={canWrite}
-              fontSize={fontSize}
-              pinned={selectedActivity?.pinned ?? false}
-              pinning={
-                pinMutationTargetsSelectedPath && pinFileMutation.isPending
-              }
-              file={file}
-              displayPath={selectedPath || file.path}
-              instance={instance}
-              loading={loadingFile}
-              error={error}
-              onFontSizeChange={setFontSize}
-              onSave={handleSave}
-              onPinnedChange={handlePinnedChange}
-              treeCollapsed={displayedTreeCollapsed}
-              onTreeExpand={handleTreeExpand}
-            />
-          </div>
-        ) : null}
-        {!isHome && (!tree || !file || selectedFileUnavailable) ? (
-          <UnavailablePreview
-            path={selectedPath || normalizedRoutePath || instance.name}
-            pathIsCopyable={Boolean(selectedPath || normalizedRoutePath)}
-            loading={loadingFile}
-            message={error}
-            canShare={canShare}
-            treeCollapsed={displayedTreeCollapsed}
-            onTreeExpand={handleTreeExpand}
-          />
-        ) : null}
-      </div>
-    </div>
+    <UnavailablePreview
+      path={selectedPath || instance.name}
+      pathIsCopyable={Boolean(selectedPath)}
+      loading={loadingFile}
+      message={error}
+      canShare={canShare}
+      treeCollapsed={treeCollapsed}
+      onTreeExpand={onTreeExpand}
+    />
   )
 }
 
