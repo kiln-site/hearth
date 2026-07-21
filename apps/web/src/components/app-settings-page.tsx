@@ -26,6 +26,7 @@ import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
 import { dismissToast, showToast } from "@workspace/ui/components/sonner"
 
+import { RelayToastTitle } from "@/components/relay-toast-title"
 import { queryKeys, relaysQueryOptions } from "@/lib/query-options"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import {
@@ -652,7 +653,7 @@ async function resumeRelay(
     dismissToast(relayPausedToastId(relay.id))
     showToast({
       type: "success",
-      message: `${relay.name} resumed`,
+      message: <RelayToastTitle name={relay.name} state="resumed" />,
       id: relayResumedToastId(relay.id),
       icon: <Play className="size-4 text-emerald-400" />,
       description: "Hearth has resumed requesting Relay data.",
@@ -669,7 +670,7 @@ function showPausedRelayToast(
 ): void {
   showToast({
     type: "info",
-    message: `${relay.name} paused`,
+    message: <RelayToastTitle name={relay.name} state="paused" />,
     id: relayPausedToastId(relay.id),
     icon: <Pause className="size-4 text-sky-400" />,
     description: "Hearth stopped requesting data. The Relay remains online.",
@@ -681,7 +682,9 @@ function showPausedRelayToast(
         void resumeRelay(queryClient, relay).catch((cause: unknown) => {
           showToast({
             type: "error",
-            message: `Could not resume ${relay.name}`,
+            message: (
+              <RelayToastTitle name={relay.name} state="could not be resumed" />
+            ),
             description: messageFrom(cause, "Try reconnecting again."),
             duration: 6_000,
           })

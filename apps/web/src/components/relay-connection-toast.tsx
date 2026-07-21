@@ -5,6 +5,7 @@ import { Wifi, WifiOff } from "lucide-react"
 
 import { dismissToast, showToast } from "@workspace/ui/components/sonner"
 
+import { RelayToastTitle } from "@/components/relay-toast-title"
 import { relayConnectionQueryOptions } from "@/lib/query-options"
 import type { RelayConnection } from "@/lib/query-options"
 
@@ -60,7 +61,7 @@ export const RelayConnectionToastMonitor = React.memo(
           activeToastIds.current.add(disconnectToastId)
           showToast({
             type: "warning",
-            message: `${relay.name} disconnected`,
+            message: <RelayToastTitle name={relay.name} state="disconnected" />,
             id: disconnectToastId,
             icon: <WifiOff className="size-4 text-amber-300" />,
             description: "Hearth will keep trying to reconnect.",
@@ -78,7 +79,7 @@ export const RelayConnectionToastMonitor = React.memo(
           activeToastIds.current.delete(disconnectToastId)
           showToast({
             type: "success",
-            message: `${relay.name} reconnected`,
+            message: <RelayToastTitle name={relay.name} state="reconnected" />,
             id: reconnectToastId,
             icon: <Wifi className="size-4 text-emerald-400" />,
             description: "Hearth is receiving live Relay data again.",

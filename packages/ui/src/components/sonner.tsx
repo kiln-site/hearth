@@ -31,7 +31,7 @@ export interface ShowToastOptions extends ExternalToast {
 
 type ToasterStyle = React.CSSProperties & { "--width": string }
 
-const defaultToasterStyle: ToasterStyle = { "--width": "30rem" }
+const defaultToasterStyle: ToasterStyle = { "--width": "27rem" }
 
 const Toaster = React.memo(function Toaster({
   className,

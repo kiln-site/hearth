@@ -274,9 +274,6 @@
   font-size: 0.625rem;
   font-weight: 650;
   letter-spacing: 0.01em;
-  transition:
-    background-color 140ms ease,
-    border-color 140ms ease;
 }
 
 .kiln-toaster[data-sonner-toaster]
@@ -284,10 +281,10 @@
   [data-button]:hover {
   border-color: color-mix(
     in oklab,
-    var(--kiln-toast-accent) 68%,
+    var(--kiln-toast-accent) 48%,
     var(--border)
   );
-  background: color-mix(in oklab, var(--kiln-toast-accent) 7%, transparent);
+  background: transparent;
 }
 
 .kiln-toaster[data-sonner-toaster]
@@ -314,8 +311,9 @@
 .kiln-toaster[data-sonner-toaster]
   [data-sonner-toast][data-styled="true"]
   [data-close-button]:hover {
-  background: oklch(1 0 0 / 0.04);
-  color: var(--foreground);
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
 }
 
 .kiln-toaster[data-sonner-toaster]
