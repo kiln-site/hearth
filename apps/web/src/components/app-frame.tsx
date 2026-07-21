@@ -23,7 +23,9 @@ export const AppFrame = React.memo(function AppFrame({
   return (
     <SidebarProvider defaultOpen={uiPreferences.sidebarOpen}>
       <MobileSidebarNavigationDismiss />
-      <AppSidebar />
+      <AppSidebar
+        selectedInstanceRouteId={uiPreferences.selectedInstanceRouteId}
+      />
       <SidebarInset className="h-dvh min-w-0 overflow-hidden">
         <div
           data-slot="app-content"

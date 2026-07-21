@@ -67,9 +67,14 @@ import type {
   SidebarInstance,
   SidebarInstanceRoute,
 } from "@/lib/relay-selectors"
+import { globalSectionFromRouteId } from "@/lib/route-sections"
+import type { GlobalSection } from "@/lib/route-sections"
+import {
+  selectedInstanceCookieName,
+  uiPreferenceCookieMaxAge,
+} from "@/lib/ui-preference-cookies"
 
 export type InstanceTab = "console" | "files" | "info"
-export type GlobalSection = "access" | "bricks" | "security" | "settings" | null
 
 const instanceItems: Array<{
   title: string
@@ -81,22 +86,8 @@ const instanceItems: Array<{
   { title: "Info", value: "info", icon: SlidersHorizontal },
 ]
 
-const selectedInstanceStorageKey = "kiln:selected-instance-id"
-
-function subscribeToSelectedInstanceStorage(listener: () => void) {
-  const handleStorage = (event: StorageEvent) => {
-    if (event.key === selectedInstanceStorageKey) listener()
-  }
-  window.addEventListener("storage", handleStorage)
-  return () => window.removeEventListener("storage", handleStorage)
-}
-
-function selectedInstanceStorageSnapshot() {
-  return window.localStorage.getItem(selectedInstanceStorageKey)
-}
-
-function selectedInstanceServerSnapshot() {
-  return null
+function persistSelectedInstance(routeId: string) {
+  document.cookie = `${selectedInstanceCookieName}=${routeId}; path=/; max-age=${uiPreferenceCookieMaxAge}; SameSite=Lax`
 }
 
 interface AppSidebarViewProps {
@@ -104,12 +95,17 @@ interface AppSidebarViewProps {
   user: AuthenticatedUser
   canManageAccess: boolean
   isPlatformAdmin: boolean
+  selectedInstanceRouteId: string | null
 }
 
 const emptyInstances: Array<SidebarInstance> = []
 const emptyInstanceRoutes: Array<SidebarInstanceRoute> = []
 
-export function AppSidebar() {
+export function AppSidebar({
+  selectedInstanceRouteId,
+}: {
+  selectedInstanceRouteId: string | null
+}) {
   const queryClient = useQueryClient()
   const { data: relayConfigured } = useSuspenseQuery({
     ...relayConnectionQueryOptions(queryClient),
@@ -129,6 +125,7 @@ export function AppSidebar() {
       canManageAccess={capabilities.canManageAccess}
       instanceCount={instanceCount}
       isPlatformAdmin={capabilities.isPlatformAdmin}
+      selectedInstanceRouteId={selectedInstanceRouteId}
       user={capabilities.user}
     />
   )
@@ -139,6 +136,7 @@ const AppSidebarView = React.memo(function AppSidebarView({
   user,
   canManageAccess,
   isPlatformAdmin,
+  selectedInstanceRouteId,
 }: AppSidebarViewProps) {
   return (
     <Sidebar collapsible="icon" className="border-sidebar-border/80">
@@ -167,7 +165,11 @@ const AppSidebarView = React.memo(function AppSidebarView({
 
         {instanceCount > 0 ? <SidebarSeparator /> : null}
 
-        {instanceCount > 0 ? <SelectedInstanceNavigation /> : null}
+        {instanceCount > 0 ? (
+          <SelectedInstanceNavigation
+            initialInstanceRouteId={selectedInstanceRouteId}
+          />
+        ) : null}
       </SidebarContent>
 
       <AccountNavigation
@@ -212,7 +214,8 @@ function BricksNavigationItem({
 }) {
   const navigate = useNavigate()
   const isActive = useRouterState({
-    select: (state) => state.location.pathname === "/bricks",
+    select: (state) =>
+      globalSectionFromRouteId(state.matches.at(-1)?.routeId) === "bricks",
   })
   return (
     <SidebarMenuItem>
@@ -245,7 +248,11 @@ function BricksNavigationItem({
   )
 }
 
-function SelectedInstanceNavigation() {
+function SelectedInstanceNavigation({
+  initialInstanceRouteId,
+}: {
+  initialInstanceRouteId: string | null
+}) {
   const { data: instanceRoutes = emptyInstanceRoutes } = useQuery({
     ...relaySnapshotQueryOptions(),
     select: selectSidebarInstanceRoutes,
@@ -255,20 +262,19 @@ function SelectedInstanceNavigation() {
       (state.matches.at(-1)?.params as { serverId?: string } | undefined)
         ?.serverId,
   })
-  const selectedInstanceId = React.useSyncExternalStore(
-    subscribeToSelectedInstanceStorage,
-    selectedInstanceStorageSnapshot,
-    selectedInstanceServerSnapshot
+  const [selectedInstanceRouteId, setSelectedInstanceRouteId] = React.useState(
+    initialInstanceRouteId
   )
   const routeInstance = findRelayInstance(instanceRoutes, serverId)
   const rememberedInstance = findRelayInstance(
     instanceRoutes,
-    selectedInstanceId
+    selectedInstanceRouteId
   )
   const instance = routeInstance ?? rememberedInstance ?? instanceRoutes.at(0)
 
   const rememberInstance = React.useCallback((instanceId: string) => {
-    window.localStorage.setItem(selectedInstanceStorageKey, instanceId)
+    setSelectedInstanceRouteId(instanceId)
+    persistSelectedInstance(instanceId)
   }, [])
 
   React.useEffect(() => {
@@ -692,7 +698,8 @@ function SignOutButton({
 function AccessNavigationButton() {
   const navigate = useNavigate()
   const isActive = useRouterState({
-    select: (state) => state.location.pathname === "/access",
+    select: (state) =>
+      globalSectionFromRouteId(state.matches.at(-1)?.routeId) === "access",
   })
   return (
     <SidebarMenuButton
@@ -711,8 +718,7 @@ function SettingsNavigationButton() {
   const navigate = useNavigate()
   const isActive = useRouterState({
     select: (state) =>
-      state.location.pathname === "/settings" ||
-      state.location.pathname.startsWith("/settings/"),
+      globalSectionFromRouteId(state.matches.at(-1)?.routeId) === "settings",
   })
   return (
     <SidebarMenuButton

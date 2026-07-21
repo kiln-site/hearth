@@ -1,5 +1,7 @@
 import { createServerFn } from "@tanstack/react-start"
 
+import { selectedInstanceCookieName } from "@/lib/ui-preference-cookies"
+
 const SIDEBAR_COOKIE_NAME = "sidebar_state"
 const FILE_TREE_COLLAPSED_COOKIE_NAME = "file_tree_collapsed"
 const FILE_TREE_WIDTH_COOKIE_NAME = "file_tree_width"
@@ -35,6 +37,8 @@ export const getUiPreferences = createServerFn({ method: "GET" }).handler(
       sidebarOpen: sidebarCookie !== "false",
       fileTreeCollapsed: fileTreeCollapsedCookie === "true",
       fileTreeWidth,
+      selectedInstanceRouteId:
+        readCookie(cookies, selectedInstanceCookieName) ?? null,
     }
   }
 )
