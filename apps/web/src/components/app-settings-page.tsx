@@ -4,17 +4,15 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query"
-import { Link } from "@tanstack/react-router"
 import {
-  ArrowUpRight,
   Check,
   CircleAlert,
-  Copy,
-  Fingerprint,
+  Eye,
+  EyeOff,
   KeyRound,
   LoaderCircle,
-  PlugZap,
-  RadioTower,
+  Pencil,
+  Plus,
   RefreshCw,
   ServerCog,
   ShieldCheck,
@@ -24,23 +22,9 @@ import {
 import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
 
-import { GlobalPageToolbar } from "@/components/global-page-toolbar"
 import { queryKeys, relaysQueryOptions } from "@/lib/query-options"
 import type { PersistedRelay } from "@/lib/relay-registry"
-import { addRelay, checkRelay, removeRelay, selectRelay } from "@/server/relays"
-
-type RelayForm = {
-  name: string
-  hostname: string
-  port: string
-  token: string
-  useTls: boolean
-}
-
-type RelayAction = (
-  id: string,
-  action: "check" | "select" | "remove"
-) => Promise<void>
+import { addRelay, checkRelay, removeRelay, updateRelay } from "@/server/relays"
 
 const relayConnectedFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
@@ -49,538 +33,559 @@ const relayConnectedFormatter = new Intl.DateTimeFormat("en-US", {
 })
 
 export function AppSettingsPage() {
-  const queryClient = useQueryClient()
   const { data: relays } = useSuspenseQuery(relaysQueryOptions())
-  const checkRelayMutation = useMutation({
-    mutationFn: checkRelay,
-    onSuccess: () =>
-      Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.relays }),
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.relay.connection,
-        }),
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.access.capabilities,
-        }),
-      ]),
-  })
-  const removeRelayMutation = useMutation({
-    mutationFn: removeRelay,
-    onSuccess: () =>
-      Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.relays }),
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.relay.connection,
-        }),
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.access.capabilities,
-        }),
-      ]),
-  })
-  const selectRelayMutation = useMutation({
-    mutationFn: selectRelay,
-    onSuccess: () =>
-      Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.relays }),
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.relay.connection,
-        }),
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.access.capabilities,
-        }),
-      ]),
-  })
-  const [pending, setPending] = React.useState<string | null>(null)
-  const pendingRef = React.useRef<string | null>(null)
-  const [error, setError] = React.useState<string | null>(null)
-  const [notice, setNotice] = React.useState<string | null>(null)
-  const beginOperation = React.useCallback((operation: string) => {
-    if (pendingRef.current !== null) return false
-    pendingRef.current = operation
-    setPending(operation)
-    setError(null)
-    setNotice(null)
-    return true
-  }, [])
-  const completeOperation = React.useCallback((operation: string) => {
-    if (pendingRef.current !== operation) return
-    pendingRef.current = null
-    setPending(null)
-  }, [])
-  async function act(id: string, action: "check" | "select" | "remove") {
-    const operation = `${action}:${id}`
-    if (!beginOperation(operation)) return
-    try {
-      if (action === "check")
-        await checkRelayMutation.mutateAsync({ data: { id } })
-      if (action === "select")
-        await selectRelayMutation.mutateAsync({ data: { id } })
-      if (action === "remove")
-        await removeRelayMutation.mutateAsync({ data: { id } })
-      if (action === "check") setNotice("Relay connection check completed.")
-      if (action === "select") window.location.assign("/")
-    } catch (cause) {
-      setError(messageFrom(cause, `Could not ${action} Relay`))
-    } finally {
-      completeOperation(operation)
-    }
-  }
+  const selection = React.useMemo(createRelaySelectionStore, [])
 
   return (
-    <main className="h-full min-h-0 overflow-y-auto bg-background">
-      <GlobalPageToolbar label="Infrastructure / Relays" />
-
-      <div className="mx-auto max-w-5xl px-5 py-10">
-        <p className="font-mono text-[10px] tracking-[0.18em] text-primary uppercase">
-          Application settings
-        </p>
-        <div className="mt-2 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-          <div>
-            <h1 className="font-heading text-3xl font-semibold tracking-[-0.04em]">
-              Relay connections
-            </h1>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Connect Hearth to one or more independently deployed Relay nodes.
-            </p>
-          </div>
-          <Button variant="outline" size="sm" asChild>
-            <Link to="/security">
-              <Fingerprint /> Account security
-            </Link>
-          </Button>
-        </div>
-
-        {error ? (
-          <div className="mt-5 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/8 px-3 py-2 text-xs text-destructive">
-            <CircleAlert className="mt-0.5 size-4 shrink-0" /> {error}
-          </div>
-        ) : null}
-        {notice ? (
-          <div className="mt-5 flex items-start gap-2 rounded-lg border border-primary/25 bg-primary/7 px-3 py-2 text-xs text-foreground">
-            <Check className="mt-0.5 size-4 shrink-0 text-primary" /> {notice}
-          </div>
-        ) : null}
-
-        {relays.length === 0 ? (
-          <section className="relative mt-7 overflow-hidden rounded-xl border border-primary/20 bg-card/55 p-5 sm:p-6">
-            <div className="absolute inset-y-0 left-0 w-0.5 bg-primary" />
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-start gap-4">
-                <div className="grid size-10 shrink-0 place-items-center border border-primary/25 bg-primary/8 text-primary">
-                  <RadioTower className="size-4" />
-                </div>
-                <div>
-                  <p className="font-mono text-[9px] tracking-[0.16em] text-primary uppercase">
-                    First-run infrastructure
-                  </p>
-                  <h2 className="mt-1 font-heading text-lg font-semibold">
-                    Hearth is ready for its first Relay
-                  </h2>
-                  <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">
-                    Relay can run on a different node. Configure the same access
-                    key on both sides, then enter an address reachable from this
-                    Hearth container.
-                  </p>
-                </div>
-              </div>
-              <span className="shrink-0 font-mono text-[9px] text-amber-400 uppercase">
-                0 nodes connected
-              </span>
-            </div>
-          </section>
-        ) : null}
-
-        <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_21rem]">
-          <RelayList relays={relays} pending={pending} onAction={act} />
-          <AddRelaySection
-            pending={pending}
-            onOperationStart={beginOperation}
-            onOperationEnd={completeOperation}
-            onError={setError}
-            onNotice={setNotice}
-          />
-        </div>
+    <div className="mx-auto w-full max-w-6xl px-5 pb-10">
+      <div className="grid gap-5 lg:grid-cols-[minmax(17rem,0.72fr)_minmax(27rem,1.28fr)]">
+        <RelayList relays={relays} selection={selection} />
+        <SelectedRelayEditor relays={relays} selection={selection} />
       </div>
-    </main>
+    </div>
   )
 }
 
-function RelayList({
+interface RelaySelectionStore {
+  clearIfSelected: (id: string) => void
+  getSnapshot: () => string | null
+  select: (id: string | null) => void
+  subscribe: (listener: () => void) => () => void
+}
+
+function createRelaySelectionStore(): RelaySelectionStore {
+  let selectedId: string | null = null
+  const listeners = new Set<() => void>()
+  const select = (id: string | null) => {
+    if (id === selectedId) return
+    selectedId = id
+    for (const listener of listeners) listener()
+  }
+  return {
+    clearIfSelected: (id) => {
+      if (selectedId === id) select(null)
+    },
+    getSnapshot: () => selectedId,
+    select,
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+  }
+}
+
+const SelectedRelayEditor = React.memo(function SelectedRelayEditor({
   relays,
-  pending,
-  onAction,
+  selection,
 }: {
   relays: Array<PersistedRelay>
-  pending: string | null
-  onAction: RelayAction
+  selection: RelaySelectionStore
+}) {
+  const selectedId = React.useSyncExternalStore(
+    selection.subscribe,
+    selection.getSnapshot,
+    selection.getSnapshot
+  )
+  const selectedRelay = relays.find((relay) => relay.id === selectedId) ?? null
+  const startAdding = React.useCallback(() => selection.select(null), [selection])
+  return (
+    <RelayEditor
+      key={selectedRelay?.id ?? "new-relay"}
+      relay={selectedRelay}
+      onStartAdding={startAdding}
+    />
+  )
+})
+
+const RelayList = React.memo(function RelayList({
+  relays,
+  selection,
+}: {
+  relays: Array<PersistedRelay>
+  selection: RelaySelectionStore
 }) {
   return (
-    <section className="overflow-hidden rounded-xl border bg-card/45">
+    <section className="self-start overflow-hidden rounded-xl border bg-card/45">
       <div className="flex items-center gap-3 border-b px-4 py-3">
         <ServerCog className="size-4 text-primary" />
-        <div>
+        <div className="min-w-0">
           <h2 className="text-sm font-semibold">Known Relays</h2>
           <p className="text-[10px] text-muted-foreground">
-            One Relay is active for the current control surface.
+            Every saved Relay participates in Hearth.
           </p>
         </div>
       </div>
       <div className="divide-y">
-        {relays.length === 0 ? (
-          <div className="px-4 py-10 text-center">
-            <ServerCog className="mx-auto size-5 text-muted-foreground/45" />
-            <p className="mt-3 text-xs font-semibold">No saved Relays</p>
-            <p className="mt-1 text-[10px] text-muted-foreground">
-              Use the enrollment form to add the first node.
-            </p>
-          </div>
-        ) : null}
+        {relays.length === 0 ? <EmptyRelayList /> : null}
         {relays.map((relay) => (
-          <div
+          <RelayRow
             key={relay.id}
-            className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center"
-          >
-            <span
-              className={`size-2 shrink-0 rounded-full ${relay.lastError ? "bg-destructive" : relay.lastConnectedAt ? "bg-emerald-400" : "bg-muted-foreground/30"}`}
-            />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="truncate text-xs font-semibold">
-                  {relay.name}
-                </span>
-                {relay.isPrimary ? (
-                  <span className="rounded border border-primary/25 bg-primary/8 px-1.5 py-0.5 font-mono text-[8px] text-primary uppercase">
-                    Active
-                  </span>
-                ) : null}
-              </div>
-              <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
-                {relay.useTls ? "https" : "http"}://{relay.hostname}:
-                {relay.port}
-              </p>
-              {relay.lastError ? (
-                <p className="mt-1 truncate text-[10px] text-destructive/85">
-                  {relay.lastError}
-                </p>
-              ) : relay.lastConnectedAt ? (
-                <p className="mt-1 text-[10px] text-muted-foreground">
-                  Connected{" "}
-                  {relayConnectedFormatter.format(
-                    new Date(relay.lastConnectedAt)
-                  )}{" "}
-                  UTC
-                </p>
-              ) : null}
-            </div>
-            <div className="flex items-center gap-1.5">
-              {!relay.isPrimary ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void onAction(relay.id, "select")}
-                  disabled={pending !== null}
-                >
-                  <PlugZap /> Use Relay
-                </Button>
-              ) : null}
-              <Button
-                size="icon-sm"
-                variant="ghost"
-                title="Check connection"
-                onClick={() => void onAction(relay.id, "check")}
-                disabled={pending !== null}
-              >
-                {pending === `check:${relay.id}` ? (
-                  <LoaderCircle className="animate-spin" />
-                ) : (
-                  <RefreshCw />
-                )}
-              </Button>
-              {!relay.isPrimary ? (
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  title="Remove Relay"
-                  onClick={() => void onAction(relay.id, "remove")}
-                  disabled={pending !== null}
-                >
-                  <Trash2 />
-                </Button>
-              ) : null}
-            </div>
-          </div>
+            relay={relay}
+            selection={selection}
+          />
         ))}
       </div>
     </section>
   )
-}
+})
 
-function AddRelaySection({
-  pending,
-  onOperationStart,
-  onOperationEnd,
-  onError,
-  onNotice,
+const RelayRow = React.memo(function RelayRow({
+  relay,
+  selection,
 }: {
-  pending: string | null
-  onOperationStart: (operation: string) => boolean
-  onOperationEnd: (operation: string) => void
-  onError: (error: string | null) => void
-  onNotice: (notice: string | null) => void
+  relay: PersistedRelay
+  selection: RelaySelectionStore
 }) {
   const queryClient = useQueryClient()
-  const addRelayMutation = useMutation({
-    mutationFn: addRelay,
-    onSuccess: () =>
-      Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.relays }),
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.relay.connection,
-        }),
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.access.capabilities,
-        }),
-      ]),
+  const getSelectedSnapshot = React.useCallback(
+    () => selection.getSnapshot() === relay.id,
+    [relay.id, selection]
+  )
+  const selected = React.useSyncExternalStore(
+    selection.subscribe,
+    getSelectedSnapshot,
+    getSelectedSnapshot
+  )
+  const [pending, setPending] = React.useState<"check" | "remove" | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
+  const checkMutation = useMutation({
+    mutationFn: checkRelay,
+    onSuccess: () => invalidateRelayQueries(queryClient),
   })
-  const [form, setForm] = React.useState<RelayForm>({
-    name: "",
-    hostname: "",
-    port: "4100",
-    token: "",
-    useTls: false,
+  const removeMutation = useMutation({
+    mutationFn: removeRelay,
+    onSuccess: () => invalidateRelayQueries(queryClient),
   })
-  const [copied, setCopied] = React.useState(false)
 
-  async function createRelay(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const operation = "add"
-    if (!onOperationStart(operation)) return
+  async function refresh(event: React.MouseEvent) {
+    event.stopPropagation()
+    setPending("check")
+    setError(null)
     try {
-      const created = await addRelayMutation.mutateAsync({
-        data: {
-          name: form.name,
-          hostname: form.hostname,
-          port: Number(form.port),
-          token: form.token,
-          useTls: form.useTls,
-        },
-      })
-      onNotice(
-        created.lastError
-          ? `${created.name} was saved, but the first connection check failed.`
-          : `${created.name} is connected and ready.`
-      )
-      setForm({
-        name: "",
-        hostname: "",
-        port: "4100",
-        token: "",
-        useTls: false,
-      })
+      await checkMutation.mutateAsync({ data: { id: relay.id } })
     } catch (cause) {
-      onError(messageFrom(cause, "Could not save Relay"))
+      setError(messageFrom(cause, "Could not check Relay"))
     } finally {
-      onOperationEnd(operation)
+      setPending(null)
+    }
+  }
+
+  async function remove(event: React.MouseEvent) {
+    event.stopPropagation()
+    if (!window.confirm(`Remove ${relay.name} from Hearth?`)) return
+    setPending("remove")
+    setError(null)
+    try {
+      await removeMutation.mutateAsync({ data: { id: relay.id } })
+      selection.clearIfSelected(relay.id)
+    } catch (cause) {
+      setError(messageFrom(cause, "Could not remove Relay"))
+    } finally {
+      setPending(null)
     }
   }
 
   return (
-    <section className="rounded-xl border bg-card/45 p-4">
-      <div className="flex items-center gap-2">
-        <PlugZap className="size-4 text-primary" />
-        <h2 className="text-sm font-semibold">Add a Relay</h2>
-      </div>
-      <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
-        Paste the key already configured on Relay, or generate a new shared key,
-        then save the node endpoint.
-      </p>
-      <form
-        className="mt-5 space-y-3"
-        onSubmit={(event) => void createRelay(event)}
-      >
-        <Field label="Relay access key">
-          <div className="flex gap-1.5">
-            <Input
-              value={form.token}
-              onChange={(event) => {
-                setCopied(false)
-                setForm((value) => ({
-                  ...value,
-                  token: event.target.value,
-                }))
-              }}
-              placeholder="Paste or generate access key"
-              className="font-mono text-[10px]"
-              autoComplete="off"
-              autoCapitalize="none"
-              spellCheck={false}
-              minLength={32}
-              maxLength={512}
-              required
-            />
-            <Button
-              type="button"
-              size="icon"
-              variant="outline"
-              title={
-                form.token
-                  ? "Copy Relay access key"
-                  : "Generate Relay access key"
-              }
-              onClick={() => {
-                if (!form.token) {
-                  setForm((value) => ({
-                    ...value,
-                    token: generateRelayKey(),
-                  }))
-                  return
-                }
-                void navigator.clipboard.writeText(form.token)
-                setCopied(true)
-                window.setTimeout(() => setCopied(false), 1_500)
-              }}
-            >
-              {form.token ? copied ? <Check /> : <Copy /> : <KeyRound />}
-            </Button>
-          </div>
-        </Field>
-        {form.token ? (
-          <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 font-mono text-[9px] leading-4 text-muted-foreground">
-            Start the Relay image with this value as KILN_RELAY_KEY, then save
-            its reachable address below. Hearth stores the key encrypted and
-            never displays it again.
-          </div>
-        ) : null}
-        <Field label="Name">
-          <Input
-            value={form.name}
-            onChange={(event) =>
-              setForm((value) => ({
-                ...value,
-                name: event.target.value,
-              }))
-            }
-            placeholder="Production node"
-            required
-          />
-        </Field>
-        <Field label="Hostname">
-          <Input
-            value={form.hostname}
-            onChange={(event) =>
-              setForm((value) => ({
-                ...value,
-                hostname: event.target.value,
-              }))
-            }
-            placeholder="relay.example.com"
-            autoCapitalize="none"
-            spellCheck={false}
-            required
-          />
-        </Field>
-        <Field label="Port">
-          <Input
-            value={form.port}
-            onChange={(event) =>
-              setForm((value) => ({
-                ...value,
-                port: event.target.value,
-              }))
-            }
-            type="number"
-            min={1}
-            max={65535}
-            required
-          />
-        </Field>
-        <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={form.useTls}
-            onChange={(event) =>
-              setForm((value) => {
-                const useTls = event.target.checked
-                return {
-                  ...value,
-                  useTls,
-                  port:
-                    useTls && value.port === "4100"
-                      ? "443"
-                      : !useTls && value.port === "443"
-                        ? "4100"
-                        : value.port,
-                }
-              })
-            }
-            className="accent-primary"
-          />
-          Connect with HTTPS
-        </label>
-        <p className="text-[9px] leading-4 text-muted-foreground">
-          Behind a reverse proxy, use HTTPS on public port 443. The proxy
-          forwards traffic to Relay on its internal port, normally 4100.
-        </p>
-        <Button className="w-full" disabled={pending !== null}>
-          {pending === "add" ? (
-            <LoaderCircle className="animate-spin" />
-          ) : (
-            <Check />
-          )}
-          Save Relay
-        </Button>
-      </form>
-
-      <div className="mt-5 space-y-3 border-t pt-4">
-        <RelayHint
-          icon={ArrowUpRight}
-          title="Hearth must reach it"
-          detail="Use DNS or an IP visible from this container. localhost points back to Hearth."
+    <div
+      className={`group relative cursor-pointer px-4 py-4 transition-colors ${
+        selected ? "bg-primary/[0.07]" : "hover:bg-accent/35"
+      }`}
+      role="button"
+      tabIndex={0}
+      aria-pressed={selected}
+      onClick={() => selection.select(relay.id)}
+      onKeyDown={(event) => {
+        if (
+          event.target === event.currentTarget &&
+          (event.key === "Enter" || event.key === " ")
+        ) {
+          event.preventDefault()
+          selection.select(relay.id)
+        }
+      }}
+    >
+      <div className="flex items-start gap-3">
+        <span
+          className={`mt-1.5 size-2 shrink-0 rounded-full ${relay.lastError ? "bg-destructive" : relay.lastConnectedAt ? "bg-emerald-400" : "bg-muted-foreground/30"}`}
         />
-        <RelayHint
-          icon={ShieldCheck}
-          title="Protect the route"
-          detail="Use HTTPS or a private network when Relay lives on another machine."
-        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-xs font-semibold">{relay.name}</span>
+            <Pencil className="size-3 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground" />
+          </div>
+          <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
+            {relay.useTls ? "https" : "http"}://{relay.hostname}:{relay.port}
+          </p>
+          <RelayMetadata relay={relay} />
+          {error ? (
+            <p className="mt-2 text-[10px] leading-4 text-destructive">
+              {error}
+            </p>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            title="Check connection"
+            aria-label={`Check ${relay.name} connection`}
+            disabled={pending !== null}
+            onClick={(event) => void refresh(event)}
+          >
+            {pending === "check" ? (
+              <LoaderCircle className="animate-spin" />
+            ) : (
+              <RefreshCw />
+            )}
+          </Button>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            title="Remove Relay"
+            aria-label={`Remove ${relay.name}`}
+            disabled={pending !== null}
+            onClick={(event) => void remove(event)}
+          >
+            {pending === "remove" ? (
+              <LoaderCircle className="animate-spin" />
+            ) : (
+              <Trash2 />
+            )}
+          </Button>
+        </div>
       </div>
-    </section>
+    </div>
   )
-}
+})
 
-function RelayHint({
-  icon: Icon,
-  title,
-  detail,
-}: {
-  icon: typeof ArrowUpRight
-  title: string
-  detail: string
-}) {
+function RelayMetadata({ relay }: { relay: PersistedRelay }) {
+  if (relay.lastError) {
+    return (
+      <p className="mt-2 line-clamp-2 text-[10px] leading-4 text-destructive/85">
+        {relay.lastError}
+      </p>
+    )
+  }
+  if (!relay.lastConnectedAt) return null
   return (
-    <div className="flex gap-2.5">
-      <Icon className="mt-0.5 size-3.5 shrink-0 text-primary" />
-      <span>
-        <span className="block text-[10px] font-semibold">{title}</span>
-        <span className="mt-0.5 block text-[9px] leading-4 text-muted-foreground">
-          {detail}
-        </span>
+    <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1 font-mono text-[9px] text-muted-foreground">
+      <span>{relay.managedEmberCount ?? 0} active Embers</span>
+      <span aria-hidden="true">·</span>
+      <span>{relay.nodeVersion ?? "version unknown"}</span>
+      {relay.nodePlatform && relay.nodeArch ? (
+        <>
+          <span aria-hidden="true">·</span>
+          <span>
+            {relay.nodePlatform}/{relay.nodeArch}
+          </span>
+        </>
+      ) : null}
+      <span className="basis-full text-muted-foreground/70">
+        Checked{" "}
+        {relayConnectedFormatter.format(new Date(relay.lastConnectedAt))} UTC
       </span>
     </div>
   )
 }
 
+function EmptyRelayList() {
+  return (
+    <div className="px-4 py-10 text-center">
+      <ServerCog className="mx-auto size-5 text-muted-foreground/45" />
+      <p className="mt-3 text-xs font-semibold">No saved Relays</p>
+      <p className="mt-1 text-[10px] text-muted-foreground">
+        Add the first Relay from the connection editor.
+      </p>
+    </div>
+  )
+}
+
+interface RelayEditorProps {
+  relay: PersistedRelay | null
+  onStartAdding: () => void
+}
+
+const RelayEditor = React.memo(function RelayEditor({
+  relay,
+  onStartAdding,
+}: RelayEditorProps) {
+  const queryClient = useQueryClient()
+  const formRef = React.useRef<HTMLFormElement>(null)
+  const keyRef = React.useRef<HTMLInputElement>(null)
+  const [showKey, setShowKey] = React.useState(false)
+  const [pending, setPending] = React.useState(false)
+  const [feedback, setFeedback] = React.useState<{
+    tone: "error" | "success"
+    message: string
+  } | null>(null)
+  const addMutation = useMutation({
+    mutationFn: addRelay,
+    onSuccess: () => invalidateRelayQueries(queryClient),
+  })
+  const updateMutation = useMutation({
+    mutationFn: updateRelay,
+    onSuccess: () => invalidateRelayQueries(queryClient),
+  })
+
+  async function save(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const formData = new FormData(event.currentTarget)
+    const token = String(formData.get("token") ?? "").trim()
+    setPending(true)
+    setFeedback(null)
+    try {
+      const input = {
+        name: String(formData.get("name") ?? ""),
+        hostname: String(formData.get("hostname") ?? ""),
+        port: Number(formData.get("port")),
+      }
+      const saved = relay
+        ? await updateMutation.mutateAsync({
+            data: { ...input, id: relay.id, token: token || undefined },
+          })
+        : await addMutation.mutateAsync({ data: { ...input, token } })
+      setFeedback({
+        tone: saved.lastError ? "error" : "success",
+        message: saved.lastError
+          ? `${saved.name} was saved, but Hearth could not connect.`
+          : `${saved.name} is saved and connected.`,
+      })
+      if (!relay) formRef.current?.reset()
+    } catch (cause) {
+      setFeedback({
+        tone: "error",
+        message: messageFrom(cause, "Could not save Relay"),
+      })
+    } finally {
+      setPending(false)
+    }
+  }
+
+  function toggleKeyVisibility() {
+    if (!keyRef.current?.value) {
+      setFeedback({
+        tone: "error",
+        message: relay
+          ? "The stored key cannot be revealed. Enter a replacement key to inspect it."
+          : "Enter or generate a key first.",
+      })
+      return
+    }
+    setShowKey((visible) => !visible)
+  }
+
+  function generateKey() {
+    if (!keyRef.current) return
+    keyRef.current.value = generateRelayKey()
+    keyRef.current.focus()
+    setFeedback(null)
+  }
+
+  return (
+    <section className="self-start rounded-xl border bg-card/45 p-5 sm:p-6">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="font-mono text-[9px] tracking-[0.16em] text-primary uppercase">
+            {relay ? "Edit connection" : "New connection"}
+          </p>
+          <h2 className="mt-1 font-heading text-xl font-semibold tracking-[-0.03em]">
+            {relay ? relay.name : "Add a Relay"}
+          </h2>
+          <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
+            {relay
+              ? "Update the endpoint or replace its encrypted access key."
+              : "Connect another Relay to Hearth over HTTPS."}
+          </p>
+        </div>
+        {relay ? (
+          <Button size="sm" variant="outline" onClick={onStartAdding}>
+            <Plus /> Add Relay
+          </Button>
+        ) : null}
+      </div>
+
+      <form
+        ref={formRef}
+        className="mt-6 space-y-4"
+        onSubmit={(event) => void save(event)}
+      >
+        <Field label="Name" htmlFor="relay-name">
+          <Input
+            id="relay-name"
+            name="name"
+            defaultValue={relay?.name ?? ""}
+            placeholder="Production node"
+            required
+          />
+        </Field>
+
+        <div className="grid grid-cols-[minmax(0,1fr)_7rem] gap-3">
+          <Field label="Host" htmlFor="relay-hostname">
+            <div className="flex items-center rounded-md border border-input bg-transparent shadow-xs focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50">
+              <span className="pl-3 font-mono text-[10px] text-muted-foreground">
+                {relay?.useTls === false ? "http://" : "https://"}
+              </span>
+              <Input
+                id="relay-hostname"
+                name="hostname"
+                defaultValue={relay?.hostname ?? ""}
+                placeholder="relay.example.com"
+                className="border-0 pl-1 shadow-none focus-visible:border-0 focus-visible:ring-0"
+                autoCapitalize="none"
+                spellCheck={false}
+                required
+              />
+            </div>
+          </Field>
+          <Field label="Port" htmlFor="relay-port">
+            <Input
+              id="relay-port"
+              name="port"
+              defaultValue={String(relay?.port ?? 443)}
+              type="number"
+              min={1}
+              max={65_535}
+              required
+            />
+          </Field>
+        </div>
+
+        <Field
+          label={relay ? "Replace access key" : "Access key"}
+          htmlFor="relay-token"
+        >
+          <div className="flex gap-2">
+            <Input
+              ref={keyRef}
+              id="relay-token"
+              name="token"
+              type={showKey ? "text" : "password"}
+              placeholder={
+                relay?.tokenConfigured
+                  ? "Stored securely — enter a replacement"
+                  : "Relay access key"
+              }
+              className="font-mono text-[10px]"
+              autoComplete="new-password"
+              autoCapitalize="none"
+              spellCheck={false}
+              minLength={32}
+              maxLength={512}
+              required={!relay}
+            />
+            <Button
+              type="button"
+              size="icon"
+              variant="outline"
+              title={showKey ? "Hide entered key" : "Show entered key"}
+              aria-label={showKey ? "Hide entered key" : "Show entered key"}
+              onClick={toggleKeyVisibility}
+            >
+              {showKey ? <EyeOff /> : <Eye />}
+            </Button>
+            {!relay ? (
+              <Button
+                type="button"
+                size="icon"
+                variant="outline"
+                title="Generate access key"
+                aria-label="Generate access key"
+                onClick={generateKey}
+              >
+                <KeyRound />
+              </Button>
+            ) : null}
+          </div>
+        </Field>
+
+        <div className="min-h-10 rounded-lg border border-primary/15 bg-primary/[0.045] px-3 py-2 font-mono text-[9px] leading-4 text-muted-foreground">
+          {relay
+            ? "The stored key stays encrypted and cannot be displayed. Leave this blank to keep it, or enter a replacement."
+            : "Use this same value as KILN_RELAY_KEY on Relay. Hearth encrypts it before storing it."}
+        </div>
+
+        {feedback ? (
+          <div
+            role="status"
+            className={`flex min-h-9 items-start gap-2 rounded-lg border px-3 py-2 text-[10px] ${
+              feedback.tone === "error"
+                ? "border-destructive/25 bg-destructive/[0.06] text-destructive"
+                : "border-emerald-400/20 bg-emerald-400/[0.055] text-emerald-200"
+            }`}
+          >
+            {feedback.tone === "error" ? (
+              <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+            ) : (
+              <Check className="mt-0.5 size-3.5 shrink-0" />
+            )}
+            {feedback.message}
+          </div>
+        ) : null}
+
+        <Button className="w-full" disabled={pending}>
+          {pending ? <LoaderCircle className="animate-spin" /> : <Check />}
+          {relay ? "Save changes" : "Save Relay"}
+        </Button>
+      </form>
+
+      <div className="mt-5 flex gap-2.5 border-t pt-4 text-[9px] leading-4 text-muted-foreground">
+        <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-primary" />
+        <p>
+          TLS is independent of port: HTTPS works on 443 or any other port when
+          the Relay endpoint or its proxy presents a valid certificate.
+        </p>
+      </div>
+    </section>
+  )
+}, relayEditorPropsEqual)
+
 function Field({
   label,
+  htmlFor,
   children,
 }: {
   label: string
+  htmlFor: string
   children: React.ReactNode
 }) {
   return (
-    <label className="block space-y-1.5 text-[10px] font-medium text-muted-foreground">
-      <span>{label}</span>
+    <div className="space-y-1.5">
+      <label
+        htmlFor={htmlFor}
+        className="block text-[10px] font-medium text-muted-foreground"
+      >
+        {label}
+      </label>
       {children}
-    </label>
+    </div>
+  )
+}
+
+async function invalidateRelayQueries(
+  queryClient: ReturnType<typeof useQueryClient>
+) {
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: queryKeys.relays }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.relay.connection }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.relay.snapshot }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.access.capabilities }),
+  ])
+}
+
+function relayEditorPropsEqual(
+  previous: RelayEditorProps,
+  next: RelayEditorProps
+): boolean {
+  if (previous.onStartAdding !== next.onStartAdding) return false
+  if (previous.relay === next.relay) return true
+  if (!previous.relay || !next.relay) return false
+  return (
+    previous.relay.id === next.relay.id &&
+    previous.relay.name === next.relay.name &&
+    previous.relay.hostname === next.relay.hostname &&
+    previous.relay.port === next.relay.port &&
+    previous.relay.tokenConfigured === next.relay.tokenConfigured &&
+    previous.relay.useTls === next.relay.useTls
   )
 }
 

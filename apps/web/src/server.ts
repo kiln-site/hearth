@@ -1,8 +1,12 @@
 import * as Sentry from "@sentry/tanstackstart-react"
 import { wrapFetchWithSentry } from "@sentry/tanstackstart-react"
-import handler, { createServerEntry } from "@tanstack/react-start/server-entry"
+import { createStartHandler } from "@tanstack/react-start/server"
+import { createServerEntry } from "@tanstack/react-start/server-entry"
 
+import { hearthStreamHandler } from "./app-server-handler"
 import { disposeAppRuntime } from "./effect/runtime"
+
+const handleStartRequest = createStartHandler(hearthStreamHandler)
 
 let shutdownPromise: Promise<void> | undefined
 
@@ -17,7 +21,7 @@ export function shutdownHearth(): Promise<void> {
 export default createServerEntry(
   wrapFetchWithSentry({
     fetch(request: Request) {
-      return handler.fetch(request)
+      return handleStartRequest(request)
     },
   })
 )

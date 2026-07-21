@@ -1,36 +1,51 @@
 import * as React from "react"
+import { useSuspenseQuery } from "@tanstack/react-query"
+import { useRouter } from "@tanstack/react-router"
 
-import { SidebarInset, SidebarProvider } from "@workspace/ui/components/sidebar"
+import {
+  SidebarInset,
+  SidebarProvider,
+  useSidebar,
+} from "@workspace/ui/components/sidebar"
 
+import { AppRouteContent } from "@/components/app-route-content"
 import { AppSidebar } from "@/components/app-sidebar"
 import { PanelFooter } from "@/components/panel-footer"
-
-interface AppFrameProps {
-  children: React.ReactNode
-  navigationDismiss: React.ReactNode
-  sidebarDefaultOpen: boolean
-  sidebarProps: React.ComponentProps<typeof AppSidebar>
-}
+import { uiPreferencesQueryOptions } from "@/lib/query-options"
 
 export const AppFrame = React.memo(function AppFrame({
   children,
-  navigationDismiss,
-  sidebarDefaultOpen,
-  sidebarProps,
-}: AppFrameProps) {
+}: {
+  children: React.ReactNode
+}) {
+  const { data: uiPreferences } = useSuspenseQuery(uiPreferencesQueryOptions())
+
   return (
-    <SidebarProvider defaultOpen={sidebarDefaultOpen}>
-      {navigationDismiss}
-      <AppSidebar {...sidebarProps} />
+    <SidebarProvider defaultOpen={uiPreferences.sidebarOpen}>
+      <MobileSidebarNavigationDismiss />
+      <AppSidebar />
       <SidebarInset className="h-dvh min-w-0 overflow-hidden">
         <div
           data-slot="app-content"
-          className="flex min-h-0 flex-1 flex-col overflow-hidden"
+          className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
         >
-          {children}
+          <AppRouteContent>{children}</AppRouteContent>
         </div>
         <PanelFooter />
       </SidebarInset>
     </SidebarProvider>
   )
 })
+
+function MobileSidebarNavigationDismiss() {
+  const { isMobile, setOpenMobile } = useSidebar()
+  const router = useRouter()
+
+  React.useEffect(() => {
+    return router.subscribe("onBeforeNavigate", () => {
+      if (isMobile) setOpenMobile(false)
+    })
+  }, [isMobile, router, setOpenMobile])
+
+  return null
+}

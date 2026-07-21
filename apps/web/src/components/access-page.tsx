@@ -4,7 +4,6 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query"
-import type { RelayInstance } from "@workspace/contracts"
 import {
   Check,
   CircleAlert,
@@ -21,8 +20,13 @@ import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
 
 import { GlobalPageToolbar } from "@/components/global-page-toolbar"
+import type { FleetRelayInstance } from "@/lib/relay-fleet"
 import type { AccessRole } from "@/lib/permissions"
-import { accessRoleDetails, accessRoles } from "@/lib/permissions"
+import {
+  accessRoleDetails,
+  accessRoles,
+  isAccessRole,
+} from "@/lib/permissions"
 import { accessOverviewQueryOptions, queryKeys } from "@/lib/query-options"
 import {
   createAccessInvitation,
@@ -35,8 +39,15 @@ import {
 type AccessOverview = Awaited<ReturnType<typeof getAccessOverview>>
 type InvitationForm = {
   email: string
-  resource: string
+  targetKey: string
   role: AccessRole
+}
+type InvitationTarget = {
+  instanceId: string | null
+  key: string
+  label: string
+  relayId: string
+  resourceName: string
 }
 
 const invitationExpiryFormatter = new Intl.DateTimeFormat(undefined, {
@@ -44,7 +55,11 @@ const invitationExpiryFormatter = new Intl.DateTimeFormat(undefined, {
   timeZone: "UTC",
 })
 
-export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
+export function AccessPage({
+  instances,
+}: {
+  instances: Array<FleetRelayInstance>
+}) {
   const queryClient = useQueryClient()
   const { data: overview } = useSuspenseQuery(accessOverviewQueryOptions())
   const inviteMutation = useMutation({
@@ -85,22 +100,57 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
   const [error, setError] = React.useState<string | null>(null)
   const [message, setMessage] = React.useState<string | null>(null)
   const [inviteLink, setInviteLink] = React.useState<string | null>(null)
-  const assignableRoles = overview.canManageOwners
-    ? accessRoles
-    : accessRoles.filter((role) => role !== "owner")
+  const ownerRelayIds = React.useMemo(
+    () => new Set(overview.ownerRelayIds),
+    [overview.ownerRelayIds]
+  )
+  const invitationTargets = React.useMemo(
+    () =>
+      overview.relays.flatMap((relay) => [
+        {
+          instanceId: null,
+          key: `relay:${relay.id}`,
+          label: `Entire Relay · ${relay.name}`,
+          relayId: relay.id,
+          resourceName: relay.name,
+        },
+        ...instances.flatMap((instance) =>
+          instance.relayId === relay.id
+            ? [
+                {
+                  instanceId: instance.id,
+                  key: `instance:${relay.id}:${instance.id}`,
+                  label: `Instance · ${instance.name} · ${relay.name}`,
+                  relayId: relay.id,
+                  resourceName: instance.name,
+                },
+              ]
+            : []
+        ),
+      ]),
+    [instances, overview.relays]
+  )
 
   async function invite(form: InvitationForm) {
     setPending("invite")
     setError(null)
     setMessage(null)
     setInviteLink(null)
-    const instance = instances.find((item) => item.id === form.resource)
+    const target = invitationTargets.find(
+      (item) => item.key === form.targetKey
+    )
+    if (!target) {
+      setError("Choose a Relay or instance")
+      setPending(null)
+      return false
+    }
     try {
       const result = await inviteMutation.mutateAsync({
         data: {
           email: form.email,
-          instanceId: instance?.id ?? null,
-          resourceName: instance?.name ?? overview.relay.name,
+          instanceId: target.instanceId,
+          relayId: target.relayId,
+          resourceName: target.resourceName,
           role: form.role,
         },
       })
@@ -121,11 +171,15 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
     }
   }
 
-  async function changeRole(id: string, role: AccessRole) {
+  async function changeRole(
+    id: string,
+    relayId: string,
+    role: AccessRole
+  ) {
     setPending(`grant:${id}`)
     setError(null)
     try {
-      await updateGrantMutation.mutateAsync({ data: { id, role } })
+      await updateGrantMutation.mutateAsync({ data: { id, relayId, role } })
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not update role")
     } finally {
@@ -133,11 +187,11 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
     }
   }
 
-  async function removeGrant(id: string) {
+  async function removeGrant(id: string, relayId: string) {
     setPending(`grant:${id}`)
     setError(null)
     try {
-      await removeGrantMutation.mutateAsync({ data: { id } })
+      await removeGrantMutation.mutateAsync({ data: { id, relayId } })
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Could not remove access"
@@ -147,11 +201,11 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
     }
   }
 
-  async function revokeInvitation(id: string) {
+  async function revokeInvitation(id: string, relayId: string) {
     setPending(`invite:${id}`)
     setError(null)
     try {
-      await revokeInvitationMutation.mutateAsync({ data: { id } })
+      await revokeInvitationMutation.mutateAsync({ data: { id, relayId } })
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Could not revoke invitation"
@@ -172,11 +226,11 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
         <div className="mt-2 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
           <div>
             <h1 className="font-heading text-3xl font-semibold tracking-[-0.045em]">
-              Who can operate {overview.relay.name}
+              Who can operate your Relay fleet
             </h1>
             <p className="mt-1 text-xs text-muted-foreground">
-              Grant the least access someone needs, across the Relay or on one
-              instance.
+              Grant the least access someone needs across a Relay or one of its
+              instances.
             </p>
           </div>
           <div className="flex items-center gap-2 rounded-lg border bg-card/45 px-3 py-2 font-mono text-[10px] text-muted-foreground">
@@ -219,8 +273,7 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
             <AccessGrantList
               grants={overview.grants}
               instances={instances}
-              relayName={overview.relay.name}
-              assignableRoles={assignableRoles}
+              ownerRelayIds={ownerRelayIds}
               pending={pending}
               onRoleChange={changeRole}
               onRemove={removeGrant}
@@ -229,17 +282,17 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
             <PendingInvitationList
               invitations={overview.invitations}
               instances={instances}
+              ownerRelayIds={ownerRelayIds}
               pending={pending}
               onRevoke={revokeInvitation}
             />
           </div>
 
           <InviteAccessSection
-            assignableRoles={assignableRoles}
-            instances={instances}
+            ownerRelayIds={ownerRelayIds}
+            targets={invitationTargets}
             disabled={pending !== null}
             pending={pending === "invite"}
-            relayName={overview.relay.name}
             onInvite={invite}
           />
         </div>
@@ -249,25 +302,29 @@ export function AccessPage({ instances }: { instances: Array<RelayInstance> }) {
 }
 
 function InviteAccessSection({
-  assignableRoles,
-  instances,
+  ownerRelayIds,
+  targets,
   disabled,
   pending,
-  relayName,
   onInvite,
 }: {
-  assignableRoles: ReadonlyArray<AccessRole>
-  instances: Array<RelayInstance>
+  ownerRelayIds: ReadonlySet<string>
+  targets: Array<InvitationTarget>
   disabled: boolean
   pending: boolean
-  relayName: string
   onInvite: (form: InvitationForm) => Promise<boolean>
 }) {
   const [form, setForm] = React.useState<InvitationForm>({
     email: "",
-    resource: "relay",
+    targetKey: targets.at(0)?.key ?? "",
     role: "operator",
   })
+  const selectedTarget = targets.find(
+    (target) => target.key === form.targetKey
+  )
+  const assignableRoles = selectedTarget
+    ? rolesForRelay(ownerRelayIds, selectedTarget.relayId)
+    : accessRoles.filter((role) => role !== "owner")
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -301,16 +358,27 @@ function InviteAccessSection({
         </Field>
         <Field label="Access scope">
           <select
-            value={form.resource}
-            onChange={(event) =>
-              setForm((value) => ({ ...value, resource: event.target.value }))
-            }
+            value={form.targetKey}
+            onChange={(event) => {
+              const targetKey = event.target.value
+              const target = targets.find((item) => item.key === targetKey)
+              setForm((value) => ({
+                ...value,
+                targetKey,
+                role:
+                  value.role === "owner" &&
+                  target &&
+                  !ownerRelayIds.has(target.relayId)
+                    ? "operator"
+                    : value.role,
+              }))
+            }}
             className="h-9 w-full rounded-md border border-input bg-background px-3 text-xs outline-none focus:border-ring"
+            required
           >
-            <option value="relay">Entire Relay · {relayName}</option>
-            {instances.map((instance) => (
-              <option key={instance.id} value={instance.id}>
-                Instance · {instance.name}
+            {targets.map((target) => (
+              <option key={target.key} value={target.key}>
+                {target.label}
               </option>
             ))}
           </select>
@@ -321,7 +389,7 @@ function InviteAccessSection({
             onChange={(event) =>
               setForm((value) => ({
                 ...value,
-                role: event.target.value as AccessRole,
+                role: accessRoleFromValue(event.target.value),
               }))
             }
             className="h-9 w-full rounded-md border border-input bg-background px-3 text-xs outline-none focus:border-ring"
@@ -348,19 +416,21 @@ function InviteAccessSection({
 function AccessGrantList({
   grants,
   instances,
-  relayName,
-  assignableRoles,
+  ownerRelayIds,
   pending,
   onRoleChange,
   onRemove,
 }: {
   grants: AccessOverview["grants"]
-  instances: Array<RelayInstance>
-  relayName: string
-  assignableRoles: ReadonlyArray<AccessRole>
+  instances: Array<FleetRelayInstance>
+  ownerRelayIds: ReadonlySet<string>
   pending: string | null
-  onRoleChange: (id: string, role: AccessRole) => Promise<void>
-  onRemove: (id: string) => Promise<void>
+  onRoleChange: (
+    id: string,
+    relayId: string,
+    role: AccessRole
+  ) => Promise<void>
+  onRemove: (id: string, relayId: string) => Promise<void>
 }) {
   return (
     <section className="overflow-hidden rounded-xl border bg-card/40">
@@ -378,8 +448,16 @@ function AccessGrantList({
         {grants.length ? (
           grants.map((grant) => {
             const instance = instances.find(
-              (item) => item.id === grant.resourceId
+              (item) =>
+                item.id === grant.resourceId && item.relayId === grant.relayId
             )
+            const assignableRoles = rolesForRelay(
+              ownerRelayIds,
+              grant.relayId,
+              grant.role
+            )
+            const ownerActionAllowed =
+              grant.role !== "owner" || ownerRelayIds.has(grant.relayId)
             return (
               <div
                 key={grant.id}
@@ -401,19 +479,20 @@ function AccessGrantList({
                   </p>
                   <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground">
                     {grant.resourceType === "relay"
-                      ? `All instances on ${relayName}`
-                      : (instance?.name ?? grant.resourceId)}
+                      ? `All instances on ${grant.relayName}`
+                      : `${instance?.name ?? grant.resourceId} · ${grant.relayName}`}
                   </p>
                 </div>
                 <select
                   aria-label={`Role for ${grant.email}`}
                   value={grant.role}
-                  disabled={pending !== null}
+                  disabled={pending !== null || !ownerActionAllowed}
                   className="h-8 rounded-md border border-input bg-background px-2 text-[11px] outline-none focus:border-ring"
                   onChange={(event) =>
                     void onRoleChange(
                       grant.id,
-                      event.target.value as AccessRole
+                      grant.relayId,
+                      accessRoleFromValue(event.target.value)
                     )
                   }
                 >
@@ -428,8 +507,8 @@ function AccessGrantList({
                   size="icon-sm"
                   variant="ghost"
                   aria-label={`Remove ${grant.email}`}
-                  disabled={pending !== null}
-                  onClick={() => void onRemove(grant.id)}
+                  disabled={pending !== null || !ownerActionAllowed}
+                  onClick={() => void onRemove(grant.id, grant.relayId)}
                 >
                   {pending === `grant:${grant.id}` ? (
                     <LoaderCircle className="animate-spin" />
@@ -453,13 +532,15 @@ function AccessGrantList({
 function PendingInvitationList({
   invitations,
   instances,
+  ownerRelayIds,
   pending,
   onRevoke,
 }: {
   invitations: AccessOverview["invitations"]
-  instances: Array<RelayInstance>
+  instances: Array<FleetRelayInstance>
+  ownerRelayIds: ReadonlySet<string>
   pending: string | null
-  onRevoke: (id: string) => Promise<void>
+  onRevoke: (id: string, relayId: string) => Promise<void>
 }) {
   if (!invitations.length) return null
 
@@ -472,7 +553,9 @@ function PendingInvitationList({
       <div className="divide-y">
         {invitations.map((invitation) => {
           const instance = instances.find(
-            (item) => item.id === invitation.instanceId
+            (item) =>
+              item.id === invitation.instanceId &&
+              item.relayId === invitation.relayId
           )
           return (
             <div
@@ -485,8 +568,9 @@ function PendingInvitationList({
                   {invitation.email}
                 </p>
                 <p className="mt-1 font-mono text-[9px] text-muted-foreground">
-                  {instance?.name ?? "Entire Relay"} · {invitation.role} ·
-                  expires <InvitationExpiry value={invitation.expiresAt} />
+                  {instance?.name ?? `Entire Relay · ${invitation.relayName}`} ·{" "}
+                  {invitation.role} · expires{" "}
+                  <InvitationExpiry value={invitation.expiresAt} />
                 </p>
               </div>
               <Button
@@ -494,8 +578,14 @@ function PendingInvitationList({
                 size="icon-sm"
                 variant="ghost"
                 aria-label={`Revoke invitation for ${invitation.email}`}
-                disabled={pending !== null}
-                onClick={() => void onRevoke(invitation.id)}
+                disabled={
+                  pending !== null ||
+                  (invitation.role === "owner" &&
+                    !ownerRelayIds.has(invitation.relayId))
+                }
+                onClick={() =>
+                  void onRevoke(invitation.id, invitation.relayId)
+                }
               >
                 {pending === `invite:${invitation.id}` ? (
                   <LoaderCircle className="animate-spin" />
@@ -509,6 +599,20 @@ function PendingInvitationList({
       </div>
     </section>
   )
+}
+
+function rolesForRelay(
+  ownerRelayIds: ReadonlySet<string>,
+  relayId: string,
+  currentRole?: AccessRole
+): ReadonlyArray<AccessRole> {
+  return ownerRelayIds.has(relayId) || currentRole === "owner"
+    ? accessRoles
+    : accessRoles.filter((role) => role !== "owner")
+}
+
+function accessRoleFromValue(value: string): AccessRole {
+  return isAccessRole(value) ? value : "viewer"
 }
 
 function InvitationExpiry({ value }: { value: string }) {

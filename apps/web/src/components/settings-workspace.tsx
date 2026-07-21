@@ -1,6 +1,5 @@
 import * as React from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
-import type { RelaySnapshot } from "@workspace/contracts"
 import {
   Box,
   Check,
@@ -21,6 +20,7 @@ import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
 
 import { queryKeys, replaceRelaySnapshotInstance } from "@/lib/query-options"
+import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 import type {
   InstanceSettingsInstance,
   RelayNodeSummary,
@@ -31,10 +31,12 @@ export function SettingsWorkspace({
   instance,
   node,
   canRename,
+  relayConnected,
 }: {
   instance: InstanceSettingsInstance
   node: RelayNodeSummary
   canRename: boolean
+  relayConnected: boolean
 }) {
   return (
     <section className="min-h-0 flex-1 overflow-y-auto bg-card">
@@ -64,7 +66,10 @@ export function SettingsWorkspace({
                 {instance.game}
               </Badge>
             </div>
-            <InstanceNameForm instance={instance} canRename={canRename} />
+            <InstanceNameForm
+              instance={instance}
+              canRename={canRename && relayConnected}
+            />
             <MetaRow
               icon={Fingerprint}
               label="Server ID"
@@ -99,9 +104,13 @@ export function SettingsWorkspace({
               <Network className="size-4 text-primary" />
               <h3 className="text-sm font-semibold">Relay placement</h3>
             </div>
-            <span className="flex items-center gap-1.5 font-mono text-[9px] text-emerald-400">
-              <span className="size-1.5 rounded-full bg-emerald-400" />
-              DISCOVERED
+            <span
+              className={`flex items-center gap-1.5 font-mono text-[9px] ${relayConnected ? "text-emerald-400" : "text-amber-300"}`}
+            >
+              <span
+                className={`size-1.5 rounded-full ${relayConnected ? "bg-emerald-400" : "bg-amber-300"}`}
+              />
+              {relayConnected ? "DISCOVERED" : "LAST KNOWN"}
             </span>
           </div>
           <div className="grid sm:grid-cols-2">
@@ -159,7 +168,7 @@ function InstanceNameForm({
   const updateNameMutation = useMutation({
     mutationFn: updateInstanceName,
     onSuccess: (updated) => {
-      queryClient.setQueryData<RelaySnapshot>(
+      queryClient.setQueryData<RelayFleetSnapshot>(
         queryKeys.relay.snapshot,
         (snapshot) => replaceRelaySnapshotInstance(snapshot, updated)
       )
@@ -180,7 +189,11 @@ function InstanceNameForm({
     setError(null)
     try {
       await updateNameMutation.mutateAsync({
-        data: { instanceId: instance.id, name: nextName },
+        data: {
+          instanceId: instance.id,
+          relayId: instance.relayId,
+          name: nextName,
+        },
       })
       setDraftName(null)
       setSaved(true)

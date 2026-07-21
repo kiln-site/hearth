@@ -1,14 +1,12 @@
-import {
-  HeadContent,
-  Scripts,
-  createRootRouteWithContext,
-} from "@tanstack/react-router"
-import { TooltipProvider } from "@workspace/ui/components/tooltip"
+import { Outlet, createRootRouteWithContext } from "@tanstack/react-router"
 import { archivoLatin, jetBrainsMonoLatin } from "@workspace/ui/lib/font-assets"
 
 import appCss from "@workspace/ui/globals.css?url"
 
-import { AppErrorPage, AppNotFoundPage } from "@/components/app-error-page"
+import {
+  AppErrorPage,
+  AppNotFoundPage,
+} from "@/components/app-error-page"
 import type { AppRouterContext } from "@/lib/query-client"
 
 export const Route = createRootRouteWithContext<AppRouterContext>()({
@@ -60,21 +58,7 @@ export const Route = createRootRouteWithContext<AppRouterContext>()({
       },
     ],
   }),
+  component: Outlet,
   errorComponent: AppErrorPage,
   notFoundComponent: AppNotFoundPage,
-  shellComponent: RootDocument,
 })
-
-function RootDocument({ children }: { children: React.ReactNode }) {
-  return (
-    <html lang="en" className="dark">
-      <head>
-        <HeadContent />
-      </head>
-      <body className="overflow-hidden antialiased">
-        <TooltipProvider delayDuration={250}>{children}</TooltipProvider>
-        <Scripts />
-      </body>
-    </html>
-  )
-}

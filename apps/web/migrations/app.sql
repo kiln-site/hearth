@@ -6,9 +6,12 @@ CREATE TABLE IF NOT EXISTS kiln_relay (
   use_tls BOOLEAN NOT NULL DEFAULT TRUE,
   token_ciphertext TEXT NULL,
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
-  is_primary BOOLEAN NOT NULL DEFAULT FALSE,
   last_connected_at TIMESTAMP(3) NULL,
   last_error VARCHAR(512) NULL,
+  managed_ember_count INT UNSIGNED NULL,
+  node_arch VARCHAR(32) NULL,
+  node_platform VARCHAR(32) NULL,
+  node_version VARCHAR(120) NULL,
   created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   UNIQUE KEY kiln_relay_endpoint_unique (hostname, port)

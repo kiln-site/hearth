@@ -1,9 +1,9 @@
 import * as React from "react"
-import * as Sentry from "@sentry/tanstackstart-react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useRouter } from "@tanstack/react-router"
 import { FileTree, useFileTree, useFileTreeSearch } from "@pierre/trees/react"
 import type {
+  RelayFileActivity,
   RelayFileActivityEntry,
   RelayFileContent,
   RelayFileTree,
@@ -62,6 +62,19 @@ import {
   FileTreeLoadingPanel,
   FileWorkspaceLoadingState,
 } from "@/components/file-tree-loading-panel"
+import {
+  createEditorSearchStore,
+  createEditorSessionStore,
+  createFileEditorPreferencesStore,
+  createFileSelectionStore,
+  fileEditorFontSizes,
+} from "@/components/files/file-workspace-stores"
+import type {
+  EditorSearchStore,
+  EditorSessionStore,
+  FileEditorPreferencesStore,
+  FileSelectionStore,
+} from "@/components/files/file-workspace-stores"
 import { redactSensitiveText } from "@/lib/redaction"
 import { fileLanguageForPath } from "@/lib/file-language"
 import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
@@ -103,235 +116,6 @@ const olderFileDateFormatter = new Intl.DateTimeFormat(undefined, {
   year: "numeric",
 })
 
-interface EditorSearchStore {
-  getSnapshot: () => string
-  setQuery: (query: string) => void
-  subscribe: (listener: () => void) => () => void
-}
-
-interface FileEditorPreferencesStore {
-  getFontSizeSnapshot: () => number
-  hydrate: () => void
-  setFontSize: (fontSize: number) => void
-  subscribe: (listener: () => void) => () => void
-}
-
-interface EditorSessionStore {
-  getDirtySnapshot: () => boolean
-  getReviewChangesSnapshot: () => boolean
-  getSavedValueSnapshot: () => string
-  getSaveErrorSnapshot: () => string | null
-  getSavingSnapshot: () => boolean
-  getSearchOpenSnapshot: () => boolean
-  getValue: () => string
-  getWrapLinesSnapshot: () => boolean
-  markSaved: (value: string) => void
-  setSaveError: (error: string | null) => void
-  setSaving: (saving: boolean) => void
-  setSearchOpen: (open: boolean) => void
-  setValue: (value: string) => void
-  subscribe: (listener: () => void) => () => void
-  toggleReviewChanges: () => void
-  toggleWrapLines: () => void
-}
-
-interface FileSelectionStore {
-  cancelNavigation: () => void
-  completeNavigation: (path: string, result: "loaded" | "unavailable") => void
-  getIsHomeSnapshot: () => boolean
-  getSnapshot: () => string
-  navigate: (path: string, from: string, to: string) => void
-  select: (path: string) => void
-  subscribe: (listener: () => void) => () => void
-}
-
-function createFileSelectionStore(initialPath: string): FileSelectionStore {
-  let path = initialPath
-  let navigation:
-    | {
-        path: string
-        span: ReturnType<typeof Sentry.startInactiveSpan>
-      }
-    | undefined
-  const listeners = new Set<() => void>()
-  const select = (nextPath: string) => {
-    if (path === nextPath) return
-    path = nextPath
-    for (const listener of listeners) listener()
-  }
-  return {
-    cancelNavigation: () => {
-      if (!navigation) return
-      navigation.span.setAttribute("kiln.file.result", "cancelled")
-      navigation.span.end()
-      navigation = undefined
-    },
-    completeNavigation: (completedPath, result) => {
-      if (navigation?.path !== completedPath) return
-      navigation.span.setAttribute("kiln.file.result", result)
-      navigation.span.end()
-      navigation = undefined
-    },
-    getIsHomeSnapshot: () => path === "",
-    getSnapshot: () => path,
-    navigate: (nextPath, from, to) => {
-      if (navigation) {
-        navigation.span.setAttribute("kiln.file.result", "superseded")
-        navigation.span.end()
-      }
-      Sentry.addBreadcrumb({
-        category: "navigation",
-        type: "navigation",
-        data: { from, to },
-      })
-      navigation = {
-        path: nextPath,
-        span: Sentry.startInactiveSpan({
-          name: to,
-          op: "navigation",
-          forceTransaction: true,
-          attributes: {
-            "sentry.source": "route",
-            "kiln.navigation.type": "file",
-          },
-        }),
-      }
-      select(nextPath)
-    },
-    select,
-    subscribe: (listener) => {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
-  }
-}
-
-function createEditorSearchStore(): EditorSearchStore {
-  let query = ""
-  const listeners = new Set<() => void>()
-  return {
-    getSnapshot: () => query,
-    setQuery: (nextQuery) => {
-      if (query === nextQuery) return
-      query = nextQuery
-      for (const listener of listeners) listener()
-    },
-    subscribe: (listener) => {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
-  }
-}
-
-function createFileEditorPreferencesStore(): FileEditorPreferencesStore {
-  let fontSize = defaultFileEditorFontSize
-  const listeners = new Set<() => void>()
-  const notify = () => {
-    for (const listener of listeners) listener()
-  }
-  const setFontSize = (nextFontSize: number) => {
-    if (
-      fontSize === nextFontSize ||
-      !fileEditorFontSizes.includes(nextFontSize)
-    ) {
-      return
-    }
-    fontSize = nextFontSize
-    try {
-      window.localStorage.setItem(
-        fileEditorFontSizeStorageKey,
-        String(nextFontSize)
-      )
-    } catch {
-      // The editor remains usable when browser storage is unavailable.
-    }
-    notify()
-  }
-  return {
-    getFontSizeSnapshot: () => fontSize,
-    hydrate: () => {
-      try {
-        const storedValue = Number.parseInt(
-          window.localStorage.getItem(fileEditorFontSizeStorageKey) ?? "",
-          10
-        )
-        setFontSize(storedValue)
-      } catch {
-        // Keep the default when browser storage is unavailable.
-      }
-    },
-    setFontSize,
-    subscribe: (listener) => {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
-  }
-}
-
-function createEditorSessionStore(initialValue: string): EditorSessionStore {
-  let value = initialValue
-  let savedValue = initialValue
-  let dirty = false
-  let saving = false
-  let saveError: string | null = null
-  let searchOpen = false
-  let reviewChanges = true
-  let wrapLines = true
-  const listeners = new Set<() => void>()
-  const notify = () => {
-    for (const listener of listeners) listener()
-  }
-  return {
-    getDirtySnapshot: () => dirty,
-    getReviewChangesSnapshot: () => reviewChanges,
-    getSavedValueSnapshot: () => savedValue,
-    getSaveErrorSnapshot: () => saveError,
-    getSavingSnapshot: () => saving,
-    getSearchOpenSnapshot: () => searchOpen,
-    getValue: () => value,
-    getWrapLinesSnapshot: () => wrapLines,
-    markSaved: (nextSavedValue) => {
-      savedValue = nextSavedValue
-      dirty = value !== savedValue
-      notify()
-    },
-    setSaveError: (nextError) => {
-      if (saveError === nextError) return
-      saveError = nextError
-      notify()
-    },
-    setSaving: (nextSaving) => {
-      if (saving === nextSaving) return
-      saving = nextSaving
-      notify()
-    },
-    setSearchOpen: (nextOpen) => {
-      if (searchOpen === nextOpen) return
-      searchOpen = nextOpen
-      notify()
-    },
-    setValue: (nextValue) => {
-      value = nextValue
-      const nextDirty = value !== savedValue
-      if (dirty === nextDirty) return
-      dirty = nextDirty
-      notify()
-    },
-    subscribe: (listener) => {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
-    toggleReviewChanges: () => {
-      reviewChanges = !reviewChanges
-      notify()
-    },
-    toggleWrapLines: () => {
-      wrapLines = !wrapLines
-      notify()
-    },
-  }
-}
-
 function persistFileTreeWidth(width: number) {
   document.cookie = `${fileTreeWidthCookieName}=${width}; path=/; max-age=${fileTreeCookieMaxAge}; SameSite=Lax`
 }
@@ -360,10 +144,6 @@ const fileTreeLayoutCss = `
     height: 14px;
   }
 `
-const fileEditorFontSizeStorageKey = "kiln:file-editor-font-size"
-const fileEditorFontSizes = [10, 11, 12, 14, 16]
-const defaultFileEditorFontSize = 16
-
 function clampFileTreeWidth(width: number, workspaceWidth: number) {
   const responsiveMaximum = Math.floor(workspaceWidth * 0.45)
   const maximum = Math.max(
@@ -813,6 +593,7 @@ function EditorShareButton({
         data: {
           content: redactSensitiveText(sessionStore.getValue()),
           instanceId: instance.id,
+          relayId: instance.relayId,
           path: file.path,
           implementation: instance.implementation,
           version: instance.version,
@@ -1092,6 +873,7 @@ function EditorMobileOverflowMenu({
         data: {
           content: redactSensitiveText(sessionStore.getValue()),
           instanceId: instance.id,
+          relayId: instance.relayId,
           path: file.path,
           implementation: instance.implementation,
           version: instance.version,
@@ -1646,6 +1428,7 @@ function FileTreePanel({
   tree,
   selectionStore,
   refreshing,
+  refreshDisabled,
   mobileOpen,
   onPathChange,
   onRefresh,
@@ -1661,6 +1444,7 @@ function FileTreePanel({
   tree: RelayFileTree
   selectionStore: FileSelectionStore
   refreshing: boolean
+  refreshDisabled: boolean
   mobileOpen: boolean
   onPathChange: (path: string) => void
   onRefresh: () => void
@@ -2041,6 +1825,7 @@ function FileTreePanel({
                   variant="ghost"
                   size="icon-sm"
                   aria-label="Refresh files"
+                  disabled={refreshDisabled}
                   onClick={onRefresh}
                 >
                   <RefreshCw className="size-[18px]" />
@@ -2048,7 +1833,11 @@ function FileTreePanel({
               )}
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>
-              {refreshing ? "Refreshing Files" : "Refresh Files"}
+              {refreshing
+                ? "Refreshing Files"
+                : refreshDisabled
+                  ? "Relay disconnected"
+                  : "Refresh Files"}
             </TooltipContent>
           </Tooltip>
           <Tooltip>
@@ -2594,6 +2383,7 @@ interface FileWorkspaceProps {
   routeFilePath?: string
   canShare: boolean
   canWrite: boolean
+  relayConnected: boolean
   openTreeOnEntry: boolean
   initialTreeCollapsed: boolean
   initialTreeWidth: number | null
@@ -2625,24 +2415,20 @@ export function FileWorkspace(props: FileWorkspaceProps) {
 
       const nextLocation = router.buildLocation({
         to: "/$serverId/files/$",
-        params: { serverId: props.instance.shortId, _splat: path },
+        params: { serverId: props.instance.routeId, _splat: path },
       })
       const nextUrl = new URL(nextLocation.href, window.location.href).href
       selectionStore.navigate(path, window.location.href, nextUrl)
       if (!props.active) return
 
-      // File selection is workspace state. Updating the address bar without
-      // notifying the route tree prevents an unchanged app shell from
-      // rendering, while preserving reloadable deep links.
-      const previousIgnoreSubscribers = router.history._ignoreSubscribers
-      router.history._ignoreSubscribers = true
-      try {
-        window.history.replaceState(window.history.state, "", nextLocation.href)
-      } finally {
-        router.history._ignoreSubscribers = previousIgnoreSubscribers
-      }
+      void router.navigate({
+        to: "/$serverId/files/$",
+        params: { serverId: props.instance.routeId, _splat: path },
+        replace: true,
+        resetScroll: false,
+      })
     },
-    [props.active, props.instance.shortId, router, selectionStore]
+    [props.active, props.instance.routeId, router, selectionStore]
   )
 
   return (
@@ -2651,6 +2437,7 @@ export function FileWorkspace(props: FileWorkspaceProps) {
       selectionStore={selectionStore}
       canShare={props.canShare}
       canWrite={props.canWrite}
+      relayConnected={props.relayConnected}
       onPathChange={handlePathChange}
       openTreeOnEntry={props.openTreeOnEntry}
       initialTreeCollapsed={props.initialTreeCollapsed}
@@ -2664,6 +2451,7 @@ interface FileWorkspaceSurfaceProps {
   selectionStore: FileSelectionStore
   canShare: boolean
   canWrite: boolean
+  relayConnected: boolean
   onPathChange: (path: string) => void
   openTreeOnEntry: boolean
   initialTreeCollapsed: boolean
@@ -2675,6 +2463,7 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
   selectionStore,
   canShare,
   canWrite,
+  relayConnected,
   onPathChange,
   openTreeOnEntry,
   initialTreeCollapsed,
@@ -2691,13 +2480,24 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
   const handledTreeEntry = React.useRef(false)
   const openingTreeForRouteEntry = openTreeOnEntry && !handledTreeEntry.current
   const displayedTreeCollapsed = treeCollapsed && !openingTreeForRouteEntry
-  const treeQuery = useQuery(relayTreeQueryOptions(instance.id))
+  const treeQuery = useQuery(
+    relayTreeQueryOptions(instance.relayId, instance.id)
+  )
   const tree = treeQuery.data ?? null
   const refreshTreeMutation = useMutation({
     mutationFn: () =>
-      getRelayTree({ data: { instanceId: instance.id, fresh: true } }),
+      getRelayTree({
+        data: {
+          instanceId: instance.id,
+          relayId: instance.relayId,
+          fresh: true,
+        },
+      }),
     onSuccess: (nextTree) => {
-      queryClient.setQueryData(queryKeys.relay.tree(instance.id), nextTree)
+      queryClient.setQueryData(
+        queryKeys.relay.tree(instance.relayId, instance.id),
+        nextTree
+      )
     },
   })
 
@@ -2765,6 +2565,7 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
           tree={tree}
           selectionStore={selectionStore}
           refreshing={refreshTreeMutation.isPending}
+          refreshDisabled={!relayConnected}
           mobileOpen={mobileTreeOpen}
           onPathChange={onPathChange}
           onRefresh={handleRefresh}
@@ -2786,8 +2587,8 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
       )}
       <div className="relative flex min-h-0 min-w-0 flex-1 pb-11 md:pb-0">
         <FileViewer
-          canShare={canShare}
-          canWrite={canWrite}
+          canShare={canShare && relayConnected}
+          canWrite={canWrite && relayConnected}
           fileTreeError={
             queryErrorMessage(treeQuery.error, "Could not load files") ??
             queryErrorMessage(
@@ -2803,6 +2604,7 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
           selectionStore={selectionStore}
           tree={tree}
           treeCollapsed={displayedTreeCollapsed}
+          relayConnected={relayConnected}
         />
       </div>
     </div>
@@ -2821,6 +2623,7 @@ interface FileViewerProps {
   selectionStore: FileSelectionStore
   tree: RelayFileTree | null
   treeCollapsed: boolean
+  relayConnected: boolean
 }
 
 function FileViewer({
@@ -2835,6 +2638,7 @@ function FileViewer({
   selectionStore,
   tree,
   treeCollapsed,
+  relayConnected,
 }: FileViewerProps) {
   const queryClient = useQueryClient()
   const selectedPath = React.useSyncExternalStore(
@@ -2844,22 +2648,26 @@ function FileViewer({
   )
   const isHome = !selectedPath
   const activityQuery = useQuery({
-    ...relayFileActivityQueryOptions(instance.id),
+    ...relayFileActivityQueryOptions(instance.relayId, instance.id),
     enabled: isHome,
   })
-  const selectedPinQuery = useQuery({
-    ...relayFileActivityQueryOptions(instance.id),
-    enabled: !isHome,
-    select: (nextActivity) =>
+  const selectSelectedPin = React.useCallback(
+    (nextActivity: RelayFileActivity) =>
       nextActivity.files.find((entry) => entry.path === selectedPath)?.pinned ??
       false,
+    [selectedPath]
+  )
+  const selectedPinQuery = useQuery({
+    ...relayFileActivityQueryOptions(instance.relayId, instance.id),
+    enabled: !isHome,
+    select: selectSelectedPin,
   })
   const selectedPathIsReadable = Boolean(
     tree?.paths.includes(selectedPath) && !selectedPath.endsWith("/")
   )
   const fileQuery = useQuery({
-    ...relayFileQueryOptions(instance.id, selectedPath),
-    enabled: selectedPathIsReadable,
+    ...relayFileQueryOptions(instance.relayId, instance.id, selectedPath),
+    enabled: selectedPathIsReadable && relayConnected,
     refetchOnMount: "always",
     refetchOnReconnect: false,
     refetchOnWindowFocus: false,
@@ -2867,13 +2675,20 @@ function FileViewer({
   const file = fileQuery.data?.path === selectedPath ? fileQuery.data : null
   const saveFileMutation = useMutation({
     mutationFn: saveRelayFile,
-    onSuccess: (nextFile, variables) => {
+    onSuccess: async (nextFile, variables) => {
       queryClient.setQueryData(
-        queryKeys.relay.file(variables.data.instanceId, variables.data.path),
+        queryKeys.relay.file(
+          variables.data.relayId,
+          variables.data.instanceId,
+          variables.data.path
+        ),
         nextFile
       )
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.relay.fileActivity(variables.data.instanceId),
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.relay.fileActivity(
+          variables.data.relayId,
+          variables.data.instanceId
+        ),
       })
     },
   })
@@ -2881,7 +2696,7 @@ function FileViewer({
     mutationFn: updateRelayFilePin,
     onSuccess: (nextActivity) => {
       queryClient.setQueryData(
-        queryKeys.relay.fileActivity(instance.id),
+        queryKeys.relay.fileActivity(instance.relayId, instance.id),
         nextActivity
       )
     },
@@ -2890,7 +2705,7 @@ function FileViewer({
     pinFileMutation.variables?.data.path === selectedPath
   const loadingFile =
     fileTreeLoading ||
-    (!isHome && selectedPinQuery.isPending) ||
+    (!isHome && selectedPinQuery.isPending && relayConnected) ||
     (selectedPathIsReadable && fileQuery.isFetching)
   const routeError =
     tree &&
@@ -2901,6 +2716,11 @@ function FileViewer({
   const error =
     routeError ??
     fileTreeError ??
+    (selectedPath && !relayConnected
+      ? file
+        ? "Relay disconnected. Showing a cached read-only copy."
+        : "Unable to connect to Relay. This file is not cached."
+      : null) ??
     queryErrorMessage(fileQuery.error, "Could not read file") ??
     queryErrorMessage(
       pinMutationTargetsSelectedPath ? pinFileMutation.error : null,
@@ -2908,7 +2728,7 @@ function FileViewer({
     )
   const selectedFileUnavailable =
     Boolean(tree && selectedPath && !selectedPathIsReadable) ||
-    (selectedPathIsReadable && fileQuery.isError)
+    (selectedPathIsReadable && !file && (!relayConnected || fileQuery.isError))
   const activity = React.useMemo(() => {
     if (!tree || !activityQuery.data) return []
     const availablePaths = new Set(tree.paths)
@@ -2924,12 +2744,12 @@ function FileViewer({
     if (activitySyncKey.current === nextKey) return
     activitySyncKey.current = nextKey
     void queryClient.invalidateQueries({
-      queryKey: queryKeys.relay.fileActivity(instance.id),
+      queryKey: queryKeys.relay.fileActivity(instance.relayId, instance.id),
       // Avoid refetching the active pin-only observer. The disabled home
       // observer refetches this stale query when Files Home becomes active.
       refetchType: "none",
     })
-  }, [fileQuery.data, instance.id, queryClient, selectedPath])
+  }, [fileQuery.data, instance.id, instance.relayId, queryClient, selectedPath])
 
   React.useEffect(() => {
     if (isHome) {
@@ -2962,13 +2782,14 @@ function FileViewer({
       await saveFile({
         data: {
           instanceId: instance.id,
+          relayId: instance.relayId,
           path: currentFile.path,
           content,
           expectedModifiedAt: currentFile.modifiedAt,
         },
       })
     },
-    [instance.id, saveFile]
+    [instance.id, instance.relayId, saveFile]
   )
   const updatePinned = pinFileMutation.mutate
   const handlePinnedChange = React.useCallback(
@@ -2976,10 +2797,15 @@ function FileViewer({
       const currentFile = fileRef.current
       if (!currentFile) return
       updatePinned({
-        data: { instanceId: instance.id, path: currentFile.path, pinned },
+        data: {
+          instanceId: instance.id,
+          relayId: instance.relayId,
+          path: currentFile.path,
+          pinned,
+        },
       })
     },
-    [instance.id, updatePinned]
+    [instance.id, instance.relayId, updatePinned]
   )
 
   if (isHome) {

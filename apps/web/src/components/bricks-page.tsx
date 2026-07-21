@@ -1,9 +1,5 @@
 import * as React from "react"
-import {
-  useMutation,
-  useQueryClient,
-  useSuspenseQuery,
-} from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
 import {
   Boxes,
@@ -35,8 +31,14 @@ import { Input } from "@workspace/ui/components/input"
 import { GlobalPageToolbar } from "@/components/global-page-toolbar"
 import { ServerTypeIcon } from "@/components/server-type-icon"
 import { updateBrickVariable } from "@/lib/brick-variables"
+import { relayInstanceRouteId } from "@/lib/relay-fleet"
 import type { PersistedRelay } from "@/lib/relay-registry"
-import { brickStudioQueryOptions, queryKeys } from "@/lib/query-options"
+import {
+  brickStudioQueryOptions,
+  queryKeys,
+  relayConnectionQueryOptions,
+} from "@/lib/query-options"
+import type { RelayConnection } from "@/lib/query-options"
 import {
   configureBrickNetworking,
   createBrickInstance,
@@ -60,12 +62,41 @@ type DeploymentForm = {
 }
 
 export function BricksPage() {
+  const studioQuery = useQuery(brickStudioQueryOptions())
+  if (!studioQuery.data) {
+    return (
+      <main className="h-full min-h-0 overflow-y-auto bg-background text-foreground">
+        <GlobalPageToolbar label="Infrastructure / Bricks" />
+        <div className="grid min-h-[24rem] place-items-center px-6 text-center">
+          <div className="max-w-sm">
+            {studioQuery.isPending ? (
+              <LoaderCircle className="mx-auto size-5 animate-spin text-primary" />
+            ) : (
+              <CircleAlert className="mx-auto size-5 text-amber-300" />
+            )}
+            <p className="mt-3 text-sm font-semibold">
+              {studioQuery.isPending
+                ? "Loading Brick studio"
+                : "Brick studio unavailable"}
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {studioQuery.error?.message ??
+                "Hearth has no cached Brick catalog for this Relay yet."}
+            </p>
+          </div>
+        </div>
+      </main>
+    )
+  }
+  return <BrickStudio studio={studioQuery.data} />
+}
+
+function BrickStudio({ studio }: { studio: Studio }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { data: studio } = useSuspenseQuery(brickStudioQueryOptions())
   const createInstanceMutation = useMutation({
     mutationFn: createBrickInstance,
-    onSuccess: async (instance) => {
+    onSuccess: async (instance, variables) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.bricks }),
         queryClient.invalidateQueries({
@@ -75,7 +106,12 @@ export function BricksPage() {
       ])
       await navigate({
         to: "/$serverId/console",
-        params: { serverId: instance.shortId },
+        params: {
+          serverId: relayInstanceRouteId(
+            variables.data.relayId,
+            instance.shortId
+          ),
+        },
       })
     },
   })
@@ -109,6 +145,18 @@ export function BricksPage() {
     dnsPort: String(studio.networking?.dnsPort ?? 53),
     proxyPort: String(studio.networking?.proxyPort ?? 25_565),
   })
+  const selectRelayConnected = React.useCallback(
+    (connection: RelayConnection) =>
+      connection.status === "connected" &&
+      connection.relays.some(
+        (relay) => relay.id === form.relayId && relay.status === "connected"
+      ),
+    [form.relayId]
+  )
+  const { data: relayConnected = false } = useQuery({
+    ...relayConnectionQueryOptions(queryClient),
+    select: selectRelayConnected,
+  })
 
   function chooseBrick(brick: Brick) {
     setSelected(brick)
@@ -122,6 +170,7 @@ export function BricksPage() {
 
   async function loadCustomRecipe(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!relayConnected) return
     setPending("recipe")
     setError(null)
     try {
@@ -138,7 +187,7 @@ export function BricksPage() {
 
   async function deploy(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!selected) return
+    if (!selected || !relayConnected) return
     setPending("deploy")
     setError(null)
     try {
@@ -159,6 +208,7 @@ export function BricksPage() {
 
   async function saveNetworking(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!relayConnected) return
     setPending("network")
     setNetworkSaved(false)
     setError(null)
@@ -186,7 +236,7 @@ export function BricksPage() {
     <main className="h-full min-h-0 overflow-y-auto bg-background text-foreground">
       <GlobalPageToolbar label="Infrastructure / Bricks" />
 
-      <div className="mx-auto max-w-7xl px-5 py-9 lg:px-8">
+      <div className="mx-auto max-w-7xl border-0 px-5 py-9 lg:px-8">
         <div className="grid gap-7 xl:grid-cols-[minmax(0,1fr)_23rem]">
           <div className="min-w-0">
             <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
@@ -224,6 +274,7 @@ export function BricksPage() {
             <CustomRecipeForm
               source={customSource}
               relayId={form.relayId}
+              relayConnected={relayConnected}
               pending={pending}
               onSourceChange={setCustomSource}
               onSubmit={loadCustomRecipe}
@@ -235,7 +286,10 @@ export function BricksPage() {
               onSelect={chooseBrick}
             />
 
-            <RelayInstanceList instances={studio.instances} />
+            <RelayInstanceList
+              instances={studio.instances}
+              relayId={studio.relayId}
+            />
           </div>
 
           <aside className="space-y-4 xl:sticky xl:top-24 xl:self-start">
@@ -243,6 +297,7 @@ export function BricksPage() {
               selected={selected}
               relays={studio.relays}
               form={form}
+              relayConnected={relayConnected}
               variables={variables}
               pending={pending}
               onFormChange={setForm}
@@ -306,7 +361,9 @@ export function BricksPage() {
                   type="submit"
                   variant="outline"
                   className="w-full"
-                  disabled={pending !== null || !form.relayId}
+                  disabled={
+                    pending !== null || !form.relayId || !relayConnected
+                  }
                 >
                   {pending === "network" ? (
                     <LoaderCircle className="animate-spin" />
@@ -329,12 +386,14 @@ export function BricksPage() {
 function CustomRecipeForm({
   source,
   relayId,
+  relayConnected,
   pending,
   onSourceChange,
   onSubmit,
 }: {
   source: string
   relayId: string
+  relayConnected: boolean
   pending: PendingAction
   onSourceChange: (source: string) => void
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => Promise<void>
@@ -357,7 +416,7 @@ function CustomRecipeForm({
       <Button
         type="submit"
         variant="outline"
-        disabled={pending !== null || !relayId}
+        disabled={pending !== null || !relayId || !relayConnected}
       >
         {pending === "recipe" ? (
           <LoaderCircle className="animate-spin" />
@@ -431,7 +490,13 @@ function BrickPicker({
   )
 }
 
-function RelayInstanceList({ instances }: { instances: Array<RelayInstance> }) {
+function RelayInstanceList({
+  instances,
+  relayId,
+}: {
+  instances: Array<RelayInstance>
+  relayId: string | null
+}) {
   return (
     <section className="mt-8 overflow-hidden rounded-2xl border border-border/75 bg-card/35">
       <div className="flex items-center justify-between border-b border-border/70 px-5 py-4">
@@ -454,7 +519,11 @@ function RelayInstanceList({ instances }: { instances: Array<RelayInstance> }) {
             <Link
               key={instance.id}
               to="/$serverId/console"
-              params={{ serverId: instance.shortId }}
+              params={{
+                serverId: relayId
+                  ? relayInstanceRouteId(relayId, instance.shortId)
+                  : instance.shortId,
+              }}
               className="flex items-center gap-3 px-5 py-3 transition-colors outline-none hover:bg-accent/35 focus-visible:bg-accent/45 focus-visible:ring-1 focus-visible:ring-ring/35 focus-visible:ring-inset"
             >
               <ServerTypeIcon
@@ -489,6 +558,7 @@ function BrickDeploymentForm({
   selected,
   relays,
   form,
+  relayConnected,
   variables,
   pending,
   onFormChange,
@@ -498,6 +568,7 @@ function BrickDeploymentForm({
   selected: Brick | null
   relays: Array<PersistedRelay>
   form: DeploymentForm
+  relayConnected: boolean
   variables: Record<string, BrickVariableValue>
   pending: PendingAction
   onFormChange: React.Dispatch<React.SetStateAction<DeploymentForm>>
@@ -597,7 +668,9 @@ function BrickDeploymentForm({
         </label>
         <Button
           className="h-11 w-full"
-          disabled={!selected || pending !== null || !form.relayId}
+          disabled={
+            !selected || pending !== null || !form.relayId || !relayConnected
+          }
         >
           {pending === "deploy" ? (
             <LoaderCircle className="animate-spin" />

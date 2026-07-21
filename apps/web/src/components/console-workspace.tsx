@@ -1,11 +1,7 @@
 import * as React from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import type {
-  RelayConsole,
-  RelayConsoleLevel,
-  RelayConsoleLine,
-} from "@workspace/contracts"
+import type { RelayConsole, RelayConsoleLevel, RelayConsoleLine } from "@workspace/contracts"
 import {
   ArrowDown,
   Check,
@@ -18,6 +14,7 @@ import {
   Search,
   Share2,
   TriangleAlert,
+  WifiOff,
   WrapText,
   X,
 } from "lucide-react"
@@ -36,24 +33,28 @@ import {
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
 
+import {
+  consoleLevels,
+  createConsoleStreamStore,
+  createConsoleUiStore,
+} from "@/components/console/console-stores"
+import type {
+  ConsoleStreamSnapshot,
+  ConsoleStreamStore,
+  ConsoleUiStore,
+} from "@/components/console/console-stores"
 import { openRelayConsoleStream } from "@/lib/relay-console-stream"
 import { redactSensitiveText } from "@/lib/redaction"
-import { relaySnapshotQueryOptions } from "@/lib/query-options"
+import { queryKeys, relaySnapshotQueryOptions } from "@/lib/query-options"
 import { selectInstanceObservedState } from "@/lib/relay-selectors"
 import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
+import { useInstanceRelayConnected } from "@/components/instance-workspace"
 import {
   completeRelayCommand,
   sendRelayCommand,
   uploadLatestLogToMclogs,
 } from "@/server/relay"
 
-const LEVELS: Array<RelayConsoleLevel> = [
-  "info",
-  "warn",
-  "error",
-  "debug",
-  "trace",
-]
 const consoleTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
   minute: "2-digit",
@@ -72,171 +73,6 @@ interface CommandCompletions {
   }>
 }
 
-interface ConsoleFilterSnapshot {
-  levels: Set<RelayConsoleLevel>
-  query: string
-  redactSensitive: boolean
-}
-
-interface ConsoleUiStore {
-  clearSelection: () => void
-  getFilterSnapshot: () => ConsoleFilterSnapshot
-  getLevelsSnapshot: () => Set<RelayConsoleLevel>
-  getLineSelectedSnapshot: (lineId: string) => boolean
-  getQuerySnapshot: () => string
-  getRedactSensitiveSnapshot: () => boolean
-  getSelectedSnapshot: () => Set<string>
-  getSelectedText: () => string
-  getShowTimestampsSnapshot: () => boolean
-  getWrapLinesSnapshot: () => boolean
-  setFilteredLines: (lines: Array<RelayConsoleLine>) => void
-  setQuery: (query: string) => void
-  subscribe: (listener: () => void) => () => void
-  toggleLevel: (level: RelayConsoleLevel | "all") => void
-  toggleLine: (line: RelayConsoleLine, index: number, shift: boolean) => void
-  toggleRedactSensitive: () => void
-  toggleShowTimestamps: () => void
-  toggleWrapLines: () => void
-}
-
-interface ConsoleStreamSnapshot {
-  consoleData: RelayConsole | null
-  loading: boolean
-}
-
-interface ConsoleStreamStore {
-  getHasLinesSnapshot: () => boolean
-  getSnapshot: () => ConsoleStreamSnapshot
-  setSnapshot: (snapshot: ConsoleStreamSnapshot) => void
-  subscribe: (listener: () => void) => () => void
-}
-
-function createConsoleStreamStore(): ConsoleStreamStore {
-  let snapshot: ConsoleStreamSnapshot = { consoleData: null, loading: true }
-  const listeners = new Set<() => void>()
-  return {
-    getHasLinesSnapshot: () => Boolean(snapshot.consoleData?.lines.length),
-    getSnapshot: () => snapshot,
-    setSnapshot: (nextSnapshot) => {
-      if (
-        snapshot.consoleData === nextSnapshot.consoleData &&
-        snapshot.loading === nextSnapshot.loading
-      ) {
-        return
-      }
-      snapshot = nextSnapshot
-      for (const listener of listeners) listener()
-    },
-    subscribe: (listener) => {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
-  }
-}
-
-function createConsoleUiStore(): ConsoleUiStore {
-  let query = ""
-  let levels = new Set(LEVELS)
-  let redactSensitive = true
-  let showTimestamps = false
-  let wrapLines = true
-  let selected = new Set<string>()
-  let filteredLines: Array<RelayConsoleLine> = []
-  let lastSelected: number | null = null
-  let filterSnapshot: ConsoleFilterSnapshot = {
-    levels,
-    query,
-    redactSensitive,
-  }
-  const listeners = new Set<() => void>()
-  const notify = () => {
-    for (const listener of listeners) listener()
-  }
-  const updateFilterSnapshot = () => {
-    filterSnapshot = { levels, query, redactSensitive }
-    notify()
-  }
-
-  return {
-    clearSelection: () => {
-      if (selected.size === 0) return
-      selected = new Set()
-      lastSelected = null
-      notify()
-    },
-    getFilterSnapshot: () => filterSnapshot,
-    getLevelsSnapshot: () => levels,
-    getLineSelectedSnapshot: (lineId) => selected.has(lineId),
-    getQuerySnapshot: () => query,
-    getRedactSensitiveSnapshot: () => redactSensitive,
-    getSelectedSnapshot: () => selected,
-    getSelectedText: () => {
-      const lines: Array<string> = []
-      for (const line of filteredLines) {
-        if (selected.has(line.id)) lines.push(line.text)
-      }
-      return lines.join("\n")
-    },
-    getShowTimestampsSnapshot: () => showTimestamps,
-    getWrapLinesSnapshot: () => wrapLines,
-    setFilteredLines: (lines) => {
-      filteredLines = lines
-    },
-    setQuery: (nextQuery) => {
-      if (query === nextQuery) return
-      query = nextQuery
-      updateFilterSnapshot()
-    },
-    subscribe: (listener) => {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
-    toggleLevel: (level) => {
-      if (level === "all") {
-        levels = new Set(LEVELS)
-      } else if (levels.size === LEVELS.length) {
-        levels = new Set([level])
-      } else {
-        const next = new Set(levels)
-        if (next.has(level) && next.size === 1) levels = new Set(LEVELS)
-        else {
-          if (next.has(level)) next.delete(level)
-          else next.add(level)
-          levels = next
-        }
-      }
-      updateFilterSnapshot()
-    },
-    toggleLine: (line, index, shift) => {
-      const next = new Set(selected)
-      if (shift && lastSelected !== null) {
-        const start = Math.min(lastSelected, index)
-        const end = Math.max(lastSelected, index)
-        for (let cursor = start; cursor <= end; cursor++) {
-          const selectedLine = filteredLines.at(cursor)
-          if (selectedLine) next.add(selectedLine.id)
-        }
-      } else if (next.has(line.id)) next.delete(line.id)
-      else next.add(line.id)
-      selected = next
-      lastSelected = index
-      notify()
-    },
-    toggleRedactSensitive: () => {
-      redactSensitive = !redactSensitive
-      updateFilterSnapshot()
-    },
-    toggleShowTimestamps: () => {
-      showTimestamps = !showTimestamps
-      notify()
-    },
-    toggleWrapLines: () => {
-      wrapLines = !wrapLines
-      notify()
-    },
-  }
-}
-
 export function ConsoleWorkspace({
   instance,
   active,
@@ -250,7 +86,7 @@ export function ConsoleWorkspace({
 }) {
   return (
     <ConsoleWorkspaceSession
-      key={instance.id}
+      key={`${instance.relayId}:${instance.id}`}
       instance={instance}
       active={active}
       canShare={canShare}
@@ -277,6 +113,7 @@ function ConsoleWorkspaceSession({
     <section className="flex min-h-0 flex-1 flex-col bg-card">
       <ConsoleStreamController
         instanceId={instance.id}
+        relayId={instance.relayId}
         streamStore={streamStore}
       />
       <ConsoleToolbar
@@ -296,6 +133,7 @@ function ConsoleWorkspaceSession({
         active={active}
         canWrite={canWrite}
         instance={instance}
+        streamStore={streamStore}
       />
     </section>
   )
@@ -303,20 +141,30 @@ function ConsoleWorkspaceSession({
 
 function ConsoleStreamController({
   instanceId,
+  relayId,
   streamStore,
 }: {
   instanceId: string
+  relayId: string
   streamStore: ConsoleStreamStore
 }) {
-  const snapshot = useRelayConsoleStream(instanceId)
+  const relayConnected = useInstanceRelayConnected()
+  const snapshot = useRelayConsoleStream(relayId, instanceId, relayConnected)
+  const effectiveSnapshot = React.useMemo(
+    () =>
+      relayConnected
+        ? snapshot
+        : { ...snapshot, connection: "unavailable" as const, loading: false },
+    [relayConnected, snapshot]
+  )
   React.useLayoutEffect(
-    () => streamStore.setSnapshot(snapshot),
-    [snapshot, streamStore]
+    () => streamStore.setSnapshot(effectiveSnapshot),
+    [effectiveSnapshot, streamStore]
   )
   return null
 }
 
-function ConsoleLogViewportController({
+const ConsoleLogViewportController = React.memo(function ConsoleLogViewportController({
   active,
   streamStore,
   uiStore,
@@ -325,7 +173,7 @@ function ConsoleLogViewportController({
   streamStore: ConsoleStreamStore
   uiStore: ConsoleUiStore
 }) {
-  const { consoleData, loading } = React.useSyncExternalStore(
+  const { connection, consoleData, loading } = React.useSyncExternalStore(
     streamStore.subscribe,
     streamStore.getSnapshot,
     streamStore.getSnapshot
@@ -360,12 +208,13 @@ function ConsoleLogViewportController({
     <ConsoleLogViewport
       active={active}
       consoleData={consoleData}
+      connection={connection}
       filteredLines={filteredLines}
       loading={loading}
       uiStore={uiStore}
     />
   )
-}
+})
 
 interface ConsoleToolbarProps {
   active: boolean
@@ -438,7 +287,7 @@ function ConsoleLevelMenu({ uiStore }: { uiStore: ConsoleUiStore }) {
     uiStore.getLevelsSnapshot,
     uiStore.getLevelsSnapshot
   )
-  const allLevels = levels.size === LEVELS.length
+  const allLevels = levels.size === consoleLevels.length
   return (
     <Popover>
       <ConsoleTooltip content="Filter Log Level">
@@ -474,7 +323,7 @@ function ConsoleLevelMenu({ uiStore }: { uiStore: ConsoleUiStore }) {
             Console levels
           </p>
           <span className="font-mono text-[9px] text-muted-foreground/75 tabular-nums">
-            {levels.size}/{LEVELS.length}
+            {levels.size}/{consoleLevels.length}
           </span>
         </div>
         <ConsoleLevelFilter
@@ -483,7 +332,7 @@ function ConsoleLevelMenu({ uiStore }: { uiStore: ConsoleUiStore }) {
           onClick={() => uiStore.toggleLevel("all")}
         />
         <div className="my-1 border-t" />
-        {LEVELS.map((level) => (
+        {consoleLevels.map((level) => (
           <ConsoleLevelFilter
             key={level}
             active={levels.has(level)}
@@ -508,6 +357,7 @@ function ConsoleShareButton({
   streamStore: ConsoleStreamStore
   uiStore: ConsoleUiStore
 }) {
+  const relayConnected = useInstanceRelayConnected()
   const [state, setState] = React.useState<
     "idle" | "uploading" | "copied" | "error"
   >("idle")
@@ -523,7 +373,7 @@ function ConsoleShareButton({
     },
     []
   )
-  if (!canShare) return null
+  if (!canShare || !relayConnected) return null
 
   async function handleShare() {
     setState("uploading")
@@ -531,6 +381,7 @@ function ConsoleShareButton({
       const result = await uploadLatestLogToMclogs({
         data: {
           instanceId: instance.id,
+          relayId: instance.relayId,
           implementation: instance.implementation,
           version: instance.version,
           redactSensitive: uiStore.getRedactSensitiveSnapshot(),
@@ -743,6 +594,7 @@ function ConsoleTimestampButton({ uiStore }: { uiStore: ConsoleUiStore }) {
 
 interface ConsoleLogViewportProps {
   active: boolean
+  connection: ConsoleStreamSnapshot["connection"]
   consoleData: RelayConsole | null
   filteredLines: Array<RelayConsoleLine>
   loading: boolean
@@ -751,6 +603,7 @@ interface ConsoleLogViewportProps {
 
 function ConsoleLogViewport({
   active,
+  connection,
   consoleData,
   filteredLines,
   loading,
@@ -872,6 +725,17 @@ function ConsoleLogViewport({
         </div>
       ) : null}
 
+      {connection !== "live" && consoleData ? (
+        <div className="pointer-events-none absolute top-3 left-1/2 z-20 -translate-x-1/2">
+          <div className="flex items-center gap-1.5 border border-amber-400/20 bg-stone-950/90 px-2.5 py-1.5 font-mono text-[9px] text-amber-200 shadow-lg shadow-black/35 backdrop-blur-sm">
+            <WifiOff className="size-3" />
+            {connection === "connecting"
+              ? "RECONNECTING · OUTPUT MAY BE DELAYED"
+              : "LIVE OUTPUT PAUSED · SHOWING LAST RECEIVED LINES"}
+          </div>
+        </div>
+      ) : null}
+
       {loading && !consoleData ? (
         <div className="absolute inset-0 grid place-items-center bg-card/70 backdrop-blur-[2px]">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -880,7 +744,19 @@ function ConsoleLogViewport({
           </div>
         </div>
       ) : null}
-      {!loading && filteredLines.length === 0 ? (
+      {!loading && !consoleData && connection === "unavailable" ? (
+        <div className="absolute inset-0 grid place-items-center text-center">
+          <div className="max-w-xs">
+            <WifiOff className="mx-auto size-5 text-amber-300" />
+            <p className="mt-3 text-sm font-semibold">Console unavailable</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              Unable to connect to Relay. Last received output will appear here
+              when available.
+            </p>
+          </div>
+        </div>
+      ) : null}
+      {!loading && consoleData && filteredLines.length === 0 ? (
         <div className="absolute inset-0 grid place-items-center text-center">
           <div>
             <p className="text-sm font-semibold">No matching output</p>
@@ -960,14 +836,22 @@ const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
   active,
   canWrite,
   instance,
+  streamStore,
 }: {
   active: boolean
   canWrite: boolean
   instance: InstanceWorkspaceInstance
+  streamStore: ConsoleStreamStore
 }) {
+  const connection = React.useSyncExternalStore(
+    streamStore.subscribe,
+    streamStore.getConnectionSnapshot,
+    streamStore.getConnectionSnapshot
+  )
+  const consoleAvailable = connection === "live"
   const selectObservedState = React.useMemo(
-    () => selectInstanceObservedState(instance.id),
-    [instance.id]
+    () => selectInstanceObservedState(instance.id, instance.relayId),
+    [instance.id, instance.relayId]
   )
   const { data: observedState } = useQuery({
     ...relaySnapshotQueryOptions(),
@@ -975,8 +859,9 @@ const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
   })
   const command = useConsoleCommand(
     instance.id,
+    instance.relayId,
     active,
-    observedState === "running"
+    consoleAvailable && observedState === "running"
   )
 
   return (
@@ -1000,9 +885,11 @@ const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
                   onBlur={command.stopCompletions}
                   onKeyDown={command.keyDown}
                   placeholder={
-                    command.running
-                      ? "Send a server command…"
-                      : "Server is offline"
+                    !consoleAvailable
+                      ? "Relay disconnected — commands paused"
+                      : command.running
+                        ? "Send a server command…"
+                        : "Server is offline"
                   }
                   role="combobox"
                   aria-label="Server command"
@@ -1116,6 +1003,7 @@ const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
 
 function useConsoleCommand(
   instanceId: string,
+  relayId: string,
   active: boolean,
   running: boolean
 ) {
@@ -1207,7 +1095,7 @@ function useConsoleCommand(
     })
     try {
       const result = await completeRelayCommand({
-        data: { instanceId, input, cursor },
+        data: { instanceId, relayId, input, cursor },
       })
       if (completionRequest.current !== requestId) return
       if (!result.supported) {
@@ -1370,7 +1258,7 @@ function useConsoleCommand(
     setSending(true)
     try {
       await sendRelayCommand({
-        data: { instanceId, command },
+        data: { instanceId, relayId, command },
       })
       setError(null)
     } catch (cause) {
@@ -1620,19 +1508,56 @@ async function copyToClipboard(value: string) {
   }
 }
 
-function useRelayConsoleStream(instanceId: string) {
-  const [consoleData, setConsoleData] = React.useState<RelayConsole | null>(
-    null
+function useRelayConsoleStream(
+  relayId: string,
+  instanceId: string,
+  relayConnected: boolean
+) {
+  const queryClient = useQueryClient()
+  const consoleDataRef = React.useRef<RelayConsole | null>(
+    queryClient.getQueryData(queryKeys.relay.console(relayId, instanceId)) ??
+      null
   )
-  const [loading, setLoading] = React.useState(true)
+  const [snapshot, setSnapshot] = React.useState<ConsoleStreamSnapshot>(() => ({
+    connection: relayConnected ? "connecting" : "unavailable",
+    consoleData: consoleDataRef.current,
+    loading: !consoleDataRef.current,
+  }))
 
   React.useEffect(() => {
+    if (!relayConnected) {
+      setSnapshot((current) =>
+        updateConsoleStreamSnapshot(current, {
+          connection: "unavailable",
+          loading: false,
+        })
+      )
+      return
+    }
+
     let cancelled = false
     const lifecycle = new AbortController()
     let activeIterator: ReturnType<typeof openRelayConsoleStream> | null = null
     let flushTimer: number | null = null
     const pending: Array<RelayConsoleLine> = []
-    const seen = new Set<string>()
+    const seen = new Set(
+      queryClient
+        .getQueryData<RelayConsole>(
+          queryKeys.relay.console(relayId, instanceId)
+        )
+        ?.lines.map((line) => line.id) ?? []
+    )
+    setSnapshot((current) =>
+      updateConsoleStreamSnapshot(current, {
+        connection: "connecting",
+        loading: !consoleDataRef.current,
+      })
+    )
+
+    function commitSnapshot(patch: Partial<ConsoleStreamSnapshot>) {
+      if (cancelled) return
+      setSnapshot((current) => updateConsoleStreamSnapshot(current, patch))
+    }
 
     function flush() {
       flushTimer = null
@@ -1643,11 +1568,18 @@ function useRelayConsoleStream(instanceId: string) {
         return true
       })
       if (fresh.length === 0) return
-      setConsoleData((current) => ({
+      const current = consoleDataRef.current
+      const next = {
         instanceId,
         lines: [...(current?.lines ?? []), ...fresh].slice(-5_000),
         truncated: Boolean(current?.truncated) || seen.size > 5_000,
-      }))
+      }
+      consoleDataRef.current = next
+      queryClient.setQueryData(
+        queryKeys.relay.console(relayId, instanceId),
+        next
+      )
+      commitSnapshot({ consoleData: next })
     }
 
     function append(line: RelayConsoleLine) {
@@ -1662,23 +1594,36 @@ function useRelayConsoleStream(instanceId: string) {
       let retryDelay = 400
       while (!cancelled) {
         try {
-          const stream = openRelayConsoleStream(instanceId, lifecycle.signal)
+          const stream = openRelayConsoleStream(
+            relayId,
+            instanceId,
+            lifecycle.signal
+          )
           activeIterator = stream
           // Cancellation changes from the effect cleanup while next() awaits.
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           while (!cancelled) {
             const result = await activeIterator.next()
+            // Cleanup can run while the iterator awaits its next event.
+            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+            if (cancelled) break
             if (result.done) throw new Error("Console stream closed")
             if (result.value.type === "ready") {
-              setLoading(false)
-              setConsoleData(
-                (current) =>
-                  current ?? {
-                    instanceId,
-                    lines: [],
-                    truncated: false,
-                  }
+              const nextConsole = consoleDataRef.current ?? {
+                instanceId,
+                lines: [],
+                truncated: false,
+              }
+              consoleDataRef.current = nextConsole
+              queryClient.setQueryData(
+                queryKeys.relay.console(relayId, instanceId),
+                nextConsole
               )
+              commitSnapshot({
+                connection: "live",
+                consoleData: nextConsole,
+                loading: false,
+              })
               retryDelay = 400
             } else {
               append(result.value.line)
@@ -1687,7 +1632,10 @@ function useRelayConsoleStream(instanceId: string) {
         } catch {
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           if (cancelled) break
-          setLoading(false)
+          commitSnapshot({
+            connection: "unavailable",
+            loading: false,
+          })
           await waitForRetry(retryDelay, lifecycle.signal)
           retryDelay = Math.min(retryDelay * 2, 5_000)
         }
@@ -1696,14 +1644,27 @@ function useRelayConsoleStream(instanceId: string) {
 
     void connect()
     return () => {
+      if (flushTimer !== null) window.clearTimeout(flushTimer)
+      flush()
       cancelled = true
       lifecycle.abort()
-      if (flushTimer !== null) window.clearTimeout(flushTimer)
       if (activeIterator) void activeIterator.return(undefined)
     }
-  }, [instanceId])
+  }, [instanceId, queryClient, relayConnected, relayId])
 
-  return { consoleData, loading }
+  return snapshot
+}
+
+function updateConsoleStreamSnapshot(
+  current: ConsoleStreamSnapshot,
+  patch: Partial<ConsoleStreamSnapshot>
+): ConsoleStreamSnapshot {
+  const next = { ...current, ...patch }
+  return current.connection === next.connection &&
+    current.consoleData === next.consoleData &&
+    current.loading === next.loading
+    ? current
+    : next
 }
 
 function waitForRetry(delay: number, signal: AbortSignal): Promise<void> {

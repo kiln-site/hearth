@@ -1,6 +1,6 @@
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import type { RelaySnapshot } from "@workspace/contracts"
+import { useRouterState } from "@tanstack/react-router"
 import {
   Check,
   CircleStop,
@@ -32,12 +32,15 @@ import {
 import { ToolbarSidebarTrigger } from "@/components/global-page-toolbar"
 import {
   queryKeys,
+  relayConnectionQueryOptions,
   relaySnapshotQueryOptions,
   replaceRelaySnapshotInstance,
 } from "@/lib/query-options"
+import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 import {
   selectInstanceObservedState,
   selectInstanceRuntime,
+  selectRelayConnected,
 } from "@/lib/relay-selectors"
 import type {
   InstanceRuntime,
@@ -68,70 +71,112 @@ export interface InstanceWorkspacePermissions {
   shareLogs: boolean
 }
 
-interface InstanceWorkspaceContextValue {
-  fileTreePreferences: {
-    collapsed: boolean
-    width: number | null
-  }
-  instance: InstanceWorkspaceInstance
-  permissions: InstanceWorkspacePermissions
+export interface FileTreePreferences {
+  collapsed: boolean
+  width: number | null
 }
 
-const InstanceWorkspaceContext =
-  React.createContext<InstanceWorkspaceContextValue | null>(null)
+const InstanceIdentityContext =
+  React.createContext<InstanceWorkspaceInstance | null>(null)
+const InstancePermissionsContext =
+  React.createContext<InstanceWorkspacePermissions | null>(null)
+const FileTreePreferencesContext =
+  React.createContext<FileTreePreferences | null>(null)
+const InstanceRelayConnectedContext = React.createContext<boolean | null>(null)
 
-export function useInstanceWorkspace() {
-  const context = React.useContext(InstanceWorkspaceContext)
-  if (!context) {
-    throw new Error(
-      "useInstanceWorkspace must be used within InstanceWorkspace"
-    )
+function useRequiredContext<T>(
+  context: React.Context<T | null>,
+  hookName: string
+): T {
+  const value = React.useContext(context)
+  if (value === null) {
+    throw new Error(`${hookName} must be used within InstanceWorkspace`)
   }
-  return context
+  return value
+}
+
+export function useInstanceIdentity() {
+  return useRequiredContext(InstanceIdentityContext, "useInstanceIdentity")
+}
+
+export function useInstancePermissions() {
+  return useRequiredContext(
+    InstancePermissionsContext,
+    "useInstancePermissions"
+  )
+}
+
+export function useFileTreePreferences() {
+  return useRequiredContext(
+    FileTreePreferencesContext,
+    "useFileTreePreferences"
+  )
+}
+
+export function useInstanceRelayConnected() {
+  return useRequiredContext(
+    InstanceRelayConnectedContext,
+    "useInstanceRelayConnected"
+  )
 }
 
 export function InstanceWorkspace({
   children,
   instance,
-  title,
   fileTreePreferences,
   permissions,
 }: {
   children: React.ReactNode
   instance: InstanceWorkspaceInstance
-  title: "Console" | "Files" | "Info"
-  fileTreePreferences: {
-    collapsed: boolean
-    width: number | null
-  }
+  fileTreePreferences: FileTreePreferences
   permissions: InstanceWorkspacePermissions
 }) {
-  const contextValue = React.useMemo(
-    () => ({
-      fileTreePreferences,
-      instance,
-      permissions,
-    }),
-    [fileTreePreferences, instance, permissions]
-  )
-
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background">
       <InstanceWorkspaceHeader
         instance={instance}
-        title={title}
         canControlPower={permissions.power}
       />
 
       <div
         data-slot="instance-workspace-surface"
-        className="relative mx-2 mt-2 flex min-h-0 flex-1 overflow-hidden border border-border/80 bg-card/30"
+        className="relative mx-2 mt-2 flex min-h-0 flex-1 overflow-hidden border border-border/80 bg-card/30 [contain:paint]"
       >
-        <InstanceWorkspaceContext.Provider value={contextValue}>
-          {children}
-        </InstanceWorkspaceContext.Provider>
+        <InstanceIdentityContext.Provider value={instance}>
+          <InstancePermissionsContext.Provider value={permissions}>
+            <FileTreePreferencesContext.Provider value={fileTreePreferences}>
+              <InstanceRelayConnectionBoundary instance={instance}>
+                {children}
+              </InstanceRelayConnectionBoundary>
+            </FileTreePreferencesContext.Provider>
+          </InstancePermissionsContext.Provider>
+        </InstanceIdentityContext.Provider>
       </div>
     </div>
+  )
+}
+
+function InstanceRelayConnectionBoundary({
+  children,
+  instance,
+}: {
+  children: React.ReactNode
+  instance: InstanceWorkspaceInstance
+}) {
+  const queryClient = useQueryClient()
+  const selectRelayConnection = React.useMemo(
+    () => selectRelayConnected(instance.relayId),
+    [instance.relayId]
+  )
+  const { data: relayConnected = false } = useQuery({
+    ...relayConnectionQueryOptions(queryClient),
+    select: selectRelayConnection,
+  })
+
+  return (
+    <InstanceRelayConnectedContext.Provider value={relayConnected}>
+      {children}
+    </InstanceRelayConnectedContext.Provider>
   )
 }
 
@@ -139,11 +184,9 @@ type ServerAction = "start" | "stop" | "restart" | "kill"
 
 function InstanceWorkspaceHeader({
   instance,
-  title,
   canControlPower,
 }: {
   instance: InstanceWorkspaceInstance
-  title: "Console" | "Files" | "Info"
   canControlPower: boolean
 }) {
   const [error, setError] = React.useState<string | null>(null)
@@ -151,8 +194,11 @@ function InstanceWorkspaceHeader({
   return (
     <header className="shrink-0 border-b bg-background/90 backdrop-blur-xl">
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-3 px-3 py-3 sm:px-5 lg:min-h-20 lg:py-2 xl:grid-cols-[minmax(0,1fr)_39rem_auto] xl:gap-x-5">
-        <InstanceIdentity error={error} instance={instance} title={title} />
-        <LiveResourceMeters instanceId={instance.id} />
+        <InstanceIdentity error={error} instance={instance} />
+        <LiveResourceMeters
+          instanceId={instance.id}
+          relayId={instance.relayId}
+        />
         <InstancePowerControls
           canControlPower={canControlPower}
           instance={instance}
@@ -166,11 +212,9 @@ function InstanceWorkspaceHeader({
 function InstanceIdentity({
   error,
   instance,
-  title,
 }: {
   error: string | null
   instance: InstanceWorkspaceInstance
-  title: "Console" | "Files" | "Info"
 }) {
   const [idCopied, setIdCopied] = React.useState(false)
   const [addressCopied, setAddressCopied] = React.useState(false)
@@ -211,14 +255,14 @@ function InstanceIdentity({
       <div className="min-w-0 flex-1">
         <h1
           className="flex min-w-0 items-baseline gap-1.5 font-heading tracking-[-0.03em]"
-          title={`${instance.name} / ${title}`}
+          title={instance.name}
         >
           <span className="min-w-0 truncate text-lg font-semibold text-foreground sm:text-xl">
             {instance.name}
           </span>
           <span className="shrink-0 text-border">/</span>
           <span className="shrink-0 text-sm font-medium text-muted-foreground sm:text-base">
-            {title}
+            <InstanceRouteTitle />
           </span>
         </h1>
         <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] whitespace-nowrap text-muted-foreground sm:text-xs">
@@ -271,17 +315,31 @@ function InstanceIdentity({
   )
 }
 
+function InstanceRouteTitle() {
+  const title = useRouterState({
+    select: (state) => {
+      const pathname = state.location.pathname
+      if (/\/files(?:\/|$)/.test(pathname)) return "Files"
+      if (pathname.endsWith("/info")) return "Info"
+      return "Console"
+    },
+  })
+  return <>{title}</>
+}
+
 function ServerPowerControls({
   action,
   canControlPower,
   instance,
   onAction,
+  relayConnected,
 }: {
   action: ServerAction | null
   canControlPower: boolean
   instance: Pick<InstanceWorkspaceInstance, "id" | "name"> &
     Pick<InstanceRuntime, "observedState">
   onAction: (action: ServerAction) => Promise<void>
+  relayConnected: boolean
 }) {
   const [serverActionsOpen, setServerActionsOpen] = React.useState(false)
   const [confirmKill, setConfirmKill] = React.useState(false)
@@ -291,8 +349,10 @@ function ServerPowerControls({
   const isStarting = instance.observedState === "starting"
   const isStopping = instance.observedState === "stopping"
   const powerIsOn = isRunning || isStarting
-  const startUnavailable = powerIsOn || isStopping || action !== null
-  const stopUnavailable = !powerIsOn || isStopping || action !== null
+  const startUnavailable =
+    !relayConnected || powerIsOn || isStopping || action !== null
+  const stopUnavailable =
+    !relayConnected || !powerIsOn || isStopping || action !== null
 
   function runAction(nextAction: ServerAction) {
     setServerActionsOpen(false)
@@ -310,7 +370,7 @@ function ServerPowerControls({
             ? "hidden h-9 gap-1.5 !border-red-500/65 !bg-red-600 px-3 text-xs !text-white shadow-none hover:!border-red-400 hover:!bg-red-500 disabled:!border-red-500/35 disabled:!bg-red-600/45 disabled:!text-white/70 md:inline-flex"
             : "hidden h-9 gap-1.5 !border-blue-500/65 !bg-blue-600 px-3 text-xs !text-white shadow-none hover:!border-blue-400 hover:!bg-blue-500 md:inline-flex"
         }
-        disabled={action !== null || isStopping}
+        disabled={!relayConnected || action !== null || isStopping}
         onClick={() => runAction(powerIsOn ? "stop" : "start")}
       >
         {action === "start" || action === "stop" || isStopping ? (
@@ -343,7 +403,7 @@ function ServerPowerControls({
                 size="icon-lg"
                 className="bg-card shadow-none"
                 aria-label="Server actions"
-                disabled={action !== null}
+                disabled={!relayConnected || action !== null}
               >
                 {action !== null ? (
                   <LoaderCircle className="animate-spin" />
@@ -415,14 +475,14 @@ function ServerPowerControls({
               />
               <PowerActionButton
                 description="Gracefully stop and start"
-                disabled={!isRunning}
+                disabled={!relayConnected || !isRunning}
                 icon={<RotateCw className="size-3.5" />}
                 label="Restart"
                 onClick={() => runAction("restart")}
               />
               <PowerActionButton
                 description="Terminate immediately"
-                disabled={!powerIsOn || isStopping}
+                disabled={!relayConnected || !powerIsOn || isStopping}
                 icon={<OctagonX className="size-3.5" />}
                 label="Kill"
                 tone="kill"
@@ -447,17 +507,25 @@ function InstancePowerControls({
 }) {
   const queryClient = useQueryClient()
   const selectObservedState = React.useMemo(
-    () => selectInstanceObservedState(instance.id),
-    [instance.id]
+    () => selectInstanceObservedState(instance.id, instance.relayId),
+    [instance.id, instance.relayId]
   )
   const { data: observedState } = useQuery({
     ...relaySnapshotQueryOptions(),
     select: selectObservedState,
   })
+  const selectRelayConnection = React.useMemo(
+    () => selectRelayConnected(instance.relayId),
+    [instance.relayId]
+  )
+  const { data: relayConnected = false } = useQuery({
+    ...relayConnectionQueryOptions(queryClient),
+    select: selectRelayConnection,
+  })
   const relayActionMutation = useMutation({
     mutationFn: performRelayAction,
     onSuccess: (updated) => {
-      queryClient.setQueryData<RelaySnapshot>(
+      queryClient.setQueryData<RelayFleetSnapshot>(
         queryKeys.relay.snapshot,
         (snapshot) => replaceRelaySnapshotInstance(snapshot, updated)
       )
@@ -468,11 +536,16 @@ function InstancePowerControls({
 
   const handleAction = React.useCallback(
     async (nextAction: ServerAction) => {
+      if (!relayConnected) return
       setAction(nextAction)
       onError(null)
       try {
         await mutateRelayAction({
-          data: { instanceId: instance.id, action: nextAction },
+          data: {
+            instanceId: instance.id,
+            relayId: instance.relayId,
+            action: nextAction,
+          },
         })
       } catch (cause) {
         onError(cause instanceof Error ? cause.message : "Relay action failed")
@@ -480,7 +553,7 @@ function InstancePowerControls({
         setAction(null)
       }
     },
-    [instance.id, mutateRelayAction, onError]
+    [instance.id, instance.relayId, mutateRelayAction, onError, relayConnected]
   )
 
   if (!observedState) {
@@ -501,6 +574,7 @@ function InstancePowerControls({
       canControlPower={canControlPower}
       instance={{ id: instance.id, name: instance.name, observedState }}
       onAction={handleAction}
+      relayConnected={relayConnected}
     />
   )
 }
@@ -594,8 +668,12 @@ interface ResourceHistoryStore {
   subscribe: (listener: () => void) => () => void
 }
 
-function createResourceHistoryStore(instanceId: string): ResourceHistoryStore {
+function createResourceHistoryStore(
+  instanceId: string,
+  relayId: string
+): ResourceHistoryStore {
   let currentInstanceId = instanceId
+  let currentRelayId = relayId
   let points: Array<ResourceHistoryPoint> = []
   const listeners = new Set<() => void>()
 
@@ -603,8 +681,12 @@ function createResourceHistoryStore(instanceId: string): ResourceHistoryStore {
     getSnapshot: () => points,
     record: (instance) => {
       let cleared = false
-      if (currentInstanceId !== instance.id) {
+      if (
+        currentInstanceId !== instance.id ||
+        currentRelayId !== instance.relayId
+      ) {
         currentInstanceId = instance.id
+        currentRelayId = instance.relayId
         points = []
         cleared = true
       }
@@ -645,9 +727,15 @@ function createResourceHistoryStore(instanceId: string): ResourceHistoryStore {
   }
 }
 
-function LiveResourceMeters({ instanceId }: { instanceId: string }) {
+function LiveResourceMeters({
+  instanceId,
+  relayId,
+}: {
+  instanceId: string
+  relayId: string
+}) {
   const [historyStore] = React.useState(() =>
-    createResourceHistoryStore(instanceId)
+    createResourceHistoryStore(instanceId, relayId)
   )
 
   return (
@@ -655,17 +743,22 @@ function LiveResourceMeters({ instanceId }: { instanceId: string }) {
       className="hidden min-w-0 md:col-span-2 md:block xl:col-span-1 xl:col-start-2 xl:row-start-1"
       aria-label="Server resource usage"
     >
-      <ResourceHistoryRecorder instanceId={instanceId} store={historyStore} />
+      <ResourceHistoryRecorder
+        instanceId={instanceId}
+        relayId={relayId}
+        store={historyStore}
+      />
       <div className="grid h-14 min-w-0 grid-cols-[repeat(3,minmax(0,1fr))_minmax(0,1.25fr)_5.5rem] divide-x divide-border/60 border border-border/80 bg-card/40 px-1.5 py-2 xl:grid-cols-[repeat(3,minmax(0,1fr))_minmax(0,1.15fr)_5.75rem]">
         {RESOURCE_IDS.map((resourceId) => (
           <LiveResourceMeter
             key={resourceId}
             instanceId={instanceId}
+            relayId={relayId}
             resourceId={resourceId}
             historyStore={historyStore}
           />
         ))}
-        <InstanceUptimeMeter instanceId={instanceId} />
+        <InstanceUptimeMeter instanceId={instanceId} relayId={relayId} />
       </div>
     </div>
   )
@@ -673,14 +766,16 @@ function LiveResourceMeters({ instanceId }: { instanceId: string }) {
 
 function ResourceHistoryRecorder({
   instanceId,
+  relayId,
   store,
 }: {
   instanceId: string
+  relayId: string
   store: ResourceHistoryStore
 }) {
   const selectRuntime = React.useMemo(
-    () => selectInstanceRuntime(instanceId),
-    [instanceId]
+    () => selectInstanceRuntime(instanceId, relayId),
+    [instanceId, relayId]
   )
   const { data: instance } = useQuery({
     ...relaySnapshotQueryOptions(),
@@ -696,19 +791,23 @@ function ResourceHistoryRecorder({
 
 function LiveResourceMeter({
   instanceId,
+  relayId,
   resourceId,
   historyStore,
 }: {
   instanceId: string
+  relayId: string
   resourceId: ResourceId
   historyStore: ResourceHistoryStore
 }) {
   const selectResource = React.useMemo(
-    () => (snapshot: RelaySnapshot) => {
-      const instance = snapshot.instances.find((item) => item.id === instanceId)
+    () => (snapshot: RelayFleetSnapshot) => {
+      const instance = snapshot.instances.find(
+        (item) => item.id === instanceId && item.relayId === relayId
+      )
       return instance ? resourceItem(instance, resourceId) : null
     },
-    [instanceId, resourceId]
+    [instanceId, relayId, resourceId]
   )
   const { data: resource } = useQuery({
     ...relaySnapshotQueryOptions(),
@@ -749,20 +848,29 @@ function LiveResourceMeter({
   )
 }
 
-function InstanceUptimeMeter({ instanceId }: { instanceId: string }) {
+function InstanceUptimeMeter({
+  instanceId,
+  relayId,
+}: {
+  instanceId: string
+  relayId: string
+}) {
   const selectRuntime = React.useMemo(
-    () => (snapshot: RelaySnapshot) => {
-      const instance = snapshot.instances.find((item) => item.id === instanceId)
+    () => (snapshot: RelayFleetSnapshot) => {
+      const instance = snapshot.instances.find(
+        (item) => item.id === instanceId && item.relayId === relayId
+      )
       return instance
         ? {
             id: instance.id,
             observedState: instance.observedState,
+            relayId: instance.relayId,
             resources: null,
             startedAt: instance.startedAt,
           }
         : null
     },
-    [instanceId]
+    [instanceId, relayId]
   )
   const { data: instance } = useQuery({
     ...relaySnapshotQueryOptions(),

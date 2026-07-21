@@ -13,15 +13,24 @@ export const Route = createFileRoute("/api/console/$instanceId")({
             { status: 401 }
           )
         }
-        const [{ requireRelayPermission }, { resolvePrimaryRelay }] =
+        const relayId = new URL(request.url).searchParams.get("relayId")
+        if (!relayId) {
+          return Response.json(
+            { error: "Relay identifier is required" },
+            { status: 400 }
+          )
+        }
+        const [{ requireRelayPermission }, { listPersistedRelays }] =
           await Promise.all([
             import("@/lib/access-control"),
             import("@/lib/relay-registry"),
           ])
-        const relay = await resolvePrimaryRelay()
+        const relay = (await listPersistedRelays()).find(
+          (item) => item.enabled && item.id === relayId
+        )
         if (!relay) {
           return Response.json(
-            { error: "No active Relay is configured" },
+            { error: "No Relay owns this instance" },
             { status: 503 }
           )
         }

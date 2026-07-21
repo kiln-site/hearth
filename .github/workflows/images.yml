@@ -40,7 +40,8 @@ jobs:
             image: ghcr.io/kiln-site/relay
             dockerfile: apps/relay/Dockerfile
             cache_scope: relay
-            build_args: ""
+            build_args: |
+              SOURCE_COMMIT=${{ github.sha }}
             uses_sentry: false
     uses: ./.github/workflows/reusable-image.yml
     with:

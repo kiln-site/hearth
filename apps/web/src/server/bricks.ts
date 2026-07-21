@@ -42,7 +42,7 @@ export const getBrickStudio = createServerFn({ method: "GET" }).handler(
       throw new Error("Platform administrator access required")
     }
     const relays = await listPersistedRelays()
-    const relay = relays.find((item) => item.isPrimary) ?? relays.at(0)
+    const relay = relays.at(0)
     if (!relay)
       return {
         relays,
@@ -56,6 +56,7 @@ export const getBrickStudio = createServerFn({ method: "GET" }).handler(
         "relay.bricks",
         cachedRelayJsonEffect({
           decode: relayCatalogSchema.parse,
+          fallbackOnError: true,
           path: "/v1/bricks",
           policy: relayCachePolicy.brickCatalog(relay.id),
           relay,
@@ -65,6 +66,7 @@ export const getBrickStudio = createServerFn({ method: "GET" }).handler(
         "relay.snapshot",
         cachedRelayJsonEffect({
           decode: relaySnapshotSchema.parse,
+          fallbackOnError: true,
           path: "/v1/snapshot",
           policy: relayCachePolicy.snapshot(relay.id),
           relay,
@@ -74,6 +76,7 @@ export const getBrickStudio = createServerFn({ method: "GET" }).handler(
         "relay.networking",
         cachedRelayJsonEffect({
           decode: z.union([relayNetworkingSchema, z.null()]).parse,
+          fallbackOnError: true,
           path: "/v1/networking",
           policy: relayCachePolicy.networking(relay.id),
           relay,

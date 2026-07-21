@@ -1,23 +1,10 @@
-import { createFileRoute, redirect } from "@tanstack/react-router"
-
-import { AppSettingsPage } from "@/components/app-settings-page"
-import { pageTitle } from "@/lib/page-title"
-import { getAuthState } from "@/server/auth"
-import { relaysQueryOptions } from "@/lib/query-options"
+import { Outlet, createFileRoute, redirect } from "@tanstack/react-router"
 
 export const Route = createFileRoute("/_app/settings")({
-  beforeLoad: async () => {
-    const { user } = await getAuthState()
-    if (!user?.isDevelopmentBypass && user?.role !== "admin") {
+  beforeLoad: ({ context }) => {
+    if (!context.user.isDevelopmentBypass && context.user.role !== "admin") {
       throw redirect({ to: "/" })
     }
   },
-  loader: ({ context }) =>
-    context.queryClient.ensureQueryData(relaysQueryOptions()),
-  head: () => ({ meta: [{ title: pageTitle("Settings") }] }),
-  component: SettingsRoute,
+  component: Outlet,
 })
-
-function SettingsRoute() {
-  return <AppSettingsPage />
-}
