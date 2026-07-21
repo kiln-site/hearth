@@ -42,7 +42,7 @@ const relayConnectedFormatter = new Intl.DateTimeFormat("en-US", {
   timeStyle: "short",
   timeZone: "UTC",
 })
-const pendingRelayResumeIds = new Set<string>()
+const pendingRelayResumes = new Map<string, Promise<void>>()
 
 export function AppSettingsPage() {
   const { data: relays } = useSuspenseQuery(relaysQueryOptions())
@@ -192,6 +192,7 @@ const RelayRow = React.memo(function RelayRow({
       await removeMutation.mutateAsync({ data: { id: relay.id } })
       dismissToast(relayPausedToastId(relay.id))
       dismissToast(relayResumedToastId(relay.id))
+      dismissToast(relayResumeErrorToastId(relay.id))
       selection.clearIfSelected(relay.id)
     } catch (cause) {
       setError(messageFrom(cause, "Could not remove Relay"))
@@ -404,12 +405,19 @@ const RelayEditor = React.memo(function RelayEditor({
             data: { ...input, id: relay.id, token: token || undefined },
           })
         : await addMutation.mutateAsync({ data: { ...input, token } })
-      setFeedback({
-        tone: saved.lastError ? "error" : "success",
-        message: saved.lastError
-          ? `${saved.name} was saved, but Hearth could not connect.`
-          : `${saved.name} is saved and connected.`,
-      })
+      if (!saved.enabled) {
+        setFeedback({
+          tone: "success",
+          message: `${saved.name} was saved without a connection check because it was paused.`,
+        })
+      } else {
+        setFeedback({
+          tone: saved.lastError ? "error" : "success",
+          message: saved.lastError
+            ? `${saved.name} was saved, but Hearth could not connect.`
+            : `${saved.name} is saved and connected.`,
+        })
+      }
       if (!relay) formRef.current?.reset()
     } catch (cause) {
       setFeedback({
@@ -624,7 +632,14 @@ function Field({
 async function invalidateRelayQueries(queryClient: QueryClient) {
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: queryKeys.relays }),
-    queryClient.invalidateQueries({ queryKey: queryKeys.relay.all }),
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.relay.connection,
+      exact: true,
+    }),
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.relay.snapshot,
+      exact: true,
+    }),
     queryClient.invalidateQueries({ queryKey: queryKeys.bricks }),
     queryClient.invalidateQueries({ queryKey: queryKeys.access.capabilities }),
   ])
@@ -634,7 +649,13 @@ async function pauseRelay(
   queryClient: QueryClient,
   relay: PersistedRelay
 ): Promise<void> {
-  await queryClient.cancelQueries({ queryKey: queryKeys.relay.all })
+  await queryClient.cancelQueries({
+    predicate: ({ queryKey }) =>
+      queryKey[0] === queryKeys.relay.all[0] &&
+      (queryKey[1] === queryKeys.relay.connection[1] ||
+        queryKey[1] === queryKeys.relay.snapshot[1] ||
+        queryKey[1] === relay.id),
+  })
   await setRelayEnabled({ data: { enabled: false, id: relay.id } })
   await invalidateRelayQueries(queryClient)
   dismissToast(relayResumedToastId(relay.id))
@@ -645,23 +666,37 @@ async function resumeRelay(
   queryClient: QueryClient,
   relay: PersistedRelay
 ): Promise<void> {
-  if (pendingRelayResumeIds.has(relay.id)) return
-  pendingRelayResumeIds.add(relay.id)
+  const existing = pendingRelayResumes.get(relay.id)
+  if (existing) return existing
+
+  dismissToast(relayResumeErrorToastId(relay.id))
+  const pending = performRelayResume(queryClient, relay)
+  pendingRelayResumes.set(relay.id, pending)
   try {
-    await setRelayEnabled({ data: { enabled: true, id: relay.id } })
-    await invalidateRelayQueries(queryClient)
-    dismissToast(relayPausedToastId(relay.id))
-    showToast({
-      type: "success",
-      message: <RelayToastTitle name={relay.name} state="resumed" />,
-      id: relayResumedToastId(relay.id),
-      icon: <Play className="size-4 text-emerald-400" />,
-      description: "Hearth has resumed requesting Relay data.",
-      duration: 4_000,
-    })
+    await pending
   } finally {
-    pendingRelayResumeIds.delete(relay.id)
+    if (pendingRelayResumes.get(relay.id) === pending) {
+      pendingRelayResumes.delete(relay.id)
+    }
   }
+}
+
+async function performRelayResume(
+  queryClient: QueryClient,
+  relay: PersistedRelay
+): Promise<void> {
+  await setRelayEnabled({ data: { enabled: true, id: relay.id } })
+  await invalidateRelayQueries(queryClient)
+  dismissToast(relayPausedToastId(relay.id))
+  dismissToast(relayResumeErrorToastId(relay.id))
+  showToast({
+    type: "success",
+    message: <RelayToastTitle name={relay.name} state="resumed" />,
+    id: relayResumedToastId(relay.id),
+    icon: <Play className="size-4 text-emerald-400" />,
+    description: "Hearth has resumed requesting Relay data.",
+    duration: 4_000,
+  })
 }
 
 function showPausedRelayToast(
@@ -685,6 +720,7 @@ function showPausedRelayToast(
             message: (
               <RelayToastTitle name={relay.name} state="could not be resumed" />
             ),
+            id: relayResumeErrorToastId(relay.id),
             description: messageFrom(cause, "Try reconnecting again."),
             duration: 6_000,
           })
@@ -700,6 +736,10 @@ function relayPausedToastId(relayId: string): string {
 
 function relayResumedToastId(relayId: string): string {
   return `relay-resumed:${relayId}`
+}
+
+function relayResumeErrorToastId(relayId: string): string {
+  return `relay-resume-error:${relayId}`
 }
 
 function relayEditorPropsEqual(
