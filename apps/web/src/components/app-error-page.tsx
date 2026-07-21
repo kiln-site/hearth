@@ -26,8 +26,8 @@ export function AppErrorPage({ error, reset }: AppErrorPageProps) {
     <StatusPage
       code="500"
       eyebrow="Unexpected application fault"
-      title="The control plane hit a cold spot."
-      description="Kiln could not finish loading this view. You can retry safely; Relay and game server processes run independently from this page."
+      title="Your Kiln ran out of fuel"
+      description="Hearth could not finish loading this view"
       actions={
         <>
           <Button
@@ -106,8 +106,8 @@ export function AppNotFoundPage() {
     <StatusPage
       code="404"
       eyebrow="Unknown route"
-      title="There’s nothing firing here."
-      description="The address may be stale, or the resource may have moved. Return to the control plane to pick up from a known state."
+      title="There's nothing firing here."
+      description="We can't find the page you're looking for"
       actions={
         <Button asChild>
           <a href="/">
