@@ -8,9 +8,12 @@ import { useNavigate, useRouterState } from "@tanstack/react-router"
 
 import { EmptyServerState } from "@/components/empty-server-state"
 import { InstanceRouteFrame } from "@/components/instance-route-frame"
+import { InstanceWorkspaceShell } from "@/components/instance-workspace"
 import { RelayConnectionNotice } from "@/components/relay-connection-status"
 import { RelayUnavailableState } from "@/components/relay-unavailable-state"
-import { SettingsLayout } from "@/components/settings-layout"
+import { SettingsShell } from "@/components/settings-layout"
+import { GlobalPageToolbar } from "@/components/global-page-toolbar"
+import { WorkspaceFrame } from "@/components/workspace-frame"
 import {
   accessCapabilitiesQueryOptions,
   relayConnectionQueryOptions,
@@ -22,12 +25,9 @@ import {
   selectRouteInstances,
   selectSidebarInstances,
 } from "@/lib/relay-selectors"
-import type {
-  RouteInstance,
-  SidebarInstance,
-} from "@/lib/relay-selectors"
-
-type GlobalSection = "access" | "bricks" | "security" | "settings" | null
+import type { RouteInstance, SidebarInstance } from "@/lib/relay-selectors"
+import { globalSectionFromRouteId } from "@/lib/route-sections"
+import type { GlobalSection } from "@/lib/route-sections"
 
 const emptyInstances: Array<SidebarInstance> = []
 const emptyRouteInstances: Array<RouteInstance> = []
@@ -54,7 +54,7 @@ function RelayConnectionNoticeBoundary() {
     select: selectRouteInstances,
   })
   const activeSection = useRouterState({
-    select: (state) => globalSectionFromPathname(state.location.pathname),
+    select: (state) => globalSectionFromRouteId(state.matches.at(-1)?.routeId),
   })
   const serverId = useRouterState({
     select: (state) =>
@@ -75,17 +75,53 @@ function RelayConnectionNoticeBoundary() {
 
 function AppRouteViewport({ children }: { children: React.ReactNode }) {
   const activeSection = useRouterState({
-    select: (state) => globalSectionFromPathname(state.location.pathname),
+    select: (state) => globalSectionFromRouteId(state.matches.at(-1)?.routeId),
   })
 
-  if (activeSection === "settings") {
-    return <SettingsLayout>{children}</SettingsLayout>
+  if (activeSection) {
+    return (
+      <GlobalRouteFrame section={activeSection}>{children}</GlobalRouteFrame>
+    )
   }
-  if (activeSection) return children
   return <InstanceRouteViewport>{children}</InstanceRouteViewport>
 }
 
-function InstanceRouteViewport({ children }: { children: React.ReactNode }) {
+const GlobalRouteFrame = React.memo(function GlobalRouteFrame({
+  children,
+  section,
+}: {
+  children: React.ReactNode
+  section: Exclude<GlobalSection, null>
+}) {
+  return (
+    <WorkspaceFrame header={<GlobalPageToolbar label={routeLabel(section)} />}>
+      <div
+        data-slot="global-route-content"
+        className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-background/55"
+      >
+        {section === "settings" ? (
+          <SettingsShell>{children}</SettingsShell>
+        ) : (
+          children
+        )}
+      </div>
+    </WorkspaceFrame>
+  )
+})
+
+const InstanceRouteViewport = React.memo(function InstanceRouteViewport({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <InstanceWorkspaceShell>
+      <InstanceRouteBoundary>{children}</InstanceRouteBoundary>
+    </InstanceWorkspaceShell>
+  )
+})
+
+function InstanceRouteBoundary({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient()
   const { data: configured } = useSuspenseQuery({
     ...relayConnectionQueryOptions(queryClient),
@@ -103,7 +139,8 @@ function InstanceRouteViewport({ children }: { children: React.ReactNode }) {
   })
 
   if (!configured) return <RouteEmptyState />
-  if (!snapshotQuery.data) return <div className="min-h-0 flex-1 bg-background" />
+  if (!snapshotQuery.data)
+    return <div className="min-h-0 flex-1 bg-background" />
   if (
     serverId &&
     findRelayInstance(snapshotQuery.data ?? emptyInstances, serverId)
@@ -144,12 +181,9 @@ function RouteEmptyState() {
   )
 }
 
-function globalSectionFromPathname(pathname: string): GlobalSection {
-  if (pathname === "/bricks") return "bricks"
-  if (pathname === "/access") return "access"
-  if (pathname === "/security") return "security"
-  if (pathname === "/settings" || pathname.startsWith("/settings/")) {
-    return "settings"
-  }
-  return null
+function routeLabel(section: Exclude<GlobalSection, null>) {
+  if (section === "bricks") return "Infrastructure / Bricks"
+  if (section === "access") return "Administration / Access"
+  if (section === "security") return "Account / Security"
+  return "Application / Settings"
 }

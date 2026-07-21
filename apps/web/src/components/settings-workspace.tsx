@@ -270,12 +270,6 @@ function InstanceNameForm({
 }
 
 function CopyAddressCard({ instance }: { instance: InstanceSettingsInstance }) {
-  const [copied, setCopied] = React.useState(false)
-  async function copyAddress() {
-    await navigator.clipboard.writeText(instance.connectAddress)
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1800)
-  }
   return (
     <div className="rounded-xl border bg-background/45 p-4">
       <div className="flex items-center gap-2">
@@ -287,6 +281,30 @@ function CopyAddressCard({ instance }: { instance: InstanceSettingsInstance }) {
           ? "Direct UDP endpoint on the Relay node."
           : "Routed through Velocity and the existing CoreDNS wildcard."}
       </p>
+      <CopyAddressControl address={instance.connectAddress} />
+    </div>
+  )
+}
+
+function CopyAddressControl({ address }: { address: string }) {
+  const [copied, setCopied] = React.useState(false)
+  const resetTimer = React.useRef<number | null>(null)
+  React.useEffect(
+    () => () => {
+      if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    },
+    []
+  )
+
+  async function copyAddress() {
+    await navigator.clipboard.writeText(address)
+    setCopied(true)
+    if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    resetTimer.current = window.setTimeout(() => setCopied(false), 1800)
+  }
+
+  return (
+    <>
       <button
         type="button"
         className="group mt-5 flex w-full items-center justify-between rounded-lg border border-primary/25 bg-primary/7 px-3 py-3 text-left transition-[background-color,border-color,box-shadow] outline-none hover:border-primary/40 hover:bg-primary/12 focus-visible:border-ring/70 focus-visible:ring-2 focus-visible:ring-ring/35"
@@ -297,7 +315,7 @@ function CopyAddressCard({ instance }: { instance: InstanceSettingsInstance }) {
             Server address
           </span>
           <span className="mt-1 block font-mono text-sm font-semibold">
-            {instance.connectAddress}
+            {address}
           </span>
         </span>
         <span className="grid size-8 place-items-center rounded-md bg-background/70 text-muted-foreground group-hover:text-foreground">
@@ -311,7 +329,7 @@ function CopyAddressCard({ instance }: { instance: InstanceSettingsInstance }) {
       <p className="mt-3 font-mono text-[9px] text-muted-foreground/75">
         {copied ? "Address copied to clipboard" : "Click to copy"}
       </p>
-    </div>
+    </>
   )
 }
 

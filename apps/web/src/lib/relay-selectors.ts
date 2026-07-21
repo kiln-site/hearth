@@ -19,14 +19,13 @@ export type SidebarInstance = Pick<
   routeId: string
 }
 
+export type SidebarInstanceRoute = Pick<
+  SidebarInstance,
+  "id" | "name" | "routeId" | "shortId"
+>
+
 export type RouteInstance = SidebarInstance & {
   relayStatus: "connected" | "unreachable"
-}
-
-export interface RelaySidebarIdentity {
-  configured: boolean
-  relayCount: number
-  relayName?: string
 }
 
 export type InstanceWorkspaceInstance = Pick<
@@ -91,6 +90,23 @@ export function selectSidebarInstances(
   return snapshot.instances.map(sidebarInstance)
 }
 
+export function selectSidebarInstanceCount(
+  snapshot: RelayFleetSnapshot
+): number {
+  return snapshot.instances.length
+}
+
+export function selectSidebarInstanceRoutes(
+  snapshot: RelayFleetSnapshot
+): Array<SidebarInstanceRoute> {
+  return snapshot.instances.map(({ id, name, routeId, shortId }) => ({
+    id,
+    name,
+    routeId,
+    shortId,
+  }))
+}
+
 export function selectRouteInstances(
   snapshot: RelayFleetSnapshot
 ): Array<RouteInstance> {
@@ -116,14 +132,8 @@ function sidebarInstance(
   }
 }
 
-export function selectRelaySidebarIdentity(
-  connection: RelayConnection
-): RelaySidebarIdentity {
-  return {
-    configured: connection.status !== "unconfigured",
-    relayCount: connection.relays?.length ?? (connection.relay ? 1 : 0),
-    relayName: connection.relay?.name,
-  }
+export function selectRelayConfigured(connection: RelayConnection): boolean {
+  return connection.status !== "unconfigured"
 }
 
 export function selectRelayConnected(relayId: string) {

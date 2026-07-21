@@ -28,7 +28,6 @@ import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
 
-import { GlobalPageToolbar } from "@/components/global-page-toolbar"
 import { ServerTypeIcon } from "@/components/server-type-icon"
 import { updateBrickVariable } from "@/lib/brick-variables"
 import { relayInstanceRouteId } from "@/lib/relay-fleet"
@@ -65,8 +64,7 @@ export function BricksPage() {
   const studioQuery = useQuery(brickStudioQueryOptions())
   if (!studioQuery.data) {
     return (
-      <main className="h-full min-h-0 overflow-y-auto bg-background text-foreground">
-        <GlobalPageToolbar label="Infrastructure / Bricks" />
+      <div className="min-h-full bg-background text-foreground">
         <div className="grid min-h-[24rem] place-items-center px-6 text-center">
           <div className="max-w-sm">
             {studioQuery.isPending ? (
@@ -85,7 +83,7 @@ export function BricksPage() {
             </p>
           </div>
         </div>
-      </main>
+      </div>
     )
   }
   return <BrickStudio studio={studioQuery.data} />
@@ -233,9 +231,7 @@ function BrickStudio({ studio }: { studio: Studio }) {
   }
 
   return (
-    <main className="h-full min-h-0 overflow-y-auto bg-background text-foreground">
-      <GlobalPageToolbar label="Infrastructure / Bricks" />
-
+    <div className="min-h-full bg-background text-foreground">
       <div className="mx-auto max-w-7xl border-0 px-5 py-9 lg:px-8">
         <div className="grid gap-7 xl:grid-cols-[minmax(0,1fr)_23rem]">
           <div className="min-w-0">
@@ -379,7 +375,7 @@ function BrickStudio({ studio }: { studio: Studio }) {
           </aside>
         </div>
       </div>
-    </main>
+    </div>
   )
 }
 

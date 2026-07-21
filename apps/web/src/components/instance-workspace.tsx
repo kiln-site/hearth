@@ -1,5 +1,10 @@
 import * as React from "react"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  useSuspenseQuery,
+} from "@tanstack/react-query"
 import { useRouterState } from "@tanstack/react-router"
 import {
   Check,
@@ -30,7 +35,10 @@ import {
 } from "@workspace/ui/components/tooltip"
 
 import { ToolbarSidebarTrigger } from "@/components/global-page-toolbar"
+import { WorkspaceFrame } from "@/components/workspace-frame"
+import { roleHasPermission } from "@/lib/permissions"
 import {
+  accessCapabilitiesQueryOptions,
   queryKeys,
   relayConnectionQueryOptions,
   relaySnapshotQueryOptions,
@@ -40,6 +48,7 @@ import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 import {
   selectInstanceObservedState,
   selectInstanceRuntime,
+  selectInstanceWorkspaceInstance,
   selectRelayConnected,
 } from "@/lib/relay-selectors"
 import type {
@@ -132,29 +141,29 @@ export function InstanceWorkspace({
   permissions: InstanceWorkspacePermissions
 }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-background">
-      <InstanceWorkspaceHeader
-        instance={instance}
-        canControlPower={permissions.power}
-      />
-
-      <div
-        data-slot="instance-workspace-surface"
-        className="relative mx-2 mt-2 flex min-h-0 flex-1 overflow-hidden border border-border/80 bg-card/30 [contain:paint]"
-      >
-        <InstanceIdentityContext.Provider value={instance}>
-          <InstancePermissionsContext.Provider value={permissions}>
-            <FileTreePreferencesContext.Provider value={fileTreePreferences}>
-              <InstanceRelayConnectionBoundary instance={instance}>
-                {children}
-              </InstanceRelayConnectionBoundary>
-            </FileTreePreferencesContext.Provider>
-          </InstancePermissionsContext.Provider>
-        </InstanceIdentityContext.Provider>
-      </div>
-    </div>
+    <InstanceIdentityContext.Provider value={instance}>
+      <InstancePermissionsContext.Provider value={permissions}>
+        <FileTreePreferencesContext.Provider value={fileTreePreferences}>
+          <InstanceRelayConnectionBoundary instance={instance}>
+            {children}
+          </InstanceRelayConnectionBoundary>
+        </FileTreePreferencesContext.Provider>
+      </InstancePermissionsContext.Provider>
+    </InstanceIdentityContext.Provider>
   )
 }
+
+export const InstanceWorkspaceShell = React.memo(
+  function InstanceWorkspaceShell({ children }: { children: React.ReactNode }) {
+    return (
+      <WorkspaceFrame header={<InstanceWorkspaceHeader />}>
+        <div data-slot="instance-workspace-surface" className="contents">
+          {children}
+        </div>
+      </WorkspaceFrame>
+    )
+  }
+)
 
 function InstanceRelayConnectionBoundary({
   children,
@@ -182,30 +191,183 @@ function InstanceRelayConnectionBoundary({
 
 type ServerAction = "start" | "stop" | "restart" | "kill"
 
-function InstanceWorkspaceHeader({
-  instance,
-  canControlPower,
-}: {
-  instance: InstanceWorkspaceInstance
-  canControlPower: boolean
-}) {
+function InstanceWorkspaceHeader() {
   const [error, setError] = React.useState<string | null>(null)
+  const instance = useRouteWorkspaceInstance()
 
   return (
     <header className="shrink-0 border-b bg-background/90 backdrop-blur-xl">
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-3 px-3 py-3 sm:px-5 lg:min-h-20 lg:py-2 xl:grid-cols-[minmax(0,1fr)_39rem_auto] xl:gap-x-5">
-        <InstanceIdentity error={error} instance={instance} />
-        <LiveResourceMeters
-          instanceId={instance.id}
-          relayId={instance.relayId}
-        />
-        <InstancePowerControls
-          canControlPower={canControlPower}
-          instance={instance}
-          onError={setError}
-        />
+        <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-2">
+          <ToolbarSidebarTrigger />
+          <span className="h-6 w-px shrink-0 bg-border/80" aria-hidden="true" />
+          <InstanceIdentityBoundary error={error} instance={instance} />
+        </div>
+        <LiveResourceMetersBoundary instance={instance} />
+        <InstancePowerControlsBoundary instance={instance} onError={setError} />
       </div>
     </header>
+  )
+}
+
+function useRouteWorkspaceInstance() {
+  const serverId = useRouterState({
+    select: (state) => {
+      const params = state.matches.at(-1)?.params
+      return params &&
+        "serverId" in params &&
+        typeof params.serverId === "string"
+        ? params.serverId
+        : undefined
+    },
+  })
+  const selectInstance = React.useMemo(
+    () => selectInstanceWorkspaceInstance(serverId ?? ""),
+    [serverId]
+  )
+  const { data: instance } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectInstance,
+  })
+  return instance
+}
+
+const InstanceIdentityBoundary = React.memo(function InstanceIdentityBoundary({
+  error,
+  instance,
+}: {
+  error: string | null
+  instance: InstanceWorkspaceInstance | null | undefined
+}) {
+  return instance ? (
+    <InstanceIdentity
+      key={`${instance.relayId}:${instance.id}`}
+      error={error}
+      instance={instance}
+    />
+  ) : null
+})
+
+const LiveResourceMetersBoundary = React.memo(
+  function LiveResourceMetersBoundary({
+    instance,
+  }: {
+    instance: InstanceWorkspaceInstance | null | undefined
+  }) {
+    return instance ? (
+      <LiveResourceMeters instanceId={instance.id} relayId={instance.relayId} />
+    ) : null
+  }
+)
+
+const InstancePowerControlsBoundary = React.memo(
+  function InstancePowerControlsBoundary({
+    instance,
+    onError,
+  }: {
+    instance: InstanceWorkspaceInstance | null | undefined
+    onError: (error: string | null) => void
+  }) {
+    const { data: capabilities } = useSuspenseQuery(
+      accessCapabilitiesQueryOptions()
+    )
+    const canControlPower = React.useMemo(() => {
+      if (!instance) return false
+      return (
+        capabilities.isPlatformAdmin ||
+        capabilities.grants.some(
+          (grant) =>
+            roleHasPermission(grant.role, "instance.power") &&
+            grant.relayId === instance.relayId &&
+            (grant.resourceType === "relay"
+              ? grant.resourceId === instance.relayId
+              : grant.resourceId === instance.id)
+        )
+      )
+    }, [capabilities.grants, capabilities.isPlatformAdmin, instance])
+
+    return instance ? (
+      <InstancePowerControls
+        canControlPower={canControlPower}
+        instance={instance}
+        onError={onError}
+      />
+    ) : null
+  }
+)
+
+function useCopyFeedback(value: string) {
+  const [copied, setCopied] = React.useState(false)
+  const resetTimer = React.useRef<number | null>(null)
+  React.useEffect(
+    () => () => {
+      if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    },
+    []
+  )
+
+  async function copy() {
+    await copyToClipboard(value)
+    setCopied(true)
+    if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    resetTimer.current = window.setTimeout(() => setCopied(false), 1_800)
+  }
+
+  return { copied, copy }
+}
+
+function InstanceIdCopyButton({
+  id,
+  shortId,
+}: {
+  id: string
+  shortId: string
+}) {
+  const { copied, copy } = useCopyFeedback(id)
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className={`truncate font-mono transition-colors ${copied ? "text-emerald-400" : "hover:text-foreground"}`}
+          aria-label={`Copy full server ID ${id}`}
+          onClick={copy}
+        >
+          {shortId}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>
+        {copied ? "Full server ID copied" : "Copy full server ID"}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function InstanceAddressCopyButton({ address }: { address: string }) {
+  const { copied, copy } = useCopyFeedback(address)
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className={`hidden min-w-0 items-center gap-1 truncate font-mono transition-colors xl:inline-flex ${copied ? "text-emerald-400" : "text-primary/75 hover:text-primary"}`}
+          aria-label={`Copy server address ${address}`}
+          onClick={copy}
+        >
+          <span className="truncate">{address}</span>
+          {copied ? (
+            <Check className="size-3 shrink-0" />
+          ) : (
+            <Copy className="size-3 shrink-0 opacity-55" />
+          )}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>
+        {copied ? "Address copied" : "Copy server address"}
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -216,101 +378,32 @@ function InstanceIdentity({
   error: string | null
   instance: InstanceWorkspaceInstance
 }) {
-  const [idCopied, setIdCopied] = React.useState(false)
-  const [addressCopied, setAddressCopied] = React.useState(false)
-  const addressCopyTimer = React.useRef<number | null>(null)
-  const idCopyTimer = React.useRef<number | null>(null)
-
-  React.useEffect(
-    () => () => {
-      if (addressCopyTimer.current) {
-        window.clearTimeout(addressCopyTimer.current)
-      }
-      if (idCopyTimer.current) window.clearTimeout(idCopyTimer.current)
-    },
-    []
-  )
-
-  async function copyAddress() {
-    await copyToClipboard(instance.connectAddress)
-    setAddressCopied(true)
-    if (addressCopyTimer.current) window.clearTimeout(addressCopyTimer.current)
-    addressCopyTimer.current = window.setTimeout(
-      () => setAddressCopied(false),
-      1_800
-    )
-  }
-
-  async function copyId() {
-    await copyToClipboard(instance.id)
-    setIdCopied(true)
-    if (idCopyTimer.current) window.clearTimeout(idCopyTimer.current)
-    idCopyTimer.current = window.setTimeout(() => setIdCopied(false), 1_800)
-  }
-
   return (
-    <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-2">
-      <ToolbarSidebarTrigger />
-      <span className="h-6 w-px shrink-0 bg-border/80" aria-hidden="true" />
-      <div className="min-w-0 flex-1">
-        <h1
-          className="flex min-w-0 items-baseline gap-1.5 font-heading tracking-[-0.03em]"
-          title={instance.name}
-        >
-          <span className="min-w-0 truncate text-lg font-semibold text-foreground sm:text-xl">
-            {instance.name}
-          </span>
-          <span className="shrink-0 text-border">/</span>
-          <span className="shrink-0 text-sm font-medium text-muted-foreground sm:text-base">
-            <InstanceRouteTitle />
-          </span>
-        </h1>
-        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] whitespace-nowrap text-muted-foreground sm:text-xs">
-          <span className="shrink-0">
-            {instance.implementation} {instance.version}
-          </span>
-          <span className="text-border">/</span>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                className={`truncate font-mono transition-colors ${idCopied ? "text-emerald-400" : "hover:text-foreground"}`}
-                aria-label={`Copy full server ID ${instance.id}`}
-                onClick={copyId}
-              >
-                {instance.shortId}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>
-              {idCopied ? "Full server ID copied" : "Copy full server ID"}
-            </TooltipContent>
-          </Tooltip>
-          <span className="hidden text-border xl:inline">/</span>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                className={`hidden min-w-0 items-center gap-1 truncate font-mono transition-colors xl:inline-flex ${addressCopied ? "text-emerald-400" : "text-primary/75 hover:text-primary"}`}
-                aria-label={`Copy server address ${instance.connectAddress}`}
-                onClick={copyAddress}
-              >
-                <span className="truncate">{instance.connectAddress}</span>
-                {addressCopied ? (
-                  <Check className="size-3 shrink-0" />
-                ) : (
-                  <Copy className="size-3 shrink-0 opacity-55" />
-                )}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>
-              {addressCopied ? "Address copied" : "Copy server address"}
-            </TooltipContent>
-          </Tooltip>
-        </div>
-        {error ? (
-          <p className="mt-0.5 truncate text-[9px] text-destructive">{error}</p>
-        ) : null}
+    <div className="min-w-0 flex-1">
+      <h1
+        className="flex min-w-0 items-baseline gap-1.5 font-heading tracking-[-0.03em]"
+        title={instance.name}
+      >
+        <span className="min-w-0 truncate text-lg font-semibold text-foreground sm:text-xl">
+          {instance.name}
+        </span>
+        <span className="shrink-0 text-border">/</span>
+        <span className="shrink-0 text-sm font-medium text-muted-foreground sm:text-base">
+          <InstanceRouteTitle />
+        </span>
+      </h1>
+      <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] whitespace-nowrap text-muted-foreground sm:text-xs">
+        <span className="shrink-0">
+          {instance.implementation} {instance.version}
+        </span>
+        <span className="text-border">/</span>
+        <InstanceIdCopyButton id={instance.id} shortId={instance.shortId} />
+        <span className="hidden text-border xl:inline">/</span>
+        <InstanceAddressCopyButton address={instance.connectAddress} />
       </div>
+      {error ? (
+        <p className="mt-0.5 truncate text-[9px] text-destructive">{error}</p>
+      ) : null}
     </div>
   )
 }

@@ -1,7 +1,11 @@
 import * as React from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import type { RelayConsole, RelayConsoleLevel, RelayConsoleLine } from "@workspace/contracts"
+import type {
+  RelayConsole,
+  RelayConsoleLevel,
+  RelayConsoleLine,
+} from "@workspace/contracts"
 import {
   ArrowDown,
   Check,
@@ -164,57 +168,59 @@ function ConsoleStreamController({
   return null
 }
 
-const ConsoleLogViewportController = React.memo(function ConsoleLogViewportController({
-  active,
-  streamStore,
-  uiStore,
-}: {
-  active: boolean
-  streamStore: ConsoleStreamStore
-  uiStore: ConsoleUiStore
-}) {
-  const { connection, consoleData, loading } = React.useSyncExternalStore(
-    streamStore.subscribe,
-    streamStore.getSnapshot,
-    streamStore.getSnapshot
-  )
-  const filters = React.useSyncExternalStore(
-    uiStore.subscribe,
-    uiStore.getFilterSnapshot,
-    uiStore.getFilterSnapshot
-  )
-  const filteredLines = React.useMemo(() => {
-    const normalizedQuery = filters.query.trim().toLowerCase()
-    const filtered: Array<RelayConsoleLine> = []
-    for (const line of consoleData?.lines ?? []) {
-      const text = filters.redactSensitive
-        ? redactSensitiveText(line.text)
-        : line.text
-      if (
-        filters.levels.has(line.level) &&
-        (!normalizedQuery || text.toLowerCase().includes(normalizedQuery))
-      ) {
-        filtered.push({ ...line, text })
+const ConsoleLogViewportController = React.memo(
+  function ConsoleLogViewportController({
+    active,
+    streamStore,
+    uiStore,
+  }: {
+    active: boolean
+    streamStore: ConsoleStreamStore
+    uiStore: ConsoleUiStore
+  }) {
+    const { connection, consoleData, loading } = React.useSyncExternalStore(
+      streamStore.subscribe,
+      streamStore.getSnapshot,
+      streamStore.getSnapshot
+    )
+    const filters = React.useSyncExternalStore(
+      uiStore.subscribe,
+      uiStore.getFilterSnapshot,
+      uiStore.getFilterSnapshot
+    )
+    const filteredLines = React.useMemo(() => {
+      const normalizedQuery = filters.query.trim().toLowerCase()
+      const filtered: Array<RelayConsoleLine> = []
+      for (const line of consoleData?.lines ?? []) {
+        const text = filters.redactSensitive
+          ? redactSensitiveText(line.text)
+          : line.text
+        if (
+          filters.levels.has(line.level) &&
+          (!normalizedQuery || text.toLowerCase().includes(normalizedQuery))
+        ) {
+          filtered.push(text === line.text ? line : { ...line, text })
+        }
       }
-    }
-    return filtered
-  }, [consoleData?.lines, filters])
+      return filtered
+    }, [consoleData?.lines, filters])
 
-  React.useLayoutEffect(() => {
-    uiStore.setFilteredLines(filteredLines)
-  }, [filteredLines, uiStore])
+    React.useLayoutEffect(() => {
+      uiStore.setFilteredLines(filteredLines)
+    }, [filteredLines, uiStore])
 
-  return (
-    <ConsoleLogViewport
-      active={active}
-      consoleData={consoleData}
-      connection={connection}
-      filteredLines={filteredLines}
-      loading={loading}
-      uiStore={uiStore}
-    />
-  )
-})
+    return (
+      <ConsoleLogViewport
+        active={active}
+        consoleData={consoleData}
+        connection={connection}
+        filteredLines={filteredLines}
+        loading={loading}
+        uiStore={uiStore}
+      />
+    )
+  }
+)
 
 interface ConsoleToolbarProps {
   active: boolean
@@ -282,67 +288,120 @@ function ConsoleSearchControl({ uiStore }: { uiStore: ConsoleUiStore }) {
 }
 
 function ConsoleLevelMenu({ uiStore }: { uiStore: ConsoleUiStore }) {
-  const levels = React.useSyncExternalStore(
-    uiStore.subscribe,
-    uiStore.getLevelsSnapshot,
-    uiStore.getLevelsSnapshot
-  )
-  const allLevels = levels.size === consoleLevels.length
   return (
     <Popover>
-      <ConsoleTooltip content="Filter Log Level">
-        <PopoverTrigger asChild>
-          <Button
-            variant={allLevels ? "ghost" : "secondary"}
-            size="icon"
-            className="relative size-9 shrink-0"
-            aria-label={
-              allLevels
-                ? "Filter console levels"
-                : `Filter console levels, ${levels.size} active`
-            }
-          >
-            <ListFilter />
-            {!allLevels ? (
-              <span
-                className="absolute top-1 right-1 size-1.5 bg-primary"
-                aria-hidden="true"
-              />
-            ) : null}
-          </Button>
-        </PopoverTrigger>
-      </ConsoleTooltip>
+      <ConsoleLevelMenuTrigger uiStore={uiStore} />
       <PopoverContent
         align="start"
         side="bottom"
         sideOffset={7}
         className="w-52 p-1"
       >
-        <div className="flex items-center justify-between border-b px-2 py-2">
-          <p className="text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
-            Console levels
-          </p>
-          <span className="font-mono text-[9px] text-muted-foreground/75 tabular-nums">
-            {levels.size}/{consoleLevels.length}
-          </span>
-        </div>
-        <ConsoleLevelFilter
-          active={allLevels}
+        <ConsoleLevelMenuSummary uiStore={uiStore} />
+        <ConsoleLevelFilterAction
           label="All levels"
-          onClick={() => uiStore.toggleLevel("all")}
+          level="all"
+          uiStore={uiStore}
         />
         <div className="my-1 border-t" />
         {consoleLevels.map((level) => (
-          <ConsoleLevelFilter
+          <ConsoleLevelFilterAction
             key={level}
-            active={levels.has(level)}
             level={level}
             label={level}
-            onClick={() => uiStore.toggleLevel(level)}
+            uiStore={uiStore}
           />
         ))}
       </PopoverContent>
     </Popover>
+  )
+}
+
+function useConsoleLevelCount(uiStore: ConsoleUiStore) {
+  const getLevelCountSnapshot = React.useCallback(
+    () => uiStore.getLevelsSnapshot().size,
+    [uiStore]
+  )
+  return React.useSyncExternalStore(
+    uiStore.subscribe,
+    getLevelCountSnapshot,
+    getLevelCountSnapshot
+  )
+}
+
+function ConsoleLevelMenuTrigger({ uiStore }: { uiStore: ConsoleUiStore }) {
+  const levelCount = useConsoleLevelCount(uiStore)
+  const allLevels = levelCount === consoleLevels.length
+
+  return (
+    <ConsoleTooltip content="Filter Log Level">
+      <PopoverTrigger asChild>
+        <Button
+          variant={allLevels ? "ghost" : "secondary"}
+          size="icon"
+          className="relative size-9 shrink-0"
+          aria-label={
+            allLevels
+              ? "Filter console levels"
+              : `Filter console levels, ${levelCount} active`
+          }
+        >
+          <ListFilter />
+          {!allLevels ? (
+            <span
+              className="absolute top-1 right-1 size-1.5 bg-primary"
+              aria-hidden="true"
+            />
+          ) : null}
+        </Button>
+      </PopoverTrigger>
+    </ConsoleTooltip>
+  )
+}
+
+function ConsoleLevelMenuSummary({ uiStore }: { uiStore: ConsoleUiStore }) {
+  const levelCount = useConsoleLevelCount(uiStore)
+
+  return (
+    <div className="flex items-center justify-between border-b px-2 py-2">
+      <p className="text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+        Console levels
+      </p>
+      <span className="font-mono text-[9px] text-muted-foreground/75 tabular-nums">
+        {levelCount}/{consoleLevels.length}
+      </span>
+    </div>
+  )
+}
+
+function ConsoleLevelFilterAction({
+  label,
+  level,
+  uiStore,
+}: {
+  label: string
+  level: RelayConsoleLevel | "all"
+  uiStore: ConsoleUiStore
+}) {
+  const getActiveSnapshot = React.useCallback(() => {
+    const levels = uiStore.getLevelsSnapshot()
+    return level === "all"
+      ? levels.size === consoleLevels.length
+      : levels.has(level)
+  }, [level, uiStore])
+  const active = React.useSyncExternalStore(
+    uiStore.subscribe,
+    getActiveSnapshot,
+    getActiveSnapshot
+  )
+
+  return (
+    <ConsoleLevelFilter
+      active={active}
+      label={label}
+      level={level === "all" ? undefined : level}
+      onClick={() => uiStore.toggleLevel(level)}
+    />
   )
 }
 

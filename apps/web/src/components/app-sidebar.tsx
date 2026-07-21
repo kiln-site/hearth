@@ -12,7 +12,6 @@ import {
   ListTodo,
   LoaderCircle,
   LogOut,
-  Server,
   Settings,
   SlidersHorizontal,
   TerminalSquare,
@@ -22,13 +21,10 @@ import { useMatch, useNavigate, useRouterState } from "@tanstack/react-router"
 
 import { Avatar, AvatarFallback } from "@workspace/ui/components/avatar"
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@workspace/ui/components/dropdown-menu"
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@workspace/ui/components/popover"
 import {
   Sidebar,
   SidebarContent,
@@ -56,17 +52,29 @@ import { authClient } from "@/lib/auth-client"
 import type { AuthenticatedUser } from "@/lib/auth-session"
 import {
   accessCapabilitiesQueryOptions,
-  type RelayConnection,
   relayConnectionQueryOptions,
   relaySnapshotQueryOptions,
 } from "@/lib/query-options"
 import { disableDevelopmentBypass } from "@/server/auth"
 import { findRelayInstance } from "@/lib/relay-selectors"
-import { selectRelaySidebarIdentity, selectSidebarInstances } from "@/lib/relay-selectors"
-import type { SidebarInstance } from "@/lib/relay-selectors"
+import {
+  selectRelayConfigured,
+  selectSidebarInstanceCount,
+  selectSidebarInstanceRoutes,
+  selectSidebarInstances,
+} from "@/lib/relay-selectors"
+import type {
+  SidebarInstance,
+  SidebarInstanceRoute,
+} from "@/lib/relay-selectors"
+import { globalSectionFromRouteId } from "@/lib/route-sections"
+import type { GlobalSection } from "@/lib/route-sections"
+import {
+  selectedInstanceCookieName,
+  uiPreferenceCookieMaxAge,
+} from "@/lib/ui-preference-cookies"
 
 export type InstanceTab = "console" | "files" | "info"
-export type GlobalSection = "access" | "bricks" | "security" | "settings" | null
 
 const instanceItems: Array<{
   title: string
@@ -78,53 +86,57 @@ const instanceItems: Array<{
   { title: "Info", value: "info", icon: SlidersHorizontal },
 ]
 
-const selectedInstanceStorageKey = "kiln:selected-instance-id"
+function persistSelectedInstance(routeId: string) {
+  document.cookie = `${selectedInstanceCookieName}=${routeId}; path=/; max-age=${uiPreferenceCookieMaxAge}; SameSite=Lax`
+}
 
 interface AppSidebarViewProps {
-  instances: Array<SidebarInstance>
+  instanceCount: number
   user: AuthenticatedUser
   canManageAccess: boolean
   isPlatformAdmin: boolean
-  relayCount: number
-  relayName?: string
+  selectedInstanceRouteId: string | null
 }
 
 const emptyInstances: Array<SidebarInstance> = []
+const emptyInstanceRoutes: Array<SidebarInstanceRoute> = []
 
-export function AppSidebar() {
+export function AppSidebar({
+  selectedInstanceRouteId,
+}: {
+  selectedInstanceRouteId: string | null
+}) {
   const queryClient = useQueryClient()
-  const { data: relayIdentity } = useSuspenseQuery({
+  const { data: relayConfigured } = useSuspenseQuery({
     ...relayConnectionQueryOptions(queryClient),
-    select: selectRelaySidebarIdentity,
+    select: selectRelayConfigured,
   })
   const { data: capabilities } = useSuspenseQuery(
     accessCapabilitiesQueryOptions()
   )
-  const { data: instances = emptyInstances } = useQuery({
+  const { data: instanceCount = 0 } = useQuery({
     ...relaySnapshotQueryOptions(),
-    enabled: relayIdentity.configured,
-    select: selectSidebarInstances,
+    enabled: relayConfigured,
+    select: selectSidebarInstanceCount,
   })
 
   return (
     <AppSidebarView
       canManageAccess={capabilities.canManageAccess}
-      instances={instances}
+      instanceCount={instanceCount}
       isPlatformAdmin={capabilities.isPlatformAdmin}
-      relayName={relayIdentity.relayName}
-      relayCount={relayIdentity.relayCount}
+      selectedInstanceRouteId={selectedInstanceRouteId}
       user={capabilities.user}
     />
   )
 }
 
 const AppSidebarView = React.memo(function AppSidebarView({
-  instances,
+  instanceCount,
   user,
   canManageAccess,
   isPlatformAdmin,
-  relayCount,
-  relayName,
+  selectedInstanceRouteId,
 }: AppSidebarViewProps) {
   return (
     <Sidebar collapsible="icon" className="border-sidebar-border/80">
@@ -147,16 +159,16 @@ const AppSidebarView = React.memo(function AppSidebarView({
 
       <SidebarContent>
         <InfrastructureNavigation
-          instances={instances}
+          instanceCount={instanceCount}
           isPlatformAdmin={isPlatformAdmin}
-          relayName={relayName}
-          relayCount={relayCount}
         />
 
-        {instances.length > 0 ? <SidebarSeparator /> : null}
+        {instanceCount > 0 ? <SidebarSeparator /> : null}
 
-        {instances.length > 0 ? (
-          <SelectedInstanceNavigation instances={instances} />
+        {instanceCount > 0 ? (
+          <SelectedInstanceNavigation
+            initialInstanceRouteId={selectedInstanceRouteId}
+          />
         ) : null}
       </SidebarContent>
 
@@ -170,26 +182,12 @@ const AppSidebarView = React.memo(function AppSidebarView({
 })
 
 function InfrastructureNavigation({
-  instances,
+  instanceCount,
   isPlatformAdmin,
-  relayName,
-  relayCount,
 }: {
-  instances: Array<SidebarInstance>
+  instanceCount: number
   isPlatformAdmin: boolean
-  relayName?: string
-  relayCount: number
 }) {
-  const navigate = useNavigate()
-  const activeSection = useRouterState({
-    select: (state) => globalSectionFromPathname(state.location.pathname),
-  })
-  const serverId = useRouterState({
-    select: (state) =>
-      (state.matches.at(-1)?.params as { serverId?: string } | undefined)
-        ?.serverId,
-  })
-  const selectedInstance = findRelayInstance(instances, serverId)
   return (
     <SidebarGroup className="pt-2">
       <SidebarGroupLabel className="text-[10px] tracking-[0.12em] uppercase">
@@ -197,131 +195,87 @@ function InfrastructureNavigation({
       </SidebarGroupLabel>
       <SidebarGroupContent>
         <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip={
-                isPlatformAdmin
-                  ? "Bricks"
-                  : "Brick provisioning is administrator-only"
-              }
-              type="button"
-              isActive={activeSection === "bricks"}
-              aria-disabled={!isPlatformAdmin}
-              tabIndex={isPlatformAdmin ? 0 : -1}
-              className={
-                isPlatformAdmin
-                  ? "data-active:bg-primary/10 data-active:text-primary"
-                  : "text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
-              }
-              onClick={() => {
-                if (isPlatformAdmin) void navigate({ to: "/bricks" })
-              }}
-            >
-              <Boxes />
-              <span>Bricks</span>
-            </SidebarMenuButton>
-            <SidebarMenuBadge className="text-sidebar-foreground/25">
-              {instances.length}
-            </SidebarMenuBadge>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip={
-                isPlatformAdmin
-                  ? "Relays"
-                  : (relayName ?? "Relay configuration is administrator-only")
-              }
-              type="button"
-              isActive={activeSection === "settings"}
-              aria-disabled={!isPlatformAdmin}
-              tabIndex={isPlatformAdmin ? 0 : -1}
-              className={
-                isPlatformAdmin
-                  ? "data-active:bg-primary/10 data-active:text-primary"
-                  : "text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
-              }
-              onClick={() => {
-                if (isPlatformAdmin) void navigate({ to: "/settings/relays" })
-              }}
-            >
-              <Server />
-              <span>Relays</span>
-            </SidebarMenuButton>
-            <RelayStatusBadge
-              relayCount={relayCount}
-              relayId={selectedInstance?.relayId}
-              useFleetStatus={Boolean(activeSection)}
-            />
-          </SidebarMenuItem>
+          <BricksNavigationItem
+            instanceCount={instanceCount}
+            isPlatformAdmin={isPlatformAdmin}
+          />
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
   )
 }
 
-function RelayStatusBadge({
-  relayCount,
-  relayId,
-  useFleetStatus,
+function BricksNavigationItem({
+  instanceCount,
+  isPlatformAdmin,
 }: {
-  relayCount: number
-  relayId?: string
-  useFleetStatus: boolean
+  instanceCount: number
+  isPlatformAdmin: boolean
 }) {
-  const queryClient = useQueryClient()
-  const selectStatus = React.useCallback(
-    (connection: RelayConnection) => {
-      if (useFleetStatus || connection.status !== "connected") {
-        return connection.status
-      }
-      return (
-        connection.relays.find((relay) => relay.id === relayId)?.status ??
-        connection.status
-      )
-    },
-    [relayId, useFleetStatus]
-  )
-  const { data: status } = useSuspenseQuery({
-    ...relayConnectionQueryOptions(queryClient),
-    select: selectStatus,
+  const navigate = useNavigate()
+  const isActive = useRouterState({
+    select: (state) =>
+      globalSectionFromRouteId(state.matches.at(-1)?.routeId) === "bricks",
   })
   return (
-    <SidebarMenuBadge className={relayBadgeTone(status)}>
-      {relayCount}
-    </SidebarMenuBadge>
+    <SidebarMenuItem>
+      <SidebarMenuButton
+        tooltip={
+          isPlatformAdmin
+            ? "Bricks"
+            : "Brick provisioning is administrator-only"
+        }
+        type="button"
+        isActive={isActive}
+        aria-disabled={!isPlatformAdmin}
+        tabIndex={isPlatformAdmin ? 0 : -1}
+        className={
+          isPlatformAdmin
+            ? "data-active:bg-primary/10 data-active:text-primary"
+            : "text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
+        }
+        onClick={() => {
+          if (isPlatformAdmin) void navigate({ to: "/bricks" })
+        }}
+      >
+        <Boxes />
+        <span>Bricks</span>
+      </SidebarMenuButton>
+      <SidebarMenuBadge className="text-sidebar-foreground/25">
+        {instanceCount}
+      </SidebarMenuBadge>
+    </SidebarMenuItem>
   )
 }
 
 function SelectedInstanceNavigation({
-  instances,
+  initialInstanceRouteId,
 }: {
-  instances: Array<SidebarInstance>
+  initialInstanceRouteId: string | null
 }) {
+  const { data: instanceRoutes = emptyInstanceRoutes } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectSidebarInstanceRoutes,
+  })
   const serverId = useRouterState({
     select: (state) =>
       (state.matches.at(-1)?.params as { serverId?: string } | undefined)
         ?.serverId,
   })
-  const [selectedInstanceId, setSelectedInstanceId] = React.useState<
-    string | null
-  >(null)
-  const routeInstance = findRelayInstance(instances, serverId)
-  const rememberedInstance = findRelayInstance(instances, selectedInstanceId)
-  const instance = routeInstance ?? rememberedInstance ?? instances.at(0)
+  const [selectedInstanceRouteId, setSelectedInstanceRouteId] = React.useState(
+    initialInstanceRouteId
+  )
+  const routeInstance = findRelayInstance(instanceRoutes, serverId)
+  const rememberedInstance = findRelayInstance(
+    instanceRoutes,
+    selectedInstanceRouteId
+  )
+  const instance = routeInstance ?? rememberedInstance ?? instanceRoutes.at(0)
 
   const rememberInstance = React.useCallback((instanceId: string) => {
-    setSelectedInstanceId(instanceId)
-    window.localStorage.setItem(selectedInstanceStorageKey, instanceId)
+    setSelectedInstanceRouteId(instanceId)
+    persistSelectedInstance(instanceId)
   }, [])
-
-  React.useEffect(() => {
-    if (serverId) return
-    const storedInstance = findRelayInstance(
-      instances,
-      window.localStorage.getItem(selectedInstanceStorageKey)
-    )
-    if (storedInstance) setSelectedInstanceId(storedInstance.routeId)
-  }, [instances, serverId])
 
   React.useEffect(() => {
     if (routeInstance?.routeId) rememberInstance(routeInstance.routeId)
@@ -329,24 +283,21 @@ function SelectedInstanceNavigation({
 
   return instance ? (
     <InstanceNavigation
-      instance={instance}
-      instances={instances}
+      instanceRouteId={instance.routeId}
       onRememberInstance={rememberInstance}
     />
   ) : null
 }
 
-function InstanceNavigation({
-  instance,
-  instances,
+const InstanceNavigation = React.memo(function InstanceNavigation({
+  instanceRouteId,
   onRememberInstance,
 }: {
-  instance: SidebarInstance
-  instances: Array<SidebarInstance>
+  instanceRouteId: string
   onRememberInstance: (id: string) => void
 }) {
-  const { isMobile } = useSidebar()
   const navigate = useNavigate()
+  const selectedInstanceRouteId = React.useRef(instanceRouteId)
 
   const navigateToTab = React.useCallback(
     (tab: InstanceTab, nextServerId: string, replace = false) => {
@@ -372,6 +323,16 @@ function InstanceNavigation({
     },
     [navigate]
   )
+  const navigateToSelectedTab = React.useCallback(
+    (tab: InstanceTab) => {
+      void navigateToTab(tab, selectedInstanceRouteId.current)
+    },
+    [navigateToTab]
+  )
+
+  React.useEffect(() => {
+    selectedInstanceRouteId.current = instanceRouteId
+  }, [instanceRouteId])
 
   return (
     <SidebarGroup>
@@ -380,93 +341,160 @@ function InstanceNavigation({
       </SidebarGroupLabel>
       <SidebarGroupContent>
         <SidebarMenu>
-          <SidebarMenuItem>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <SidebarMenuButton
-                  size="lg"
-                  tooltip="Switch server"
-                  className={`mb-2 h-auto min-h-13 border border-l-2 border-sidebar-border/80 bg-background/45 py-2 ${statusBorderTone(instance.observedState)} group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:min-h-8 group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:p-2!`}
-                >
-                  <ServerTypeIcon
-                    implementation={instance.implementation}
-                    className="size-4 shrink-0 text-sidebar-foreground/80"
-                    aria-hidden="true"
-                  />
-                  <span className="flex min-w-0 flex-1 flex-col items-start leading-none">
-                    <span className="w-full truncate text-xs font-semibold">
-                      {instance.name}
-                    </span>
-                    <span className="mt-1 truncate font-mono text-[9px] text-sidebar-foreground/60">
-                      {instance.implementation} {instance.version} ·{" "}
-                      {instance.shortId}
-                    </span>
-                  </span>
-                  <ChevronsUpDown className="ml-auto size-3.5! text-sidebar-foreground/60" />
-                </SidebarMenuButton>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                side={isMobile ? "bottom" : "right"}
-                align="start"
-                className="w-64 max-w-[calc(100vw-1rem)]"
-              >
-                <DropdownMenuLabel className="flex items-center justify-between">
-                  <span>Managed servers</span>
-                  <span className="font-mono text-[10px] font-normal text-muted-foreground">
-                    {instances.length} discovered
-                  </span>
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                {instances.map((item) => (
-                  <DropdownMenuItem
-                    key={`${item.relayId}:${item.id}`}
-                    className={`gap-2.5 border-l-2 py-2 ${statusBorderTone(item.observedState)}`}
-                    aria-label={`${item.name}, ${item.implementation} ${item.version}, ${item.observedState}`}
-                    onSelect={() => {
-                      onRememberInstance(item.routeId)
-                      void navigateToTab(
-                        instanceTabFromPathname(window.location.pathname) ??
-                          "console",
-                        item.routeId
-                      )
-                    }}
-                  >
-                    <ServerTypeIcon
-                      implementation={item.implementation}
-                      className="size-4 shrink-0 text-muted-foreground"
-                      aria-hidden="true"
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-xs font-medium">
-                        {item.name}
-                      </span>
-                      <span className="block truncate font-mono text-[9px] text-muted-foreground">
-                        {item.implementation} {item.version} · {item.shortId}
-                      </span>
-                    </span>
-                    {item.id === instance.id &&
-                    item.relayId === instance.relayId ? (
-                      <span className="font-mono text-[9px] text-primary">
-                        ACTIVE
-                      </span>
-                    ) : null}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </SidebarMenuItem>
-          <CanonicalInstanceRoute
-            instanceRouteId={instance.routeId}
-          />
-          <InstanceTabNavigation
-            instanceRouteId={instance.routeId}
+          <ServerSelectorBoundary
+            instanceRouteId={instanceRouteId}
             navigateToTab={navigateToTab}
+            onRememberInstance={onRememberInstance}
           />
+          <CanonicalInstanceRoute instanceRouteId={instanceRouteId} />
+          <InstanceTabNavigation navigateToTab={navigateToSelectedTab} />
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
   )
+})
+
+function ServerSelectorBoundary({
+  instanceRouteId,
+  navigateToTab,
+  onRememberInstance,
+}: {
+  instanceRouteId: string
+  navigateToTab: (tab: InstanceTab, serverId: string) => void
+  onRememberInstance: (id: string) => void
+}) {
+  const { data: instances = emptyInstances } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectSidebarInstances,
+  })
+  const instance = findRelayInstance(instances, instanceRouteId)
+
+  return instance ? (
+    <ServerSelector
+      instance={instance}
+      instances={instances}
+      navigateToTab={navigateToTab}
+      onRememberInstance={onRememberInstance}
+    />
+  ) : null
 }
+
+const ServerSelector = React.memo(function ServerSelector({
+  instance,
+  instances,
+  navigateToTab,
+  onRememberInstance,
+}: {
+  instance: SidebarInstance
+  instances: Array<SidebarInstance>
+  navigateToTab: (tab: InstanceTab, serverId: string) => void
+  onRememberInstance: (id: string) => void
+}) {
+  const { isMobile } = useSidebar()
+  const [open, setOpen] = React.useState(false)
+  const selectInstance = React.useCallback(
+    (routeId: string) => {
+      setOpen(false)
+      onRememberInstance(routeId)
+      navigateToTab(
+        instanceTabFromPathname(window.location.pathname) ?? "console",
+        routeId
+      )
+    },
+    [navigateToTab, onRememberInstance]
+  )
+
+  return (
+    <SidebarMenuItem>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <SidebarMenuButton
+            size="lg"
+            tooltip="Switch server"
+            className={`mb-2 h-auto min-h-13 border border-l-2 border-sidebar-border/80 bg-background/45 py-2 ${statusBorderTone(instance.observedState)} group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:min-h-8 group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:p-2!`}
+          >
+            <ServerTypeIcon
+              implementation={instance.implementation}
+              className="size-4 shrink-0 text-sidebar-foreground/80"
+              aria-hidden="true"
+            />
+            <span className="flex min-w-0 flex-1 flex-col items-start leading-none">
+              <span className="w-full truncate text-xs font-semibold">
+                {instance.name}
+              </span>
+              <span className="mt-1 truncate font-mono text-[9px] text-sidebar-foreground/60">
+                {instance.implementation} {instance.version} ·{" "}
+                {instance.shortId}
+              </span>
+            </span>
+            <ChevronsUpDown className="ml-auto size-3.5! text-sidebar-foreground/60" />
+          </SidebarMenuButton>
+        </PopoverTrigger>
+        <PopoverContent
+          aria-label="Managed servers"
+          side={isMobile ? "bottom" : "right"}
+          align="start"
+          className="w-64 max-w-[calc(100vw-1rem)] p-1"
+        >
+          <div className="flex items-center justify-between px-2 py-1.5 text-sm font-semibold">
+            <span>Managed servers</span>
+            <span className="font-mono text-[10px] font-normal text-muted-foreground">
+              {instances.length} discovered
+            </span>
+          </div>
+          <div className="-mx-1 my-1 h-px bg-border" />
+          <div className="space-y-0.5">
+            {instances.map((item) => (
+              <ServerSelectorItem
+                key={`${item.relayId}:${item.id}`}
+                active={
+                  item.id === instance.id && item.relayId === instance.relayId
+                }
+                item={item}
+                onSelect={selectInstance}
+              />
+            ))}
+          </div>
+        </PopoverContent>
+      </Popover>
+    </SidebarMenuItem>
+  )
+})
+
+const ServerSelectorItem = React.memo(function ServerSelectorItem({
+  active,
+  item,
+  onSelect,
+}: {
+  active: boolean
+  item: SidebarInstance
+  onSelect: (routeId: string) => void
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={`${item.name}, ${item.implementation} ${item.version}, ${item.observedState}`}
+      aria-pressed={active}
+      className={`flex w-full items-center gap-2.5 rounded-md border-l-2 px-1.5 py-2 text-left transition-colors duration-100 outline-none hover:bg-popover-accent hover:text-popover-accent-foreground focus-visible:bg-popover-accent focus-visible:text-popover-accent-foreground ${statusBorderTone(item.observedState)}`}
+      onClick={() => onSelect(item.routeId)}
+    >
+      <ServerTypeIcon
+        implementation={item.implementation}
+        className="size-4 shrink-0 text-muted-foreground"
+        aria-hidden="true"
+      />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-xs font-medium">{item.name}</span>
+        <span className="block truncate font-mono text-[9px] text-muted-foreground">
+          {item.implementation} {item.version} · {item.shortId}
+        </span>
+      </span>
+      {active ? (
+        <span className="font-mono text-[9px] text-primary">ACTIVE</span>
+      ) : null}
+    </button>
+  )
+})
 
 function CanonicalInstanceRoute({
   instanceRouteId,
@@ -511,31 +539,49 @@ function CanonicalInstanceRoute({
   return null
 }
 
-function InstanceTabNavigation({
-  instanceRouteId,
+const InstanceTabNavigation = React.memo(function InstanceTabNavigation({
   navigateToTab,
 }: {
-  instanceRouteId: string
-  navigateToTab: (tab: InstanceTab, serverId: string) => void
+  navigateToTab: (tab: InstanceTab) => void
 }) {
-  const activeTab = useRouterState({
-    select: (state) => instanceTabFromPathname(state.location.pathname),
-  })
   return instanceItems.map((item) => (
-    <SidebarMenuItem key={item.value}>
-      <SidebarMenuButton
-        tooltip={item.title}
-        isActive={activeTab === item.value}
-        type="button"
-        className="data-active:bg-primary/10 data-active:text-primary"
-        onClick={() => navigateToTab(item.value, instanceRouteId)}
-      >
-        <item.icon />
-        <span>{item.title}</span>
-      </SidebarMenuButton>
-    </SidebarMenuItem>
+    <InstanceTabNavigationItem
+      key={item.value}
+      item={item}
+      navigateToTab={navigateToTab}
+    />
   ))
-}
+})
+
+const InstanceTabNavigationItem = React.memo(
+  function InstanceTabNavigationItem({
+    item,
+    navigateToTab,
+  }: {
+    item: (typeof instanceItems)[number]
+    navigateToTab: (tab: InstanceTab) => void
+  }) {
+    const isActive = useRouterState({
+      select: (state) =>
+        instanceTabFromPathname(state.location.pathname) === item.value,
+    })
+
+    return (
+      <SidebarMenuItem>
+        <SidebarMenuButton
+          tooltip={item.title}
+          isActive={isActive}
+          type="button"
+          className="data-active:bg-primary/10 data-active:text-primary"
+          onClick={() => navigateToTab(item.value)}
+        >
+          <item.icon />
+          <span>{item.title}</span>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    )
+  }
+)
 
 function AccountNavigation({
   canManageAccess,
@@ -546,12 +592,7 @@ function AccountNavigation({
   isPlatformAdmin: boolean
   user: AuthenticatedUser
 }) {
-  const navigate = useNavigate()
-  const activeSection = useRouterState({
-    select: (state) => globalSectionFromPathname(state.location.pathname),
-  })
   const { isMobile } = useSidebar()
-  const [signingOut, setSigningOut] = React.useState(false)
   return (
     <SidebarFooter>
       <SidebarMenu>
@@ -580,29 +621,11 @@ function AccountNavigation({
           </SidebarMenuButton>
         </SidebarMenuItem>
         <SidebarMenuItem>
-          {canManageAccess ? (
-            <SidebarMenuButton
-              tooltip="Access"
-              isActive={activeSection === "access"}
-              type="button"
-              onClick={() => void navigate({ to: "/access" })}
-            >
-              <UserRoundCog />
-              <span>Access</span>
-            </SidebarMenuButton>
-          ) : null}
+          {canManageAccess ? <AccessNavigationButton /> : null}
         </SidebarMenuItem>
         {isPlatformAdmin ? (
           <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip="Settings"
-              type="button"
-              isActive={activeSection === "settings"}
-              onClick={() => void navigate({ to: "/settings" })}
-            >
-              <Settings />
-              <span>Settings</span>
-            </SidebarMenuButton>
+            <SettingsNavigationButton />
           </SidebarMenuItem>
         ) : null}
         <SidebarMenuItem>
@@ -623,35 +646,90 @@ function AccountNavigation({
                 {user.isDevelopmentBypass ? "Development bypass" : user.email}
               </span>
             </span>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  className="ml-auto grid size-7 shrink-0 place-items-center text-sidebar-foreground/55 transition-colors group-data-[collapsible=icon]:mx-auto hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring/45 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-45"
-                  aria-label={signingOut ? "Signing out" : "Sign out"}
-                  disabled={signingOut}
-                  onClick={() => {
-                    setSigningOut(true)
-                    void signOut(user.isDevelopmentBypass).catch(() => {
-                      setSigningOut(false)
-                    })
-                  }}
-                >
-                  {signingOut ? (
-                    <LoaderCircle className="size-4 animate-spin" />
-                  ) : (
-                    <LogOut className="size-4" />
-                  )}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right" align="center" hidden={isMobile}>
-                Logout
-              </TooltipContent>
-            </Tooltip>
+            <SignOutButton
+              developmentBypass={user.isDevelopmentBypass}
+              tooltipHidden={isMobile}
+            />
           </div>
         </SidebarMenuItem>
       </SidebarMenu>
     </SidebarFooter>
+  )
+}
+
+function SignOutButton({
+  developmentBypass,
+  tooltipHidden,
+}: {
+  developmentBypass: boolean
+  tooltipHidden: boolean
+}) {
+  const [signingOut, setSigningOut] = React.useState(false)
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className="ml-auto grid size-7 shrink-0 place-items-center text-sidebar-foreground/55 transition-colors group-data-[collapsible=icon]:mx-auto hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring/45 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-45"
+          aria-label={signingOut ? "Signing out" : "Sign out"}
+          disabled={signingOut}
+          onClick={() => {
+            setSigningOut(true)
+            void signOut(developmentBypass).catch(() => {
+              setSigningOut(false)
+            })
+          }}
+        >
+          {signingOut ? (
+            <LoaderCircle className="size-4 animate-spin" />
+          ) : (
+            <LogOut className="size-4" />
+          )}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right" align="center" hidden={tooltipHidden}>
+        Logout
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function AccessNavigationButton() {
+  const navigate = useNavigate()
+  const isActive = useRouterState({
+    select: (state) =>
+      globalSectionFromRouteId(state.matches.at(-1)?.routeId) === "access",
+  })
+  return (
+    <SidebarMenuButton
+      tooltip="Access"
+      isActive={isActive}
+      type="button"
+      onClick={() => void navigate({ to: "/access" })}
+    >
+      <UserRoundCog />
+      <span>Access</span>
+    </SidebarMenuButton>
+  )
+}
+
+function SettingsNavigationButton() {
+  const navigate = useNavigate()
+  const isActive = useRouterState({
+    select: (state) =>
+      globalSectionFromRouteId(state.matches.at(-1)?.routeId) === "settings",
+  })
+  return (
+    <SidebarMenuButton
+      tooltip="Settings"
+      type="button"
+      isActive={isActive}
+      onClick={() => void navigate({ to: "/settings" })}
+    >
+      <Settings />
+      <span>Settings</span>
+    </SidebarMenuButton>
   )
 }
 
@@ -678,14 +756,6 @@ function statusBorderTone(state: SidebarInstance["observedState"]): string {
   }
   if (state === "stopping") return "border-l-amber-400/45"
   return "border-l-muted-foreground/25"
-}
-
-function relayBadgeTone(
-  status: "connected" | "unconfigured" | "unreachable"
-): string {
-  if (status === "connected") return "text-emerald-400"
-  if (status === "unreachable") return "text-amber-400"
-  return "text-sidebar-foreground/35"
 }
 
 function globalSectionFromPathname(pathname: string): GlobalSection {
