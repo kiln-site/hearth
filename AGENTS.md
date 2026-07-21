@@ -4,18 +4,21 @@ Kiln is a fast, approachable, reliable self-hosted game-server platform. Keep
 privileged Docker/filesystem work in Relay; Hearth is the control plane. Favor
 simple operation and existing patterns over new abstractions.
 
-Performance/Speed and UX is always the most important thing to keep in mind for every change you do.
-
-Before changing React UI, routing, providers, polling, queries, or client state,
-read and follow `RENDERING.md`. Do not patch framework internals or use private
-framework fields to solve rendering problems.
+Performance/Speed and UX is always the most important thing to keep in mind for every change you do. Make sure any UI change doesn't cause react to re-render/paint other components. You can use react-scan and react-audit to verify. Avoid patching framework/library internals unless explicitly given permission.
 
 ## Work
 
-- When making big feature changes, Sync `main`, then use a focused branch, and prepare a PR. Otherwise, or when explicitly told, feel free to make minor changes on main, however do not commit to main. Let human do that.
 - Use Vite+ (`vp`) and existing Effect patterns; never edit `.repos/effect`.
-- Keep only critical deterministic tests. Prefer browser validation during
-  development; use Sentry to find production regressions. In your browser, you will already have an authenticated sentry.io page you can use
+- Keep only critical deterministic tests, and been hesitant o creating new tests. Prefer browser validation during development
+- This project uses Sentry.io for error/traces/session replays and more. SENTRY_TRACES_SAMPLE_RATE is set to 100% in local development. Review the sentry-cli skill when debugging
+
+For user-visible or runtime work, use T3 Code's collaborative Preview tools
+against `https://hearth.hearth.orb.local`;
+
+When preparing a PR you can commit breakpoints/checkpoints but limit pushes. We have reviewers auto audit PRs that will run on every push. When you do push, you should wait for their audits and address them. They might not always be perfect, use your jugdgemnt. Never merge the PR as the human will be the final reviewer.
+
+After a successful merge: switch to `main`, pull with `--ff-only`, delete the merged local
+branch, restart `pnpm dev:docker`, and verify the OrbStack URL in T3 Preview.
 
 ## Setup
 
@@ -26,29 +29,6 @@ Copy `.env.hearth.example` to `.env`, fill its required values, and set
 vp install --frozen-lockfile
 pnpm dev:docker
 ```
-
-This source-mounts both Hearth and Relay. Do not validate local work against
-GHCR images.
-
-## Validate
-
-```sh
-vp run -r typecheck
-vp check
-vp run -r test
-vp run -r build
-git diff --exit-code -- apps/web/src/routeTree.gen.ts
-```
-
-For user-visible or runtime work, use T3 Code's collaborative Preview tools
-against `https://hearth.hearth.orb.local`; never substitute localhost or
-`127.0.0.1`. Check the affected flows plus browser console/network failures.
-
-Before a PR, run the full checks and T3 browser pass. Keep pushes minimal and
-audit Greptile, and Macroscope findings until they reports 5/5, or approved and ready to merge.
-
-After merge: switch to `main`, pull with `--ff-only`, delete the merged local
-branch, restart `pnpm dev:docker`, and verify the OrbStack URL in T3 Preview.
 
 # Reference Repos
 
