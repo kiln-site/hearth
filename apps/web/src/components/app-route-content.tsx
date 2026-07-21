@@ -20,6 +20,7 @@ import {
 } from "@/lib/query-options"
 import {
   findRelayInstance,
+  selectRelayConfigured,
   selectRelayConnectionSummary,
   selectSidebarInstances,
 } from "@/lib/relay-selectors"
@@ -85,7 +86,7 @@ function InstanceRouteBoundary({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient()
   const { data: configured } = useSuspenseQuery({
     ...relayConnectionQueryOptions(queryClient),
-    select: (connection) => connection.status !== "unconfigured",
+    select: selectRelayConfigured,
   })
   const snapshotQuery = useQuery({
     ...relaySnapshotQueryOptions(),

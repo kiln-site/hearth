@@ -1,4 +1,10 @@
-import { Cable, CircleAlert, RefreshCw, Settings } from "lucide-react"
+import {
+  Cable,
+  CircleAlert,
+  CirclePause,
+  RefreshCw,
+  Settings,
+} from "lucide-react"
 
 import { Button } from "@workspace/ui/components/button"
 
@@ -15,7 +21,8 @@ export function RelayUnavailableState({
   onRetry: () => void
   onConfigure: () => void
 }) {
-  const configured = connection.status === "unreachable"
+  const paused = connection.status === "paused"
+  const configured = connection.status !== "unconfigured"
   return (
     <main className="relative grid min-h-0 flex-1 place-items-center overflow-hidden bg-background px-5 py-10">
       <div
@@ -35,12 +42,14 @@ export function RelayUnavailableState({
             Control plane status
           </span>
           <span className="font-mono text-[9px] text-amber-400 uppercase">
-            {configured ? "Disconnected" : "Setup required"}
+            {paused ? "Paused" : configured ? "Disconnected" : "Setup required"}
           </span>
         </div>
         <div className="p-6 sm:p-8">
           <div className="grid size-12 place-items-center rounded-xl border border-amber-400/25 bg-amber-400/8 text-amber-300">
-            {configured ? (
+            {paused ? (
+              <CirclePause className="size-5" />
+            ) : configured ? (
               <CircleAlert className="size-5" />
             ) : (
               <Cable className="size-5" />
@@ -50,14 +59,18 @@ export function RelayUnavailableState({
             {configured ? connection.relay.name : "Relay enrollment"}
           </p>
           <h1 className="mt-2 font-heading text-2xl font-semibold tracking-[-0.04em] sm:text-3xl">
-            {configured
-              ? "Hearth is waiting for its Relay"
-              : "Connect your first Relay"}
+            {paused
+              ? "Relay polling is paused"
+              : configured
+                ? "Hearth is waiting for its Relay"
+                : "Connect your first Relay"}
           </h1>
           <p className="mt-3 max-w-md text-sm leading-6 text-muted-foreground">
-            {configured
-              ? "No last-known server data is available in this browser or Hearth's cache. Live navigation will return when the Relay can be reached."
-              : "Hearth is ready. Add a Relay endpoint to discover and operate the game servers on another node."}
+            {paused
+              ? "Hearth will not request live data from paused Relays. Resume a Relay in settings when you are ready to reconnect it."
+              : configured
+                ? "No last-known server data is available in this browser or Hearth's cache. Live navigation will return when the Relay can be reached."
+                : "Hearth is ready. Add a Relay endpoint to discover and operate the game servers on another node."}
           </p>
           <div className="mt-7 flex flex-col gap-2 sm:flex-row">
             {canConfigure ? (
@@ -65,14 +78,17 @@ export function RelayUnavailableState({
                 <Settings /> {configured ? "Review Relay" : "Configure Relay"}
               </Button>
             ) : null}
-            <Button variant="outline" onClick={onRetry}>
-              <RefreshCw /> Check again
-            </Button>
+            {paused ? null : (
+              <Button variant="outline" onClick={onRetry}>
+                <RefreshCw /> Check again
+              </Button>
+            )}
           </div>
         </div>
         <div className="border-t border-border/70 bg-muted/10 px-5 py-3 font-mono text-[9px] leading-4 text-muted-foreground">
-          Hearth checks configured Relays automatically. No page reload is
-          required.
+          {paused
+            ? "Paused Relays remain online; only Hearth's requests are suspended."
+            : "Hearth checks configured Relays automatically. No page reload is required."}
         </div>
       </section>
     </main>

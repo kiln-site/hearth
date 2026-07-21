@@ -196,6 +196,11 @@
 }
 
 .kiln-toaster[data-sonner-toaster]
+  [data-sonner-toast][data-styled="true"][data-type="loading"] {
+  --kiln-toast-accent: var(--primary);
+}
+
+.kiln-toaster[data-sonner-toaster]
   [data-sonner-toast][data-styled="true"]::after {
   position: absolute;
   inset: 0 auto 0 0;

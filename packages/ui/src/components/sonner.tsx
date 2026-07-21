@@ -1,5 +1,10 @@
 import * as React from "react"
-import { Toaster as Sonner, type ToasterProps } from "sonner"
+import {
+  toast as sonnerToast,
+  Toaster as Sonner,
+  type ExternalToast,
+  type ToasterProps,
+} from "sonner"
 import {
   CircleCheckIcon,
   InfoIcon,
@@ -10,6 +15,23 @@ import {
 } from "lucide-react"
 
 import { cn } from "@workspace/ui/lib/utils"
+
+export type AppToastType =
+  | "default"
+  | "error"
+  | "info"
+  | "loading"
+  | "success"
+  | "warning"
+
+export interface ShowToastOptions extends ExternalToast {
+  message: React.ReactNode
+  type?: AppToastType
+}
+
+type ToasterStyle = React.CSSProperties & { "--width": string }
+
+const defaultToasterStyle: ToasterStyle = { "--width": "30rem" }
 
 const Toaster = React.memo(function Toaster({
   className,
@@ -26,7 +48,7 @@ const Toaster = React.memo(function Toaster({
       visibleToasts={4}
       closeButton
       className={cn("kiln-toaster", className)}
-      style={{ "--width": "30rem", ...style } as React.CSSProperties}
+      style={{ ...defaultToasterStyle, ...style }}
       containerAriaLabel="Notifications"
       icons={{
         success: <CircleCheckIcon className="size-4 text-emerald-400" />,
@@ -42,4 +64,28 @@ const Toaster = React.memo(function Toaster({
 })
 
 export { Toaster }
-export { toast } from "sonner"
+
+export function showToast({
+  message,
+  type = "default",
+  ...options
+}: ShowToastOptions): number | string {
+  switch (type) {
+    case "error":
+      return sonnerToast.error(message, options)
+    case "info":
+      return sonnerToast.info(message, options)
+    case "loading":
+      return sonnerToast.loading(message, options)
+    case "success":
+      return sonnerToast.success(message, options)
+    case "warning":
+      return sonnerToast.warning(message, options)
+    default:
+      return sonnerToast(message, options)
+  }
+}
+
+export function dismissToast(id?: number | string): number | string {
+  return sonnerToast.dismiss(id)
+}

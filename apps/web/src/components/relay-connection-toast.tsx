@@ -1,9 +1,9 @@
 import * as React from "react"
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query"
 import { useRouter } from "@tanstack/react-router"
-import { WifiOff } from "lucide-react"
+import { Wifi, WifiOff } from "lucide-react"
 
-import { toast } from "@workspace/ui/components/sonner"
+import { dismissToast, showToast } from "@workspace/ui/components/sonner"
 
 import { relayConnectionQueryOptions } from "@/lib/query-options"
 import type { RelayConnection } from "@/lib/query-options"
@@ -40,7 +40,7 @@ export const RelayConnectionToastMonitor = React.memo(
         cleanupTimer.current = window.setTimeout(() => {
           cleanupTimer.current = undefined
           previousStatuses.current.clear()
-          for (const toastId of activeToastIds.current) toast.dismiss(toastId)
+          for (const toastId of activeToastIds.current) dismissToast(toastId)
           activeToastIds.current.clear()
         }, 0)
       }
@@ -50,14 +50,18 @@ export const RelayConnectionToastMonitor = React.memo(
       const nextStatuses = new Map<string, RelayState["status"]>()
 
       for (const relay of relays) {
-        const toastId = relayToastId(relay.id)
+        const disconnectToastId = relayDisconnectToastId(relay.id)
+        const reconnectToastId = relayReconnectToastId(relay.id)
         const previousStatus = previousStatuses.current.get(relay.id)
         nextStatuses.set(relay.id, relay.status)
 
         if (relay.status === "unreachable" && previousStatus !== relay.status) {
-          activeToastIds.current.add(toastId)
-          toast.warning(`${relay.name} disconnected`, {
-            id: toastId,
+          dismissToast(reconnectToastId)
+          activeToastIds.current.add(disconnectToastId)
+          showToast({
+            type: "warning",
+            message: `${relay.name} disconnected`,
+            id: disconnectToastId,
             icon: <WifiOff className="size-4 text-amber-300" />,
             description: "Hearth will keep trying to reconnect.",
             duration: Infinity,
@@ -70,16 +74,25 @@ export const RelayConnectionToastMonitor = React.memo(
           relay.status === "connected" &&
           previousStatus === "unreachable"
         ) {
-          toast.dismiss(toastId)
-          activeToastIds.current.delete(toastId)
+          dismissToast(disconnectToastId)
+          activeToastIds.current.delete(disconnectToastId)
+          showToast({
+            type: "success",
+            message: `${relay.name} reconnected`,
+            id: reconnectToastId,
+            icon: <Wifi className="size-4 text-emerald-400" />,
+            description: "Hearth is receiving live Relay data again.",
+            duration: 4_000,
+          })
         }
       }
 
       for (const relayId of previousStatuses.current.keys()) {
         if (nextStatuses.has(relayId)) continue
-        const toastId = relayToastId(relayId)
-        toast.dismiss(toastId)
-        activeToastIds.current.delete(toastId)
+        const disconnectToastId = relayDisconnectToastId(relayId)
+        dismissToast(disconnectToastId)
+        dismissToast(relayReconnectToastId(relayId))
+        activeToastIds.current.delete(disconnectToastId)
       }
 
       previousStatuses.current = nextStatuses
@@ -92,11 +105,15 @@ export const RelayConnectionToastMonitor = React.memo(
 function selectRelayStates(
   connection: RelayConnection
 ): ReadonlyArray<RelayState> {
-  return connection.status === "unconfigured"
+  return connection.status === "unconfigured" || connection.status === "paused"
     ? emptyRelayStates
     : connection.relays
 }
 
-function relayToastId(relayId: string): string {
+function relayDisconnectToastId(relayId: string): string {
   return `relay-disconnected:${relayId}`
+}
+
+function relayReconnectToastId(relayId: string): string {
+  return `relay-reconnected:${relayId}`
 }
