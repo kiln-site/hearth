@@ -168,7 +168,8 @@
     var(--border)
   );
   border-radius: 0;
-  background: color-mix(in oklab, var(--popover) 94%, transparent);
+  background: color-mix(in oklab, var(--popover) 90%, transparent);
+  backdrop-filter: blur(6px);
   color: var(--popover-foreground);
   box-shadow:
     0 1px 0 oklch(1 0 0 / 0.035) inset,
