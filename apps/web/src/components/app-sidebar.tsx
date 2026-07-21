@@ -59,9 +59,14 @@ import { disableDevelopmentBypass } from "@/server/auth"
 import { findRelayInstance } from "@/lib/relay-selectors"
 import {
   selectRelayConfigured,
+  selectSidebarInstanceCount,
+  selectSidebarInstanceRoutes,
   selectSidebarInstances,
 } from "@/lib/relay-selectors"
-import type { SidebarInstance } from "@/lib/relay-selectors"
+import type {
+  SidebarInstance,
+  SidebarInstanceRoute,
+} from "@/lib/relay-selectors"
 
 export type InstanceTab = "console" | "files" | "info"
 export type GlobalSection = "access" | "bricks" | "security" | "settings" | null
@@ -95,13 +100,14 @@ function selectedInstanceServerSnapshot() {
 }
 
 interface AppSidebarViewProps {
-  instances: Array<SidebarInstance>
+  instanceCount: number
   user: AuthenticatedUser
   canManageAccess: boolean
   isPlatformAdmin: boolean
 }
 
 const emptyInstances: Array<SidebarInstance> = []
+const emptyInstanceRoutes: Array<SidebarInstanceRoute> = []
 
 export function AppSidebar() {
   const queryClient = useQueryClient()
@@ -112,16 +118,16 @@ export function AppSidebar() {
   const { data: capabilities } = useSuspenseQuery(
     accessCapabilitiesQueryOptions()
   )
-  const { data: instances = emptyInstances } = useQuery({
+  const { data: instanceCount = 0 } = useQuery({
     ...relaySnapshotQueryOptions(),
     enabled: relayConfigured,
-    select: selectSidebarInstances,
+    select: selectSidebarInstanceCount,
   })
 
   return (
     <AppSidebarView
       canManageAccess={capabilities.canManageAccess}
-      instances={instances}
+      instanceCount={instanceCount}
       isPlatformAdmin={capabilities.isPlatformAdmin}
       user={capabilities.user}
     />
@@ -129,7 +135,7 @@ export function AppSidebar() {
 }
 
 const AppSidebarView = React.memo(function AppSidebarView({
-  instances,
+  instanceCount,
   user,
   canManageAccess,
   isPlatformAdmin,
@@ -155,15 +161,13 @@ const AppSidebarView = React.memo(function AppSidebarView({
 
       <SidebarContent>
         <InfrastructureNavigation
-          instances={instances}
+          instanceCount={instanceCount}
           isPlatformAdmin={isPlatformAdmin}
         />
 
-        {instances.length > 0 ? <SidebarSeparator /> : null}
+        {instanceCount > 0 ? <SidebarSeparator /> : null}
 
-        {instances.length > 0 ? (
-          <SelectedInstanceNavigation instances={instances} />
-        ) : null}
+        {instanceCount > 0 ? <SelectedInstanceNavigation /> : null}
       </SidebarContent>
 
       <AccountNavigation
@@ -176,10 +180,10 @@ const AppSidebarView = React.memo(function AppSidebarView({
 })
 
 function InfrastructureNavigation({
-  instances,
+  instanceCount,
   isPlatformAdmin,
 }: {
-  instances: Array<SidebarInstance>
+  instanceCount: number
   isPlatformAdmin: boolean
 }) {
   return (
@@ -190,7 +194,7 @@ function InfrastructureNavigation({
       <SidebarGroupContent>
         <SidebarMenu>
           <BricksNavigationItem
-            instanceCount={instances.length}
+            instanceCount={instanceCount}
             isPlatformAdmin={isPlatformAdmin}
           />
         </SidebarMenu>
@@ -241,11 +245,11 @@ function BricksNavigationItem({
   )
 }
 
-function SelectedInstanceNavigation({
-  instances,
-}: {
-  instances: Array<SidebarInstance>
-}) {
+function SelectedInstanceNavigation() {
+  const { data: instanceRoutes = emptyInstanceRoutes } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectSidebarInstanceRoutes,
+  })
   const serverId = useRouterState({
     select: (state) =>
       (state.matches.at(-1)?.params as { serverId?: string } | undefined)
@@ -256,9 +260,12 @@ function SelectedInstanceNavigation({
     selectedInstanceStorageSnapshot,
     selectedInstanceServerSnapshot
   )
-  const routeInstance = findRelayInstance(instances, serverId)
-  const rememberedInstance = findRelayInstance(instances, selectedInstanceId)
-  const instance = routeInstance ?? rememberedInstance ?? instances.at(0)
+  const routeInstance = findRelayInstance(instanceRoutes, serverId)
+  const rememberedInstance = findRelayInstance(
+    instanceRoutes,
+    selectedInstanceId
+  )
+  const instance = routeInstance ?? rememberedInstance ?? instanceRoutes.at(0)
 
   const rememberInstance = React.useCallback((instanceId: string) => {
     window.localStorage.setItem(selectedInstanceStorageKey, instanceId)
@@ -270,24 +277,21 @@ function SelectedInstanceNavigation({
 
   return instance ? (
     <InstanceNavigation
-      instance={instance}
-      instances={instances}
+      instanceRouteId={instance.routeId}
       onRememberInstance={rememberInstance}
     />
   ) : null
 }
 
 const InstanceNavigation = React.memo(function InstanceNavigation({
-  instance,
-  instances,
+  instanceRouteId,
   onRememberInstance,
 }: {
-  instance: SidebarInstance
-  instances: Array<SidebarInstance>
+  instanceRouteId: string
   onRememberInstance: (id: string) => void
 }) {
   const navigate = useNavigate()
-  const selectedInstanceRouteId = React.useRef(instance.routeId)
+  const selectedInstanceRouteId = React.useRef(instanceRouteId)
 
   const navigateToTab = React.useCallback(
     (tab: InstanceTab, nextServerId: string, replace = false) => {
@@ -321,8 +325,8 @@ const InstanceNavigation = React.memo(function InstanceNavigation({
   )
 
   React.useEffect(() => {
-    selectedInstanceRouteId.current = instance.routeId
-  }, [instance.routeId])
+    selectedInstanceRouteId.current = instanceRouteId
+  }, [instanceRouteId])
 
   return (
     <SidebarGroup>
@@ -331,19 +335,43 @@ const InstanceNavigation = React.memo(function InstanceNavigation({
       </SidebarGroupLabel>
       <SidebarGroupContent>
         <SidebarMenu>
-          <ServerSelector
-            instance={instance}
-            instances={instances}
+          <ServerSelectorBoundary
+            instanceRouteId={instanceRouteId}
             navigateToTab={navigateToTab}
             onRememberInstance={onRememberInstance}
           />
-          <CanonicalInstanceRoute instanceRouteId={instance.routeId} />
+          <CanonicalInstanceRoute instanceRouteId={instanceRouteId} />
           <InstanceTabNavigation navigateToTab={navigateToSelectedTab} />
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
   )
 })
+
+function ServerSelectorBoundary({
+  instanceRouteId,
+  navigateToTab,
+  onRememberInstance,
+}: {
+  instanceRouteId: string
+  navigateToTab: (tab: InstanceTab, serverId: string) => void
+  onRememberInstance: (id: string) => void
+}) {
+  const { data: instances = emptyInstances } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectSidebarInstances,
+  })
+  const instance = findRelayInstance(instances, instanceRouteId)
+
+  return instance ? (
+    <ServerSelector
+      instance={instance}
+      instances={instances}
+      navigateToTab={navigateToTab}
+      onRememberInstance={onRememberInstance}
+    />
+  ) : null
+}
 
 const ServerSelector = React.memo(function ServerSelector({
   instance,

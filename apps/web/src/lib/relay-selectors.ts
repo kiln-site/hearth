@@ -19,6 +19,11 @@ export type SidebarInstance = Pick<
   routeId: string
 }
 
+export type SidebarInstanceRoute = Pick<
+  SidebarInstance,
+  "id" | "name" | "routeId" | "shortId"
+>
+
 export type RouteInstance = SidebarInstance & {
   relayStatus: "connected" | "unreachable"
 }
@@ -83,6 +88,23 @@ export function selectSidebarInstances(
   snapshot: RelayFleetSnapshot
 ): Array<SidebarInstance> {
   return snapshot.instances.map(sidebarInstance)
+}
+
+export function selectSidebarInstanceCount(
+  snapshot: RelayFleetSnapshot
+): number {
+  return snapshot.instances.length
+}
+
+export function selectSidebarInstanceRoutes(
+  snapshot: RelayFleetSnapshot
+): Array<SidebarInstanceRoute> {
+  return snapshot.instances.map(({ id, name, routeId, shortId }) => ({
+    id,
+    name,
+    routeId,
+    shortId,
+  }))
 }
 
 export function selectRouteInstances(
