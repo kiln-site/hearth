@@ -52,7 +52,7 @@ import { redactSensitiveText } from "@/lib/redaction"
 import { queryKeys, relaySnapshotQueryOptions } from "@/lib/query-options"
 import { selectInstanceObservedState } from "@/lib/relay-selectors"
 import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
-import { useInstanceRelayConnected } from "@/components/instance-workspace"
+import { useInstanceRelayConnected } from "@/components/instance-workspace-context"
 import {
   completeRelayCommand,
   sendRelayCommand,
@@ -790,7 +790,7 @@ function ConsoleLogViewport({
             <WifiOff className="size-3" />
             {connection === "connecting"
               ? "RECONNECTING · OUTPUT MAY BE DELAYED"
-              : "LIVE OUTPUT PAUSED · SHOWING LAST RECEIVED LINES"}
+              : "LIVE OUTPUT PAUSED"}
           </div>
         </div>
       ) : null}
@@ -809,8 +809,7 @@ function ConsoleLogViewport({
             <WifiOff className="mx-auto size-5 text-amber-300" />
             <p className="mt-3 text-sm font-semibold">Console unavailable</p>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              Unable to connect to Relay. Last received output will appear here
-              when available.
+              Unable to connect to Relay
             </p>
           </div>
         </div>

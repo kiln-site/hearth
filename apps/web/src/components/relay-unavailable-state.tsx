@@ -60,9 +60,9 @@ export function RelayUnavailableState({
           </p>
           <h1 className="mt-2 font-heading text-2xl font-semibold tracking-[-0.04em] sm:text-3xl">
             {paused
-              ? "Relay polling is paused"
+              ? "All Relays are paused"
               : configured
-                ? "Hearth is waiting for its Relay"
+                ? "Kiln is attempting to connect to your Relay(s)..."
                 : "Connect your first Relay"}
           </h1>
           <p className="mt-3 max-w-md text-sm leading-6 text-muted-foreground">

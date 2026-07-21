@@ -35,6 +35,16 @@ import {
 } from "@workspace/ui/components/tooltip"
 
 import { ToolbarSidebarTrigger } from "@/components/global-page-toolbar"
+import {
+  FileTreePreferencesContext,
+  InstanceIdentityContext,
+  InstancePermissionsContext,
+  InstanceRelayConnectedContext,
+} from "@/components/instance-workspace-context"
+import type {
+  FileTreePreferences,
+  InstanceWorkspacePermissions,
+} from "@/components/instance-workspace-context"
 import { WorkspaceFrame } from "@/components/workspace-frame"
 import { roleHasPermission } from "@/lib/permissions"
 import {
@@ -70,63 +80,6 @@ function clampResourcePercent(value: number | null | undefined): number {
   return value === null || value === undefined
     ? 0
     : Math.max(1, Math.min(value, 100))
-}
-
-export interface InstanceWorkspacePermissions {
-  consoleWrite: boolean
-  filesWrite: boolean
-  power: boolean
-  settings: boolean
-  shareLogs: boolean
-}
-
-export interface FileTreePreferences {
-  collapsed: boolean
-  width: number | null
-}
-
-const InstanceIdentityContext =
-  React.createContext<InstanceWorkspaceInstance | null>(null)
-const InstancePermissionsContext =
-  React.createContext<InstanceWorkspacePermissions | null>(null)
-const FileTreePreferencesContext =
-  React.createContext<FileTreePreferences | null>(null)
-const InstanceRelayConnectedContext = React.createContext<boolean | null>(null)
-
-function useRequiredContext<T>(
-  context: React.Context<T | null>,
-  hookName: string
-): T {
-  const value = React.useContext(context)
-  if (value === null) {
-    throw new Error(`${hookName} must be used within InstanceWorkspace`)
-  }
-  return value
-}
-
-export function useInstanceIdentity() {
-  return useRequiredContext(InstanceIdentityContext, "useInstanceIdentity")
-}
-
-export function useInstancePermissions() {
-  return useRequiredContext(
-    InstancePermissionsContext,
-    "useInstancePermissions"
-  )
-}
-
-export function useFileTreePreferences() {
-  return useRequiredContext(
-    FileTreePreferencesContext,
-    "useFileTreePreferences"
-  )
-}
-
-export function useInstanceRelayConnected() {
-  return useRequiredContext(
-    InstanceRelayConnectedContext,
-    "useInstanceRelayConnected"
-  )
 }
 
 export function InstanceWorkspace({

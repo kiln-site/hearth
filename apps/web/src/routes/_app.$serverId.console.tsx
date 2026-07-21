@@ -4,7 +4,7 @@ import { ConsoleWorkspace } from "@/components/console-workspace"
 import {
   useInstanceIdentity,
   useInstancePermissions,
-} from "@/components/instance-workspace"
+} from "@/components/instance-workspace-context"
 import { pageTitle } from "@/lib/page-title"
 
 export const Route = createFileRoute("/_app/$serverId/console")({

@@ -11,7 +11,7 @@ import {
   useInstanceIdentity,
   useInstancePermissions,
   useInstanceRelayConnected,
-} from "@/components/instance-workspace"
+} from "@/components/instance-workspace-context"
 import { pageTitle } from "@/lib/page-title"
 
 const FileWorkspace = React.lazy(async () => {
