@@ -296,6 +296,81 @@ const InstancePowerControlsBoundary = React.memo(
   }
 )
 
+function useCopyFeedback(value: string) {
+  const [copied, setCopied] = React.useState(false)
+  const resetTimer = React.useRef<number | null>(null)
+  React.useEffect(
+    () => () => {
+      if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    },
+    []
+  )
+
+  async function copy() {
+    await copyToClipboard(value)
+    setCopied(true)
+    if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    resetTimer.current = window.setTimeout(() => setCopied(false), 1_800)
+  }
+
+  return { copied, copy }
+}
+
+function InstanceIdCopyButton({
+  id,
+  shortId,
+}: {
+  id: string
+  shortId: string
+}) {
+  const { copied, copy } = useCopyFeedback(id)
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className={`truncate font-mono transition-colors ${copied ? "text-emerald-400" : "hover:text-foreground"}`}
+          aria-label={`Copy full server ID ${id}`}
+          onClick={copy}
+        >
+          {shortId}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>
+        {copied ? "Full server ID copied" : "Copy full server ID"}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function InstanceAddressCopyButton({ address }: { address: string }) {
+  const { copied, copy } = useCopyFeedback(address)
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className={`hidden min-w-0 items-center gap-1 truncate font-mono transition-colors xl:inline-flex ${copied ? "text-emerald-400" : "text-primary/75 hover:text-primary"}`}
+          aria-label={`Copy server address ${address}`}
+          onClick={copy}
+        >
+          <span className="truncate">{address}</span>
+          {copied ? (
+            <Check className="size-3 shrink-0" />
+          ) : (
+            <Copy className="size-3 shrink-0 opacity-55" />
+          )}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>
+        {copied ? "Address copied" : "Copy server address"}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 function InstanceIdentity({
   error,
   instance,
@@ -303,38 +378,6 @@ function InstanceIdentity({
   error: string | null
   instance: InstanceWorkspaceInstance
 }) {
-  const [idCopied, setIdCopied] = React.useState(false)
-  const [addressCopied, setAddressCopied] = React.useState(false)
-  const addressCopyTimer = React.useRef<number | null>(null)
-  const idCopyTimer = React.useRef<number | null>(null)
-
-  React.useEffect(
-    () => () => {
-      if (addressCopyTimer.current) {
-        window.clearTimeout(addressCopyTimer.current)
-      }
-      if (idCopyTimer.current) window.clearTimeout(idCopyTimer.current)
-    },
-    []
-  )
-
-  async function copyAddress() {
-    await copyToClipboard(instance.connectAddress)
-    setAddressCopied(true)
-    if (addressCopyTimer.current) window.clearTimeout(addressCopyTimer.current)
-    addressCopyTimer.current = window.setTimeout(
-      () => setAddressCopied(false),
-      1_800
-    )
-  }
-
-  async function copyId() {
-    await copyToClipboard(instance.id)
-    setIdCopied(true)
-    if (idCopyTimer.current) window.clearTimeout(idCopyTimer.current)
-    idCopyTimer.current = window.setTimeout(() => setIdCopied(false), 1_800)
-  }
-
   return (
     <div className="min-w-0 flex-1">
       <h1
@@ -354,42 +397,9 @@ function InstanceIdentity({
           {instance.implementation} {instance.version}
         </span>
         <span className="text-border">/</span>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              className={`truncate font-mono transition-colors ${idCopied ? "text-emerald-400" : "hover:text-foreground"}`}
-              aria-label={`Copy full server ID ${instance.id}`}
-              onClick={copyId}
-            >
-              {instance.shortId}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" sideOffset={6}>
-            {idCopied ? "Full server ID copied" : "Copy full server ID"}
-          </TooltipContent>
-        </Tooltip>
+        <InstanceIdCopyButton id={instance.id} shortId={instance.shortId} />
         <span className="hidden text-border xl:inline">/</span>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              className={`hidden min-w-0 items-center gap-1 truncate font-mono transition-colors xl:inline-flex ${addressCopied ? "text-emerald-400" : "text-primary/75 hover:text-primary"}`}
-              aria-label={`Copy server address ${instance.connectAddress}`}
-              onClick={copyAddress}
-            >
-              <span className="truncate">{instance.connectAddress}</span>
-              {addressCopied ? (
-                <Check className="size-3 shrink-0" />
-              ) : (
-                <Copy className="size-3 shrink-0 opacity-55" />
-              )}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" sideOffset={6}>
-            {addressCopied ? "Address copied" : "Copy server address"}
-          </TooltipContent>
-        </Tooltip>
+        <InstanceAddressCopyButton address={instance.connectAddress} />
       </div>
       {error ? (
         <p className="mt-0.5 truncate text-[9px] text-destructive">{error}</p>

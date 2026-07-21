@@ -358,6 +358,17 @@ const ServerSelector = React.memo(function ServerSelector({
 }) {
   const { isMobile } = useSidebar()
   const [open, setOpen] = React.useState(false)
+  const selectInstance = React.useCallback(
+    (routeId: string) => {
+      setOpen(false)
+      onRememberInstance(routeId)
+      navigateToTab(
+        instanceTabFromPathname(window.location.pathname) ?? "console",
+        routeId
+      )
+    },
+    [navigateToTab, onRememberInstance]
+  )
 
   return (
     <SidebarMenuItem>
@@ -399,51 +410,55 @@ const ServerSelector = React.memo(function ServerSelector({
           </div>
           <div className="-mx-1 my-1 h-px bg-border" />
           <div className="space-y-0.5">
-            {instances.map((item) => {
-              const active =
-                item.id === instance.id && item.relayId === instance.relayId
-              return (
-                <button
-                  key={`${item.relayId}:${item.id}`}
-                  type="button"
-                  aria-label={`${item.name}, ${item.implementation} ${item.version}, ${item.observedState}`}
-                  aria-pressed={active}
-                  className={`flex w-full items-center gap-2.5 rounded-md border-l-2 px-1.5 py-2 text-left transition-colors duration-100 outline-none hover:bg-popover-accent hover:text-popover-accent-foreground focus-visible:bg-popover-accent focus-visible:text-popover-accent-foreground ${statusBorderTone(item.observedState)}`}
-                  onClick={() => {
-                    setOpen(false)
-                    onRememberInstance(item.routeId)
-                    navigateToTab(
-                      instanceTabFromPathname(window.location.pathname) ??
-                        "console",
-                      item.routeId
-                    )
-                  }}
-                >
-                  <ServerTypeIcon
-                    implementation={item.implementation}
-                    className="size-4 shrink-0 text-muted-foreground"
-                    aria-hidden="true"
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-xs font-medium">
-                      {item.name}
-                    </span>
-                    <span className="block truncate font-mono text-[9px] text-muted-foreground">
-                      {item.implementation} {item.version} · {item.shortId}
-                    </span>
-                  </span>
-                  {active ? (
-                    <span className="font-mono text-[9px] text-primary">
-                      ACTIVE
-                    </span>
-                  ) : null}
-                </button>
-              )
-            })}
+            {instances.map((item) => (
+              <ServerSelectorItem
+                key={`${item.relayId}:${item.id}`}
+                active={
+                  item.id === instance.id && item.relayId === instance.relayId
+                }
+                item={item}
+                onSelect={selectInstance}
+              />
+            ))}
           </div>
         </PopoverContent>
       </Popover>
     </SidebarMenuItem>
+  )
+})
+
+const ServerSelectorItem = React.memo(function ServerSelectorItem({
+  active,
+  item,
+  onSelect,
+}: {
+  active: boolean
+  item: SidebarInstance
+  onSelect: (routeId: string) => void
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={`${item.name}, ${item.implementation} ${item.version}, ${item.observedState}`}
+      aria-pressed={active}
+      className={`flex w-full items-center gap-2.5 rounded-md border-l-2 px-1.5 py-2 text-left transition-colors duration-100 outline-none hover:bg-popover-accent hover:text-popover-accent-foreground focus-visible:bg-popover-accent focus-visible:text-popover-accent-foreground ${statusBorderTone(item.observedState)}`}
+      onClick={() => onSelect(item.routeId)}
+    >
+      <ServerTypeIcon
+        implementation={item.implementation}
+        className="size-4 shrink-0 text-muted-foreground"
+        aria-hidden="true"
+      />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-xs font-medium">{item.name}</span>
+        <span className="block truncate font-mono text-[9px] text-muted-foreground">
+          {item.implementation} {item.version} · {item.shortId}
+        </span>
+      </span>
+      {active ? (
+        <span className="font-mono text-[9px] text-primary">ACTIVE</span>
+      ) : null}
+    </button>
   )
 })
 
@@ -544,7 +559,6 @@ function AccountNavigation({
   user: AuthenticatedUser
 }) {
   const { isMobile } = useSidebar()
-  const [signingOut, setSigningOut] = React.useState(false)
   return (
     <SidebarFooter>
       <SidebarMenu>
@@ -598,35 +612,52 @@ function AccountNavigation({
                 {user.isDevelopmentBypass ? "Development bypass" : user.email}
               </span>
             </span>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  className="ml-auto grid size-7 shrink-0 place-items-center text-sidebar-foreground/55 transition-colors group-data-[collapsible=icon]:mx-auto hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring/45 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-45"
-                  aria-label={signingOut ? "Signing out" : "Sign out"}
-                  disabled={signingOut}
-                  onClick={() => {
-                    setSigningOut(true)
-                    void signOut(user.isDevelopmentBypass).catch(() => {
-                      setSigningOut(false)
-                    })
-                  }}
-                >
-                  {signingOut ? (
-                    <LoaderCircle className="size-4 animate-spin" />
-                  ) : (
-                    <LogOut className="size-4" />
-                  )}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right" align="center" hidden={isMobile}>
-                Logout
-              </TooltipContent>
-            </Tooltip>
+            <SignOutButton
+              developmentBypass={user.isDevelopmentBypass}
+              tooltipHidden={isMobile}
+            />
           </div>
         </SidebarMenuItem>
       </SidebarMenu>
     </SidebarFooter>
+  )
+}
+
+function SignOutButton({
+  developmentBypass,
+  tooltipHidden,
+}: {
+  developmentBypass: boolean
+  tooltipHidden: boolean
+}) {
+  const [signingOut, setSigningOut] = React.useState(false)
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className="ml-auto grid size-7 shrink-0 place-items-center text-sidebar-foreground/55 transition-colors group-data-[collapsible=icon]:mx-auto hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring/45 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-45"
+          aria-label={signingOut ? "Signing out" : "Sign out"}
+          disabled={signingOut}
+          onClick={() => {
+            setSigningOut(true)
+            void signOut(developmentBypass).catch(() => {
+              setSigningOut(false)
+            })
+          }}
+        >
+          {signingOut ? (
+            <LoaderCircle className="size-4 animate-spin" />
+          ) : (
+            <LogOut className="size-4" />
+          )}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right" align="center" hidden={tooltipHidden}>
+        Logout
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
