@@ -1,5 +1,6 @@
 import { HeadContent, Scripts } from "@tanstack/react-router"
 
+import { Toaster } from "@workspace/ui/components/sonner"
 import { TooltipProvider } from "@workspace/ui/components/tooltip"
 
 export function AppDocument({ children }: { children: React.ReactNode }) {
@@ -9,6 +10,7 @@ export function AppDocument({ children }: { children: React.ReactNode }) {
         <HeadContent />
       </head>
       <body className="overflow-hidden antialiased">
+        <Toaster />
         <TooltipProvider delayDuration={250}>{children}</TooltipProvider>
         <Scripts />
       </body>

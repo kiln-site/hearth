@@ -9,7 +9,6 @@ import { useNavigate, useRouterState } from "@tanstack/react-router"
 import { EmptyServerState } from "@/components/empty-server-state"
 import { InstanceRouteFrame } from "@/components/instance-route-frame"
 import { InstanceWorkspaceShell } from "@/components/instance-workspace"
-import { RelayConnectionNotice } from "@/components/relay-connection-status"
 import { RelayUnavailableState } from "@/components/relay-unavailable-state"
 import { SettingsShell } from "@/components/settings-layout"
 import { GlobalPageToolbar } from "@/components/global-page-toolbar"
@@ -22,55 +21,16 @@ import {
 import {
   findRelayInstance,
   selectRelayConnectionSummary,
-  selectRouteInstances,
   selectSidebarInstances,
 } from "@/lib/relay-selectors"
-import type { RouteInstance, SidebarInstance } from "@/lib/relay-selectors"
+import type { SidebarInstance } from "@/lib/relay-selectors"
 import { globalSectionFromRouteId } from "@/lib/route-sections"
 import type { GlobalSection } from "@/lib/route-sections"
 
 const emptyInstances: Array<SidebarInstance> = []
-const emptyRouteInstances: Array<RouteInstance> = []
 
 export function AppRouteContent({ children }: { children: React.ReactNode }) {
-  return (
-    <>
-      <RelayConnectionNoticeBoundary />
-      <AppRouteViewport>{children}</AppRouteViewport>
-    </>
-  )
-}
-
-function RelayConnectionNoticeBoundary() {
-  const queryClient = useQueryClient()
-  const connectionQuery = useSuspenseQuery({
-    ...relayConnectionQueryOptions(queryClient),
-    select: selectRelayConnectionSummary,
-  })
-  const connection = connectionQuery.data
-  const { data: instances = emptyRouteInstances } = useQuery({
-    ...relaySnapshotQueryOptions(),
-    enabled: connection.status !== "unconfigured",
-    select: selectRouteInstances,
-  })
-  const activeSection = useRouterState({
-    select: (state) => globalSectionFromRouteId(state.matches.at(-1)?.routeId),
-  })
-  const serverId = useRouterState({
-    select: (state) =>
-      (state.matches.at(-1)?.params as { serverId?: string } | undefined)
-        ?.serverId,
-  })
-  const instance = findRelayInstance(instances, serverId)
-  const status = activeSection
-    ? connection.status
-    : connection.status === "unreachable"
-      ? "unreachable"
-      : (instance?.relayStatus ?? connection.status)
-  const retry = React.useCallback(async () => {
-    await connectionQuery.refetch()
-  }, [connectionQuery.refetch])
-  return <RelayConnectionNotice retry={retry} status={status} />
+  return <AppRouteViewport>{children}</AppRouteViewport>
 }
 
 function AppRouteViewport({ children }: { children: React.ReactNode }) {

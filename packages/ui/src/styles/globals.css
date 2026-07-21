@@ -151,3 +151,170 @@
     }
   }
 }
+
+.kiln-toaster[data-sonner-toaster] {
+  font-family: var(--font-sans);
+}
+
+.kiln-toaster[data-sonner-toaster] [data-sonner-toast][data-styled="true"] {
+  --kiln-toast-accent: var(--muted-foreground);
+  gap: 0.625rem;
+  min-height: 3.375rem;
+  padding: 0.625rem 3.5rem 0.625rem 0.625rem;
+  overflow: hidden;
+  border-color: color-mix(
+    in oklab,
+    var(--kiln-toast-accent) 30%,
+    var(--border)
+  );
+  border-radius: 0;
+  background: color-mix(in oklab, var(--popover) 94%, transparent);
+  color: var(--popover-foreground);
+  box-shadow:
+    0 1px 0 oklch(1 0 0 / 0.035) inset,
+    0 18px 55px oklch(0 0 0 / 0.42);
+}
+
+.kiln-toaster[data-sonner-toaster]
+  [data-sonner-toast][data-styled="true"][data-type="success"] {
+  --kiln-toast-accent: oklch(0.72 0.14 155);
+}
+
+.kiln-toaster[data-sonner-toaster]
+  [data-sonner-toast][data-styled="true"][data-type="info"] {
+  --kiln-toast-accent: oklch(0.7 0.12 245);
+}
+
+.kiln-toaster[data-sonner-toaster]
+  [data-sonner-toast][data-styled="true"][data-type="warning"] {
+  --kiln-toast-accent: oklch(0.78 0.15 80);
+}
+
+.kiln-toaster[data-sonner-toaster]
+  [data-sonner-toast][data-styled="true"][data-type="error"] {
+  --kiln-toast-accent: var(--destructive);
+}
+
+.kiln-toaster[data-sonner-toaster]
+  [data-sonner-toast][data-styled="true"]::after {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--kiln-toast-accent);
+  content: "";
+}
+
+.kiln-toaster[data-sonner-toaster]
+  [data-sonner-toast][data-styled="true"]::before {
+  position: absolute;
+  inset: 0.5rem 2.875rem 0.5rem auto;
+  width: 1px;
+  background: var(--border);
+  content: "";
+}
+
+.kiln-toaster[data-sonner-toaster]
+  [data-sonner-toast][data-styled="true"]
+  [data-icon] {
+  width: 2rem;
+  height: 2rem;
+  margin: 0;
+  align-self: center;
+  justify-content: center;
+  border: 1px solid
+    color-mix(in oklab, var(--kiln-toast-accent) 48%, transparent);
+  border-radius: 0;
+  background: color-mix(in oklab, var(--kiln-toast-accent) 5%, transparent);
+  color: var(--kiln-toast-accent);
+}
+
+.kiln-toaster[data-sonner-toaster]
+  [data-sonner-toast][data-styled="true"]
+  [data-icon]
+  svg {
+  color: var(--kiln-toast-accent);
+}
+
+.kiln-toaster[data-sonner-toaster] [data-content] {
+  min-width: 0;
+  gap: 0.125rem;
+}
+
+.kiln-toaster[data-sonner-toaster] [data-title] {
+  color: var(--kiln-toast-accent);
+  font-size: 0.8125rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.25rem;
+}
+
+.kiln-toaster[data-sonner-toaster] [data-description] {
+  color: var(--muted-foreground);
+  font-size: 0.6875rem;
+  line-height: 1rem;
+}
+
+.kiln-toaster[data-sonner-toaster]
+  [data-sonner-toast][data-styled="true"]
+  [data-button] {
+  height: 1.625rem;
+  margin-left: auto;
+  padding-inline: 0.625rem;
+  border: 1px solid
+    color-mix(in oklab, var(--kiln-toast-accent) 48%, var(--border));
+  border-radius: 0;
+  background: transparent;
+  color: var(--kiln-toast-accent);
+  font-family: var(--font-sans);
+  font-size: 0.625rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+
+.kiln-toaster[data-sonner-toaster]
+  [data-sonner-toast][data-styled="true"]
+  [data-button]:hover {
+  border-color: color-mix(
+    in oklab,
+    var(--kiln-toast-accent) 68%,
+    var(--border)
+  );
+  background: color-mix(in oklab, var(--kiln-toast-accent) 7%, transparent);
+}
+
+.kiln-toaster[data-sonner-toaster]
+  [data-sonner-toast][data-styled="true"]
+  [data-button]:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 55%, transparent);
+}
+
+.kiln-toaster[data-sonner-toaster]
+  [data-sonner-toast][data-styled="true"]
+  [data-close-button] {
+  top: 50%;
+  right: 0.625rem;
+  left: auto;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  transform: translateY(-50%);
+}
+
+.kiln-toaster[data-sonner-toaster]
+  [data-sonner-toast][data-styled="true"]
+  [data-close-button]:hover {
+  background: oklch(1 0 0 / 0.04);
+  color: var(--foreground);
+}
+
+.kiln-toaster[data-sonner-toaster]
+  [data-sonner-toast][data-styled="true"]
+  [data-close-button]:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 55%, transparent);
+}
