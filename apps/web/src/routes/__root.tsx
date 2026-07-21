@@ -1,18 +1,22 @@
 import * as React from "react"
 import {
-  HeadContent,
-  Scripts,
+  Outlet,
   createRootRouteWithContext,
 } from "@tanstack/react-router"
-import { TooltipProvider } from "@workspace/ui/components/tooltip"
 import { archivoLatin, jetBrainsMonoLatin } from "@workspace/ui/lib/font-assets"
 
 import appCss from "@workspace/ui/globals.css?url"
 
-import { AppErrorPage, AppNotFoundPage } from "@/components/app-error-page"
+import { AppDocument } from "@/components/app-document"
 import type { AppRouterContext } from "@/lib/query-client"
 
-const RootDocument = React.memo(RootDocumentContent, preserveDocumentShell)
+const RootDocument = React.memo(function RootDocument() {
+  return (
+    <AppDocument>
+      <Outlet />
+    </AppDocument>
+  )
+})
 
 export const Route = createRootRouteWithContext<AppRouterContext>()({
   head: () => ({
@@ -63,25 +67,5 @@ export const Route = createRootRouteWithContext<AppRouterContext>()({
       },
     ],
   }),
-  errorComponent: AppErrorPage,
-  notFoundComponent: AppNotFoundPage,
-  shellComponent: RootDocument,
+  component: RootDocument,
 })
-
-function RootDocumentContent({ children }: { children: React.ReactNode }) {
-  return (
-    <html lang="en" className="dark">
-      <head>
-        <HeadContent />
-      </head>
-      <body className="overflow-hidden antialiased">
-        <TooltipProvider delayDuration={250}>{children}</TooltipProvider>
-        <Scripts />
-      </body>
-    </html>
-  )
-}
-
-function preserveDocumentShell() {
-  return !import.meta.env.SSR
-}

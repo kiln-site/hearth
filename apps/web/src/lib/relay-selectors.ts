@@ -34,7 +34,6 @@ export type InstanceWorkspaceInstance = Pick<
 > & {
   relayId: string
   relayName: string
-  relayStatus: "connected" | "unreachable"
   routeId: string
 }
 
@@ -56,7 +55,7 @@ export type InstanceSettingsInstance = Pick<
   | "service"
   | "shortId"
   | "version"
-> & { relayId: string; relayStatus: "connected" | "unreachable" }
+> & { relayId: string }
 
 export type RelayNodeSummary = Pick<RelayNode, "id" | "name">
 
@@ -107,13 +106,17 @@ export function selectInstanceWorkspaceInstance(identifier: string) {
       name: instance.name,
       relayId: instance.relayId,
       relayName: instance.relayName,
-      relayStatus: instance.relayStatus,
       routeId: instance.routeId,
       service: instance.service,
       shortId: instance.shortId,
       version: instance.version,
     }
   }
+}
+
+export function selectInstanceRelayConnected(identifier: string) {
+  return (snapshot: RelayFleetSnapshot): boolean =>
+    findRelayInstance(snapshot.instances, identifier)?.relayStatus === "connected"
 }
 
 export function selectInstanceRuntime(instanceId: string, relayId?: string) {
@@ -150,7 +153,6 @@ export function selectInstanceSettings(instanceId: string, relayId?: string) {
         javaVersion: instance.javaVersion,
         name: instance.name,
         relayId: instance.relayId,
-        relayStatus: instance.relayStatus,
         service: instance.service,
         shortId: instance.shortId,
         version: instance.version,

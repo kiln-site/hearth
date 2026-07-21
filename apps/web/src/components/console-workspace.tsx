@@ -1,11 +1,7 @@
 import * as React from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import type {
-  RelayConsole,
-  RelayConsoleLevel,
-  RelayConsoleLine,
-} from "@workspace/contracts"
+import type { RelayConsole, RelayConsoleLevel, RelayConsoleLine } from "@workspace/contracts"
 import {
   ArrowDown,
   Check,
@@ -37,6 +33,16 @@ import {
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
 
+import {
+  consoleLevels,
+  createConsoleStreamStore,
+  createConsoleUiStore,
+} from "@/components/console/console-stores"
+import type {
+  ConsoleStreamSnapshot,
+  ConsoleStreamStore,
+  ConsoleUiStore,
+} from "@/components/console/console-stores"
 import { openRelayConsoleStream } from "@/lib/relay-console-stream"
 import { redactSensitiveText } from "@/lib/redaction"
 import { queryKeys, relaySnapshotQueryOptions } from "@/lib/query-options"
@@ -48,13 +54,6 @@ import {
   uploadLatestLogToMclogs,
 } from "@/server/relay"
 
-const LEVELS: Array<RelayConsoleLevel> = [
-  "info",
-  "warn",
-  "error",
-  "debug",
-  "trace",
-]
 const consoleTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
   minute: "2-digit",
@@ -73,187 +72,18 @@ interface CommandCompletions {
   }>
 }
 
-interface ConsoleFilterSnapshot {
-  levels: Set<RelayConsoleLevel>
-  query: string
-  redactSensitive: boolean
-}
-
-interface ConsoleUiStore {
-  clearSelection: () => void
-  getFilterSnapshot: () => ConsoleFilterSnapshot
-  getLevelsSnapshot: () => Set<RelayConsoleLevel>
-  getLineSelectedSnapshot: (lineId: string) => boolean
-  getQuerySnapshot: () => string
-  getRedactSensitiveSnapshot: () => boolean
-  getSelectedSnapshot: () => Set<string>
-  getSelectedText: () => string
-  getShowTimestampsSnapshot: () => boolean
-  getWrapLinesSnapshot: () => boolean
-  setFilteredLines: (lines: Array<RelayConsoleLine>) => void
-  setQuery: (query: string) => void
-  subscribe: (listener: () => void) => () => void
-  toggleLevel: (level: RelayConsoleLevel | "all") => void
-  toggleLine: (line: RelayConsoleLine, index: number, shift: boolean) => void
-  toggleRedactSensitive: () => void
-  toggleShowTimestamps: () => void
-  toggleWrapLines: () => void
-}
-
-interface ConsoleStreamSnapshot {
-  connection: "connecting" | "live" | "unavailable"
-  consoleData: RelayConsole | null
-  loading: boolean
-}
-
-interface ConsoleStreamStore {
-  getHasLinesSnapshot: () => boolean
-  getSnapshot: () => ConsoleStreamSnapshot
-  setSnapshot: (snapshot: ConsoleStreamSnapshot) => void
-  subscribe: (listener: () => void) => () => void
-}
-
-function createConsoleStreamStore(): ConsoleStreamStore {
-  let snapshot: ConsoleStreamSnapshot = {
-    connection: "connecting",
-    consoleData: null,
-    loading: true,
-  }
-  const listeners = new Set<() => void>()
-  return {
-    getHasLinesSnapshot: () => Boolean(snapshot.consoleData?.lines.length),
-    getSnapshot: () => snapshot,
-    setSnapshot: (nextSnapshot) => {
-      if (
-        snapshot.consoleData === nextSnapshot.consoleData &&
-        snapshot.connection === nextSnapshot.connection &&
-        snapshot.loading === nextSnapshot.loading
-      ) {
-        return
-      }
-      snapshot = nextSnapshot
-      for (const listener of listeners) listener()
-    },
-    subscribe: (listener) => {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
-  }
-}
-
-function createConsoleUiStore(): ConsoleUiStore {
-  let query = ""
-  let levels = new Set(LEVELS)
-  let redactSensitive = true
-  let showTimestamps = false
-  let wrapLines = true
-  let selected = new Set<string>()
-  let filteredLines: Array<RelayConsoleLine> = []
-  let lastSelected: number | null = null
-  let filterSnapshot: ConsoleFilterSnapshot = {
-    levels,
-    query,
-    redactSensitive,
-  }
-  const listeners = new Set<() => void>()
-  const notify = () => {
-    for (const listener of listeners) listener()
-  }
-  const updateFilterSnapshot = () => {
-    filterSnapshot = { levels, query, redactSensitive }
-    notify()
-  }
-
-  return {
-    clearSelection: () => {
-      if (selected.size === 0) return
-      selected = new Set()
-      lastSelected = null
-      notify()
-    },
-    getFilterSnapshot: () => filterSnapshot,
-    getLevelsSnapshot: () => levels,
-    getLineSelectedSnapshot: (lineId) => selected.has(lineId),
-    getQuerySnapshot: () => query,
-    getRedactSensitiveSnapshot: () => redactSensitive,
-    getSelectedSnapshot: () => selected,
-    getSelectedText: () => {
-      const lines: Array<string> = []
-      for (const line of filteredLines) {
-        if (selected.has(line.id)) lines.push(line.text)
-      }
-      return lines.join("\n")
-    },
-    getShowTimestampsSnapshot: () => showTimestamps,
-    getWrapLinesSnapshot: () => wrapLines,
-    setFilteredLines: (lines) => {
-      filteredLines = lines
-    },
-    setQuery: (nextQuery) => {
-      if (query === nextQuery) return
-      query = nextQuery
-      updateFilterSnapshot()
-    },
-    subscribe: (listener) => {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
-    toggleLevel: (level) => {
-      if (level === "all") {
-        levels = new Set(LEVELS)
-      } else if (levels.size === LEVELS.length) {
-        levels = new Set([level])
-      } else {
-        const next = new Set(levels)
-        if (next.has(level) && next.size === 1) levels = new Set(LEVELS)
-        else {
-          if (next.has(level)) next.delete(level)
-          else next.add(level)
-          levels = next
-        }
-      }
-      updateFilterSnapshot()
-    },
-    toggleLine: (line, index, shift) => {
-      const next = new Set(selected)
-      if (shift && lastSelected !== null) {
-        const start = Math.min(lastSelected, index)
-        const end = Math.max(lastSelected, index)
-        for (let cursor = start; cursor <= end; cursor++) {
-          const selectedLine = filteredLines.at(cursor)
-          if (selectedLine) next.add(selectedLine.id)
-        }
-      } else if (next.has(line.id)) next.delete(line.id)
-      else next.add(line.id)
-      selected = next
-      lastSelected = index
-      notify()
-    },
-    toggleRedactSensitive: () => {
-      redactSensitive = !redactSensitive
-      updateFilterSnapshot()
-    },
-    toggleShowTimestamps: () => {
-      showTimestamps = !showTimestamps
-      notify()
-    },
-    toggleWrapLines: () => {
-      wrapLines = !wrapLines
-      notify()
-    },
-  }
-}
-
 export function ConsoleWorkspace({
   instance,
   active,
   canShare,
   canWrite,
+  relayConnected,
 }: {
   instance: InstanceWorkspaceInstance
   active: boolean
   canShare: boolean
   canWrite: boolean
+  relayConnected: boolean
 }) {
   return (
     <ConsoleWorkspaceSession
@@ -262,6 +92,7 @@ export function ConsoleWorkspace({
       active={active}
       canShare={canShare}
       canWrite={canWrite}
+      relayConnected={relayConnected}
     />
   )
 }
@@ -271,13 +102,14 @@ function ConsoleWorkspaceSession({
   active,
   canShare,
   canWrite,
+  relayConnected,
 }: {
   instance: InstanceWorkspaceInstance
   active: boolean
   canShare: boolean
   canWrite: boolean
+  relayConnected: boolean
 }) {
-  const relayConnected = instance.relayStatus === "connected"
   const [uiStore] = React.useState(createConsoleUiStore)
   const [streamStore] = React.useState(createConsoleStreamStore)
 
@@ -458,7 +290,7 @@ function ConsoleLevelMenu({ uiStore }: { uiStore: ConsoleUiStore }) {
     uiStore.getLevelsSnapshot,
     uiStore.getLevelsSnapshot
   )
-  const allLevels = levels.size === LEVELS.length
+  const allLevels = levels.size === consoleLevels.length
   return (
     <Popover>
       <ConsoleTooltip content="Filter Log Level">
@@ -494,7 +326,7 @@ function ConsoleLevelMenu({ uiStore }: { uiStore: ConsoleUiStore }) {
             Console levels
           </p>
           <span className="font-mono text-[9px] text-muted-foreground/75 tabular-nums">
-            {levels.size}/{LEVELS.length}
+            {levels.size}/{consoleLevels.length}
           </span>
         </div>
         <ConsoleLevelFilter
@@ -503,7 +335,7 @@ function ConsoleLevelMenu({ uiStore }: { uiStore: ConsoleUiStore }) {
           onClick={() => uiStore.toggleLevel("all")}
         />
         <div className="my-1 border-t" />
-        {LEVELS.map((level) => (
+        {consoleLevels.map((level) => (
           <ConsoleLevelFilter
             key={level}
             active={levels.has(level)}

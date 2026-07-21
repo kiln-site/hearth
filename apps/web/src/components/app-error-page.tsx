@@ -1,15 +1,22 @@
 import * as React from "react"
 import * as Sentry from "@sentry/tanstackstart-react"
-import type { ErrorComponentProps } from "@tanstack/react-router"
+import { useRouter } from "@tanstack/react-router"
+import type { AnyRouter } from "@tanstack/react-router"
 import { ArrowLeft, RefreshCw, TriangleAlert } from "lucide-react"
 
 import { Button } from "@workspace/ui/components/button"
 
+import { AppDocument } from "@/components/app-document"
 import { HearthMark } from "@/components/hearth-mark"
 
 const reportedErrors = new WeakSet<Error>()
 
-export function AppErrorPage({ error, reset }: ErrorComponentProps) {
+interface AppErrorPageProps {
+  error: Error
+  reset: () => void
+}
+
+export function AppErrorPage({ error, reset }: AppErrorPageProps) {
   React.useEffect(() => {
     if (reportedErrors.has(error)) return
     reportedErrors.add(error)
@@ -42,6 +49,57 @@ export function AppErrorPage({ error, reset }: ErrorComponentProps) {
       detail={import.meta.env.DEV ? error.message : undefined}
     />
   )
+}
+
+export function AppRouterErrorBoundary({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  const router = useRouter()
+  return (
+    <AppRouterErrorBoundaryImpl router={router}>
+      {children}
+    </AppRouterErrorBoundaryImpl>
+  )
+}
+
+class AppRouterErrorBoundaryImpl extends React.Component<
+  { children: React.ReactNode; router: AnyRouter },
+  { error: Error | null }
+> {
+  state = { error: null }
+  unsubscribeFromNavigation: (() => void) | null = null
+
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+
+  componentDidMount() {
+    this.unsubscribeFromNavigation = this.props.router.subscribe(
+      "onBeforeNavigate",
+      () => {
+        if (this.state.error) this.setState({ error: null })
+      }
+    )
+  }
+
+  componentWillUnmount() {
+    this.unsubscribeFromNavigation?.()
+  }
+
+  render() {
+    return this.state.error ? (
+      <AppDocument>
+        <AppErrorPage
+          error={this.state.error}
+          reset={() => this.setState({ error: null })}
+        />
+      </AppDocument>
+    ) : (
+      this.props.children
+    )
+  }
 }
 
 export function AppNotFoundPage() {

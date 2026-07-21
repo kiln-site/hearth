@@ -1,5 +1,4 @@
 import * as React from "react"
-import * as Sentry from "@sentry/tanstackstart-react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useRouter } from "@tanstack/react-router"
 import { FileTree, useFileTree, useFileTreeSearch } from "@pierre/trees/react"
@@ -62,6 +61,19 @@ import {
   FileTreeLoadingPanel,
   FileWorkspaceLoadingState,
 } from "@/components/file-tree-loading-panel"
+import {
+  createEditorSearchStore,
+  createEditorSessionStore,
+  createFileEditorPreferencesStore,
+  createFileSelectionStore,
+  fileEditorFontSizes,
+} from "@/components/files/file-workspace-stores"
+import type {
+  EditorSearchStore,
+  EditorSessionStore,
+  FileEditorPreferencesStore,
+  FileSelectionStore,
+} from "@/components/files/file-workspace-stores"
 import { redactSensitiveText } from "@/lib/redaction"
 import { fileLanguageForPath } from "@/lib/file-language"
 import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
@@ -103,235 +115,6 @@ const olderFileDateFormatter = new Intl.DateTimeFormat(undefined, {
   year: "numeric",
 })
 
-interface EditorSearchStore {
-  getSnapshot: () => string
-  setQuery: (query: string) => void
-  subscribe: (listener: () => void) => () => void
-}
-
-interface FileEditorPreferencesStore {
-  getFontSizeSnapshot: () => number
-  hydrate: () => void
-  setFontSize: (fontSize: number) => void
-  subscribe: (listener: () => void) => () => void
-}
-
-interface EditorSessionStore {
-  getDirtySnapshot: () => boolean
-  getReviewChangesSnapshot: () => boolean
-  getSavedValueSnapshot: () => string
-  getSaveErrorSnapshot: () => string | null
-  getSavingSnapshot: () => boolean
-  getSearchOpenSnapshot: () => boolean
-  getValue: () => string
-  getWrapLinesSnapshot: () => boolean
-  markSaved: (value: string) => void
-  setSaveError: (error: string | null) => void
-  setSaving: (saving: boolean) => void
-  setSearchOpen: (open: boolean) => void
-  setValue: (value: string) => void
-  subscribe: (listener: () => void) => () => void
-  toggleReviewChanges: () => void
-  toggleWrapLines: () => void
-}
-
-interface FileSelectionStore {
-  cancelNavigation: () => void
-  completeNavigation: (path: string, result: "loaded" | "unavailable") => void
-  getIsHomeSnapshot: () => boolean
-  getSnapshot: () => string
-  navigate: (path: string, from: string, to: string) => void
-  select: (path: string) => void
-  subscribe: (listener: () => void) => () => void
-}
-
-function createFileSelectionStore(initialPath: string): FileSelectionStore {
-  let path = initialPath
-  let navigation:
-    | {
-        path: string
-        span: ReturnType<typeof Sentry.startInactiveSpan>
-      }
-    | undefined
-  const listeners = new Set<() => void>()
-  const select = (nextPath: string) => {
-    if (path === nextPath) return
-    path = nextPath
-    for (const listener of listeners) listener()
-  }
-  return {
-    cancelNavigation: () => {
-      if (!navigation) return
-      navigation.span.setAttribute("kiln.file.result", "cancelled")
-      navigation.span.end()
-      navigation = undefined
-    },
-    completeNavigation: (completedPath, result) => {
-      if (navigation?.path !== completedPath) return
-      navigation.span.setAttribute("kiln.file.result", result)
-      navigation.span.end()
-      navigation = undefined
-    },
-    getIsHomeSnapshot: () => path === "",
-    getSnapshot: () => path,
-    navigate: (nextPath, from, to) => {
-      if (navigation) {
-        navigation.span.setAttribute("kiln.file.result", "superseded")
-        navigation.span.end()
-      }
-      Sentry.addBreadcrumb({
-        category: "navigation",
-        type: "navigation",
-        data: { from, to },
-      })
-      navigation = {
-        path: nextPath,
-        span: Sentry.startInactiveSpan({
-          name: to,
-          op: "navigation",
-          forceTransaction: true,
-          attributes: {
-            "sentry.source": "route",
-            "kiln.navigation.type": "file",
-          },
-        }),
-      }
-      select(nextPath)
-    },
-    select,
-    subscribe: (listener) => {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
-  }
-}
-
-function createEditorSearchStore(): EditorSearchStore {
-  let query = ""
-  const listeners = new Set<() => void>()
-  return {
-    getSnapshot: () => query,
-    setQuery: (nextQuery) => {
-      if (query === nextQuery) return
-      query = nextQuery
-      for (const listener of listeners) listener()
-    },
-    subscribe: (listener) => {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
-  }
-}
-
-function createFileEditorPreferencesStore(): FileEditorPreferencesStore {
-  let fontSize = defaultFileEditorFontSize
-  const listeners = new Set<() => void>()
-  const notify = () => {
-    for (const listener of listeners) listener()
-  }
-  const setFontSize = (nextFontSize: number) => {
-    if (
-      fontSize === nextFontSize ||
-      !fileEditorFontSizes.includes(nextFontSize)
-    ) {
-      return
-    }
-    fontSize = nextFontSize
-    try {
-      window.localStorage.setItem(
-        fileEditorFontSizeStorageKey,
-        String(nextFontSize)
-      )
-    } catch {
-      // The editor remains usable when browser storage is unavailable.
-    }
-    notify()
-  }
-  return {
-    getFontSizeSnapshot: () => fontSize,
-    hydrate: () => {
-      try {
-        const storedValue = Number.parseInt(
-          window.localStorage.getItem(fileEditorFontSizeStorageKey) ?? "",
-          10
-        )
-        setFontSize(storedValue)
-      } catch {
-        // Keep the default when browser storage is unavailable.
-      }
-    },
-    setFontSize,
-    subscribe: (listener) => {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
-  }
-}
-
-function createEditorSessionStore(initialValue: string): EditorSessionStore {
-  let value = initialValue
-  let savedValue = initialValue
-  let dirty = false
-  let saving = false
-  let saveError: string | null = null
-  let searchOpen = false
-  let reviewChanges = true
-  let wrapLines = true
-  const listeners = new Set<() => void>()
-  const notify = () => {
-    for (const listener of listeners) listener()
-  }
-  return {
-    getDirtySnapshot: () => dirty,
-    getReviewChangesSnapshot: () => reviewChanges,
-    getSavedValueSnapshot: () => savedValue,
-    getSaveErrorSnapshot: () => saveError,
-    getSavingSnapshot: () => saving,
-    getSearchOpenSnapshot: () => searchOpen,
-    getValue: () => value,
-    getWrapLinesSnapshot: () => wrapLines,
-    markSaved: (nextSavedValue) => {
-      savedValue = nextSavedValue
-      dirty = value !== savedValue
-      notify()
-    },
-    setSaveError: (nextError) => {
-      if (saveError === nextError) return
-      saveError = nextError
-      notify()
-    },
-    setSaving: (nextSaving) => {
-      if (saving === nextSaving) return
-      saving = nextSaving
-      notify()
-    },
-    setSearchOpen: (nextOpen) => {
-      if (searchOpen === nextOpen) return
-      searchOpen = nextOpen
-      notify()
-    },
-    setValue: (nextValue) => {
-      value = nextValue
-      const nextDirty = value !== savedValue
-      if (dirty === nextDirty) return
-      dirty = nextDirty
-      notify()
-    },
-    subscribe: (listener) => {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
-    toggleReviewChanges: () => {
-      reviewChanges = !reviewChanges
-      notify()
-    },
-    toggleWrapLines: () => {
-      wrapLines = !wrapLines
-      notify()
-    },
-  }
-}
-
 function persistFileTreeWidth(width: number) {
   document.cookie = `${fileTreeWidthCookieName}=${width}; path=/; max-age=${fileTreeCookieMaxAge}; SameSite=Lax`
 }
@@ -360,10 +143,6 @@ const fileTreeLayoutCss = `
     height: 14px;
   }
 `
-const fileEditorFontSizeStorageKey = "kiln:file-editor-font-size"
-const fileEditorFontSizes = [10, 11, 12, 14, 16]
-const defaultFileEditorFontSize = 16
-
 function clampFileTreeWidth(width: number, workspaceWidth: number) {
   const responsiveMaximum = Math.floor(workspaceWidth * 0.45)
   const maximum = Math.max(
@@ -2603,6 +2382,7 @@ interface FileWorkspaceProps {
   routeFilePath?: string
   canShare: boolean
   canWrite: boolean
+  relayConnected: boolean
   openTreeOnEntry: boolean
   initialTreeCollapsed: boolean
   initialTreeWidth: number | null
@@ -2640,16 +2420,12 @@ export function FileWorkspace(props: FileWorkspaceProps) {
       selectionStore.navigate(path, window.location.href, nextUrl)
       if (!props.active) return
 
-      // File selection is workspace state. Updating the address bar without
-      // notifying the route tree prevents an unchanged app shell from
-      // rendering, while preserving reloadable deep links.
-      const previousIgnoreSubscribers = router.history._ignoreSubscribers
-      router.history._ignoreSubscribers = true
-      try {
-        window.history.replaceState(window.history.state, "", nextLocation.href)
-      } finally {
-        router.history._ignoreSubscribers = previousIgnoreSubscribers
-      }
+      void router.navigate({
+        to: "/$serverId/files/$",
+        params: { serverId: props.instance.shortId, _splat: path },
+        replace: true,
+        resetScroll: false,
+      })
     },
     [props.active, props.instance.shortId, router, selectionStore]
   )
@@ -2660,6 +2436,7 @@ export function FileWorkspace(props: FileWorkspaceProps) {
       selectionStore={selectionStore}
       canShare={props.canShare}
       canWrite={props.canWrite}
+      relayConnected={props.relayConnected}
       onPathChange={handlePathChange}
       openTreeOnEntry={props.openTreeOnEntry}
       initialTreeCollapsed={props.initialTreeCollapsed}
@@ -2673,6 +2450,7 @@ interface FileWorkspaceSurfaceProps {
   selectionStore: FileSelectionStore
   canShare: boolean
   canWrite: boolean
+  relayConnected: boolean
   onPathChange: (path: string) => void
   openTreeOnEntry: boolean
   initialTreeCollapsed: boolean
@@ -2684,12 +2462,12 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
   selectionStore,
   canShare,
   canWrite,
+  relayConnected,
   onPathChange,
   openTreeOnEntry,
   initialTreeCollapsed,
   initialTreeWidth,
 }: FileWorkspaceSurfaceProps) {
-  const relayConnected = instance.relayStatus === "connected"
   const queryClient = useQueryClient()
   const [preferencesStore] = React.useState(createFileEditorPreferencesStore)
   const [mobileTreeOpen, setMobileTreeOpen] = React.useState(false)

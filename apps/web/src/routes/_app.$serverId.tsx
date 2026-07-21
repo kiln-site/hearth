@@ -10,7 +10,9 @@ import {
   relaySnapshotQueryOptions,
   uiPreferencesQueryOptions,
 } from "@/lib/query-options"
-import { selectInstanceWorkspaceInstance } from "@/lib/relay-selectors"
+import {
+  selectInstanceWorkspaceInstance,
+} from "@/lib/relay-selectors"
 
 export const Route = createFileRoute("/_app/$serverId")({
   component: InstanceRouteLayout,
@@ -66,7 +68,6 @@ function InstanceRouteLayout() {
       instance={instance}
       fileTreePreferences={fileTreePreferences}
       permissions={permissions}
-      relayConnected={instance.relayStatus === "connected"}
     />
   )
 }

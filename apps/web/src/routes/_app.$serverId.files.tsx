@@ -6,7 +6,12 @@ import {
   FileTreeLoadingPanel,
   FileWorkspaceLoadingState,
 } from "@/components/file-tree-loading-panel"
-import { useInstanceWorkspace } from "@/components/instance-workspace"
+import {
+  useFileTreePreferences,
+  useInstanceIdentity,
+  useInstancePermissions,
+  useInstanceRelayConnected,
+} from "@/components/instance-workspace"
 import { pageTitle } from "@/lib/page-title"
 
 const FileWorkspace = React.lazy(async () => {
@@ -25,7 +30,10 @@ function FilesRoute() {
     shouldThrow: false,
     select: (match) => match.params._splat,
   })
-  const { fileTreePreferences, instance, permissions } = useInstanceWorkspace()
+  const fileTreePreferences = useFileTreePreferences()
+  const instance = useInstanceIdentity()
+  const permissions = useInstancePermissions()
+  const relayConnected = useInstanceRelayConnected()
 
   return (
     <React.Suspense
@@ -73,6 +81,7 @@ function FilesRoute() {
         routeFilePath={filePath}
         canShare={permissions.shareLogs}
         canWrite={permissions.filesWrite}
+        relayConnected={relayConnected}
         openTreeOnEntry
         initialTreeCollapsed={fileTreePreferences.collapsed}
         initialTreeWidth={fileTreePreferences.width}

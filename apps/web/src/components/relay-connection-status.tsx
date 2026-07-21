@@ -5,40 +5,13 @@ import { Button } from "@workspace/ui/components/button"
 
 export type RelayStatus = "connected" | "unconfigured" | "unreachable"
 
-interface RelayConnectionContextValue {
+export function RelayConnectionNotice({
+  retry,
+  status,
+}: {
   retry: () => Promise<void>
   status: RelayStatus
-}
-
-const RelayConnectionContext =
-  React.createContext<RelayConnectionContextValue | null>(null)
-
-export function RelayConnectionProvider({
-  children,
-  value,
-}: {
-  children: React.ReactNode
-  value: RelayConnectionContextValue
 }) {
-  return (
-    <RelayConnectionContext.Provider value={value}>
-      {children}
-    </RelayConnectionContext.Provider>
-  )
-}
-
-export function useRelayConnection() {
-  const connection = React.useContext(RelayConnectionContext)
-  if (!connection) {
-    throw new Error(
-      "useRelayConnection must be used within RelayConnectionProvider"
-    )
-  }
-  return connection
-}
-
-export function RelayConnectionNotice() {
-  const { retry, status } = useRelayConnection()
   const [checking, setChecking] = React.useState(false)
   if (status !== "unreachable") return null
 

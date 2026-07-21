@@ -2,6 +2,10 @@ import * as Sentry from "@sentry/tanstackstart-react"
 import { createRouter as createTanStackRouter } from "@tanstack/react-router"
 import { setupRouterSsrQueryIntegration } from "@tanstack/react-router-ssr-query"
 
+import {
+  AppNotFoundPage,
+  AppRouterErrorBoundary,
+} from "@/components/app-error-page"
 import { createAppQueryClient } from "@/lib/query-client"
 import { routeTree } from "./routeTree.gen"
 
@@ -15,11 +19,9 @@ export function getRouter() {
     defaultPreload: "intent",
     defaultPreloadStaleTime: 0,
     defaultStructuralSharing: true,
-    // The root route already owns Hearth's error and not-found UI. Keeping the
-    // router-wide boundary as well makes every completed navigation reset a
-    // component whose visual bounds are the entire document, which causes the
-    // whole app shell to be marked and painted as changed.
+    defaultNotFoundComponent: AppNotFoundPage,
     disableGlobalCatchBoundary: true,
+    InnerWrap: AppRouterErrorBoundary,
   })
 
   setupRouterSsrQueryIntegration({ queryClient, router })

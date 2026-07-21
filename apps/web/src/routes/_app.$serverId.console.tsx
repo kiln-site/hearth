@@ -1,7 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router"
 
 import { ConsoleWorkspace } from "@/components/console-workspace"
-import { useInstanceWorkspace } from "@/components/instance-workspace"
+import {
+  useInstanceIdentity,
+  useInstancePermissions,
+  useInstanceRelayConnected,
+} from "@/components/instance-workspace"
 import { pageTitle } from "@/lib/page-title"
 
 export const Route = createFileRoute("/_app/$serverId/console")({
@@ -10,7 +14,9 @@ export const Route = createFileRoute("/_app/$serverId/console")({
 })
 
 function ConsoleRoute() {
-  const { instance, permissions } = useInstanceWorkspace()
+  const instance = useInstanceIdentity()
+  const permissions = useInstancePermissions()
+  const relayConnected = useInstanceRelayConnected()
   return (
     <ConsoleWorkspace
       key={instance.id}
@@ -18,6 +24,7 @@ function ConsoleRoute() {
       active
       canShare={permissions.shareLogs}
       canWrite={permissions.consoleWrite}
+      relayConnected={relayConnected}
     />
   )
 }

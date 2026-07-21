@@ -14,7 +14,6 @@ allowBuilds:
 
 patchedDependencies:
   "@codemirror/merge@6.12.2": patches/@codemirror__merge@6.12.2.patch
-  "@tanstack/react-router@1.170.16": patches/@tanstack__react-router@1.170.16.patch
 catalog:
   vite: npm:@voidzero-dev/vite-plus-core@0.2.5
   vitest: 4.1.10

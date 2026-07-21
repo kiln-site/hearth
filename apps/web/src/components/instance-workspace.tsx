@@ -38,6 +38,7 @@ import {
 import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 import {
   selectInstanceObservedState,
+  selectInstanceRelayConnected,
   selectInstanceRuntime,
 } from "@/lib/relay-selectors"
 import type {
@@ -69,27 +70,53 @@ export interface InstanceWorkspacePermissions {
   shareLogs: boolean
 }
 
-interface InstanceWorkspaceContextValue {
-  fileTreePreferences: {
-    collapsed: boolean
-    width: number | null
-  }
-  instance: InstanceWorkspaceInstance
-  permissions: InstanceWorkspacePermissions
-  relayConnected: boolean
+export interface FileTreePreferences {
+  collapsed: boolean
+  width: number | null
 }
 
-const InstanceWorkspaceContext =
-  React.createContext<InstanceWorkspaceContextValue | null>(null)
+const InstanceIdentityContext =
+  React.createContext<InstanceWorkspaceInstance | null>(null)
+const InstancePermissionsContext =
+  React.createContext<InstanceWorkspacePermissions | null>(null)
+const FileTreePreferencesContext =
+  React.createContext<FileTreePreferences | null>(null)
+const InstanceRelayConnectedContext = React.createContext<boolean | null>(null)
 
-export function useInstanceWorkspace() {
-  const context = React.useContext(InstanceWorkspaceContext)
-  if (!context) {
-    throw new Error(
-      "useInstanceWorkspace must be used within InstanceWorkspace"
-    )
+function useRequiredContext<T>(
+  context: React.Context<T | null>,
+  hookName: string
+): T {
+  const value = React.useContext(context)
+  if (value === null) {
+    throw new Error(`${hookName} must be used within InstanceWorkspace`)
   }
-  return context
+  return value
+}
+
+export function useInstanceIdentity() {
+  return useRequiredContext(InstanceIdentityContext, "useInstanceIdentity")
+}
+
+export function useInstancePermissions() {
+  return useRequiredContext(
+    InstancePermissionsContext,
+    "useInstancePermissions"
+  )
+}
+
+export function useFileTreePreferences() {
+  return useRequiredContext(
+    FileTreePreferencesContext,
+    "useFileTreePreferences"
+  )
+}
+
+export function useInstanceRelayConnected() {
+  return useRequiredContext(
+    InstanceRelayConnectedContext,
+    "useInstanceRelayConnected"
+  )
 }
 
 export function InstanceWorkspace({
@@ -97,44 +124,57 @@ export function InstanceWorkspace({
   instance,
   fileTreePreferences,
   permissions,
-  relayConnected,
 }: {
   children: React.ReactNode
   instance: InstanceWorkspaceInstance
-  fileTreePreferences: {
-    collapsed: boolean
-    width: number | null
-  }
+  fileTreePreferences: FileTreePreferences
   permissions: InstanceWorkspacePermissions
-  relayConnected: boolean
 }) {
-  const contextValue = React.useMemo(
-    () => ({
-      fileTreePreferences,
-      instance,
-      permissions,
-      relayConnected,
-    }),
-    [fileTreePreferences, instance, permissions, relayConnected]
-  )
-
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background">
       <InstanceWorkspaceHeader
         instance={instance}
         canControlPower={permissions.power}
-        relayConnected={relayConnected}
       />
 
       <div
         data-slot="instance-workspace-surface"
         className="relative mx-2 mt-2 flex min-h-0 flex-1 overflow-hidden border border-border/80 bg-card/30 [contain:paint]"
       >
-        <InstanceWorkspaceContext.Provider value={contextValue}>
-          {children}
-        </InstanceWorkspaceContext.Provider>
+        <InstanceIdentityContext.Provider value={instance}>
+          <InstancePermissionsContext.Provider value={permissions}>
+            <FileTreePreferencesContext.Provider value={fileTreePreferences}>
+              <InstanceRelayConnectionBoundary instance={instance}>
+                {children}
+              </InstanceRelayConnectionBoundary>
+            </FileTreePreferencesContext.Provider>
+          </InstancePermissionsContext.Provider>
+        </InstanceIdentityContext.Provider>
       </div>
     </div>
+  )
+}
+
+function InstanceRelayConnectionBoundary({
+  children,
+  instance,
+}: {
+  children: React.ReactNode
+  instance: InstanceWorkspaceInstance
+}) {
+  const selectRelayConnected = React.useMemo(
+    () => selectInstanceRelayConnected(instance.id),
+    [instance.id]
+  )
+  const { data: relayConnected = false } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectRelayConnected,
+  })
+
+  return (
+    <InstanceRelayConnectedContext.Provider value={relayConnected}>
+      {children}
+    </InstanceRelayConnectedContext.Provider>
   )
 }
 
@@ -143,11 +183,9 @@ type ServerAction = "start" | "stop" | "restart" | "kill"
 function InstanceWorkspaceHeader({
   instance,
   canControlPower,
-  relayConnected,
 }: {
   instance: InstanceWorkspaceInstance
   canControlPower: boolean
-  relayConnected: boolean
 }) {
   const [error, setError] = React.useState<string | null>(null)
 
@@ -163,7 +201,6 @@ function InstanceWorkspaceHeader({
           canControlPower={canControlPower}
           instance={instance}
           onError={setError}
-          relayConnected={relayConnected}
         />
       </div>
     </header>
@@ -461,12 +498,10 @@ function InstancePowerControls({
   canControlPower,
   instance,
   onError,
-  relayConnected,
 }: {
   canControlPower: boolean
   instance: InstanceWorkspaceInstance
   onError: (error: string | null) => void
-  relayConnected: boolean
 }) {
   const queryClient = useQueryClient()
   const selectObservedState = React.useMemo(
@@ -476,6 +511,14 @@ function InstancePowerControls({
   const { data: observedState } = useQuery({
     ...relaySnapshotQueryOptions(),
     select: selectObservedState,
+  })
+  const selectRelayConnected = React.useMemo(
+    () => selectInstanceRelayConnected(instance.id),
+    [instance.id]
+  )
+  const { data: relayConnected = false } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectRelayConnected,
   })
   const relayActionMutation = useMutation({
     mutationFn: performRelayAction,

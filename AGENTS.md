@@ -6,6 +6,10 @@ simple operation and existing patterns over new abstractions.
 
 Performance/Speed and UX is always the most important thing to keep in mind for every change you do.
 
+Before changing React UI, routing, providers, polling, queries, or client state,
+read and follow `RENDERING.md`. Do not patch framework internals or use private
+framework fields to solve rendering problems.
+
 ## Work
 
 - When making big feature changes, Sync `main`, then use a focused branch, and prepare a PR. Otherwise, or when explicitly told, feel free to make minor changes on main, however do not commit to main. Let human do that.
@@ -51,4 +55,3 @@ branch, restart `pnpm dev:docker`, and verify the OrbStack URL in T3 Preview.
 This project takes inspiration on Pterodactyl's Panel (https://github.com/pterodactyl/panel) and wings (https://github.com/pterodactyl/wings). There's also a properly fully pterodactyl compliant alternative Hyrodactyl (formerly Pyrodactyl) that we reference (https://github.com/blueprintframework/hydrodactyl). 
 
 Note: These should just be used to reference ideas and implementation. Do not assume that the decisions they make is the correct one. The vision for our project is to be a pterodactyl reimagined, not a pterodactyl clone. That being said we can definitely learn from them as they have been battle tested by millions of users.
-

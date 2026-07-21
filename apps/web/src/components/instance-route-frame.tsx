@@ -12,14 +12,12 @@ export const InstanceRouteFrame = React.memo(function InstanceRouteFrame({
   instance,
   fileTreePreferences,
   permissions,
-  relayConnected,
 }: InstanceRouteFrameProps) {
   return (
     <InstanceWorkspace
       instance={instance}
       fileTreePreferences={fileTreePreferences}
       permissions={permissions}
-      relayConnected={relayConnected}
     >
       <Outlet />
     </InstanceWorkspace>

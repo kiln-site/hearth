@@ -1,5 +1,10 @@
 import * as React from "react"
 import {
+  useQuery,
+  useQueryClient,
+  useSuspenseQuery,
+} from "@tanstack/react-query"
+import {
   Boxes,
   ChevronsUpDown,
   CircleHelp,
@@ -49,8 +54,17 @@ import { HearthMark } from "@/components/hearth-mark"
 import { ServerTypeIcon } from "@/components/server-type-icon"
 import { authClient } from "@/lib/auth-client"
 import type { AuthenticatedUser } from "@/lib/auth-session"
+import {
+  accessCapabilitiesQueryOptions,
+  relayConnectionQueryOptions,
+  relaySnapshotQueryOptions,
+} from "@/lib/query-options"
 import { disableDevelopmentBypass } from "@/server/auth"
 import { findRelayInstance } from "@/lib/relay-selectors"
+import {
+  selectRelayConnectionSummary,
+  selectSidebarInstances,
+} from "@/lib/relay-selectors"
 import type { SidebarInstance } from "@/lib/relay-selectors"
 
 export type InstanceTab = "console" | "files" | "info"
@@ -68,7 +82,7 @@ const instanceItems: Array<{
 
 const selectedInstanceStorageKey = "kiln:selected-instance-id"
 
-interface AppSidebarProps {
+interface AppSidebarViewProps {
   instances: Array<SidebarInstance>
   user: AuthenticatedUser
   canManageAccess: boolean
@@ -78,7 +92,39 @@ interface AppSidebarProps {
   relayName?: string
 }
 
-export const AppSidebar = React.memo(function AppSidebar({
+const emptyInstances: Array<SidebarInstance> = []
+
+export function AppSidebar() {
+  const queryClient = useQueryClient()
+  const { data: connection } = useSuspenseQuery({
+    ...relayConnectionQueryOptions(queryClient),
+    select: selectRelayConnectionSummary,
+  })
+  const { data: capabilities } = useSuspenseQuery(
+    accessCapabilitiesQueryOptions()
+  )
+  const { data: instances = emptyInstances } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    enabled: connection.status !== "unconfigured",
+    select: selectSidebarInstances,
+  })
+
+  return (
+    <AppSidebarView
+      canManageAccess={capabilities.canManageAccess}
+      instances={instances}
+      isPlatformAdmin={capabilities.isPlatformAdmin}
+      relayName={connection.relay?.name}
+      relayCount={
+        connection.relays?.length ?? (connection.relay ? 1 : 0)
+      }
+      relayStatus={connection.status}
+      user={capabilities.user}
+    />
+  )
+}
+
+const AppSidebarView = React.memo(function AppSidebarView({
   instances,
   user,
   canManageAccess,
@@ -86,7 +132,7 @@ export const AppSidebar = React.memo(function AppSidebar({
   relayStatus,
   relayCount,
   relayName,
-}: AppSidebarProps) {
+}: AppSidebarViewProps) {
   return (
     <Sidebar collapsible="icon" className="border-sidebar-border/80">
       <SidebarHeader className="gap-1 px-2 pt-3">
