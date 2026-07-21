@@ -41,7 +41,9 @@ export const getBrickStudio = createServerFn({ method: "GET" }).handler(
     if (!isPlatformAdmin(user)) {
       throw new Error("Platform administrator access required")
     }
-    const relays = await listPersistedRelays()
+    const relays = (await listPersistedRelays()).filter(
+      (relay) => relay.enabled
+    )
     const relay = relays.at(0)
     if (!relay)
       return {
@@ -165,7 +167,9 @@ export const configureBrickNetworking = createServerFn({ method: "POST" })
   })
 
 async function requiredRelay(id: string): Promise<PersistedRelay> {
-  const relay = (await listPersistedRelays()).find((item) => item.id === id)
+  const relay = (await listPersistedRelays()).find(
+    (item) => item.enabled && item.id === id
+  )
   if (!relay) throw new Error("Relay not found")
   return relay
 }

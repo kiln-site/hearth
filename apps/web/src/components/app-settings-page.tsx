@@ -4,6 +4,7 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query"
+import type { QueryClient } from "@tanstack/react-query"
 import {
   Check,
   CircleAlert,
@@ -11,7 +12,9 @@ import {
   EyeOff,
   KeyRound,
   LoaderCircle,
+  Pause,
   Pencil,
+  Play,
   Plus,
   RefreshCw,
   ServerCog,
@@ -21,16 +24,25 @@ import {
 
 import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
+import { dismissToast, showToast } from "@workspace/ui/components/sonner"
 
+import { RelayToastTitle } from "@/components/relay-toast-title"
 import { queryKeys, relaysQueryOptions } from "@/lib/query-options"
 import type { PersistedRelay } from "@/lib/relay-registry"
-import { addRelay, checkRelay, removeRelay, updateRelay } from "@/server/relays"
+import {
+  addRelay,
+  checkRelay,
+  removeRelay,
+  setRelayEnabled,
+  updateRelay,
+} from "@/server/relays"
 
 const relayConnectedFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
   timeStyle: "short",
   timeZone: "UTC",
 })
+const pendingRelayResumes = new Map<string, Promise<void>>()
 
 export function AppSettingsPage() {
   const { data: relays } = useSuspenseQuery(relaysQueryOptions())
@@ -87,7 +99,10 @@ const SelectedRelayEditor = React.memo(function SelectedRelayEditor({
     selection.getSnapshot
   )
   const selectedRelay = relays.find((relay) => relay.id === selectedId) ?? null
-  const startAdding = React.useCallback(() => selection.select(null), [selection])
+  const startAdding = React.useCallback(
+    () => selection.select(null),
+    [selection]
+  )
   return (
     <RelayEditor
       key={selectedRelay?.id ?? "new-relay"}
@@ -111,18 +126,14 @@ const RelayList = React.memo(function RelayList({
         <div className="min-w-0">
           <h2 className="text-sm font-semibold">Known Relays</h2>
           <p className="text-[10px] text-muted-foreground">
-            Every saved Relay participates in Hearth.
+            Pause a Relay to suspend Hearth requests without stopping it.
           </p>
         </div>
       </div>
       <div className="divide-y">
         {relays.length === 0 ? <EmptyRelayList /> : null}
         {relays.map((relay) => (
-          <RelayRow
-            key={relay.id}
-            relay={relay}
-            selection={selection}
-          />
+          <RelayRow key={relay.id} relay={relay} selection={selection} />
         ))}
       </div>
     </section>
@@ -146,7 +157,9 @@ const RelayRow = React.memo(function RelayRow({
     getSelectedSnapshot,
     getSelectedSnapshot
   )
-  const [pending, setPending] = React.useState<"check" | "remove" | null>(null)
+  const [pending, setPending] = React.useState<
+    "check" | "pause" | "remove" | "resume" | null
+  >(null)
   const [error, setError] = React.useState<string | null>(null)
   const checkMutation = useMutation({
     mutationFn: checkRelay,
@@ -177,9 +190,34 @@ const RelayRow = React.memo(function RelayRow({
     setError(null)
     try {
       await removeMutation.mutateAsync({ data: { id: relay.id } })
+      dismissToast(relayPausedToastId(relay.id))
+      dismissToast(relayResumedToastId(relay.id))
+      dismissToast(relayResumeErrorToastId(relay.id))
       selection.clearIfSelected(relay.id)
     } catch (cause) {
       setError(messageFrom(cause, "Could not remove Relay"))
+    } finally {
+      setPending(null)
+    }
+  }
+
+  async function togglePaused(event: React.MouseEvent) {
+    event.stopPropagation()
+    setPending(relay.enabled ? "pause" : "resume")
+    setError(null)
+    try {
+      if (relay.enabled) {
+        await pauseRelay(queryClient, relay)
+      } else {
+        await resumeRelay(queryClient, relay)
+      }
+    } catch (cause) {
+      setError(
+        messageFrom(
+          cause,
+          relay.enabled ? "Could not pause Relay" : "Could not resume Relay"
+        )
+      )
     } finally {
       setPending(null)
     }
@@ -206,7 +244,7 @@ const RelayRow = React.memo(function RelayRow({
     >
       <div className="flex items-start gap-3">
         <span
-          className={`mt-1.5 size-2 shrink-0 rounded-full ${relay.lastError ? "bg-destructive" : relay.lastConnectedAt ? "bg-emerald-400" : "bg-muted-foreground/30"}`}
+          className={`mt-1.5 size-2 shrink-0 rounded-full ${!relay.enabled ? "bg-sky-400" : relay.lastError ? "bg-destructive" : relay.lastConnectedAt ? "bg-emerald-400" : "bg-muted-foreground/30"}`}
         />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -229,13 +267,29 @@ const RelayRow = React.memo(function RelayRow({
             variant="ghost"
             title="Check connection"
             aria-label={`Check ${relay.name} connection`}
-            disabled={pending !== null}
+            disabled={pending !== null || !relay.enabled}
             onClick={(event) => void refresh(event)}
           >
             {pending === "check" ? (
               <LoaderCircle className="animate-spin" />
             ) : (
               <RefreshCw />
+            )}
+          </Button>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            title={relay.enabled ? "Pause Relay" : "Resume Relay"}
+            aria-label={`${relay.enabled ? "Pause" : "Resume"} ${relay.name}`}
+            disabled={pending !== null}
+            onClick={(event) => void togglePaused(event)}
+          >
+            {pending === "pause" || pending === "resume" ? (
+              <LoaderCircle className="animate-spin" />
+            ) : relay.enabled ? (
+              <Pause />
+            ) : (
+              <Play />
             )}
           </Button>
           <Button
@@ -259,6 +313,13 @@ const RelayRow = React.memo(function RelayRow({
 })
 
 function RelayMetadata({ relay }: { relay: PersistedRelay }) {
+  if (!relay.enabled) {
+    return (
+      <p className="mt-2 flex items-center gap-1.5 text-[10px] leading-4 text-sky-300/85">
+        <Pause className="size-3" /> Hearth requests are paused
+      </p>
+    )
+  }
   if (relay.lastError) {
     return (
       <p className="mt-2 line-clamp-2 text-[10px] leading-4 text-destructive/85">
@@ -344,12 +405,19 @@ const RelayEditor = React.memo(function RelayEditor({
             data: { ...input, id: relay.id, token: token || undefined },
           })
         : await addMutation.mutateAsync({ data: { ...input, token } })
-      setFeedback({
-        tone: saved.lastError ? "error" : "success",
-        message: saved.lastError
-          ? `${saved.name} was saved, but Hearth could not connect.`
-          : `${saved.name} is saved and connected.`,
-      })
+      if (!saved.enabled) {
+        setFeedback({
+          tone: "success",
+          message: `${saved.name} was saved without a connection check because it was paused.`,
+        })
+      } else {
+        setFeedback({
+          tone: saved.lastError ? "error" : "success",
+          message: saved.lastError
+            ? `${saved.name} was saved, but Hearth could not connect.`
+            : `${saved.name} is saved and connected.`,
+        })
+      }
       if (!relay) formRef.current?.reset()
     } catch (cause) {
       setFeedback({
@@ -561,15 +629,117 @@ function Field({
   )
 }
 
-async function invalidateRelayQueries(
-  queryClient: ReturnType<typeof useQueryClient>
-) {
+async function invalidateRelayQueries(queryClient: QueryClient) {
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: queryKeys.relays }),
-    queryClient.invalidateQueries({ queryKey: queryKeys.relay.connection }),
-    queryClient.invalidateQueries({ queryKey: queryKeys.relay.snapshot }),
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.relay.connection,
+      exact: true,
+    }),
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.relay.snapshot,
+      exact: true,
+    }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.bricks }),
     queryClient.invalidateQueries({ queryKey: queryKeys.access.capabilities }),
   ])
+}
+
+async function pauseRelay(
+  queryClient: QueryClient,
+  relay: PersistedRelay
+): Promise<void> {
+  await queryClient.cancelQueries({
+    predicate: ({ queryKey }) =>
+      queryKey[0] === queryKeys.relay.all[0] &&
+      (queryKey[1] === queryKeys.relay.connection[1] ||
+        queryKey[1] === queryKeys.relay.snapshot[1] ||
+        queryKey[1] === relay.id),
+  })
+  await setRelayEnabled({ data: { enabled: false, id: relay.id } })
+  await invalidateRelayQueries(queryClient)
+  dismissToast(relayResumedToastId(relay.id))
+  showPausedRelayToast(queryClient, relay)
+}
+
+async function resumeRelay(
+  queryClient: QueryClient,
+  relay: PersistedRelay
+): Promise<void> {
+  const existing = pendingRelayResumes.get(relay.id)
+  if (existing) return existing
+
+  dismissToast(relayResumeErrorToastId(relay.id))
+  const pending = performRelayResume(queryClient, relay)
+  pendingRelayResumes.set(relay.id, pending)
+  try {
+    await pending
+  } finally {
+    if (pendingRelayResumes.get(relay.id) === pending) {
+      pendingRelayResumes.delete(relay.id)
+    }
+  }
+}
+
+async function performRelayResume(
+  queryClient: QueryClient,
+  relay: PersistedRelay
+): Promise<void> {
+  await setRelayEnabled({ data: { enabled: true, id: relay.id } })
+  await invalidateRelayQueries(queryClient)
+  dismissToast(relayPausedToastId(relay.id))
+  dismissToast(relayResumeErrorToastId(relay.id))
+  showToast({
+    type: "success",
+    message: <RelayToastTitle name={relay.name} state="resumed" />,
+    id: relayResumedToastId(relay.id),
+    icon: <Play className="size-4 text-emerald-400" />,
+    description: "Hearth has resumed requesting Relay data.",
+    duration: 4_000,
+  })
+}
+
+function showPausedRelayToast(
+  queryClient: QueryClient,
+  relay: PersistedRelay
+): void {
+  showToast({
+    type: "info",
+    message: <RelayToastTitle name={relay.name} state="paused" />,
+    id: relayPausedToastId(relay.id),
+    icon: <Pause className="size-4 text-sky-400" />,
+    description: "Hearth stopped requesting data. The Relay remains online.",
+    duration: Infinity,
+    action: {
+      label: "Reconnect",
+      onClick: (event) => {
+        event.preventDefault()
+        void resumeRelay(queryClient, relay).catch((cause: unknown) => {
+          showToast({
+            type: "error",
+            message: (
+              <RelayToastTitle name={relay.name} state="could not be resumed" />
+            ),
+            id: relayResumeErrorToastId(relay.id),
+            description: messageFrom(cause, "Try reconnecting again."),
+            duration: 6_000,
+          })
+        })
+      },
+    },
+  })
+}
+
+function relayPausedToastId(relayId: string): string {
+  return `relay-paused:${relayId}`
+}
+
+function relayResumedToastId(relayId: string): string {
+  return `relay-resumed:${relayId}`
+}
+
+function relayResumeErrorToastId(relayId: string): string {
+  return `relay-resume-error:${relayId}`
 }
 
 function relayEditorPropsEqual(

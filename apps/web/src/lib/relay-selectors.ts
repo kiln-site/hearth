@@ -133,7 +133,7 @@ function sidebarInstance(
 }
 
 export function selectRelayConfigured(connection: RelayConnection): boolean {
-  return connection.status !== "unconfigured"
+  return connection.status !== "unconfigured" && connection.status !== "paused"
 }
 
 export function selectRelayConnected(relayId: string) {

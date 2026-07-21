@@ -11,6 +11,7 @@ import {
 import { AppRouteContent } from "@/components/app-route-content"
 import { AppSidebar } from "@/components/app-sidebar"
 import { PanelFooter } from "@/components/panel-footer"
+import { RelayConnectionToastMonitor } from "@/components/relay-connection-toast"
 import { uiPreferencesQueryOptions } from "@/lib/query-options"
 
 export const AppFrame = React.memo(function AppFrame({
@@ -22,6 +23,7 @@ export const AppFrame = React.memo(function AppFrame({
 
   return (
     <SidebarProvider defaultOpen={uiPreferences.sidebarOpen}>
+      <RelayConnectionToastMonitor />
       <MobileSidebarNavigationDismiss />
       <AppSidebar
         selectedInstanceRouteId={uiPreferences.selectedInstanceRouteId}

@@ -144,13 +144,25 @@ export const getRelayConnectionState = createServerFn({
   method: "GET",
 }).handler(async () => {
   const user = await requireAuthenticatedUser()
-  const relays = (await listPersistedRelays()).filter((relay) => relay.enabled)
+  const configuredRelays = await listPersistedRelays()
 
-  if (relays.length === 0) {
+  if (configuredRelays.length === 0) {
     return {
       status: "unconfigured" as const,
       message: "No Relay has been configured yet.",
       relay: null,
+    }
+  }
+
+  const relays = configuredRelays.filter((relay) => relay.enabled)
+  if (relays.length === 0) {
+    return {
+      status: "paused" as const,
+      message: "All configured Relays are paused.",
+      relay: publicPausedFleetRelay(configuredRelays),
+      relays: configuredRelays.map((relay) =>
+        publicRelayState({ relay, status: "paused" })
+      ),
     }
   }
 
@@ -738,9 +750,18 @@ function publicFleetRelay(
   }
 }
 
-function publicRelayState(entry: {
+function publicPausedFleetRelay(relays: Array<PersistedRelay>) {
+  const relay = relays[0]
+  if (relays.length === 1 && relay) return { id: relay.id, name: relay.name }
+  return {
+    id: "relay-fleet",
+    name: `${relays.length} Relays paused`,
+  }
+}
+
+function publicRelayState<TStatus extends RelayReachability | "paused">(entry: {
   relay: PersistedRelay
-  status: RelayReachability
+  status: TStatus
 }) {
   return {
     id: entry.relay.id,

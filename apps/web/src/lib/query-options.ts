@@ -35,6 +35,7 @@ export const queryKeys = {
   },
   bricks: ["bricks", "studio"] as const,
   relay: {
+    all: ["relay"] as const,
     connection: ["relay", "connection"] as const,
     console: (relayId: string, instanceId: string) =>
       ["relay", relayId, "instances", instanceId, "console"] as const,
@@ -89,10 +90,12 @@ export function relayConnectionQueryOptions(queryClient: QueryClient) {
       }
       return connection
     },
-    refetchInterval: (query) =>
-      query.state.data?.status === "connected"
+    refetchInterval: (query) => {
+      if (query.state.data?.status === "paused") return false
+      return query.state.data?.status === "connected"
         ? connectedRelayPollDelayMs
-        : disconnectedRelayPollDelayMs,
+        : disconnectedRelayPollDelayMs
+    },
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: "always",
     staleTime: connectedRelayPollDelayMs,

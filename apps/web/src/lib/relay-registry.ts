@@ -5,7 +5,7 @@ import { Effect } from "effect"
 import { relaySnapshotSchema } from "@workspace/contracts"
 
 import { Database } from "@/effect/database"
-import { CredentialError } from "@/effect/errors"
+import { CredentialError, ResourceNotFoundError } from "@/effect/errors"
 import { runAppEffect } from "@/effect/runtime"
 import { databasePool } from "@/lib/database"
 import { databaseTable } from "@/lib/database-config"
@@ -106,7 +106,7 @@ export async function updatePersistedRelay(input: {
   const [result] = await databasePool.execute<ResultSetHeader>(
     `UPDATE ${databaseTable("relay")}
         SET name = ?, hostname = ?, port = ?, use_tls = ?,
-            token_ciphertext = COALESCE(?, token_ciphertext), enabled = TRUE
+            token_ciphertext = COALESCE(?, token_ciphertext)
       WHERE id = ?`,
     [
       input.name,
@@ -118,13 +118,53 @@ export async function updatePersistedRelay(input: {
     ]
   )
   if (result.affectedRows !== 1) throw new Error("Relay not found")
-  await checkPersistedRelay(input.id)
   const relay = (await listPersistedRelays()).find(
     (item) => item.id === input.id
   )
   if (!relay) throw new Error("Relay was saved but could not be read back")
-  return relay
+  return relay.enabled ? checkPersistedRelay(input.id) : relay
 }
+
+export function setPersistedRelayEnabled(
+  id: string,
+  enabled: boolean
+): Promise<PersistedRelay> {
+  return runAppEffect(
+    "relays.setEnabled",
+    setPersistedRelayEnabledEffect(id, enabled)
+  )
+}
+
+export const setPersistedRelayEnabledEffect = Effect.fn("relays.setEnabled")(
+  function* (id: string, enabled: boolean) {
+    const database = yield* Database
+    const result = yield* database.execute(
+      "relay_set_enabled",
+      `UPDATE ${databaseTable("relay")} SET enabled = ? WHERE id = ?`,
+      [enabled, id]
+    )
+    if (result.affectedRows !== 1) {
+      return yield* Effect.fail(
+        ResourceNotFoundError.make({
+          resource: "relay",
+          message: "Relay not found",
+        })
+      )
+    }
+    const relay = (yield* listPersistedRelaysEffect()).find(
+      (item) => item.id === id
+    )
+    if (!relay) {
+      return yield* Effect.fail(
+        ResourceNotFoundError.make({
+          resource: "relay",
+          message: "Relay was updated but could not be read back",
+        })
+      )
+    }
+    return relay
+  }
+)
 
 export async function deletePersistedRelay(id: string): Promise<void> {
   const [result] = await databasePool.execute<ResultSetHeader>(
@@ -139,6 +179,7 @@ export async function deletePersistedRelay(id: string): Promise<void> {
 export async function checkPersistedRelay(id: string): Promise<PersistedRelay> {
   const relay = (await listPersistedRelays()).find((item) => item.id === id)
   if (!relay) throw new Error("Relay not found")
+  if (!relay.enabled) return relay
 
   let error: string | null = null
   try {
