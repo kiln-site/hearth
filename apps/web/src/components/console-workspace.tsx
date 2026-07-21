@@ -1554,6 +1554,11 @@ function useRelayConsoleStream(
       })
     )
 
+    function commitSnapshot(patch: Partial<ConsoleStreamSnapshot>) {
+      if (cancelled) return
+      setSnapshot((current) => updateConsoleStreamSnapshot(current, patch))
+    }
+
     function flush() {
       flushTimer = null
       if (cancelled || pending.length === 0) return
@@ -1574,9 +1579,7 @@ function useRelayConsoleStream(
         queryKeys.relay.console(relayId, instanceId),
         next
       )
-      setSnapshot((previous) =>
-        updateConsoleStreamSnapshot(previous, { consoleData: next })
-      )
+      commitSnapshot({ consoleData: next })
     }
 
     function append(line: RelayConsoleLine) {
@@ -1601,6 +1604,9 @@ function useRelayConsoleStream(
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           while (!cancelled) {
             const result = await activeIterator.next()
+            // Cleanup can run while the iterator awaits its next event.
+            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+            if (cancelled) break
             if (result.done) throw new Error("Console stream closed")
             if (result.value.type === "ready") {
               const nextConsole = consoleDataRef.current ?? {
@@ -1613,13 +1619,11 @@ function useRelayConsoleStream(
                 queryKeys.relay.console(relayId, instanceId),
                 nextConsole
               )
-              setSnapshot((current) =>
-                updateConsoleStreamSnapshot(current, {
-                  connection: "live",
-                  consoleData: nextConsole,
-                  loading: false,
-                })
-              )
+              commitSnapshot({
+                connection: "live",
+                consoleData: nextConsole,
+                loading: false,
+              })
               retryDelay = 400
             } else {
               append(result.value.line)
@@ -1628,12 +1632,10 @@ function useRelayConsoleStream(
         } catch {
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           if (cancelled) break
-          setSnapshot((current) =>
-            updateConsoleStreamSnapshot(current, {
-              connection: "unavailable",
-              loading: false,
-            })
-          )
+          commitSnapshot({
+            connection: "unavailable",
+            loading: false,
+          })
           await waitForRetry(retryDelay, lifecycle.signal)
           retryDelay = Math.min(retryDelay * 2, 5_000)
         }

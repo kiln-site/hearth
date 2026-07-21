@@ -41,6 +41,7 @@ import {
 } from "@/effect/errors"
 import { runAppEffect } from "@/effect/runtime"
 import {
+  cachedRelayFallbackJsonEffect,
   cachedRelayJsonEffect,
   invalidateRelayCache,
   relayCachePolicy,
@@ -161,7 +162,7 @@ export const getRelayConnectionState = createServerFn({
         warnRelayUnavailable(relay.id, cause)
         return {
           relay,
-          snapshot: await authorizedRelaySnapshot(relay, user, true).catch(
+          snapshot: await authorizedRelayFallbackSnapshot(relay, user).catch(
             () => null
           ),
           status: "unreachable" as const,
@@ -575,19 +576,41 @@ async function relayRequestRaw(
 
 async function authorizedRelaySnapshot(
   relay: RelayEndpoint,
-  user: AuthenticatedUser,
-  fallbackOnError = false
+  user: AuthenticatedUser
 ) {
   const snapshot = await runAppEffect(
     "relay.snapshot",
     cachedRelayJsonEffect({
       decode: relaySnapshotSchema.parse,
-      fallbackOnError,
       path: "/v1/snapshot",
       policy: relayCachePolicy.snapshot(relay.id),
       relay,
     })
   )
+  const allowed = await allowedInstanceIds(
+    user,
+    relay.id,
+    snapshot.instances.map((instance) => instance.id)
+  )
+  const instances = snapshot.instances.filter((item) => allowed.has(item.id))
+  return {
+    ...snapshot,
+    instances: await applyInstanceDisplayNames(relay.id, instances),
+  }
+}
+
+async function authorizedRelayFallbackSnapshot(
+  relay: RelayEndpoint,
+  user: AuthenticatedUser
+) {
+  const snapshot = await runAppEffect(
+    "relay.snapshotFallback",
+    cachedRelayFallbackJsonEffect({
+      decode: relaySnapshotSchema.parse,
+      policy: relayCachePolicy.snapshot(relay.id),
+    })
+  )
+  if (!snapshot) return null
   const allowed = await allowedInstanceIds(
     user,
     relay.id,
@@ -658,7 +681,7 @@ async function authorizedFleetSnapshot(
         if (!fallbackOnError) throw cause
         return {
           relay,
-          snapshot: await authorizedRelaySnapshot(relay, user, true).catch(
+          snapshot: await authorizedRelayFallbackSnapshot(relay, user).catch(
             () => null
           ),
           status: "unreachable" as const,

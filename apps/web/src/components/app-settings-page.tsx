@@ -199,6 +199,7 @@ const RelayRow = React.memo(function RelayRow({
           event.target === event.currentTarget &&
           (event.key === "Enter" || event.key === " ")
         ) {
+          event.preventDefault()
           selection.select(relay.id)
         }
       }}

@@ -98,16 +98,24 @@ export async function updatePersistedRelay(input: {
   hostname: string
   port: number
   token?: string
+  useTls: boolean
 }): Promise<PersistedRelay> {
   const tokenCiphertext = input.token
     ? encryptRelayToken(input.token)
     : undefined
   const [result] = await databasePool.execute<ResultSetHeader>(
     `UPDATE ${databaseTable("relay")}
-        SET name = ?, hostname = ?, port = ?,
+        SET name = ?, hostname = ?, port = ?, use_tls = ?,
             token_ciphertext = COALESCE(?, token_ciphertext), enabled = TRUE
       WHERE id = ?`,
-    [input.name, input.hostname, input.port, tokenCiphertext ?? null, input.id]
+    [
+      input.name,
+      input.hostname,
+      input.port,
+      input.useTls,
+      tokenCiphertext ?? null,
+      input.id,
+    ]
   )
   if (result.affectedRows !== 1) throw new Error("Relay not found")
   await checkPersistedRelay(input.id)

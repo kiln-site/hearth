@@ -70,8 +70,10 @@ class AppRouterErrorBoundaryImpl extends React.Component<
   state = { error: null }
   unsubscribeFromNavigation: (() => void) | null = null
 
-  static getDerivedStateFromError(error: Error) {
-    return { error }
+  static getDerivedStateFromError(error: unknown) {
+    return {
+      error: error instanceof Error ? error : new Error(String(error)),
+    }
   }
 
   componentDidMount() {

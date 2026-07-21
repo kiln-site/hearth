@@ -31,6 +31,7 @@ export const InstanceRouteFrame = React.memo(function InstanceRouteFrame({
   )
   const { data: uiPreferences } = useSuspenseQuery(uiPreferencesQueryOptions())
   const instanceId = instance?.id
+  const relayId = instance?.relayId
 
   const fileTreePreferences = React.useMemo(
     () => ({
@@ -45,7 +46,10 @@ export const InstanceRouteFrame = React.memo(function InstanceRouteFrame({
       capabilities.grants.some(
         (grant) =>
           roleHasPermission(grant.role, permission) &&
-          (grant.resourceType === "relay" || grant.resourceId === instanceId)
+          grant.relayId === relayId &&
+          (grant.resourceType === "relay"
+            ? grant.resourceId === relayId
+            : grant.resourceId === instanceId)
       )
 
     return {
@@ -55,7 +59,7 @@ export const InstanceRouteFrame = React.memo(function InstanceRouteFrame({
       settings: can("instance.settings"),
       shareLogs: can("instance.logs.share"),
     }
-  }, [capabilities.grants, capabilities.isPlatformAdmin, instanceId])
+  }, [capabilities.grants, capabilities.isPlatformAdmin, instanceId, relayId])
 
   if (!instance) return null
 

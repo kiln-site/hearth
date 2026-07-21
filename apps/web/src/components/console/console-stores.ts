@@ -129,6 +129,7 @@ export function createConsoleUiStore(): ConsoleUiStore {
     getWrapLinesSnapshot: () => wrapLines,
     setFilteredLines: (lines) => {
       filteredLines = lines
+      lastSelected = null
     },
     setQuery: (nextQuery) => {
       if (query === nextQuery) return

@@ -2415,7 +2415,7 @@ export function FileWorkspace(props: FileWorkspaceProps) {
 
       const nextLocation = router.buildLocation({
         to: "/$serverId/files/$",
-        params: { serverId: props.instance.shortId, _splat: path },
+        params: { serverId: props.instance.routeId, _splat: path },
       })
       const nextUrl = new URL(nextLocation.href, window.location.href).href
       selectionStore.navigate(path, window.location.href, nextUrl)
@@ -2423,12 +2423,12 @@ export function FileWorkspace(props: FileWorkspaceProps) {
 
       void router.navigate({
         to: "/$serverId/files/$",
-        params: { serverId: props.instance.shortId, _splat: path },
+        params: { serverId: props.instance.routeId, _splat: path },
         replace: true,
         resetScroll: false,
       })
     },
-    [props.active, props.instance.shortId, router, selectionStore]
+    [props.active, props.instance.routeId, router, selectionStore]
   )
 
   return (

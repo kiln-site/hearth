@@ -4,7 +4,11 @@ import { Effect, Layer } from "effect"
 import { AppCache } from "@/effect/cache"
 import { CacheError } from "@/effect/errors"
 
-import { invalidateCached, readThroughCache } from "./cache"
+import {
+  invalidateCached,
+  readCachedFallback,
+  readThroughCache,
+} from "./cache"
 
 const policy = { key: "example", name: "Example", ttlMs: 1_000 }
 const fallbackPolicy = { ...policy, fallbackTtlMs: 60_000 }
@@ -138,6 +142,20 @@ describe("readThroughCache", () => {
       assert.strictEqual(result, "last-known")
       assert.strictEqual(cache.state.sets, 0)
       assert.strictEqual(cache.values.has(policy.key), false)
+    }).pipe(Effect.provide(cache.layer))
+  })
+
+  it.effect("reads last-known data without invoking a source load", () => {
+    const cache = testCache()
+    cache.values.set(fallbackKey, JSON.stringify("last-known"))
+    return Effect.gen(function* () {
+      const result = yield* readCachedFallback(
+        fallbackPolicy,
+        decodeString
+      )
+      assert.strictEqual(result, "last-known")
+      assert.strictEqual(cache.state.gets, 1)
+      assert.strictEqual(cache.state.sets, 0)
     }).pipe(Effect.provide(cache.layer))
   })
 

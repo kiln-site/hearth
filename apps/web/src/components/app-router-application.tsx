@@ -1,6 +1,7 @@
 import { Matches, useRouterState } from "@tanstack/react-router"
 
 import { AppDocument } from "@/components/app-document"
+import { AppRouterErrorBoundary } from "@/components/app-error-page"
 import { AppFrame } from "@/components/app-frame"
 
 export function AppRouterApplication() {
@@ -11,13 +12,15 @@ export function AppRouterApplication() {
 
   return (
     <AppDocument>
-      {usesAppFrame ? (
-        <AppFrame>
+      <AppRouterErrorBoundary>
+        {usesAppFrame ? (
+          <AppFrame>
+            <Matches />
+          </AppFrame>
+        ) : (
           <Matches />
-        </AppFrame>
-      ) : (
-        <Matches />
-      )}
+        )}
+      </AppRouterErrorBoundary>
     </AppDocument>
   )
 }

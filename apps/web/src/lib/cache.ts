@@ -70,6 +70,15 @@ export const invalidateCached = Effect.fn("cache.invalidate")(function* (
   }
 })
 
+export const readCachedFallback = Effect.fn("cache.readFallback")(function* <
+  TResult,
+>(policy: CachePolicy, decode: (input: unknown) => TResult) {
+  const cache = yield* AppCache
+  if (!cache.enabled || !policy.fallbackTtlMs) return undefined
+  const cached = yield* readCachedJson(fallbackPolicy(policy), decode)
+  return Option.getOrUndefined(cached)
+})
+
 export const writeCachedJson = Effect.fn("cache.write")(function* <TValue>(
   policy: CachePolicy,
   value: TValue

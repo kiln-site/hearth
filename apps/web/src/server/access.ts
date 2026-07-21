@@ -15,19 +15,23 @@ import {
 import { databasePool } from "@/lib/database"
 import { databaseTable } from "@/lib/database-config"
 import { emailDeliveryConfig, kilnPublicUrl } from "@/lib/environment"
-import { accessRoles } from "@/lib/permissions"
+import { accessRoles, roleHasPermission } from "@/lib/permissions"
+import type { PersistedRelay } from "@/lib/relay-registry"
+import { listPersistedRelays } from "@/lib/relay-registry"
 import { requireAuthenticatedUser } from "@/server/auth"
 
 const tokenSchema = z.object({ token: z.string().min(32).max(256) })
-const grantIdSchema = z.object({ id: z.uuid() })
-const invitationIdSchema = z.object({ id: z.uuid() })
+const relayResourceIdSchema = z.object({ id: z.uuid(), relayId: z.uuid() })
 const invitationSchema = z.object({
   email: z.email().transform((value) => value.trim().toLowerCase()),
   instanceId: z.string().min(1).max(64).nullable(),
+  relayId: z.uuid(),
   resourceName: z.string().trim().min(1).max(160),
   role: z.enum(accessRoles),
 })
-const updateGrantSchema = grantIdSchema.extend({ role: z.enum(accessRoles) })
+const updateGrantSchema = relayResourceIdSchema.extend({
+  role: z.enum(accessRoles),
+})
 
 interface InvitationRow extends RowDataPacket {
   accepted_at: Date | null
@@ -64,23 +68,22 @@ interface PendingInvitationRow extends RowDataPacket {
 export const getAccessCapabilities = createServerFn({ method: "GET" }).handler(
   async () => {
     const user = await requireAuthenticatedUser()
-    const relay = await defaultRelay()
-    const grants =
-      relay && !isPlatformAdmin(user)
-        ? await listUserGrants(user.id, relay.id)
-        : []
+    const platformAdmin = isPlatformAdmin(user)
+    const relays = (await listPersistedRelays()).filter((relay) => relay.enabled)
+    const grants = platformAdmin ? [] : await listUserGrants(user.id)
+    const enabledRelayIds = new Set(relays.map((relay) => relay.id))
     return {
       user,
       canManageAccess:
-        isPlatformAdmin(user) ||
-        (relay
-          ? await hasRelayPermission({
-              user,
-              relayId: relay.id,
-              permission: "access.manage",
-            })
-          : false),
-      isPlatformAdmin: isPlatformAdmin(user),
+        platformAdmin ||
+        grants.some(
+          (grant) =>
+            enabledRelayIds.has(grant.relayId) &&
+            grant.resourceType === "relay" &&
+            grant.resourceId === grant.relayId &&
+            roleHasPermission(grant.role, "access.manage")
+        ),
+      isPlatformAdmin: platformAdmin,
       grants,
     }
   }
@@ -89,64 +92,101 @@ export const getAccessCapabilities = createServerFn({ method: "GET" }).handler(
 export const getAccessOverview = createServerFn({ method: "GET" }).handler(
   async () => {
     const user = await requireAuthenticatedUser()
-    const relay = await requiredDefaultRelay()
-    await requireRelayPermission({
-      user,
-      relayId: relay.id,
-      permission: "access.manage",
-    })
-    const [grants, invitations] = await Promise.all([
-      databasePool.query<Array<AccessOverviewRow>>(
-        `SELECT grant_row.id, grant_row.user_id, grant_row.resource_type,
-                grant_row.resource_id, grant_row.role, grant_row.created_at,
-                auth_user.name, auth_user.email
-           FROM ${databaseTable("access_grant")} AS grant_row
-           JOIN ${databaseTable("user")} AS auth_user ON auth_user.id = grant_row.user_id
-          WHERE grant_row.relay_id = ?
-          ORDER BY auth_user.name ASC, grant_row.created_at ASC`,
-        [relay.id]
-      ),
-      databasePool.query<Array<PendingInvitationRow>>(
-        `SELECT id, email, instance_id, role, expires_at, created_at
-           FROM ${databaseTable("invitation")}
-          WHERE relay_id = ?
-            AND accepted_at IS NULL
-            AND revoked_at IS NULL
-            AND expires_at > CURRENT_TIMESTAMP(3)
-          ORDER BY created_at DESC`,
-        [relay.id]
-      ),
-    ])
+    const platformAdmin = isPlatformAdmin(user)
+    const relays = (await listPersistedRelays()).filter((relay) => relay.enabled)
+    const relayAccess = await Promise.all(
+      relays.map(async (relay) => ({
+        relay,
+        manageable:
+          platformAdmin ||
+          (await hasRelayPermission({
+            user,
+            relayId: relay.id,
+            permission: "access.manage",
+          })),
+      }))
+    )
+    const manageableRelays = relayAccess.flatMap((entry) =>
+      entry.manageable ? [entry.relay] : []
+    )
+    if (manageableRelays.length === 0) {
+      throw new Error("You do not have permission to manage Relay access")
+    }
+    const sections = await Promise.all(
+      manageableRelays.map((relay) => relayAccessOverview(user, relay))
+    )
     return {
-      canManageOwners: await canManageOwners(user, relay.id),
-      grants: grants[0].map((grant) => ({
-        createdAt: grant.created_at.toISOString(),
-        email: grant.email,
-        id: grant.id,
-        name: grant.name,
-        resourceId: grant.resource_id,
-        resourceType: grant.resource_type,
-        role: grant.role,
-        userId: grant.user_id,
-      })),
-      invitations: invitations[0].map((invitation) => ({
-        createdAt: invitation.created_at.toISOString(),
-        email: invitation.email,
-        expiresAt: invitation.expires_at.toISOString(),
-        id: invitation.id,
-        instanceId: invitation.instance_id,
-        role: invitation.role,
-      })),
-      relay: { id: relay.id, name: relay.name },
+      grants: sections.flatMap((section) => section.grants),
+      invitations: sections.flatMap((section) => section.invitations),
+      ownerRelayIds: sections.flatMap((section) =>
+        section.canManageOwners ? [section.relay.id] : []
+      ),
+      relays: sections.map((section) => section.relay),
     }
   }
 )
+
+async function relayAccessOverview(
+  user: Awaited<ReturnType<typeof requireAuthenticatedUser>>,
+  relay: PersistedRelay
+) {
+  const [grants, invitations, ownerAccess] = await Promise.all([
+    databasePool.query<Array<AccessOverviewRow>>(
+      `SELECT grant_row.id, grant_row.user_id, grant_row.resource_type,
+              grant_row.resource_id, grant_row.role, grant_row.created_at,
+              auth_user.name, auth_user.email
+         FROM ${databaseTable("access_grant")} AS grant_row
+         JOIN ${databaseTable("user")} AS auth_user ON auth_user.id = grant_row.user_id
+        WHERE grant_row.relay_id = ?
+        ORDER BY auth_user.name ASC, grant_row.created_at ASC`,
+      [relay.id]
+    ),
+    databasePool.query<Array<PendingInvitationRow>>(
+      `SELECT id, email, instance_id, role, expires_at, created_at
+         FROM ${databaseTable("invitation")}
+        WHERE relay_id = ?
+          AND accepted_at IS NULL
+          AND revoked_at IS NULL
+          AND expires_at > CURRENT_TIMESTAMP(3)
+        ORDER BY created_at DESC`,
+      [relay.id]
+    ),
+    canManageOwners(user, relay.id),
+  ])
+
+  return {
+    canManageOwners: ownerAccess,
+    grants: grants[0].map((grant) => ({
+      createdAt: grant.created_at.toISOString(),
+      email: grant.email,
+      id: grant.id,
+      name: grant.name,
+      relayId: relay.id,
+      relayName: relay.name,
+      resourceId: grant.resource_id,
+      resourceType: grant.resource_type,
+      role: grant.role,
+      userId: grant.user_id,
+    })),
+    invitations: invitations[0].map((invitation) => ({
+      createdAt: invitation.created_at.toISOString(),
+      email: invitation.email,
+      expiresAt: invitation.expires_at.toISOString(),
+      id: invitation.id,
+      instanceId: invitation.instance_id,
+      relayId: relay.id,
+      relayName: relay.name,
+      role: invitation.role,
+    })),
+    relay: { id: relay.id, name: relay.name },
+  }
+}
 
 export const createAccessInvitation = createServerFn({ method: "POST" })
   .validator(invitationSchema)
   .handler(async ({ data }) => {
     const user = await requireAuthenticatedUser()
-    const relay = await requiredDefaultRelay()
+    const relay = await requiredRelay(data.relayId)
     await requireRelayPermission({
       user,
       relayId: relay.id,
@@ -297,7 +337,7 @@ export const updateAccessGrant = createServerFn({ method: "POST" })
   .validator(updateGrantSchema)
   .handler(async ({ data }) => {
     const user = await requireAuthenticatedUser()
-    const relay = await requiredDefaultRelay()
+    const relay = await requiredRelay(data.relayId)
     await requireRelayPermission({
       user,
       relayId: relay.id,
@@ -320,10 +360,10 @@ export const updateAccessGrant = createServerFn({ method: "POST" })
   })
 
 export const removeAccessGrant = createServerFn({ method: "POST" })
-  .validator(grantIdSchema)
+  .validator(relayResourceIdSchema)
   .handler(async ({ data }) => {
     const user = await requireAuthenticatedUser()
-    const relay = await requiredDefaultRelay()
+    const relay = await requiredRelay(data.relayId)
     await requireRelayPermission({
       user,
       relayId: relay.id,
@@ -345,10 +385,10 @@ export const removeAccessGrant = createServerFn({ method: "POST" })
   })
 
 export const revokeAccessInvitation = createServerFn({ method: "POST" })
-  .validator(invitationIdSchema)
+  .validator(relayResourceIdSchema)
   .handler(async ({ data }) => {
     const user = await requireAuthenticatedUser()
-    const relay = await requiredDefaultRelay()
+    const relay = await requiredRelay(data.relayId)
     await requireRelayPermission({
       user,
       relayId: relay.id,
@@ -376,19 +416,13 @@ export const revokeAccessInvitation = createServerFn({ method: "POST" })
     return { revoked: true }
   })
 
-async function defaultRelay() {
-  const { resolveDefaultRelay } = await import("@/lib/relay-registry")
-  return resolveDefaultRelay()
-}
-
-async function requiredDefaultRelay() {
-  const relay = await defaultRelay()
-  if (!relay) throw new Error("No Relay is configured")
+async function requiredRelay(relayId: string) {
+  const relay = await relayById(relayId)
+  if (!relay?.enabled) throw new Error("Relay not found")
   return relay
 }
 
 async function relayById(id: string) {
-  const { listPersistedRelays } = await import("@/lib/relay-registry")
   return (await listPersistedRelays()).find((relay) => relay.id === id) ?? null
 }
 

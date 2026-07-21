@@ -14,7 +14,7 @@ import { hydrateRoot } from "react-dom/client"
 import { AppRouterApplication } from "@/components/app-router-application"
 import { createRenderAudit } from "@/lib/render-audit"
 
-if (import.meta.env.DEV) {
+if (import.meta.env.DEV && typeof window !== "undefined") {
   const { audit, onRender } = createRenderAudit()
   window.__hearthRenderAudit = audit
   scan({

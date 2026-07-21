@@ -122,9 +122,11 @@ subscription merely because they come from the same server response.
 ### Boundaries implemented by the refactor
 
 - The client and server entries compose `AppDocument` and the authenticated
-  `AppFrame` outside TanStack Router's changing match tree. The exported
-  `Matches` viewport is their child, so route-match commits own only the leaf
-  content they can actually change instead of the complete application DOM.
+  `AppFrame` outside TanStack Router's changing match tree. A recovery boundary
+  wraps that complete application tree without making the shell part of the
+  changing match tree. The exported `Matches` viewport is its leaf child, so
+  route-match commits own only the content they can actually change instead of
+  the complete application DOM.
 - The root and authenticated pathless routes retain route metadata, loaders,
   and authentication, but no longer own persistent application chrome.
   Settings authorization reads the parent `beforeLoad` context instead of
@@ -197,7 +199,8 @@ when every prop happens to retain its identity.
 ```text
 HearthStartClient / HearthStartServer
 └─ AppDocument                    outside route-match ownership
-   └─ AppFrame                    retained for authenticated routes
+   └─ AppRouterErrorBoundary      recovery without route-match ownership
+      └─ AppFrame                 retained for authenticated routes
       ├─ SidebarRegion
       │  ├─ SidebarIdentity       slow/static account data
       │  ├─ SidebarRelaySummary   narrow Relay selector

@@ -164,6 +164,7 @@ function BrickStudio({ studio }: { studio: Studio }) {
 
   async function loadCustomRecipe(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!relayConnected) return
     setPending("recipe")
     setError(null)
     try {
@@ -180,7 +181,7 @@ function BrickStudio({ studio }: { studio: Studio }) {
 
   async function deploy(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!selected) return
+    if (!selected || !relayConnected) return
     setPending("deploy")
     setError(null)
     try {
@@ -201,6 +202,7 @@ function BrickStudio({ studio }: { studio: Studio }) {
 
   async function saveNetworking(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!relayConnected) return
     setPending("network")
     setNetworkSaved(false)
     setError(null)
@@ -228,10 +230,7 @@ function BrickStudio({ studio }: { studio: Studio }) {
     <main className="h-full min-h-0 overflow-y-auto bg-background text-foreground">
       <GlobalPageToolbar label="Infrastructure / Bricks" />
 
-      <fieldset
-        disabled={!relayConnected}
-        className="mx-auto block max-w-7xl border-0 px-5 py-9 lg:px-8"
-      >
+      <div className="mx-auto max-w-7xl border-0 px-5 py-9 lg:px-8">
         <div className="grid gap-7 xl:grid-cols-[minmax(0,1fr)_23rem]">
           <div className="min-w-0">
             <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
@@ -269,6 +268,7 @@ function BrickStudio({ studio }: { studio: Studio }) {
             <CustomRecipeForm
               source={customSource}
               relayId={form.relayId}
+              relayConnected={relayConnected}
               pending={pending}
               onSourceChange={setCustomSource}
               onSubmit={loadCustomRecipe}
@@ -288,6 +288,7 @@ function BrickStudio({ studio }: { studio: Studio }) {
               selected={selected}
               relays={studio.relays}
               form={form}
+              relayConnected={relayConnected}
               variables={variables}
               pending={pending}
               onFormChange={setForm}
@@ -351,7 +352,9 @@ function BrickStudio({ studio }: { studio: Studio }) {
                   type="submit"
                   variant="outline"
                   className="w-full"
-                  disabled={pending !== null || !form.relayId}
+                  disabled={
+                    pending !== null || !form.relayId || !relayConnected
+                  }
                 >
                   {pending === "network" ? (
                     <LoaderCircle className="animate-spin" />
@@ -366,7 +369,7 @@ function BrickStudio({ studio }: { studio: Studio }) {
             </section>
           </aside>
         </div>
-      </fieldset>
+      </div>
     </main>
   )
 }
@@ -374,12 +377,14 @@ function BrickStudio({ studio }: { studio: Studio }) {
 function CustomRecipeForm({
   source,
   relayId,
+  relayConnected,
   pending,
   onSourceChange,
   onSubmit,
 }: {
   source: string
   relayId: string
+  relayConnected: boolean
   pending: PendingAction
   onSourceChange: (source: string) => void
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => Promise<void>
@@ -402,7 +407,7 @@ function CustomRecipeForm({
       <Button
         type="submit"
         variant="outline"
-        disabled={pending !== null || !relayId}
+        disabled={pending !== null || !relayId || !relayConnected}
       >
         {pending === "recipe" ? (
           <LoaderCircle className="animate-spin" />
@@ -534,6 +539,7 @@ function BrickDeploymentForm({
   selected,
   relays,
   form,
+  relayConnected,
   variables,
   pending,
   onFormChange,
@@ -543,6 +549,7 @@ function BrickDeploymentForm({
   selected: Brick | null
   relays: Array<PersistedRelay>
   form: DeploymentForm
+  relayConnected: boolean
   variables: Record<string, BrickVariableValue>
   pending: PendingAction
   onFormChange: React.Dispatch<React.SetStateAction<DeploymentForm>>
@@ -642,7 +649,9 @@ function BrickDeploymentForm({
         </label>
         <Button
           className="h-11 w-full"
-          disabled={!selected || pending !== null || !form.relayId}
+          disabled={
+            !selected || pending !== null || !form.relayId || !relayConnected
+          }
         >
           {pending === "deploy" ? (
             <LoaderCircle className="animate-spin" />

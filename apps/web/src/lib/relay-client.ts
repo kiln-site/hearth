@@ -5,6 +5,7 @@ import { z } from "zod"
 import { RelayResponseError, RelayUnavailableError } from "@/effect/errors"
 import {
   invalidateCached,
+  readCachedFallback,
   readThroughCache,
   writeCachedJson,
 } from "@/lib/cache"
@@ -149,6 +150,15 @@ export const cachedRelayJsonEffect = Effect.fn("relay.cachedJson")(function* <
     load: relayJsonEffect(options.relay, options.path, options.decode),
     policy: options.policy,
   })
+})
+
+export const cachedRelayFallbackJsonEffect = Effect.fn(
+  "relay.cachedFallbackJson"
+)(function* <TResult>(options: {
+  decode: (input: unknown) => TResult
+  policy: CachePolicy
+}) {
+  return yield* readCachedFallback(options.policy, options.decode)
 })
 
 export const invalidateRelayCache = invalidateCached

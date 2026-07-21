@@ -51,7 +51,7 @@ export const updateRelay = createServerFn({ method: "POST" })
     if (!isPlatformAdmin(user))
       throw new Error("Platform administrator access required")
     const { updatePersistedRelay } = await import("@/lib/relay-registry")
-    return updatePersistedRelay(data)
+    return updatePersistedRelay({ ...data, useTls: true })
   })
 
 export const checkRelay = createServerFn({ method: "POST" })

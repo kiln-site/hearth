@@ -18,7 +18,7 @@ import {
   TerminalSquare,
   UserRoundCog,
 } from "lucide-react"
-import { useNavigate, useRouterState } from "@tanstack/react-router"
+import { useMatch, useNavigate, useRouterState } from "@tanstack/react-router"
 
 import { Avatar, AvatarFallback } from "@workspace/ui/components/avatar"
 import {
@@ -482,6 +482,11 @@ function CanonicalInstanceRoute({
       (state.matches.at(-1)?.params as { serverId?: string } | undefined)
         ?.serverId,
   })
+  const filePath = useMatch({
+    from: "/_app/$serverId/files/$",
+    shouldThrow: false,
+    select: (match) => match.params._splat,
+  })
 
   // Router state can change through direct navigation and history, so this is
   // URL normalization rather than a deferred user-event handler.
@@ -491,7 +496,7 @@ function CanonicalInstanceRoute({
     if (activeTab === "files") {
       void navigate({
         to: "/$serverId/files/$",
-        params: { serverId: instanceRouteId, _splat: "" },
+        params: { serverId: instanceRouteId, _splat: filePath ?? "" },
         replace: true,
       })
       return
@@ -501,7 +506,7 @@ function CanonicalInstanceRoute({
       params: { serverId: instanceRouteId },
       replace: true,
     })
-  }, [activeTab, instanceRouteId, navigate, serverId])
+  }, [activeTab, filePath, instanceRouteId, navigate, serverId])
 
   return null
 }
