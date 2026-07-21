@@ -23,12 +23,6 @@ export type RouteInstance = SidebarInstance & {
   relayStatus: "connected" | "unreachable"
 }
 
-export interface RelaySidebarIdentity {
-  configured: boolean
-  relayCount: number
-  relayName?: string
-}
-
 export type InstanceWorkspaceInstance = Pick<
   RelayInstance,
   | "connectAddress"
@@ -116,14 +110,8 @@ function sidebarInstance(
   }
 }
 
-export function selectRelaySidebarIdentity(
-  connection: RelayConnection
-): RelaySidebarIdentity {
-  return {
-    configured: connection.status !== "unconfigured",
-    relayCount: connection.relays?.length ?? (connection.relay ? 1 : 0),
-    relayName: connection.relay?.name,
-  }
+export function selectRelayConfigured(connection: RelayConnection): boolean {
+  return connection.status !== "unconfigured"
 }
 
 export function selectRelayConnected(relayId: string) {

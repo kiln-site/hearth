@@ -12,7 +12,6 @@ import {
   ListTodo,
   LoaderCircle,
   LogOut,
-  Server,
   Settings,
   SlidersHorizontal,
   TerminalSquare,
@@ -53,13 +52,15 @@ import { authClient } from "@/lib/auth-client"
 import type { AuthenticatedUser } from "@/lib/auth-session"
 import {
   accessCapabilitiesQueryOptions,
-  type RelayConnection,
   relayConnectionQueryOptions,
   relaySnapshotQueryOptions,
 } from "@/lib/query-options"
 import { disableDevelopmentBypass } from "@/server/auth"
 import { findRelayInstance } from "@/lib/relay-selectors"
-import { selectRelaySidebarIdentity, selectSidebarInstances } from "@/lib/relay-selectors"
+import {
+  selectRelayConfigured,
+  selectSidebarInstances,
+} from "@/lib/relay-selectors"
 import type { SidebarInstance } from "@/lib/relay-selectors"
 
 export type InstanceTab = "console" | "files" | "info"
@@ -98,24 +99,22 @@ interface AppSidebarViewProps {
   user: AuthenticatedUser
   canManageAccess: boolean
   isPlatformAdmin: boolean
-  relayCount: number
-  relayName?: string
 }
 
 const emptyInstances: Array<SidebarInstance> = []
 
 export function AppSidebar() {
   const queryClient = useQueryClient()
-  const { data: relayIdentity } = useSuspenseQuery({
+  const { data: relayConfigured } = useSuspenseQuery({
     ...relayConnectionQueryOptions(queryClient),
-    select: selectRelaySidebarIdentity,
+    select: selectRelayConfigured,
   })
   const { data: capabilities } = useSuspenseQuery(
     accessCapabilitiesQueryOptions()
   )
   const { data: instances = emptyInstances } = useQuery({
     ...relaySnapshotQueryOptions(),
-    enabled: relayIdentity.configured,
+    enabled: relayConfigured,
     select: selectSidebarInstances,
   })
 
@@ -124,8 +123,6 @@ export function AppSidebar() {
       canManageAccess={capabilities.canManageAccess}
       instances={instances}
       isPlatformAdmin={capabilities.isPlatformAdmin}
-      relayName={relayIdentity.relayName}
-      relayCount={relayIdentity.relayCount}
       user={capabilities.user}
     />
   )
@@ -136,8 +133,6 @@ const AppSidebarView = React.memo(function AppSidebarView({
   user,
   canManageAccess,
   isPlatformAdmin,
-  relayCount,
-  relayName,
 }: AppSidebarViewProps) {
   return (
     <Sidebar collapsible="icon" className="border-sidebar-border/80">
@@ -162,8 +157,6 @@ const AppSidebarView = React.memo(function AppSidebarView({
         <InfrastructureNavigation
           instances={instances}
           isPlatformAdmin={isPlatformAdmin}
-          relayName={relayName}
-          relayCount={relayCount}
         />
 
         {instances.length > 0 ? <SidebarSeparator /> : null}
@@ -185,24 +178,10 @@ const AppSidebarView = React.memo(function AppSidebarView({
 function InfrastructureNavigation({
   instances,
   isPlatformAdmin,
-  relayName,
-  relayCount,
 }: {
   instances: Array<SidebarInstance>
   isPlatformAdmin: boolean
-  relayName?: string
-  relayCount: number
 }) {
-  const navigate = useNavigate()
-  const activeSection = useRouterState({
-    select: (state) => globalSectionFromPathname(state.location.pathname),
-  })
-  const serverId = useRouterState({
-    select: (state) =>
-      (state.matches.at(-1)?.params as { serverId?: string } | undefined)
-        ?.serverId,
-  })
-  const selectedInstance = findRelayInstance(instances, serverId)
   return (
     <SidebarGroup className="pt-2">
       <SidebarGroupLabel className="text-[10px] tracking-[0.12em] uppercase">
@@ -210,98 +189,55 @@ function InfrastructureNavigation({
       </SidebarGroupLabel>
       <SidebarGroupContent>
         <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip={
-                isPlatformAdmin
-                  ? "Bricks"
-                  : "Brick provisioning is administrator-only"
-              }
-              type="button"
-              isActive={activeSection === "bricks"}
-              aria-disabled={!isPlatformAdmin}
-              tabIndex={isPlatformAdmin ? 0 : -1}
-              className={
-                isPlatformAdmin
-                  ? "data-active:bg-primary/10 data-active:text-primary"
-                  : "text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
-              }
-              onClick={() => {
-                if (isPlatformAdmin) void navigate({ to: "/bricks" })
-              }}
-            >
-              <Boxes />
-              <span>Bricks</span>
-            </SidebarMenuButton>
-            <SidebarMenuBadge className="text-sidebar-foreground/25">
-              {instances.length}
-            </SidebarMenuBadge>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip={
-                isPlatformAdmin
-                  ? "Relays"
-                  : (relayName ?? "Relay configuration is administrator-only")
-              }
-              type="button"
-              isActive={activeSection === "settings"}
-              aria-disabled={!isPlatformAdmin}
-              tabIndex={isPlatformAdmin ? 0 : -1}
-              className={
-                isPlatformAdmin
-                  ? "data-active:bg-primary/10 data-active:text-primary"
-                  : "text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
-              }
-              onClick={() => {
-                if (isPlatformAdmin) void navigate({ to: "/settings/relays" })
-              }}
-            >
-              <Server />
-              <span>Relays</span>
-            </SidebarMenuButton>
-            <RelayStatusBadge
-              relayCount={relayCount}
-              relayId={selectedInstance?.relayId}
-              useFleetStatus={Boolean(activeSection)}
-            />
-          </SidebarMenuItem>
+          <BricksNavigationItem
+            instanceCount={instances.length}
+            isPlatformAdmin={isPlatformAdmin}
+          />
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
   )
 }
 
-function RelayStatusBadge({
-  relayCount,
-  relayId,
-  useFleetStatus,
+function BricksNavigationItem({
+  instanceCount,
+  isPlatformAdmin,
 }: {
-  relayCount: number
-  relayId?: string
-  useFleetStatus: boolean
+  instanceCount: number
+  isPlatformAdmin: boolean
 }) {
-  const queryClient = useQueryClient()
-  const selectStatus = React.useCallback(
-    (connection: RelayConnection) => {
-      if (useFleetStatus || connection.status !== "connected") {
-        return connection.status
-      }
-      return (
-        connection.relays.find((relay) => relay.id === relayId)?.status ??
-        connection.status
-      )
-    },
-    [relayId, useFleetStatus]
-  )
-  const { data: status } = useSuspenseQuery({
-    ...relayConnectionQueryOptions(queryClient),
-    select: selectStatus,
+  const navigate = useNavigate()
+  const isActive = useRouterState({
+    select: (state) => state.location.pathname === "/bricks",
   })
   return (
-    <SidebarMenuBadge className={relayBadgeTone(status)}>
-      {relayCount}
-    </SidebarMenuBadge>
+    <SidebarMenuItem>
+      <SidebarMenuButton
+        tooltip={
+          isPlatformAdmin
+            ? "Bricks"
+            : "Brick provisioning is administrator-only"
+        }
+        type="button"
+        isActive={isActive}
+        aria-disabled={!isPlatformAdmin}
+        tabIndex={isPlatformAdmin ? 0 : -1}
+        className={
+          isPlatformAdmin
+            ? "data-active:bg-primary/10 data-active:text-primary"
+            : "text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
+        }
+        onClick={() => {
+          if (isPlatformAdmin) void navigate({ to: "/bricks" })
+        }}
+      >
+        <Boxes />
+        <span>Bricks</span>
+      </SidebarMenuButton>
+      <SidebarMenuBadge className="text-sidebar-foreground/25">
+        {instanceCount}
+      </SidebarMenuBadge>
+    </SidebarMenuItem>
   )
 }
 
@@ -341,7 +277,7 @@ function SelectedInstanceNavigation({
   ) : null
 }
 
-function InstanceNavigation({
+const InstanceNavigation = React.memo(function InstanceNavigation({
   instance,
   instances,
   onRememberInstance,
@@ -401,17 +337,13 @@ function InstanceNavigation({
             navigateToTab={navigateToTab}
             onRememberInstance={onRememberInstance}
           />
-          <CanonicalInstanceRoute
-            instanceRouteId={instance.routeId}
-          />
-          <InstanceTabNavigation
-            navigateToTab={navigateToSelectedTab}
-          />
+          <CanonicalInstanceRoute instanceRouteId={instance.routeId} />
+          <InstanceTabNavigation navigateToTab={navigateToSelectedTab} />
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
   )
-}
+})
 
 const ServerSelector = React.memo(function ServerSelector({
   instance,
@@ -476,7 +408,7 @@ const ServerSelector = React.memo(function ServerSelector({
                   type="button"
                   aria-label={`${item.name}, ${item.implementation} ${item.version}, ${item.observedState}`}
                   aria-pressed={active}
-                  className={`flex w-full items-center gap-2.5 rounded-md border-l-2 px-1.5 py-2 text-left outline-none transition-colors duration-100 hover:bg-popover-accent hover:text-popover-accent-foreground focus-visible:bg-popover-accent focus-visible:text-popover-accent-foreground ${statusBorderTone(item.observedState)}`}
+                  className={`flex w-full items-center gap-2.5 rounded-md border-l-2 px-1.5 py-2 text-left transition-colors duration-100 outline-none hover:bg-popover-accent hover:text-popover-accent-foreground focus-visible:bg-popover-accent focus-visible:text-popover-accent-foreground ${statusBorderTone(item.observedState)}`}
                   onClick={() => {
                     setOpen(false)
                     onRememberInstance(item.routeId)
@@ -611,10 +543,6 @@ function AccountNavigation({
   isPlatformAdmin: boolean
   user: AuthenticatedUser
 }) {
-  const navigate = useNavigate()
-  const activeSection = useRouterState({
-    select: (state) => globalSectionFromPathname(state.location.pathname),
-  })
   const { isMobile } = useSidebar()
   const [signingOut, setSigningOut] = React.useState(false)
   return (
@@ -645,29 +573,11 @@ function AccountNavigation({
           </SidebarMenuButton>
         </SidebarMenuItem>
         <SidebarMenuItem>
-          {canManageAccess ? (
-            <SidebarMenuButton
-              tooltip="Access"
-              isActive={activeSection === "access"}
-              type="button"
-              onClick={() => void navigate({ to: "/access" })}
-            >
-              <UserRoundCog />
-              <span>Access</span>
-            </SidebarMenuButton>
-          ) : null}
+          {canManageAccess ? <AccessNavigationButton /> : null}
         </SidebarMenuItem>
         {isPlatformAdmin ? (
           <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip="Settings"
-              type="button"
-              isActive={activeSection === "settings"}
-              onClick={() => void navigate({ to: "/settings" })}
-            >
-              <Settings />
-              <span>Settings</span>
-            </SidebarMenuButton>
+            <SettingsNavigationButton />
           </SidebarMenuItem>
         ) : null}
         <SidebarMenuItem>
@@ -720,6 +630,44 @@ function AccountNavigation({
   )
 }
 
+function AccessNavigationButton() {
+  const navigate = useNavigate()
+  const isActive = useRouterState({
+    select: (state) => state.location.pathname === "/access",
+  })
+  return (
+    <SidebarMenuButton
+      tooltip="Access"
+      isActive={isActive}
+      type="button"
+      onClick={() => void navigate({ to: "/access" })}
+    >
+      <UserRoundCog />
+      <span>Access</span>
+    </SidebarMenuButton>
+  )
+}
+
+function SettingsNavigationButton() {
+  const navigate = useNavigate()
+  const isActive = useRouterState({
+    select: (state) =>
+      state.location.pathname === "/settings" ||
+      state.location.pathname.startsWith("/settings/"),
+  })
+  return (
+    <SidebarMenuButton
+      tooltip="Settings"
+      type="button"
+      isActive={isActive}
+      onClick={() => void navigate({ to: "/settings" })}
+    >
+      <Settings />
+      <span>Settings</span>
+    </SidebarMenuButton>
+  )
+}
+
 async function signOut(isDevelopmentBypass: boolean) {
   if (isDevelopmentBypass) await disableDevelopmentBypass()
   else await authClient.signOut()
@@ -743,14 +691,6 @@ function statusBorderTone(state: SidebarInstance["observedState"]): string {
   }
   if (state === "stopping") return "border-l-amber-400/45"
   return "border-l-muted-foreground/25"
-}
-
-function relayBadgeTone(
-  status: "connected" | "unconfigured" | "unreachable"
-): string {
-  if (status === "connected") return "text-emerald-400"
-  if (status === "unreachable") return "text-amber-400"
-  return "text-sidebar-foreground/35"
 }
 
 function globalSectionFromPathname(pathname: string): GlobalSection {
