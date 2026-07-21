@@ -167,6 +167,8 @@
     var(--kiln-toast-accent) 30%,
     var(--border)
   );
+  border-left-color: var(--kiln-toast-accent);
+  border-left-width: 3px;
   border-radius: 0;
   background: color-mix(in oklab, var(--popover) 90%, transparent);
   backdrop-filter: blur(6px);
@@ -199,15 +201,6 @@
 .kiln-toaster[data-sonner-toaster]
   [data-sonner-toast][data-styled="true"][data-type="loading"] {
   --kiln-toast-accent: var(--primary);
-}
-
-.kiln-toaster[data-sonner-toaster]
-  [data-sonner-toast][data-styled="true"]::after {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 3px;
-  background: var(--kiln-toast-accent);
-  content: "";
 }
 
 .kiln-toaster[data-sonner-toaster]
@@ -275,6 +268,9 @@
   font-size: 0.625rem;
   font-weight: 650;
   letter-spacing: 0.01em;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
 }
 
 .kiln-toaster[data-sonner-toaster]
@@ -282,10 +278,10 @@
   [data-button]:hover {
   border-color: color-mix(
     in oklab,
-    var(--kiln-toast-accent) 48%,
+    var(--kiln-toast-accent) 68%,
     var(--border)
   );
-  background: transparent;
+  background: color-mix(in oklab, var(--kiln-toast-accent) 7%, transparent);
 }
 
 .kiln-toaster[data-sonner-toaster]
@@ -313,8 +309,8 @@
   [data-sonner-toast][data-styled="true"]
   [data-close-button]:hover {
   border: 0;
-  background: transparent;
-  color: var(--muted-foreground);
+  background: oklch(1 0 0 / 0.04);
+  color: var(--foreground);
 }
 
 .kiln-toaster[data-sonner-toaster]
