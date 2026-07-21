@@ -19,14 +19,9 @@ import {
 import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
 
-import { GlobalPageToolbar } from "@/components/global-page-toolbar"
 import type { FleetRelayInstance } from "@/lib/relay-fleet"
 import type { AccessRole } from "@/lib/permissions"
-import {
-  accessRoleDetails,
-  accessRoles,
-  isAccessRole,
-} from "@/lib/permissions"
+import { accessRoleDetails, accessRoles, isAccessRole } from "@/lib/permissions"
 import { accessOverviewQueryOptions, queryKeys } from "@/lib/query-options"
 import {
   createAccessInvitation,
@@ -136,9 +131,7 @@ export function AccessPage({
     setError(null)
     setMessage(null)
     setInviteLink(null)
-    const target = invitationTargets.find(
-      (item) => item.key === form.targetKey
-    )
+    const target = invitationTargets.find((item) => item.key === form.targetKey)
     if (!target) {
       setError("Choose a Relay or instance")
       setPending(null)
@@ -171,11 +164,7 @@ export function AccessPage({
     }
   }
 
-  async function changeRole(
-    id: string,
-    relayId: string,
-    role: AccessRole
-  ) {
+  async function changeRole(id: string, relayId: string, role: AccessRole) {
     setPending(`grant:${id}`)
     setError(null)
     try {
@@ -216,9 +205,7 @@ export function AccessPage({
   }
 
   return (
-    <main className="h-full min-h-0 overflow-y-auto bg-background">
-      <GlobalPageToolbar label="Administration / Access" />
-
+    <div className="min-h-full bg-background">
       <div className="mx-auto max-w-6xl px-5 py-10">
         <p className="font-mono text-[10px] tracking-[0.18em] text-primary uppercase">
           Identity & access
@@ -297,7 +284,7 @@ export function AccessPage({
           />
         </div>
       </div>
-    </main>
+    </div>
   )
 }
 
@@ -319,9 +306,7 @@ function InviteAccessSection({
     targetKey: targets.at(0)?.key ?? "",
     role: "operator",
   })
-  const selectedTarget = targets.find(
-    (target) => target.key === form.targetKey
-  )
+  const selectedTarget = targets.find((target) => target.key === form.targetKey)
   const assignableRoles = selectedTarget
     ? rolesForRelay(ownerRelayIds, selectedTarget.relayId)
     : accessRoles.filter((role) => role !== "owner")
@@ -425,11 +410,7 @@ function AccessGrantList({
   instances: Array<FleetRelayInstance>
   ownerRelayIds: ReadonlySet<string>
   pending: string | null
-  onRoleChange: (
-    id: string,
-    relayId: string,
-    role: AccessRole
-  ) => Promise<void>
+  onRoleChange: (id: string, relayId: string, role: AccessRole) => Promise<void>
   onRemove: (id: string, relayId: string) => Promise<void>
 }) {
   return (
@@ -583,9 +564,7 @@ function PendingInvitationList({
                   (invitation.role === "owner" &&
                     !ownerRelayIds.has(invitation.relayId))
                 }
-                onClick={() =>
-                  void onRevoke(invitation.id, invitation.relayId)
-                }
+                onClick={() => void onRevoke(invitation.id, invitation.relayId)}
               >
                 {pending === `invite:${invitation.id}` ? (
                   <LoaderCircle className="animate-spin" />

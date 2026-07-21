@@ -22,13 +22,10 @@ import { useMatch, useNavigate, useRouterState } from "@tanstack/react-router"
 
 import { Avatar, AvatarFallback } from "@workspace/ui/components/avatar"
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@workspace/ui/components/dropdown-menu"
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@workspace/ui/components/popover"
 import {
   Sidebar,
   SidebarContent,
@@ -79,6 +76,22 @@ const instanceItems: Array<{
 ]
 
 const selectedInstanceStorageKey = "kiln:selected-instance-id"
+
+function subscribeToSelectedInstanceStorage(listener: () => void) {
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key === selectedInstanceStorageKey) listener()
+  }
+  window.addEventListener("storage", handleStorage)
+  return () => window.removeEventListener("storage", handleStorage)
+}
+
+function selectedInstanceStorageSnapshot() {
+  return window.localStorage.getItem(selectedInstanceStorageKey)
+}
+
+function selectedInstanceServerSnapshot() {
+  return null
+}
 
 interface AppSidebarViewProps {
   instances: Array<SidebarInstance>
@@ -302,26 +315,18 @@ function SelectedInstanceNavigation({
       (state.matches.at(-1)?.params as { serverId?: string } | undefined)
         ?.serverId,
   })
-  const [selectedInstanceId, setSelectedInstanceId] = React.useState<
-    string | null
-  >(null)
+  const selectedInstanceId = React.useSyncExternalStore(
+    subscribeToSelectedInstanceStorage,
+    selectedInstanceStorageSnapshot,
+    selectedInstanceServerSnapshot
+  )
   const routeInstance = findRelayInstance(instances, serverId)
   const rememberedInstance = findRelayInstance(instances, selectedInstanceId)
   const instance = routeInstance ?? rememberedInstance ?? instances.at(0)
 
   const rememberInstance = React.useCallback((instanceId: string) => {
-    setSelectedInstanceId(instanceId)
     window.localStorage.setItem(selectedInstanceStorageKey, instanceId)
   }, [])
-
-  React.useEffect(() => {
-    if (serverId) return
-    const storedInstance = findRelayInstance(
-      instances,
-      window.localStorage.getItem(selectedInstanceStorageKey)
-    )
-    if (storedInstance) setSelectedInstanceId(storedInstance.routeId)
-  }, [instances, serverId])
 
   React.useEffect(() => {
     if (routeInstance?.routeId) rememberInstance(routeInstance.routeId)
@@ -345,8 +350,8 @@ function InstanceNavigation({
   instances: Array<SidebarInstance>
   onRememberInstance: (id: string) => void
 }) {
-  const { isMobile } = useSidebar()
   const navigate = useNavigate()
+  const selectedInstanceRouteId = React.useRef(instance.routeId)
 
   const navigateToTab = React.useCallback(
     (tab: InstanceTab, nextServerId: string, replace = false) => {
@@ -372,6 +377,16 @@ function InstanceNavigation({
     },
     [navigate]
   )
+  const navigateToSelectedTab = React.useCallback(
+    (tab: InstanceTab) => {
+      void navigateToTab(tab, selectedInstanceRouteId.current)
+    },
+    [navigateToTab]
+  )
+
+  React.useEffect(() => {
+    selectedInstanceRouteId.current = instance.routeId
+  }, [instance.routeId])
 
   return (
     <SidebarGroup>
@@ -380,93 +395,125 @@ function InstanceNavigation({
       </SidebarGroupLabel>
       <SidebarGroupContent>
         <SidebarMenu>
-          <SidebarMenuItem>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <SidebarMenuButton
-                  size="lg"
-                  tooltip="Switch server"
-                  className={`mb-2 h-auto min-h-13 border border-l-2 border-sidebar-border/80 bg-background/45 py-2 ${statusBorderTone(instance.observedState)} group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:min-h-8 group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:p-2!`}
-                >
-                  <ServerTypeIcon
-                    implementation={instance.implementation}
-                    className="size-4 shrink-0 text-sidebar-foreground/80"
-                    aria-hidden="true"
-                  />
-                  <span className="flex min-w-0 flex-1 flex-col items-start leading-none">
-                    <span className="w-full truncate text-xs font-semibold">
-                      {instance.name}
-                    </span>
-                    <span className="mt-1 truncate font-mono text-[9px] text-sidebar-foreground/60">
-                      {instance.implementation} {instance.version} ·{" "}
-                      {instance.shortId}
-                    </span>
-                  </span>
-                  <ChevronsUpDown className="ml-auto size-3.5! text-sidebar-foreground/60" />
-                </SidebarMenuButton>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                side={isMobile ? "bottom" : "right"}
-                align="start"
-                className="w-64 max-w-[calc(100vw-1rem)]"
-              >
-                <DropdownMenuLabel className="flex items-center justify-between">
-                  <span>Managed servers</span>
-                  <span className="font-mono text-[10px] font-normal text-muted-foreground">
-                    {instances.length} discovered
-                  </span>
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                {instances.map((item) => (
-                  <DropdownMenuItem
-                    key={`${item.relayId}:${item.id}`}
-                    className={`gap-2.5 border-l-2 py-2 ${statusBorderTone(item.observedState)}`}
-                    aria-label={`${item.name}, ${item.implementation} ${item.version}, ${item.observedState}`}
-                    onSelect={() => {
-                      onRememberInstance(item.routeId)
-                      void navigateToTab(
-                        instanceTabFromPathname(window.location.pathname) ??
-                          "console",
-                        item.routeId
-                      )
-                    }}
-                  >
-                    <ServerTypeIcon
-                      implementation={item.implementation}
-                      className="size-4 shrink-0 text-muted-foreground"
-                      aria-hidden="true"
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-xs font-medium">
-                        {item.name}
-                      </span>
-                      <span className="block truncate font-mono text-[9px] text-muted-foreground">
-                        {item.implementation} {item.version} · {item.shortId}
-                      </span>
-                    </span>
-                    {item.id === instance.id &&
-                    item.relayId === instance.relayId ? (
-                      <span className="font-mono text-[9px] text-primary">
-                        ACTIVE
-                      </span>
-                    ) : null}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </SidebarMenuItem>
+          <ServerSelector
+            instance={instance}
+            instances={instances}
+            navigateToTab={navigateToTab}
+            onRememberInstance={onRememberInstance}
+          />
           <CanonicalInstanceRoute
             instanceRouteId={instance.routeId}
           />
           <InstanceTabNavigation
-            instanceRouteId={instance.routeId}
-            navigateToTab={navigateToTab}
+            navigateToTab={navigateToSelectedTab}
           />
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
   )
 }
+
+const ServerSelector = React.memo(function ServerSelector({
+  instance,
+  instances,
+  navigateToTab,
+  onRememberInstance,
+}: {
+  instance: SidebarInstance
+  instances: Array<SidebarInstance>
+  navigateToTab: (tab: InstanceTab, serverId: string) => void
+  onRememberInstance: (id: string) => void
+}) {
+  const { isMobile } = useSidebar()
+  const [open, setOpen] = React.useState(false)
+
+  return (
+    <SidebarMenuItem>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <SidebarMenuButton
+            size="lg"
+            tooltip="Switch server"
+            className={`mb-2 h-auto min-h-13 border border-l-2 border-sidebar-border/80 bg-background/45 py-2 ${statusBorderTone(instance.observedState)} group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:min-h-8 group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:p-2!`}
+          >
+            <ServerTypeIcon
+              implementation={instance.implementation}
+              className="size-4 shrink-0 text-sidebar-foreground/80"
+              aria-hidden="true"
+            />
+            <span className="flex min-w-0 flex-1 flex-col items-start leading-none">
+              <span className="w-full truncate text-xs font-semibold">
+                {instance.name}
+              </span>
+              <span className="mt-1 truncate font-mono text-[9px] text-sidebar-foreground/60">
+                {instance.implementation} {instance.version} ·{" "}
+                {instance.shortId}
+              </span>
+            </span>
+            <ChevronsUpDown className="ml-auto size-3.5! text-sidebar-foreground/60" />
+          </SidebarMenuButton>
+        </PopoverTrigger>
+        <PopoverContent
+          aria-label="Managed servers"
+          side={isMobile ? "bottom" : "right"}
+          align="start"
+          className="w-64 max-w-[calc(100vw-1rem)] p-1"
+        >
+          <div className="flex items-center justify-between px-2 py-1.5 text-sm font-semibold">
+            <span>Managed servers</span>
+            <span className="font-mono text-[10px] font-normal text-muted-foreground">
+              {instances.length} discovered
+            </span>
+          </div>
+          <div className="-mx-1 my-1 h-px bg-border" />
+          <div className="space-y-0.5">
+            {instances.map((item) => {
+              const active =
+                item.id === instance.id && item.relayId === instance.relayId
+              return (
+                <button
+                  key={`${item.relayId}:${item.id}`}
+                  type="button"
+                  aria-label={`${item.name}, ${item.implementation} ${item.version}, ${item.observedState}`}
+                  aria-pressed={active}
+                  className={`flex w-full items-center gap-2.5 rounded-md border-l-2 px-1.5 py-2 text-left outline-none transition-colors duration-100 hover:bg-popover-accent hover:text-popover-accent-foreground focus-visible:bg-popover-accent focus-visible:text-popover-accent-foreground ${statusBorderTone(item.observedState)}`}
+                  onClick={() => {
+                    setOpen(false)
+                    onRememberInstance(item.routeId)
+                    navigateToTab(
+                      instanceTabFromPathname(window.location.pathname) ??
+                        "console",
+                      item.routeId
+                    )
+                  }}
+                >
+                  <ServerTypeIcon
+                    implementation={item.implementation}
+                    className="size-4 shrink-0 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs font-medium">
+                      {item.name}
+                    </span>
+                    <span className="block truncate font-mono text-[9px] text-muted-foreground">
+                      {item.implementation} {item.version} · {item.shortId}
+                    </span>
+                  </span>
+                  {active ? (
+                    <span className="font-mono text-[9px] text-primary">
+                      ACTIVE
+                    </span>
+                  ) : null}
+                </button>
+              )
+            })}
+          </div>
+        </PopoverContent>
+      </Popover>
+    </SidebarMenuItem>
+  )
+})
 
 function CanonicalInstanceRoute({
   instanceRouteId,
@@ -511,31 +558,49 @@ function CanonicalInstanceRoute({
   return null
 }
 
-function InstanceTabNavigation({
-  instanceRouteId,
+const InstanceTabNavigation = React.memo(function InstanceTabNavigation({
   navigateToTab,
 }: {
-  instanceRouteId: string
-  navigateToTab: (tab: InstanceTab, serverId: string) => void
+  navigateToTab: (tab: InstanceTab) => void
 }) {
-  const activeTab = useRouterState({
-    select: (state) => instanceTabFromPathname(state.location.pathname),
-  })
   return instanceItems.map((item) => (
-    <SidebarMenuItem key={item.value}>
-      <SidebarMenuButton
-        tooltip={item.title}
-        isActive={activeTab === item.value}
-        type="button"
-        className="data-active:bg-primary/10 data-active:text-primary"
-        onClick={() => navigateToTab(item.value, instanceRouteId)}
-      >
-        <item.icon />
-        <span>{item.title}</span>
-      </SidebarMenuButton>
-    </SidebarMenuItem>
+    <InstanceTabNavigationItem
+      key={item.value}
+      item={item}
+      navigateToTab={navigateToTab}
+    />
   ))
-}
+})
+
+const InstanceTabNavigationItem = React.memo(
+  function InstanceTabNavigationItem({
+    item,
+    navigateToTab,
+  }: {
+    item: (typeof instanceItems)[number]
+    navigateToTab: (tab: InstanceTab) => void
+  }) {
+    const isActive = useRouterState({
+      select: (state) =>
+        instanceTabFromPathname(state.location.pathname) === item.value,
+    })
+
+    return (
+      <SidebarMenuItem>
+        <SidebarMenuButton
+          tooltip={item.title}
+          isActive={isActive}
+          type="button"
+          className="data-active:bg-primary/10 data-active:text-primary"
+          onClick={() => navigateToTab(item.value)}
+        >
+          <item.icon />
+          <span>{item.title}</span>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    )
+  }
+)
 
 function AccountNavigation({
   canManageAccess,

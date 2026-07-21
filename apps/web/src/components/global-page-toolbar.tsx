@@ -1,3 +1,5 @@
+import * as React from "react"
+
 import { SidebarTrigger } from "@workspace/ui/components/sidebar"
 import {
   Tooltip,
@@ -5,21 +7,40 @@ import {
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
 
-export function GlobalPageToolbar({ label }: { label: string }) {
+export const GlobalPageToolbar = React.memo(function GlobalPageToolbar({
+  label,
+}: {
+  label: string
+}) {
   return (
-    <header className="sticky top-0 z-20 border-b border-border/70 bg-background/92 backdrop-blur-xl">
-      <div className="flex h-14 items-center gap-3 px-3 sm:px-5 lg:px-8">
+    <header className="shrink-0 border-b bg-background/90 backdrop-blur-xl">
+      <div className="flex min-h-20 items-center gap-3 px-3 py-3 sm:px-5 lg:py-2">
         <ToolbarSidebarTrigger />
-        <span className="h-4 w-px bg-border" />
-        <span className="font-mono text-[10px] tracking-[0.14em] text-muted-foreground uppercase">
-          {label}
-        </span>
+        <span className="h-6 w-px shrink-0 bg-border/80" aria-hidden="true" />
+        <div className="min-w-0">
+          <p className="font-mono text-[9px] tracking-[0.16em] text-primary uppercase">
+            {sectionFromLabel(label)}
+          </p>
+          <h1 className="mt-0.5 truncate font-heading text-xl font-semibold tracking-[-0.035em]">
+            {titleFromLabel(label)}
+          </h1>
+        </div>
       </div>
     </header>
   )
+})
+
+function sectionFromLabel(label: string) {
+  const separator = label.indexOf(" / ")
+  return separator === -1 ? "Hearth" : label.slice(0, separator)
 }
 
-export function ToolbarSidebarTrigger() {
+function titleFromLabel(label: string) {
+  const separator = label.lastIndexOf(" / ")
+  return separator === -1 ? label : label.slice(separator + 3)
+}
+
+export const ToolbarSidebarTrigger = React.memo(function ToolbarSidebarTrigger() {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -33,4 +54,4 @@ export function ToolbarSidebarTrigger() {
       </TooltipContent>
     </Tooltip>
   )
-}
+})

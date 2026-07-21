@@ -14,7 +14,6 @@ import {
 import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
 
-import { GlobalPageToolbar } from "@/components/global-page-toolbar"
 import { authClient } from "@/lib/auth-client"
 import type { AuthenticatedUser } from "@/lib/auth-session"
 
@@ -327,8 +326,7 @@ function SecurityShell({
   children: React.ReactNode
 }) {
   return (
-    <main className="h-full min-h-0 overflow-y-auto bg-background">
-      <GlobalPageToolbar label="Account / Security" />
+    <div className="min-h-full bg-background">
       <div className="mx-auto max-w-6xl px-5 py-8 sm:px-8 sm:py-12">
         <p className="font-mono text-[10px] tracking-[0.17em] text-primary uppercase">
           Account security
@@ -349,7 +347,7 @@ function SecurityShell({
         </div>
         <div className="mt-8">{children}</div>
       </div>
-    </main>
+    </div>
   )
 }
 

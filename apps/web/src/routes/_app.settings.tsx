@@ -1,4 +1,6 @@
-import { Outlet, createFileRoute, redirect } from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
+
+import { SettingsRouteOutlet } from "@/components/settings-layout"
 
 export const Route = createFileRoute("/_app/settings")({
   beforeLoad: ({ context }) => {
@@ -6,5 +8,5 @@ export const Route = createFileRoute("/_app/settings")({
       throw redirect({ to: "/" })
     }
   },
-  component: Outlet,
+  component: SettingsRouteOutlet,
 })
