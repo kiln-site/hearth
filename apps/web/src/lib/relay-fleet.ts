@@ -19,3 +19,7 @@ export interface RelayFleetSnapshot {
   instances: Array<FleetRelayInstance>
   nodes: Array<FleetRelayNode>
 }
+
+export function relayInstanceRouteId(relayId: string, shortId: string): string {
+  return `${relayId}-${shortId}`
+}

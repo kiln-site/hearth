@@ -28,7 +28,7 @@ export async function redirectLegacyPage(
   throw redirect({
     to: `/$serverId/${page}`,
     params: {
-      serverId: connection.snapshot.instances.at(0)?.shortId ?? "unavailable",
+      serverId: connection.snapshot.instances.at(0)?.routeId ?? "unavailable",
     },
     replace: true,
   })

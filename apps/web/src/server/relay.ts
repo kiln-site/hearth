@@ -49,7 +49,11 @@ import {
   relayJsonEffect,
 } from "@/lib/relay-client"
 import type { RelayEndpoint } from "@/lib/relay-client"
-import type { RelayFleetSnapshot, RelayReachability } from "@/lib/relay-fleet"
+import {
+  relayInstanceRouteId,
+  type RelayFleetSnapshot,
+  type RelayReachability,
+} from "@/lib/relay-fleet"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import { listPersistedRelays } from "@/lib/relay-registry"
 import { resolveMclogsApiUrl } from "@/lib/mclogs"
@@ -702,13 +706,6 @@ function mergeRelaySnapshots(
       relayStatus: status,
     }))
   )
-  const shortIdCounts = new Map<string, number>()
-  for (const instance of instances) {
-    shortIdCounts.set(
-      instance.shortId,
-      (shortIdCounts.get(instance.shortId) ?? 0) + 1
-    )
-  }
   return {
     nodes: entries.flatMap(({ relay, snapshot, status }) =>
       snapshot
@@ -724,10 +721,7 @@ function mergeRelaySnapshots(
     ),
     instances: instances.map((instance) => ({
       ...instance,
-      routeId:
-        shortIdCounts.get(instance.shortId) === 1
-          ? instance.shortId
-          : `${instance.relayId}-${instance.shortId}`,
+      routeId: relayInstanceRouteId(instance.relayId, instance.shortId),
     })),
   }
 }
