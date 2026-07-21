@@ -46,6 +46,7 @@ export interface ConsoleStreamSnapshot {
 }
 
 export interface ConsoleStreamStore {
+  getConnectionSnapshot: () => ConsoleStreamSnapshot["connection"]
   getHasLinesSnapshot: () => boolean
   getSnapshot: () => ConsoleStreamSnapshot
   setSnapshot: (snapshot: ConsoleStreamSnapshot) => void
@@ -60,6 +61,7 @@ export function createConsoleStreamStore(): ConsoleStreamStore {
   }
   const listeners = new Set<() => void>()
   return {
+    getConnectionSnapshot: () => snapshot.connection,
     getHasLinesSnapshot: () => Boolean(snapshot.consoleData?.lines.length),
     getSnapshot: () => snapshot,
     setSnapshot: (nextSnapshot) => {

@@ -1,6 +1,5 @@
-import { createFileRoute, redirect } from "@tanstack/react-router"
+import { Outlet, createFileRoute, redirect } from "@tanstack/react-router"
 
-import { AppFrame } from "@/components/app-frame"
 import { getAuthState } from "@/server/auth"
 import {
   accessCapabilitiesQueryOptions,
@@ -29,9 +28,5 @@ export const Route = createFileRoute("/_app")({
       context.queryClient.ensureQueryData(uiPreferencesQueryOptions()),
     ])
   },
-  component: AppLayout,
+  component: Outlet,
 })
-
-function AppLayout() {
-  return <AppFrame />
-}

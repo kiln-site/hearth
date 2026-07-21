@@ -6,7 +6,6 @@ import { ArrowLeft, RefreshCw, TriangleAlert } from "lucide-react"
 
 import { Button } from "@workspace/ui/components/button"
 
-import { AppDocument } from "@/components/app-document"
 import { HearthMark } from "@/components/hearth-mark"
 
 const reportedErrors = new WeakSet<Error>()
@@ -90,12 +89,10 @@ class AppRouterErrorBoundaryImpl extends React.Component<
 
   render() {
     return this.state.error ? (
-      <AppDocument>
-        <AppErrorPage
-          error={this.state.error}
-          reset={() => this.setState({ error: null })}
-        />
-      </AppDocument>
+      <AppErrorPage
+        error={this.state.error}
+        reset={() => this.setState({ error: null })}
+      />
     ) : (
       this.props.children
     )

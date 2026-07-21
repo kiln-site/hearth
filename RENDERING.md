@@ -121,13 +121,21 @@ subscription merely because they come from the same server response.
 
 ### Boundaries implemented by the refactor
 
-- The root route owns the document as a normal, prop-free route component with
-  a live `Outlet`. `HeadContent`, `Scripts`, and `Outlet` retain their own
-  supported subscriptions; changing router children are no longer passed
-  through a document-wide `shellComponent` render.
-- The authenticated pathless layout performs authentication and composes a
-  prop-free `AppFrame`. Settings authorization reads the parent `beforeLoad`
-  context instead of repeating the auth request.
+- The client and server entries compose `AppDocument` and the authenticated
+  `AppFrame` outside TanStack Router's changing match tree. The exported
+  `Matches` viewport is their child, so route-match commits own only the leaf
+  content they can actually change instead of the complete application DOM.
+- The root and authenticated pathless routes retain route metadata, loaders,
+  and authentication, but no longer own persistent application chrome.
+  Settings authorization reads the parent `beforeLoad` context instead of
+  repeating the auth request.
+- Settings and instance frames also sit above `Matches`. Their headers,
+  navigation, and identity regions remain mounted while only the active leaf
+  route changes.
+- Authentication runs once in the parent `beforeLoad`, which executes before
+  child loaders and publishes the authenticated user through route context.
+  Route guards protect UI composition only; every server function and API
+  endpoint must still authorize its own request.
 - Sidebar and viewport regions own their own narrow React Query and Router
   selectors. Relay polling is no longer subscribed at the authenticated route
   component.
@@ -187,25 +195,24 @@ The application shell should be stable by construction rather than stable only
 when every prop happens to retain its identity.
 
 ```text
-RootDocument
-└─ AppShell                       no route or polling subscription
-   ├─ SidebarRegion
-   │  ├─ SidebarIdentity          slow/static account data
-   │  ├─ SidebarRelaySummary      narrow Relay selector
-   │  ├─ SidebarInstancePicker    narrow instance-list selector
-   │  └─ SidebarRouteSelection    narrow route selector
-   ├─ RouteViewport
-   │  └─ Outlet
-   │     ├─ SettingsFrame
-   │     │  ├─ SettingsTabs       route-selection consumer
-   │     │  └─ SettingsOutlet     active leaf only
-   │     └─ InstanceFrame
-   │        ├─ InstanceIdentity   slow identity selector
-   │        ├─ RuntimeControls    observed-state selector
-   │        ├─ ResourceMeters     per-resource selectors
-   │        └─ InstanceOutlet     Console / Files / Info
-   ├─ RelayNoticeBoundary         connection-status selector only
-   └─ Footer                      no application-state subscription
+HearthStartClient / HearthStartServer
+└─ AppDocument                    outside route-match ownership
+   └─ AppFrame                    retained for authenticated routes
+      ├─ SidebarRegion
+      │  ├─ SidebarIdentity       slow/static account data
+      │  ├─ SidebarRelaySummary   narrow Relay selector
+      │  ├─ InstancePicker        narrow instance-list selector
+      │  └─ RouteSelection        narrow route selector
+      ├─ RelayNoticeBoundary      connection-status selector only
+      ├─ RouteViewport
+      │  ├─ SettingsFrame         retained across Settings tabs
+      │  │  └─ Matches            active Settings leaf only
+      │  └─ InstanceFrame         retained across instance tabs
+      │     ├─ InstanceIdentity   slow identity selector
+      │     ├─ RuntimeControls    observed-state selector
+      │     ├─ ResourceMeters     per-resource selectors
+      │     └─ Matches            Console / Files / Info leaf only
+      └─ Footer                   no application-state subscription
 ```
 
 ### Shell rules

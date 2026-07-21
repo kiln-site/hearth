@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useRouter } from "@tanstack/react-router"
 import { FileTree, useFileTree, useFileTreeSearch } from "@pierre/trees/react"
 import type {
+  RelayFileActivity,
   RelayFileActivityEntry,
   RelayFileContent,
   RelayFileTree,
@@ -2650,12 +2651,16 @@ function FileViewer({
     ...relayFileActivityQueryOptions(instance.relayId, instance.id),
     enabled: isHome,
   })
+  const selectSelectedPin = React.useCallback(
+    (nextActivity: RelayFileActivity) =>
+      nextActivity.files.find((entry) => entry.path === selectedPath)?.pinned ??
+      false,
+    [selectedPath]
+  )
   const selectedPinQuery = useQuery({
     ...relayFileActivityQueryOptions(instance.relayId, instance.id),
     enabled: !isHome,
-    select: (nextActivity) =>
-      nextActivity.files.find((entry) => entry.path === selectedPath)?.pinned ??
-      false,
+    select: selectSelectedPin,
   })
   const selectedPathIsReadable = Boolean(
     tree?.paths.includes(selectedPath) && !selectedPath.endsWith("/")
@@ -2670,7 +2675,7 @@ function FileViewer({
   const file = fileQuery.data?.path === selectedPath ? fileQuery.data : null
   const saveFileMutation = useMutation({
     mutationFn: saveRelayFile,
-    onSuccess: (nextFile, variables) => {
+    onSuccess: async (nextFile, variables) => {
       queryClient.setQueryData(
         queryKeys.relay.file(
           variables.data.relayId,
@@ -2679,7 +2684,7 @@ function FileViewer({
         ),
         nextFile
       )
-      void queryClient.invalidateQueries({
+      await queryClient.invalidateQueries({
         queryKey: queryKeys.relay.fileActivity(
           variables.data.relayId,
           variables.data.instanceId

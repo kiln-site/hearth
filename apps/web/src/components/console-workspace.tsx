@@ -48,6 +48,7 @@ import { redactSensitiveText } from "@/lib/redaction"
 import { queryKeys, relaySnapshotQueryOptions } from "@/lib/query-options"
 import { selectInstanceObservedState } from "@/lib/relay-selectors"
 import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
+import { useInstanceRelayConnected } from "@/components/instance-workspace"
 import {
   completeRelayCommand,
   sendRelayCommand,
@@ -77,13 +78,11 @@ export function ConsoleWorkspace({
   active,
   canShare,
   canWrite,
-  relayConnected,
 }: {
   instance: InstanceWorkspaceInstance
   active: boolean
   canShare: boolean
   canWrite: boolean
-  relayConnected: boolean
 }) {
   return (
     <ConsoleWorkspaceSession
@@ -92,7 +91,6 @@ export function ConsoleWorkspace({
       active={active}
       canShare={canShare}
       canWrite={canWrite}
-      relayConnected={relayConnected}
     />
   )
 }
@@ -102,13 +100,11 @@ function ConsoleWorkspaceSession({
   active,
   canShare,
   canWrite,
-  relayConnected,
 }: {
   instance: InstanceWorkspaceInstance
   active: boolean
   canShare: boolean
   canWrite: boolean
-  relayConnected: boolean
 }) {
   const [uiStore] = React.useState(createConsoleUiStore)
   const [streamStore] = React.useState(createConsoleStreamStore)
@@ -118,19 +114,17 @@ function ConsoleWorkspaceSession({
       <ConsoleStreamController
         instanceId={instance.id}
         relayId={instance.relayId}
-        relayConnected={relayConnected}
         streamStore={streamStore}
       />
       <ConsoleToolbar
         active={active}
-        canShare={canShare && relayConnected}
+        canShare={canShare}
         instance={instance}
         streamStore={streamStore}
         uiStore={uiStore}
       />
       <ConsoleLogViewportController
         active={active}
-        relayConnected={relayConnected}
         streamStore={streamStore}
         uiStore={uiStore}
       />
@@ -139,7 +133,6 @@ function ConsoleWorkspaceSession({
         active={active}
         canWrite={canWrite}
         instance={instance}
-        relayConnected={relayConnected}
         streamStore={streamStore}
       />
     </section>
@@ -149,30 +142,34 @@ function ConsoleWorkspaceSession({
 function ConsoleStreamController({
   instanceId,
   relayId,
-  relayConnected,
   streamStore,
 }: {
   instanceId: string
   relayId: string
-  relayConnected: boolean
   streamStore: ConsoleStreamStore
 }) {
+  const relayConnected = useInstanceRelayConnected()
   const snapshot = useRelayConsoleStream(relayId, instanceId, relayConnected)
+  const effectiveSnapshot = React.useMemo(
+    () =>
+      relayConnected
+        ? snapshot
+        : { ...snapshot, connection: "unavailable" as const, loading: false },
+    [relayConnected, snapshot]
+  )
   React.useLayoutEffect(
-    () => streamStore.setSnapshot(snapshot),
-    [snapshot, streamStore]
+    () => streamStore.setSnapshot(effectiveSnapshot),
+    [effectiveSnapshot, streamStore]
   )
   return null
 }
 
-function ConsoleLogViewportController({
+const ConsoleLogViewportController = React.memo(function ConsoleLogViewportController({
   active,
-  relayConnected,
   streamStore,
   uiStore,
 }: {
   active: boolean
-  relayConnected: boolean
   streamStore: ConsoleStreamStore
   uiStore: ConsoleUiStore
 }) {
@@ -211,13 +208,13 @@ function ConsoleLogViewportController({
     <ConsoleLogViewport
       active={active}
       consoleData={consoleData}
-      connection={relayConnected ? connection : "unavailable"}
+      connection={connection}
       filteredLines={filteredLines}
       loading={loading}
       uiStore={uiStore}
     />
   )
-}
+})
 
 interface ConsoleToolbarProps {
   active: boolean
@@ -360,6 +357,7 @@ function ConsoleShareButton({
   streamStore: ConsoleStreamStore
   uiStore: ConsoleUiStore
 }) {
+  const relayConnected = useInstanceRelayConnected()
   const [state, setState] = React.useState<
     "idle" | "uploading" | "copied" | "error"
   >("idle")
@@ -375,7 +373,7 @@ function ConsoleShareButton({
     },
     []
   )
-  if (!canShare) return null
+  if (!canShare || !relayConnected) return null
 
   async function handleShare() {
     setState("uploading")
@@ -838,21 +836,19 @@ const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
   active,
   canWrite,
   instance,
-  relayConnected,
   streamStore,
 }: {
   active: boolean
   canWrite: boolean
   instance: InstanceWorkspaceInstance
-  relayConnected: boolean
   streamStore: ConsoleStreamStore
 }) {
-  const { connection } = React.useSyncExternalStore(
+  const connection = React.useSyncExternalStore(
     streamStore.subscribe,
-    streamStore.getSnapshot,
-    streamStore.getSnapshot
+    streamStore.getConnectionSnapshot,
+    streamStore.getConnectionSnapshot
   )
-  const consoleAvailable = relayConnected && connection === "live"
+  const consoleAvailable = connection === "live"
   const selectObservedState = React.useMemo(
     () => selectInstanceObservedState(instance.id, instance.relayId),
     [instance.id, instance.relayId]
@@ -1518,20 +1514,24 @@ function useRelayConsoleStream(
   relayConnected: boolean
 ) {
   const queryClient = useQueryClient()
-  const [consoleData, setConsoleData] = React.useState<RelayConsole | null>(
-    () =>
-      queryClient.getQueryData(queryKeys.relay.console(relayId, instanceId)) ??
+  const consoleDataRef = React.useRef<RelayConsole | null>(
+    queryClient.getQueryData(queryKeys.relay.console(relayId, instanceId)) ??
       null
   )
-  const [loading, setLoading] = React.useState(() => !consoleData)
-  const [connection, setConnection] = React.useState<
-    ConsoleStreamSnapshot["connection"]
-  >(relayConnected ? "connecting" : "unavailable")
+  const [snapshot, setSnapshot] = React.useState<ConsoleStreamSnapshot>(() => ({
+    connection: relayConnected ? "connecting" : "unavailable",
+    consoleData: consoleDataRef.current,
+    loading: !consoleDataRef.current,
+  }))
 
   React.useEffect(() => {
     if (!relayConnected) {
-      setConnection("unavailable")
-      setLoading(false)
+      setSnapshot((current) =>
+        updateConsoleStreamSnapshot(current, {
+          connection: "unavailable",
+          loading: false,
+        })
+      )
       return
     }
 
@@ -1547,9 +1547,11 @@ function useRelayConsoleStream(
         )
         ?.lines.map((line) => line.id) ?? []
     )
-    setConnection("connecting")
-    setLoading(
-      !queryClient.getQueryData(queryKeys.relay.console(relayId, instanceId))
+    setSnapshot((current) =>
+      updateConsoleStreamSnapshot(current, {
+        connection: "connecting",
+        loading: !consoleDataRef.current,
+      })
     )
 
     function flush() {
@@ -1561,18 +1563,20 @@ function useRelayConsoleStream(
         return true
       })
       if (fresh.length === 0) return
-      setConsoleData((current) => {
-        const next = {
-          instanceId,
-          lines: [...(current?.lines ?? []), ...fresh].slice(-5_000),
-          truncated: Boolean(current?.truncated) || seen.size > 5_000,
-        }
-        queryClient.setQueryData(
-          queryKeys.relay.console(relayId, instanceId),
-          next
-        )
-        return next
-      })
+      const current = consoleDataRef.current
+      const next = {
+        instanceId,
+        lines: [...(current?.lines ?? []), ...fresh].slice(-5_000),
+        truncated: Boolean(current?.truncated) || seen.size > 5_000,
+      }
+      consoleDataRef.current = next
+      queryClient.setQueryData(
+        queryKeys.relay.console(relayId, instanceId),
+        next
+      )
+      setSnapshot((previous) =>
+        updateConsoleStreamSnapshot(previous, { consoleData: next })
+      )
     }
 
     function append(line: RelayConsoleLine) {
@@ -1599,20 +1603,23 @@ function useRelayConsoleStream(
             const result = await activeIterator.next()
             if (result.done) throw new Error("Console stream closed")
             if (result.value.type === "ready") {
-              setLoading(false)
-              setConnection("live")
-              setConsoleData((current) => {
-                const next = current ?? {
-                  instanceId,
-                  lines: [],
-                  truncated: false,
-                }
-                queryClient.setQueryData(
-                  queryKeys.relay.console(relayId, instanceId),
-                  next
-                )
-                return next
-              })
+              const nextConsole = consoleDataRef.current ?? {
+                instanceId,
+                lines: [],
+                truncated: false,
+              }
+              consoleDataRef.current = nextConsole
+              queryClient.setQueryData(
+                queryKeys.relay.console(relayId, instanceId),
+                nextConsole
+              )
+              setSnapshot((current) =>
+                updateConsoleStreamSnapshot(current, {
+                  connection: "live",
+                  consoleData: nextConsole,
+                  loading: false,
+                })
+              )
               retryDelay = 400
             } else {
               append(result.value.line)
@@ -1621,8 +1628,12 @@ function useRelayConsoleStream(
         } catch {
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           if (cancelled) break
-          setLoading(false)
-          setConnection("unavailable")
+          setSnapshot((current) =>
+            updateConsoleStreamSnapshot(current, {
+              connection: "unavailable",
+              loading: false,
+            })
+          )
           await waitForRetry(retryDelay, lifecycle.signal)
           retryDelay = Math.min(retryDelay * 2, 5_000)
         }
@@ -1639,7 +1650,19 @@ function useRelayConsoleStream(
     }
   }, [instanceId, queryClient, relayConnected, relayId])
 
-  return { connection, consoleData, loading }
+  return snapshot
+}
+
+function updateConsoleStreamSnapshot(
+  current: ConsoleStreamSnapshot,
+  patch: Partial<ConsoleStreamSnapshot>
+): ConsoleStreamSnapshot {
+  const next = { ...current, ...patch }
+  return current.connection === next.connection &&
+    current.consoleData === next.consoleData &&
+    current.loading === next.loading
+    ? current
+    : next
 }
 
 function waitForRetry(delay: number, signal: AbortSignal): Promise<void> {

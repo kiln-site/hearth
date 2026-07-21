@@ -1,22 +1,9 @@
-import * as React from "react"
-import {
-  Outlet,
-  createRootRouteWithContext,
-} from "@tanstack/react-router"
+import { Outlet, createRootRouteWithContext } from "@tanstack/react-router"
 import { archivoLatin, jetBrainsMonoLatin } from "@workspace/ui/lib/font-assets"
 
 import appCss from "@workspace/ui/globals.css?url"
 
-import { AppDocument } from "@/components/app-document"
 import type { AppRouterContext } from "@/lib/query-client"
-
-const RootDocument = React.memo(function RootDocument() {
-  return (
-    <AppDocument>
-      <Outlet />
-    </AppDocument>
-  )
-})
 
 export const Route = createRootRouteWithContext<AppRouterContext>()({
   head: () => ({
@@ -67,5 +54,5 @@ export const Route = createRootRouteWithContext<AppRouterContext>()({
       },
     ],
   }),
-  component: RootDocument,
+  component: Outlet,
 })

@@ -1,25 +1,71 @@
 import * as React from "react"
-import { Outlet } from "@tanstack/react-router"
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 
 import { InstanceWorkspace } from "@/components/instance-workspace"
-
-type InstanceRouteFrameProps = Omit<
-  React.ComponentProps<typeof InstanceWorkspace>,
-  "children"
->
+import type { AccessPermission } from "@/lib/permissions"
+import { roleHasPermission } from "@/lib/permissions"
+import {
+  accessCapabilitiesQueryOptions,
+  relaySnapshotQueryOptions,
+  uiPreferencesQueryOptions,
+} from "@/lib/query-options"
+import { selectInstanceWorkspaceInstance } from "@/lib/relay-selectors"
 
 export const InstanceRouteFrame = React.memo(function InstanceRouteFrame({
-  instance,
-  fileTreePreferences,
-  permissions,
-}: InstanceRouteFrameProps) {
+  children,
+  serverId,
+}: {
+  children: React.ReactNode
+  serverId: string
+}) {
+  const selectInstance = React.useMemo(
+    () => selectInstanceWorkspaceInstance(serverId),
+    [serverId]
+  )
+  const { data: instance } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectInstance,
+  })
+  const { data: capabilities } = useSuspenseQuery(
+    accessCapabilitiesQueryOptions()
+  )
+  const { data: uiPreferences } = useSuspenseQuery(uiPreferencesQueryOptions())
+  const instanceId = instance?.id
+
+  const fileTreePreferences = React.useMemo(
+    () => ({
+      collapsed: uiPreferences.fileTreeCollapsed,
+      width: uiPreferences.fileTreeWidth,
+    }),
+    [uiPreferences.fileTreeCollapsed, uiPreferences.fileTreeWidth]
+  )
+  const permissions = React.useMemo(() => {
+    const can = (permission: AccessPermission): boolean =>
+      capabilities.isPlatformAdmin ||
+      capabilities.grants.some(
+        (grant) =>
+          roleHasPermission(grant.role, permission) &&
+          (grant.resourceType === "relay" || grant.resourceId === instanceId)
+      )
+
+    return {
+      consoleWrite: can("instance.console.write"),
+      filesWrite: can("instance.files.write"),
+      power: can("instance.power"),
+      settings: can("instance.settings"),
+      shareLogs: can("instance.logs.share"),
+    }
+  }, [capabilities.grants, capabilities.isPlatformAdmin, instanceId])
+
+  if (!instance) return null
+
   return (
     <InstanceWorkspace
       instance={instance}
       fileTreePreferences={fileTreePreferences}
       permissions={permissions}
     >
-      <Outlet />
+      {children}
     </InstanceWorkspace>
   )
 })

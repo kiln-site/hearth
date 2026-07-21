@@ -4,9 +4,11 @@ import type { RelayInstance, RelaySnapshot } from "@workspace/contracts"
 import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 import { replaceRelaySnapshotInstance } from "@/lib/query-options"
 import {
+  selectInstanceRelayConnected,
   selectInstanceRuntime,
   selectInstanceSettings,
   selectInstanceWorkspaceInstance,
+  selectRouteInstances,
   selectSidebarInstances,
 } from "@/lib/relay-selectors"
 
@@ -82,6 +84,24 @@ describe("Relay render selectors", () => {
     expect(after?.resources?.sampledAt).not.toBe(before?.resources?.sampledAt)
   })
 
+  it("keeps sidebar identity stable while route availability changes", () => {
+    const connected = snapshotWithCpu(1)
+    const unreachable: RelayFleetSnapshot = {
+      ...connected,
+      instances: connected.instances.map((item) => ({
+        ...item,
+        relayStatus: "unreachable",
+      })),
+    }
+
+    expect(selectSidebarInstances(unreachable)).toEqual(
+      selectSidebarInstances(connected)
+    )
+    expect(selectRouteInstances(unreachable)).not.toEqual(
+      selectRouteInstances(connected)
+    )
+  })
+
   it("updates only the matching Relay when local instance IDs collide", () => {
     const first = snapshotWithCpu(1).instances[0]
     if (!first) throw new Error("Expected Relay fixture")
@@ -103,5 +123,25 @@ describe("Relay render selectors", () => {
       "Renamed on Relay one",
       "Test server",
     ])
+  })
+
+  it("selects connectivity from the instance's Relay when IDs collide", () => {
+    const first = snapshotWithCpu(1).instances[0]
+    if (!first) throw new Error("Expected Relay fixture")
+    const snapshot = snapshotWithCpu(1)
+    snapshot.instances.push({
+      ...first,
+      relayId: "relay-two",
+      relayName: "Relay two",
+      relayStatus: "unreachable",
+      routeId: "relay-two-aaaaaaaa",
+    })
+
+    expect(
+      selectInstanceRelayConnected(first.id, "relay-one")(snapshot)
+    ).toBe(true)
+    expect(
+      selectInstanceRelayConnected(first.id, "relay-two")(snapshot)
+    ).toBe(false)
   })
 })

@@ -32,14 +32,15 @@ import {
 import { ToolbarSidebarTrigger } from "@/components/global-page-toolbar"
 import {
   queryKeys,
+  relayConnectionQueryOptions,
   relaySnapshotQueryOptions,
   replaceRelaySnapshotInstance,
 } from "@/lib/query-options"
 import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 import {
   selectInstanceObservedState,
-  selectInstanceRelayConnected,
   selectInstanceRuntime,
+  selectRelayConnected,
 } from "@/lib/relay-selectors"
 import type {
   InstanceRuntime,
@@ -162,13 +163,14 @@ function InstanceRelayConnectionBoundary({
   children: React.ReactNode
   instance: InstanceWorkspaceInstance
 }) {
-  const selectRelayConnected = React.useMemo(
-    () => selectInstanceRelayConnected(instance.id),
-    [instance.id]
+  const queryClient = useQueryClient()
+  const selectRelayConnection = React.useMemo(
+    () => selectRelayConnected(instance.relayId),
+    [instance.relayId]
   )
   const { data: relayConnected = false } = useQuery({
-    ...relaySnapshotQueryOptions(),
-    select: selectRelayConnected,
+    ...relayConnectionQueryOptions(queryClient),
+    select: selectRelayConnection,
   })
 
   return (
@@ -512,13 +514,13 @@ function InstancePowerControls({
     ...relaySnapshotQueryOptions(),
     select: selectObservedState,
   })
-  const selectRelayConnected = React.useMemo(
-    () => selectInstanceRelayConnected(instance.id),
-    [instance.id]
+  const selectRelayConnection = React.useMemo(
+    () => selectRelayConnected(instance.relayId),
+    [instance.relayId]
   )
   const { data: relayConnected = false } = useQuery({
-    ...relaySnapshotQueryOptions(),
-    select: selectRelayConnected,
+    ...relayConnectionQueryOptions(queryClient),
+    select: selectRelayConnection,
   })
   const relayActionMutation = useMutation({
     mutationFn: performRelayAction,

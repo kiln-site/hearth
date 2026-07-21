@@ -1,4 +1,5 @@
-import { Link, Outlet } from "@tanstack/react-router"
+import * as React from "react"
+import { Link } from "@tanstack/react-router"
 import { CircleUserRound, CreditCard, Palette, RadioTower } from "lucide-react"
 
 import { GlobalPageToolbar } from "@/components/global-page-toolbar"
@@ -10,7 +11,11 @@ const settingsTabs = [
   { label: "Billing", to: "/settings/billing", icon: CreditCard },
 ] as const
 
-export function SettingsLayout() {
+export const SettingsLayout = React.memo(function SettingsLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
   return (
     <main className="h-full min-h-0 overflow-y-auto bg-background">
       <GlobalPageToolbar label="Settings" />
@@ -45,8 +50,8 @@ export function SettingsLayout() {
         </nav>
       </header>
       <div data-slot="settings-content" className="[contain:paint]">
-        <Outlet />
+        {children}
       </div>
     </main>
   )
-}
+})

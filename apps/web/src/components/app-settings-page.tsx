@@ -34,43 +34,75 @@ const relayConnectedFormatter = new Intl.DateTimeFormat("en-US", {
 
 export function AppSettingsPage() {
   const { data: relays } = useSuspenseQuery(relaysQueryOptions())
-  const [selectedId, setSelectedId] = React.useState<string | null>(null)
-  const selectedRelay = relays.find((relay) => relay.id === selectedId) ?? null
-  const selectRelay = React.useCallback((id: string) => setSelectedId(id), [])
-  const startAdding = React.useCallback(() => setSelectedId(null), [])
-  const relayRemoved = React.useCallback((id: string) => {
-    setSelectedId((selected) => (selected === id ? null : selected))
-  }, [])
+  const selection = React.useMemo(createRelaySelectionStore, [])
 
   return (
     <div className="mx-auto w-full max-w-6xl px-5 pb-10">
       <div className="grid gap-5 lg:grid-cols-[minmax(17rem,0.72fr)_minmax(27rem,1.28fr)]">
-        <RelayList
-          relays={relays}
-          selectedId={selectedRelay?.id ?? null}
-          onSelect={selectRelay}
-          onRemoved={relayRemoved}
-        />
-        <RelayEditor
-          key={selectedRelay?.id ?? "new-relay"}
-          relay={selectedRelay}
-          onStartAdding={startAdding}
-        />
+        <RelayList relays={relays} selection={selection} />
+        <SelectedRelayEditor relays={relays} selection={selection} />
       </div>
     </div>
   )
 }
 
-const RelayList = React.memo(function RelayList({
+interface RelaySelectionStore {
+  clearIfSelected: (id: string) => void
+  getSnapshot: () => string | null
+  select: (id: string | null) => void
+  subscribe: (listener: () => void) => () => void
+}
+
+function createRelaySelectionStore(): RelaySelectionStore {
+  let selectedId: string | null = null
+  const listeners = new Set<() => void>()
+  const select = (id: string | null) => {
+    if (id === selectedId) return
+    selectedId = id
+    for (const listener of listeners) listener()
+  }
+  return {
+    clearIfSelected: (id) => {
+      if (selectedId === id) select(null)
+    },
+    getSnapshot: () => selectedId,
+    select,
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+  }
+}
+
+const SelectedRelayEditor = React.memo(function SelectedRelayEditor({
   relays,
-  selectedId,
-  onSelect,
-  onRemoved,
+  selection,
 }: {
   relays: Array<PersistedRelay>
-  selectedId: string | null
-  onSelect: (id: string) => void
-  onRemoved: (id: string) => void
+  selection: RelaySelectionStore
+}) {
+  const selectedId = React.useSyncExternalStore(
+    selection.subscribe,
+    selection.getSnapshot,
+    selection.getSnapshot
+  )
+  const selectedRelay = relays.find((relay) => relay.id === selectedId) ?? null
+  const startAdding = React.useCallback(() => selection.select(null), [selection])
+  return (
+    <RelayEditor
+      key={selectedRelay?.id ?? "new-relay"}
+      relay={selectedRelay}
+      onStartAdding={startAdding}
+    />
+  )
+})
+
+const RelayList = React.memo(function RelayList({
+  relays,
+  selection,
+}: {
+  relays: Array<PersistedRelay>
+  selection: RelaySelectionStore
 }) {
   return (
     <section className="self-start overflow-hidden rounded-xl border bg-card/45">
@@ -89,9 +121,7 @@ const RelayList = React.memo(function RelayList({
           <RelayRow
             key={relay.id}
             relay={relay}
-            selected={relay.id === selectedId}
-            onSelect={onSelect}
-            onRemoved={onRemoved}
+            selection={selection}
           />
         ))}
       </div>
@@ -101,16 +131,21 @@ const RelayList = React.memo(function RelayList({
 
 const RelayRow = React.memo(function RelayRow({
   relay,
-  selected,
-  onSelect,
-  onRemoved,
+  selection,
 }: {
   relay: PersistedRelay
-  selected: boolean
-  onSelect: (id: string) => void
-  onRemoved: (id: string) => void
+  selection: RelaySelectionStore
 }) {
   const queryClient = useQueryClient()
+  const getSelectedSnapshot = React.useCallback(
+    () => selection.getSnapshot() === relay.id,
+    [relay.id, selection]
+  )
+  const selected = React.useSyncExternalStore(
+    selection.subscribe,
+    getSelectedSnapshot,
+    getSelectedSnapshot
+  )
   const [pending, setPending] = React.useState<"check" | "remove" | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const checkMutation = useMutation({
@@ -142,7 +177,7 @@ const RelayRow = React.memo(function RelayRow({
     setError(null)
     try {
       await removeMutation.mutateAsync({ data: { id: relay.id } })
-      onRemoved(relay.id)
+      selection.clearIfSelected(relay.id)
     } catch (cause) {
       setError(messageFrom(cause, "Could not remove Relay"))
     } finally {
@@ -158,13 +193,13 @@ const RelayRow = React.memo(function RelayRow({
       role="button"
       tabIndex={0}
       aria-pressed={selected}
-      onClick={() => onSelect(relay.id)}
+      onClick={() => selection.select(relay.id)}
       onKeyDown={(event) => {
         if (
           event.target === event.currentTarget &&
           (event.key === "Enter" || event.key === " ")
         ) {
-          onSelect(relay.id)
+          selection.select(relay.id)
         }
       }}
     >

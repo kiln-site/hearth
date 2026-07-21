@@ -1,6 +1,6 @@
 import * as React from "react"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { useRouterState } from "@tanstack/react-router"
+import { useRouter } from "@tanstack/react-router"
 
 import {
   SidebarInset,
@@ -13,7 +13,11 @@ import { AppSidebar } from "@/components/app-sidebar"
 import { PanelFooter } from "@/components/panel-footer"
 import { uiPreferencesQueryOptions } from "@/lib/query-options"
 
-export const AppFrame = React.memo(function AppFrame() {
+export const AppFrame = React.memo(function AppFrame({
+  children,
+}: {
+  children: React.ReactNode
+}) {
   const { data: uiPreferences } = useSuspenseQuery(uiPreferencesQueryOptions())
 
   return (
@@ -25,7 +29,7 @@ export const AppFrame = React.memo(function AppFrame() {
           data-slot="app-content"
           className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
         >
-          <AppRouteContent />
+          <AppRouteContent>{children}</AppRouteContent>
         </div>
         <PanelFooter />
       </SidebarInset>
@@ -35,13 +39,13 @@ export const AppFrame = React.memo(function AppFrame() {
 
 function MobileSidebarNavigationDismiss() {
   const { isMobile, setOpenMobile } = useSidebar()
-  const pathname = useRouterState({
-    select: (state) => state.location.pathname,
-  })
+  const router = useRouter()
 
   React.useEffect(() => {
-    if (isMobile) setOpenMobile(false)
-  }, [isMobile, pathname, setOpenMobile])
+    return router.subscribe("onBeforeNavigate", () => {
+      if (isMobile) setOpenMobile(false)
+    })
+  }, [isMobile, router, setOpenMobile])
 
   return null
 }

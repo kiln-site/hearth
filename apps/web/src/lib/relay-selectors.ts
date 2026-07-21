@@ -16,8 +16,17 @@ export type SidebarInstance = Pick<
 > & {
   relayId: string
   relayName: string
-  relayStatus: "connected" | "unreachable"
   routeId: string
+}
+
+export type RouteInstance = SidebarInstance & {
+  relayStatus: "connected" | "unreachable"
+}
+
+export interface RelaySidebarIdentity {
+  configured: boolean
+  relayCount: number
+  relayName?: string
 }
 
 export type InstanceWorkspaceInstance = Pick<
@@ -79,18 +88,51 @@ export function selectRelayConnectionSummary(
 export function selectSidebarInstances(
   snapshot: RelayFleetSnapshot
 ): Array<SidebarInstance> {
+  return snapshot.instances.map(sidebarInstance)
+}
+
+export function selectRouteInstances(
+  snapshot: RelayFleetSnapshot
+): Array<RouteInstance> {
   return snapshot.instances.map((instance) => ({
+    ...sidebarInstance(instance),
+    relayStatus: instance.relayStatus,
+  }))
+}
+
+function sidebarInstance(
+  instance: RelayFleetSnapshot["instances"][number]
+): SidebarInstance {
+  return {
     id: instance.id,
     implementation: instance.implementation,
     name: instance.name,
     observedState: instance.observedState,
     relayId: instance.relayId,
     relayName: instance.relayName,
-    relayStatus: instance.relayStatus,
     routeId: instance.routeId,
     shortId: instance.shortId,
     version: instance.version,
-  }))
+  }
+}
+
+export function selectRelaySidebarIdentity(
+  connection: RelayConnection
+): RelaySidebarIdentity {
+  return {
+    configured: connection.status !== "unconfigured",
+    relayCount: connection.relays?.length ?? (connection.relay ? 1 : 0),
+    relayName: connection.relay?.name,
+  }
+}
+
+export function selectRelayConnected(relayId: string) {
+  return (connection: RelayConnection): boolean =>
+    connection.status === "connected" &&
+    (connection.relays.some(
+      (relay) => relay.id === relayId && relay.status === "connected"
+    ) ||
+      (connection.relays.length === 0 && connection.relay?.id === relayId))
 }
 
 export function selectInstanceWorkspaceInstance(identifier: string) {
@@ -114,9 +156,19 @@ export function selectInstanceWorkspaceInstance(identifier: string) {
   }
 }
 
-export function selectInstanceRelayConnected(identifier: string) {
+export function selectInstanceRelayConnected(
+  identifier: string,
+  relayId?: string
+) {
   return (snapshot: RelayFleetSnapshot): boolean =>
-    findRelayInstance(snapshot.instances, identifier)?.relayStatus === "connected"
+    snapshot.instances.find(
+      (instance) =>
+        (!relayId || instance.relayId === relayId) &&
+        (instance.routeId === identifier ||
+          instance.shortId === identifier ||
+          instance.id === identifier ||
+          instance.name === identifier)
+    )?.relayStatus === "connected"
 }
 
 export function selectInstanceRuntime(instanceId: string, relayId?: string) {

@@ -18,7 +18,7 @@ import {
   TerminalSquare,
   UserRoundCog,
 } from "lucide-react"
-import { useNavigate, useParams, useRouterState } from "@tanstack/react-router"
+import { useNavigate, useRouterState } from "@tanstack/react-router"
 
 import { Avatar, AvatarFallback } from "@workspace/ui/components/avatar"
 import {
@@ -56,15 +56,13 @@ import { authClient } from "@/lib/auth-client"
 import type { AuthenticatedUser } from "@/lib/auth-session"
 import {
   accessCapabilitiesQueryOptions,
+  type RelayConnection,
   relayConnectionQueryOptions,
   relaySnapshotQueryOptions,
 } from "@/lib/query-options"
 import { disableDevelopmentBypass } from "@/server/auth"
 import { findRelayInstance } from "@/lib/relay-selectors"
-import {
-  selectRelayConnectionSummary,
-  selectSidebarInstances,
-} from "@/lib/relay-selectors"
+import { selectRelaySidebarIdentity, selectSidebarInstances } from "@/lib/relay-selectors"
 import type { SidebarInstance } from "@/lib/relay-selectors"
 
 export type InstanceTab = "console" | "files" | "info"
@@ -87,7 +85,6 @@ interface AppSidebarViewProps {
   user: AuthenticatedUser
   canManageAccess: boolean
   isPlatformAdmin: boolean
-  relayStatus: "connected" | "unconfigured" | "unreachable"
   relayCount: number
   relayName?: string
 }
@@ -96,16 +93,16 @@ const emptyInstances: Array<SidebarInstance> = []
 
 export function AppSidebar() {
   const queryClient = useQueryClient()
-  const { data: connection } = useSuspenseQuery({
+  const { data: relayIdentity } = useSuspenseQuery({
     ...relayConnectionQueryOptions(queryClient),
-    select: selectRelayConnectionSummary,
+    select: selectRelaySidebarIdentity,
   })
   const { data: capabilities } = useSuspenseQuery(
     accessCapabilitiesQueryOptions()
   )
   const { data: instances = emptyInstances } = useQuery({
     ...relaySnapshotQueryOptions(),
-    enabled: connection.status !== "unconfigured",
+    enabled: relayIdentity.configured,
     select: selectSidebarInstances,
   })
 
@@ -114,11 +111,8 @@ export function AppSidebar() {
       canManageAccess={capabilities.canManageAccess}
       instances={instances}
       isPlatformAdmin={capabilities.isPlatformAdmin}
-      relayName={connection.relay?.name}
-      relayCount={
-        connection.relays?.length ?? (connection.relay ? 1 : 0)
-      }
-      relayStatus={connection.status}
+      relayName={relayIdentity.relayName}
+      relayCount={relayIdentity.relayCount}
       user={capabilities.user}
     />
   )
@@ -129,7 +123,6 @@ const AppSidebarView = React.memo(function AppSidebarView({
   user,
   canManageAccess,
   isPlatformAdmin,
-  relayStatus,
   relayCount,
   relayName,
 }: AppSidebarViewProps) {
@@ -158,7 +151,6 @@ const AppSidebarView = React.memo(function AppSidebarView({
           isPlatformAdmin={isPlatformAdmin}
           relayName={relayName}
           relayCount={relayCount}
-          relayStatus={relayStatus}
         />
 
         {instances.length > 0 ? <SidebarSeparator /> : null}
@@ -182,28 +174,22 @@ function InfrastructureNavigation({
   isPlatformAdmin,
   relayName,
   relayCount,
-  relayStatus,
 }: {
   instances: Array<SidebarInstance>
   isPlatformAdmin: boolean
   relayName?: string
   relayCount: number
-  relayStatus: "connected" | "unconfigured" | "unreachable"
 }) {
   const navigate = useNavigate()
   const activeSection = useRouterState({
     select: (state) => globalSectionFromPathname(state.location.pathname),
   })
-  const serverId = useParams({
-    strict: false,
-    select: (params) => params.serverId,
+  const serverId = useRouterState({
+    select: (state) =>
+      (state.matches.at(-1)?.params as { serverId?: string } | undefined)
+        ?.serverId,
   })
   const selectedInstance = findRelayInstance(instances, serverId)
-  const displayedRelayStatus = activeSection
-    ? relayStatus
-    : relayStatus === "unreachable"
-      ? "unreachable"
-      : (selectedInstance?.relayStatus ?? relayStatus)
   return (
     <SidebarGroup className="pt-2">
       <SidebarGroupLabel className="text-[10px] tracking-[0.12em] uppercase">
@@ -261,13 +247,48 @@ function InfrastructureNavigation({
               <Server />
               <span>Relays</span>
             </SidebarMenuButton>
-            <SidebarMenuBadge className={relayBadgeTone(displayedRelayStatus)}>
-              {relayCount}
-            </SidebarMenuBadge>
+            <RelayStatusBadge
+              relayCount={relayCount}
+              relayId={selectedInstance?.relayId}
+              useFleetStatus={Boolean(activeSection)}
+            />
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
+  )
+}
+
+function RelayStatusBadge({
+  relayCount,
+  relayId,
+  useFleetStatus,
+}: {
+  relayCount: number
+  relayId?: string
+  useFleetStatus: boolean
+}) {
+  const queryClient = useQueryClient()
+  const selectStatus = React.useCallback(
+    (connection: RelayConnection) => {
+      if (useFleetStatus || connection.status !== "connected") {
+        return connection.status
+      }
+      return (
+        connection.relays.find((relay) => relay.id === relayId)?.status ??
+        connection.status
+      )
+    },
+    [relayId, useFleetStatus]
+  )
+  const { data: status } = useSuspenseQuery({
+    ...relayConnectionQueryOptions(queryClient),
+    select: selectStatus,
+  })
+  return (
+    <SidebarMenuBadge className={relayBadgeTone(status)}>
+      {relayCount}
+    </SidebarMenuBadge>
   )
 }
 
@@ -276,9 +297,10 @@ function SelectedInstanceNavigation({
 }: {
   instances: Array<SidebarInstance>
 }) {
-  const serverId = useParams({
-    strict: false,
-    select: (params) => params.serverId,
+  const serverId = useRouterState({
+    select: (state) =>
+      (state.matches.at(-1)?.params as { serverId?: string } | undefined)
+        ?.serverId,
   })
   const [selectedInstanceId, setSelectedInstanceId] = React.useState<
     string | null
@@ -455,9 +477,10 @@ function CanonicalInstanceRoute({
   const activeTab = useRouterState({
     select: (state) => instanceTabFromPathname(state.location.pathname),
   })
-  const serverId = useParams({
-    strict: false,
-    select: (params) => params.serverId,
+  const serverId = useRouterState({
+    select: (state) =>
+      (state.matches.at(-1)?.params as { serverId?: string } | undefined)
+        ?.serverId,
   })
 
   // Router state can change through direct navigation and history, so this is
