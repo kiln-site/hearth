@@ -159,7 +159,7 @@ export const getRelayConnectionState = createServerFn({
     return {
       status: "paused" as const,
       message: "All configured Relays are paused.",
-      relay: publicFleetRelay(configuredRelays, 0),
+      relay: publicPausedFleetRelay(configuredRelays),
       relays: configuredRelays.map((relay) =>
         publicRelayState({ relay, status: "paused" })
       ),
@@ -747,6 +747,15 @@ function publicFleetRelay(
   return {
     id: "relay-fleet",
     name: `${connectedCount}/${relays.length} Relays connected`,
+  }
+}
+
+function publicPausedFleetRelay(relays: Array<PersistedRelay>) {
+  const relay = relays[0]
+  if (relays.length === 1 && relay) return { id: relay.id, name: relay.name }
+  return {
+    id: "relay-fleet",
+    name: `${relays.length} Relays paused`,
   }
 }
 
