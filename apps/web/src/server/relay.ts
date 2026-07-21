@@ -151,24 +151,12 @@ export const getRelayConnectionState = createServerFn({
   }
 
   const entries = await Promise.all(
-    relays.map(async (relay) => {
-      try {
-        return {
-          relay,
-          snapshot: await authorizedRelaySnapshot(relay, user),
-          status: "connected" as const,
-        }
-      } catch (cause) {
-        warnRelayUnavailable(relay.id, cause)
-        return {
-          relay,
-          snapshot: await authorizedRelayFallbackSnapshot(relay, user).catch(
-            () => null
-          ),
-          status: "unreachable" as const,
-        }
-      }
-    })
+    relays.map((relay) =>
+      authorizedRelayEntry(relay, user, {
+        fallbackOnError: true,
+        warnOnUnavailable: true,
+      })
+    )
   )
   const connectedCount = entries.filter(
     (entry) => entry.status === "connected"
@@ -574,11 +562,8 @@ async function relayRequestRaw(
   )
 }
 
-async function authorizedRelaySnapshot(
-  relay: RelayEndpoint,
-  user: AuthenticatedUser
-) {
-  const snapshot = await runAppEffect(
+async function relaySnapshot(relay: RelayEndpoint) {
+  return runAppEffect(
     "relay.snapshot",
     cachedRelayJsonEffect({
       decode: relaySnapshotSchema.parse,
@@ -587,6 +572,23 @@ async function authorizedRelaySnapshot(
       relay,
     })
   )
+}
+
+async function relayFallbackSnapshot(relay: RelayEndpoint) {
+  return runAppEffect(
+    "relay.snapshotFallback",
+    cachedRelayFallbackJsonEffect({
+      decode: relaySnapshotSchema.parse,
+      policy: relayCachePolicy.snapshot(relay.id),
+    })
+  )
+}
+
+async function authorizeRelaySnapshot(
+  snapshot: Awaited<ReturnType<typeof relaySnapshot>>,
+  relay: RelayEndpoint,
+  user: AuthenticatedUser
+) {
   const allowed = await allowedInstanceIds(
     user,
     relay.id,
@@ -599,27 +601,32 @@ async function authorizedRelaySnapshot(
   }
 }
 
-async function authorizedRelayFallbackSnapshot(
-  relay: RelayEndpoint,
-  user: AuthenticatedUser
+async function authorizedRelayEntry(
+  relay: PersistedRelay,
+  user: AuthenticatedUser,
+  options: { fallbackOnError: boolean; warnOnUnavailable: boolean }
 ) {
-  const snapshot = await runAppEffect(
-    "relay.snapshotFallback",
-    cachedRelayFallbackJsonEffect({
-      decode: relaySnapshotSchema.parse,
-      policy: relayCachePolicy.snapshot(relay.id),
-    })
-  )
-  if (!snapshot) return null
-  const allowed = await allowedInstanceIds(
-    user,
-    relay.id,
-    snapshot.instances.map((instance) => instance.id)
-  )
-  const instances = snapshot.instances.filter((item) => allowed.has(item.id))
+  let snapshot: Awaited<ReturnType<typeof relaySnapshot>> | null
+  try {
+    snapshot = await relaySnapshot(relay)
+  } catch (cause) {
+    if (!options.fallbackOnError) throw cause
+    if (options.warnOnUnavailable) warnRelayUnavailable(relay.id, cause)
+    snapshot =
+      (await relayFallbackSnapshot(relay).catch(() => undefined)) ?? null
+    return {
+      relay,
+      snapshot: snapshot
+        ? await authorizeRelaySnapshot(snapshot, relay, user)
+        : null,
+      status: "unreachable" as const,
+    }
+  }
+
   return {
-    ...snapshot,
-    instances: await applyInstanceDisplayNames(relay.id, instances),
+    relay,
+    snapshot: await authorizeRelaySnapshot(snapshot, relay, user),
+    status: "connected" as const,
   }
 }
 
@@ -670,24 +677,12 @@ async function authorizedFleetSnapshot(
 ): Promise<RelayFleetSnapshot> {
   const relays = (await listPersistedRelays()).filter((relay) => relay.enabled)
   const entries = await Promise.all(
-    relays.map(async (relay) => {
-      try {
-        return {
-          relay,
-          snapshot: await authorizedRelaySnapshot(relay, user),
-          status: "connected" as const,
-        }
-      } catch (cause) {
-        if (!fallbackOnError) throw cause
-        return {
-          relay,
-          snapshot: await authorizedRelayFallbackSnapshot(relay, user).catch(
-            () => null
-          ),
-          status: "unreachable" as const,
-        }
-      }
-    })
+    relays.map((relay) =>
+      authorizedRelayEntry(relay, user, {
+        fallbackOnError,
+        warnOnUnavailable: false,
+      })
+    )
   )
   return mergeRelaySnapshots(entries)
 }
@@ -695,7 +690,7 @@ async function authorizedFleetSnapshot(
 function mergeRelaySnapshots(
   entries: Array<{
     relay: PersistedRelay
-    snapshot: Awaited<ReturnType<typeof authorizedRelaySnapshot>> | null
+    snapshot: Awaited<ReturnType<typeof authorizeRelaySnapshot>> | null
     status: RelayReachability
   }>
 ): RelayFleetSnapshot {
