@@ -193,6 +193,7 @@ type ServerAction = "start" | "stop" | "restart" | "kill"
 
 function InstanceWorkspaceHeader() {
   const [error, setError] = React.useState<string | null>(null)
+  const instance = useRouteWorkspaceInstance()
 
   return (
     <header className="shrink-0 border-b bg-background/90 backdrop-blur-xl">
@@ -200,10 +201,10 @@ function InstanceWorkspaceHeader() {
         <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-2">
           <ToolbarSidebarTrigger />
           <span className="h-6 w-px shrink-0 bg-border/80" aria-hidden="true" />
-          <InstanceIdentityBoundary error={error} />
+          <InstanceIdentityBoundary error={error} instance={instance} />
         </div>
-        <LiveResourceMetersBoundary />
-        <InstancePowerControlsBoundary onError={setError} />
+        <LiveResourceMetersBoundary instance={instance} />
+        <InstancePowerControlsBoundary instance={instance} onError={setError} />
       </div>
     </header>
   )
@@ -231,8 +232,13 @@ function useRouteWorkspaceInstance() {
   return instance
 }
 
-function InstanceIdentityBoundary({ error }: { error: string | null }) {
-  const instance = useRouteWorkspaceInstance()
+const InstanceIdentityBoundary = React.memo(function InstanceIdentityBoundary({
+  error,
+  instance,
+}: {
+  error: string | null
+  instance: InstanceWorkspaceInstance | null | undefined
+}) {
   return instance ? (
     <InstanceIdentity
       key={`${instance.relayId}:${instance.id}`}
@@ -240,45 +246,55 @@ function InstanceIdentityBoundary({ error }: { error: string | null }) {
       instance={instance}
     />
   ) : null
-}
+})
 
-function LiveResourceMetersBoundary() {
-  const instance = useRouteWorkspaceInstance()
-  return instance ? (
-    <LiveResourceMeters instanceId={instance.id} relayId={instance.relayId} />
-  ) : null
-}
+const LiveResourceMetersBoundary = React.memo(
+  function LiveResourceMetersBoundary({
+    instance,
+  }: {
+    instance: InstanceWorkspaceInstance | null | undefined
+  }) {
+    return instance ? (
+      <LiveResourceMeters instanceId={instance.id} relayId={instance.relayId} />
+    ) : null
+  }
+)
 
-function InstancePowerControlsBoundary({
-  onError,
-}: {
-  onError: (error: string | null) => void
-}) {
-  const instance = useRouteWorkspaceInstance()
-  const { data: capabilities } = useSuspenseQuery(
-    accessCapabilitiesQueryOptions()
-  )
-  if (!instance) return null
-
-  const canControlPower =
-    capabilities.isPlatformAdmin ||
-    capabilities.grants.some(
-      (grant) =>
-        roleHasPermission(grant.role, "instance.power") &&
-        grant.relayId === instance.relayId &&
-        (grant.resourceType === "relay"
-          ? grant.resourceId === instance.relayId
-          : grant.resourceId === instance.id)
+const InstancePowerControlsBoundary = React.memo(
+  function InstancePowerControlsBoundary({
+    instance,
+    onError,
+  }: {
+    instance: InstanceWorkspaceInstance | null | undefined
+    onError: (error: string | null) => void
+  }) {
+    const { data: capabilities } = useSuspenseQuery(
+      accessCapabilitiesQueryOptions()
     )
+    const canControlPower = React.useMemo(() => {
+      if (!instance) return false
+      return (
+        capabilities.isPlatformAdmin ||
+        capabilities.grants.some(
+          (grant) =>
+            roleHasPermission(grant.role, "instance.power") &&
+            grant.relayId === instance.relayId &&
+            (grant.resourceType === "relay"
+              ? grant.resourceId === instance.relayId
+              : grant.resourceId === instance.id)
+        )
+      )
+    }, [capabilities.grants, capabilities.isPlatformAdmin, instance])
 
-  return (
-    <InstancePowerControls
-      canControlPower={canControlPower}
-      instance={instance}
-      onError={onError}
-    />
-  )
-}
+    return instance ? (
+      <InstancePowerControls
+        canControlPower={canControlPower}
+        instance={instance}
+        onError={onError}
+      />
+    ) : null
+  }
+)
 
 function InstanceIdentity({
   error,
