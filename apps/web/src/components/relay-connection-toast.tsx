@@ -64,7 +64,7 @@ export const RelayConnectionToastMonitor = React.memo(
             message: <RelayToastTitle name={relay.name} state="disconnected" />,
             id: disconnectToastId,
             icon: <WifiOff className="size-4 text-amber-300" />,
-            description: "Hearth will keep trying to reconnect.",
+            description: "Kiln will keep trying to reconnect...",
             duration: Infinity,
             action: {
               label: "View relays",
