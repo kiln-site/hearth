@@ -1428,6 +1428,8 @@ function relayEditorPropsEqual(
     previous.relay.hostname === next.relay.hostname &&
     previous.relay.port === next.relay.port &&
     previous.relay.useTls === next.relay.useTls &&
+    previous.relay.enabled === next.relay.enabled &&
+    previous.relay.lastError === next.relay.lastError &&
     previous.relay.browserOrigin === next.relay.browserOrigin &&
     previous.relay.managedTls === next.relay.managedTls
   )

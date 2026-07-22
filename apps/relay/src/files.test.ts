@@ -8,6 +8,7 @@ import { FilesystemDriver } from "./files.js"
 import type { RelayInstanceConfig } from "./config.js"
 
 const temporaryDirectories: Array<string> = []
+const describeLinux = process.platform === "linux" ? describe : describe.skip
 
 afterEach(async () => {
   await Promise.all(
@@ -17,7 +18,7 @@ afterEach(async () => {
   )
 })
 
-describe("Relay direct file transfers", () => {
+describeLinux("Relay direct file transfers", () => {
   it("atomically uploads and reads through a pinned file handle", async () => {
     const { driver, instance, root } = await setup()
 

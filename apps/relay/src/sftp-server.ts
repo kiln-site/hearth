@@ -77,6 +77,9 @@ export async function attachSftpServer(options: {
   control: Pick<ControlSocketServer, "requestClients">
   docker: Pick<DockerDriver, "findInstance">
 }): Promise<SftpServerHandle> {
+  if (process.platform !== "linux") {
+    throw new Error("Secure Relay SFTP requires a Linux host")
+  }
   const hostKey = await loadOrCreateHostKey(options.config)
   const hostKeyFingerprint = fingerprintHostKey(hostKey)
   const connections = new Set<Connection>()
@@ -365,11 +368,7 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
         fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW
       )
       try {
-        await verifyOpenPath(
-          target.grant?.root ?? "",
-          file,
-          target.physicalPath
-        )
+        await verifyOpenPath(target.grant?.root ?? "", file)
         stream.attrs(requestId, attributes(await file.stat()))
       } finally {
         await file.close()
@@ -443,7 +442,7 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
           )
       )
       try {
-        await verifyOpenPath(target.grant.root, file, target.physicalPath)
+        await verifyOpenPath(target.grant.root, file)
       } catch (cause) {
         await file.close()
         throw cause
@@ -481,7 +480,7 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
       if (!resource || resource.kind !== "file" || !resource.writable) {
         throw permissionDenied()
       }
-      await resource.file.write(data, 0, data.length, offset)
+      await writeFully(resource.file, data, offset)
       stream.status(requestId, STATUS_CODE.OK)
     })
   })
@@ -577,7 +576,7 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
           open(anchoredPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
       )
       try {
-        await verifyOpenPath(target.grant.root, file, target.physicalPath)
+        await verifyOpenPath(target.grant.root, file)
         await file.chmod(sanitizeMode(inputAttributes.mode, 0o644))
       } finally {
         await file.close()
@@ -701,9 +700,8 @@ async function physicalDirectoryEntries(
   )
   try {
     const anchored = fdPath(directory)
-    await verifyOpenPath(root, directory, path)
-    const ioPath = process.platform === "linux" ? anchored : path
-    const entries = await readdir(ioPath, { withFileTypes: true })
+    await verifyOpenPath(root, directory)
+    const entries = await readdir(anchored, { withFileTypes: true })
     if (entries.length > MAX_DIRECTORY_ENTRIES) {
       throw new Error("Directory contains too many entries")
     }
@@ -713,7 +711,7 @@ async function physicalDirectoryEntries(
       result.push(
         ...(await Promise.all(
           batch.map(async (entry) => {
-            const metadata = await lstat(resolve(ioPath, entry.name))
+            const metadata = await lstat(resolve(anchored, entry.name))
             return {
               attrs: attributes(metadata),
               filename: entry.name,
@@ -740,12 +738,9 @@ async function withAnchoredParent<T>(
   )
   try {
     const anchoredParent = fdPath(parent)
-    await verifyOpenPath(root, parent, dirname(path))
+    await verifyOpenPath(root, parent)
     return await operation(
-      resolve(
-        process.platform === "linux" ? anchoredParent : dirname(path),
-        posix.basename(path)
-      )
+      resolve(anchoredParent, posix.basename(path))
     )
   } finally {
     await parent.close()
@@ -753,17 +748,32 @@ async function withAnchoredParent<T>(
 }
 
 function fdPath(file: FileHandle): string {
-  return `${process.platform === "linux" ? "/proc/self/fd" : "/dev/fd"}/${file.fd}`
+  return `/proc/self/fd/${file.fd}`
 }
 
-async function verifyOpenPath(
-  root: string,
+async function writeFully(
   file: FileHandle,
-  fallbackPath: string
+  data: Uint8Array,
+  position: number
 ): Promise<void> {
-  const actual = await realpath(
-    process.platform === "linux" ? fdPath(file) : fallbackPath
-  )
+  const buffer = Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+  let written = 0
+  while (written < buffer.length) {
+    const result = await file.write(
+      buffer,
+      written,
+      buffer.length - written,
+      position + written
+    )
+    if (result.bytesWritten <= 0) {
+      throw new Error("Filesystem stopped before the SFTP block was complete")
+    }
+    written += result.bytesWritten
+  }
+}
+
+async function verifyOpenPath(root: string, file: FileHandle): Promise<void> {
+  const actual = await realpath(fdPath(file))
   ensureContained(root, actual)
 }
 

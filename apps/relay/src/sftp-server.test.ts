@@ -8,6 +8,7 @@ import type { RelayConfig, RelayInstanceConfig } from "./config.js"
 import { attachSftpServer } from "./sftp-server.js"
 
 const temporaryDirectories: Array<string> = []
+const describeLinux = process.platform === "linux" ? describe : describe.skip
 
 afterEach(async () => {
   await Promise.all(
@@ -17,7 +18,7 @@ afterEach(async () => {
   )
 })
 
-describe("Relay SFTP server", () => {
+describeLinux("Relay SFTP server", () => {
   it("exposes authorized instances, transfers files, and rejects SSH commands", async () => {
     const dataDirectory = await mkdtemp(resolve(tmpdir(), "kiln-sftp-test-"))
     temporaryDirectories.push(dataDirectory)

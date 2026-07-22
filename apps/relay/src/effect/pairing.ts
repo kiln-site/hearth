@@ -135,6 +135,8 @@ export const initializePairing = Effect.fn("RelayPairing.initialize")(
         )
         return { invitation, kind: "automatic" } satisfies InitialPairingResult
       }
+      // Manual bootstrap URIs are intentionally printed only on first creation.
+      // An operator can explicitly issue a replacement with `kiln-relay pair`.
       return { invitation: null, kind: "none" } satisfies InitialPairingResult
     }
 

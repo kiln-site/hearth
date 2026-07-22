@@ -21,6 +21,9 @@ Completed and locally verified:
   persistent host key, email/`dev123` development authentication, live Hearth
   authorization, multi-instance virtual roots, action-by-action filesystem
   grants, bounded sessions/handles, and complete shell/exec/PTY rejection.
+- Direct file and SFTP boundaries fail closed outside Linux: the supported
+  Relay container uses `/proc/self/fd` to pin authorized files/directories and
+  prevent ancestor-symlink swaps between validation and I/O.
 - Full-access/read-only foundations, stable action keys, Relay/instance cache
   synchronization, and browser/Hearth/Relay disconnect recovery notices.
 - Relay-authoritative naming plus platform-admin management for pending pairing

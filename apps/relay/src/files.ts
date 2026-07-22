@@ -208,6 +208,7 @@ export class FilesystemDriver {
     name: string
     size: number
   }> {
+    requireLinuxDescriptorAnchoring()
     validateRelativePath(requestedPath)
     const root = await this.#instanceRoot(instance)
     const candidate = resolve(root, requestedPath)
@@ -217,9 +218,7 @@ export class FilesystemDriver {
       fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW
     )
     try {
-      const actual = await realpath(
-        process.platform === "linux" ? fileDescriptorPath(file) : candidate
-      )
+      const actual = await realpath(fileDescriptorPath(file))
       ensureContained(root, actual)
       const metadata = await file.stat()
       if (!metadata.isFile()) {
@@ -247,6 +246,7 @@ export class FilesystemDriver {
     sha256: string
     size: number
   }> {
+    requireLinuxDescriptorAnchoring()
     validateRelativePath(requestedPath)
     const root = await this.#instanceRoot(instance)
     const candidate = resolve(root, requestedPath)
@@ -259,12 +259,8 @@ export class FilesystemDriver {
     )
     try {
       const anchoredParent = fileDescriptorPath(parentHandle)
-      ensureContained(
-        root,
-        await realpath(process.platform === "linux" ? anchoredParent : parent)
-      )
-      const operationParent =
-        process.platform === "linux" ? anchoredParent : parent
+      ensureContained(root, await realpath(anchoredParent))
+      const operationParent = anchoredParent
       const target = resolve(operationParent, basename(candidate))
       let mode = 0o644
       try {
@@ -291,14 +287,11 @@ export class FilesystemDriver {
             )
           }
           digest.update(chunk)
-          await file.write(chunk)
+          await writeFully(file, chunk, null)
         }
         await file.sync()
         await file.close()
-        ensureContained(
-          root,
-          await realpath(process.platform === "linux" ? anchoredParent : parent)
-        )
+        ensureContained(root, await realpath(anchoredParent))
         await rename(temporary, target)
       } catch (cause) {
         await file.close().catch(() => undefined)
@@ -341,7 +334,40 @@ export class FilesystemDriver {
 }
 
 function fileDescriptorPath(file: FileHandle): string {
-  return `${process.platform === "linux" ? "/proc/self/fd" : "/dev/fd"}/${file.fd}`
+  return `/proc/self/fd/${file.fd}`
+}
+
+function requireLinuxDescriptorAnchoring(): void {
+  if (process.platform !== "linux") {
+    throw new RelayFilesystemError(
+      "unsupported_platform",
+      "Secure direct file transfers require a Linux Relay host"
+    )
+  }
+}
+
+async function writeFully(
+  file: FileHandle,
+  data: Uint8Array,
+  position: number | null
+): Promise<void> {
+  const buffer = Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+  let written = 0
+  while (written < buffer.length) {
+    const result = await file.write(
+      buffer,
+      written,
+      buffer.length - written,
+      position === null ? null : position + written
+    )
+    if (result.bytesWritten <= 0) {
+      throw new RelayFilesystemError(
+        "write_incomplete",
+        "Filesystem stopped before the complete upload chunk was written"
+      )
+    }
+    written += result.bytesWritten
+  }
 }
 
 function isMissingFile(cause: unknown): boolean {

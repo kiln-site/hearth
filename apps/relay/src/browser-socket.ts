@@ -189,7 +189,7 @@ export function attachBrowserSocket(
     close: async () => {
       hubs.close()
       resourceHubs.close()
-      for (const socket of sockets) socket.close(1001, "Relay shutting down")
+      await closeSockets(sockets, "Relay shutting down")
       await new Promise<void>((resolve) => wss.close(() => resolve()))
     },
     handleRequest: (request, response) =>
@@ -938,6 +938,7 @@ class ConsoleHubRegistry {
 
   async subscribe(socket: WebSocket, instanceId: string): Promise<void> {
     this.remove(socket)
+    this.#subscriptions.set(socket, instanceId)
     let hub = this.#hubs.get(instanceId)
     if (!hub) {
       let pending = this.#pendingHubs.get(instanceId)
@@ -953,7 +954,16 @@ class ConsoleHubRegistry {
         }
       }
     }
-    this.#subscriptions.set(socket, instanceId)
+    if (
+      this.#subscriptions.get(socket) !== instanceId ||
+      socket.readyState !== WebSocket.OPEN
+    ) {
+      const hasWaitingSubscriber = [...this.#subscriptions.values()].some(
+        (subscribedInstanceId) => subscribedInstanceId === instanceId
+      )
+      if (hub.subscriberCount === 0 && !hasWaitingSubscriber) hub.close()
+      return
+    }
     hub.add(socket)
   }
 
@@ -1125,6 +1135,32 @@ function browserKeyThumbprint(jwk: {
   return createHash("sha256")
     .update(JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y }))
     .digest("base64url")
+}
+
+async function closeSockets(
+  sockets: ReadonlySet<WebSocket>,
+  reason: string
+): Promise<void> {
+  await Promise.all(
+    [...sockets].map(
+      (socket) =>
+        new Promise<void>((resolveClose) => {
+          if (socket.readyState === WebSocket.CLOSED) {
+            resolveClose()
+            return
+          }
+          const timer = setTimeout(() => {
+            socket.terminate()
+          }, 1_000)
+          timer.unref()
+          socket.once("close", () => {
+            clearTimeout(timer)
+            resolveClose()
+          })
+          socket.close(1001, reason)
+        })
+    )
+  )
 }
 
 function send(socket: WebSocket, value: unknown): void {
