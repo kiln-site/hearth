@@ -198,7 +198,7 @@ export const relayInstanceWebRouteSchema = z
       .trim()
       .min(1)
       .max(256)
-      .regex(/^\/(?!\/)(?!.*(?:^|\/)\.\.?\/)(?:[^?#])*$/u)
+      .regex(/^\/(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))(?:[^?#])*$/u)
       .regex(
         /^\/[A-Za-z0-9\-._~!$&'()*+,;=:@%/]*$/u,
         "Use an encoded URL path without spaces or routing metacharacters"

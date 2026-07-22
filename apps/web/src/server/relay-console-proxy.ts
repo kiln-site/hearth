@@ -22,6 +22,7 @@ export async function* openHearthRelayConsoleStream(input: {
   signal: AbortSignal
   user: AuthenticatedUser
 }): AsyncGenerator<RelayConsoleStreamEvent> {
+  if (input.signal.aborted) throw new Error("Console proxy was cancelled")
   const relay = (await listPersistedRelays()).find(
     (candidate) => candidate.enabled && candidate.id === input.relayId
   )
@@ -193,6 +194,7 @@ function createSocketInbox(socket: WebSocket, signal: AbortSignal) {
   socket.once("error", failed)
   socket.once("close", closed)
   signal.addEventListener("abort", abort, { once: true })
+  if (signal.aborted) abort()
   return {
     close: () => {
       signal.removeEventListener("abort", abort)

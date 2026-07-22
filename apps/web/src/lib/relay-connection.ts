@@ -183,29 +183,33 @@ class RelayConnection {
     this.#setState("connecting", null)
     this.#eventSequence = 0
     this.#hasPushedSnapshot = false
-    const { loadRelayCredentials } = await import("@/lib/relay-registry")
-    this.#credentials = await loadRelayCredentials(this.#relay.id)
-    const protocol = this.#relay.useTls ? "wss" : "ws"
-    const socket = new WebSocket(
-      `${protocol}://${formatHost(this.#relay.hostname)}:${this.#relay.port}/v1/socket`,
-      relayControlProtocol,
-      {
-        ca: this.#credentials.caCertificatePem ?? undefined,
-        handshakeTimeout: 5_000,
-        maxPayload: 1024 * 1024,
-        perMessageDeflate: false,
-        rejectUnauthorized: this.#relay.useTls,
-      }
-    )
-    this.#socket = socket
+    this.#socket = null
+    let socket: WebSocket | null = null
     try {
+      const { loadRelayCredentials } = await import("@/lib/relay-registry")
+      this.#credentials = await loadRelayCredentials(this.#relay.id)
+      const protocol = this.#relay.useTls ? "wss" : "ws"
+      const activeSocket = new WebSocket(
+        `${protocol}://${formatHost(this.#relay.hostname)}:${this.#relay.port}/v1/socket`,
+        relayControlProtocol,
+        {
+          ca: this.#credentials.caCertificatePem ?? undefined,
+          handshakeTimeout: 5_000,
+          maxPayload: 1024 * 1024,
+          perMessageDeflate: false,
+          rejectUnauthorized: this.#relay.useTls,
+        }
+      )
+      socket = activeSocket
+      this.#socket = activeSocket
       await new Promise<void>((resolve, reject) => {
         let authenticated = false
+        let challengeAnswered = false
         const authenticationTimer = setTimeout(
           () => reject(new Error("Relay authentication timed out")),
           10_000
         )
-        socket.on("message", (data, binary) => {
+        activeSocket.on("message", (data, binary) => {
           if (binary) {
             reject(new Error("Relay sent an unsupported binary control frame"))
             return
@@ -220,15 +224,23 @@ class RelayConnection {
             return
           }
           if (message.type === "auth.challenge") {
+            if (challengeAnswered) {
+              reject(new Error("Relay repeated its authentication challenge"))
+              return
+            }
             try {
-              this.#answerChallenge(socket, message)
+              this.#answerChallenge(activeSocket, message)
+              challengeAnswered = true
             } catch (cause) {
               reject(asError(cause))
             }
             return
           }
           if (message.type === "auth.ready") {
-            if (message.clientId !== this.#credentials?.clientId) {
+            if (
+              !challengeAnswered ||
+              message.clientId !== this.#credentials?.clientId
+            ) {
               reject(new Error("Relay authenticated the wrong Hearth identity"))
               return
             }
@@ -239,6 +251,13 @@ class RelayConnection {
               clearTimeout(authenticationTimer)
               resolve()
             }
+            return
+          }
+          if (!authenticated) {
+            reject(
+              new Error("Relay sent a control message before authentication")
+            )
+            activeSocket.close(4401, "Relay authentication is incomplete")
             return
           }
           if (message.type === "event") {
@@ -259,8 +278,8 @@ class RelayConnection {
           }
           void this.#handleMessage(message)
         })
-        socket.once("error", reject)
-        socket.once("close", (code, reason) => {
+        activeSocket.once("error", reject)
+        activeSocket.once("close", (code, reason) => {
           clearTimeout(authenticationTimer)
           const error = new Error(
             `Relay connection closed (${code}${reason.length ? `: ${reason.toString()}` : ""})`
@@ -274,8 +293,9 @@ class RelayConnection {
         })
       })
     } catch (cause) {
-      socket.terminate()
+      socket?.terminate()
       const error = asError(cause)
+      if (!socket) this.#attempt += 1
       this.#setState("unreachable", error.message)
       this.#scheduleReconnect()
       throw error

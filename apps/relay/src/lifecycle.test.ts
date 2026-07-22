@@ -134,6 +134,15 @@ describe("Traefik web routes", () => {
     ).toThrow("routing metacharacters")
   })
 
+  it.each(["/.", "/..", "/map/.", "/map/.."])(
+    "rejects terminal dot-segment path %s",
+    (path) => {
+      expect(() =>
+        relayInstanceWebRoutesSchema.parse([{ ...route, path }])
+      ).toThrow()
+    }
+  )
+
   it("restores the direct endpoint when bundled Traefik is disabled", () => {
     const config = loadConfig({
       KILN_RELAY_HOST: "relay.example.com",

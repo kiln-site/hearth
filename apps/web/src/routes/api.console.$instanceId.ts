@@ -24,9 +24,7 @@ export const Route = createFileRoute("/api/console/$instanceId")({
 
         const url = new URL(request.url)
         const relayId = relayIdSchema.safeParse(url.searchParams.get("relayId"))
-        const instanceId = decodeURIComponent(
-          url.pathname.split("/").at(-1) ?? ""
-        )
+        const instanceId = decodePathSegment(url.pathname.split("/").at(-1))
         if (!relayId.success || !instanceId || instanceId.length > 64) {
           return Response.json(
             {
@@ -41,6 +39,7 @@ export const Route = createFileRoute("/api/console/$instanceId")({
           const lifecycle = new AbortController()
           const abort = () => lifecycle.abort()
           request.signal.addEventListener("abort", abort, { once: true })
+          if (request.signal.aborted) abort()
           const iterator = openHearthRelayConsoleStream({
             instanceId,
             relayId: relayId.data,
@@ -132,4 +131,12 @@ export const Route = createFileRoute("/api/console/$instanceId")({
 
 function encodeRecord(value: unknown): Uint8Array {
   return encoder.encode(`${JSON.stringify(value)}\n`)
+}
+
+function decodePathSegment(value: string | undefined): string | null {
+  try {
+    return decodeURIComponent(value ?? "")
+  } catch {
+    return null
+  }
 }

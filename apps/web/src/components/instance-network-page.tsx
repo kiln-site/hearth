@@ -84,9 +84,10 @@ export function InstanceNetworkPage() {
 
         {permissions.networkWrite ? (
           <RouteForm
-            disabled={update.isPending}
+            disabled={update.isPending || routes.data === undefined}
             onAdd={async (route) => {
-              await update.mutateAsync([...(routes.data ?? []), route])
+              if (!routes.data) throw new Error("Routes are not loaded yet")
+              await update.mutateAsync([...routes.data, route])
             }}
           />
         ) : null}
