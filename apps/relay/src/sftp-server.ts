@@ -211,6 +211,11 @@ export async function attachSftpServer(options: {
     server.once("error", reject)
     server.listen(options.config.sftpPort, options.config.host, () => {
       server.off("error", reject)
+      server.on("error", (cause: Error) => {
+        Sentry.captureException(cause, {
+          tags: { "kiln.operation": "sftp.server" },
+        })
+      })
       resolveListen()
     })
   })
