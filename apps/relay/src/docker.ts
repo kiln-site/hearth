@@ -45,6 +45,26 @@ interface DockerInspect {
   }
 }
 
+interface DockerRecreateInspect {
+  Config: Record<string, unknown> & {
+    Labels?: Record<string, string> | null
+  }
+  HostConfig: Record<string, unknown> & {
+    NetworkMode?: string
+  }
+  NetworkSettings?: {
+    Networks?: Record<
+      string,
+      {
+        Aliases?: Array<string> | null
+      }
+    >
+  }
+  State: {
+    Running: boolean
+  }
+}
+
 interface DiscoveredInstance {
   config: RelayInstanceConfig
   container: DockerInspect
@@ -195,6 +215,123 @@ export class DockerDriver {
 
     const current = await this.inspectInstances()
     const updated = current.find((item) => item.id === instance.id)
+    if (!updated) throw new Error(`Instance ${instance.id} disappeared`)
+    return updated
+  }
+
+  async recreateOwnedInstance(
+    instance: RelayInstanceConfig,
+    routeLabels: Readonly<Record<string, string>>,
+    edgeNetwork: string | null
+  ): Promise<RelayInstance> {
+    if (!instance.managedByRelay) {
+      throw new Error("Relay can only recreate containers it created")
+    }
+
+    const inspected = await command("docker", ["inspect", instance.service])
+    const current = (
+      JSON.parse(inspected.stdout) as Array<DockerRecreateInspect>
+    )[0]
+    if (!current)
+      throw new Error(`Docker could not inspect ${instance.service}`)
+
+    const labels = { ...current.Config.Labels }
+    for (const label of Object.keys(labels)) {
+      if (
+        label.startsWith("traefik.http.") ||
+        label === "traefik.enable" ||
+        label === "traefik.docker.network" ||
+        label.startsWith("kiln.relay.web-routes.")
+      ) {
+        delete labels[label]
+      }
+    }
+    Object.assign(labels, routeLabels)
+
+    const primaryNetwork = Object.hasOwn(
+      current.NetworkSettings?.Networks ?? {},
+      "kiln-minecraft"
+    )
+      ? "kiln-minecraft"
+      : current.HostConfig.NetworkMode
+    if (!primaryNetwork || primaryNetwork === "default") {
+      throw new Error(
+        `Relay cannot safely recreate ${instance.name} without its primary Docker network`
+      )
+    }
+
+    const backupName = `${instance.service}-kiln-backup-${Date.now()}`
+    let replacementCreated = false
+    if (current.State.Running) {
+      await command("docker", ["stop", "--time", "30", instance.service], {
+        timeout: 45_000,
+      })
+    }
+    await command("docker", ["rename", instance.service, backupName])
+
+    try {
+      await this.#dockerJson(
+        "POST",
+        `/containers/create?name=${encodeURIComponent(instance.service)}`,
+        {
+          ...current.Config,
+          HostConfig: {
+            ...current.HostConfig,
+            NetworkMode: primaryNetwork,
+          },
+          Labels: labels,
+          NetworkingConfig: {
+            EndpointsConfig: {
+              [primaryNetwork]: {
+                Aliases: [instance.service],
+              },
+            },
+          },
+        }
+      )
+      replacementCreated = true
+      if (edgeNetwork) {
+        await command("docker", [
+          "network",
+          "connect",
+          "--alias",
+          instance.service,
+          edgeNetwork,
+          instance.service,
+        ])
+      }
+      await command("docker", ["start", instance.service], {
+        timeout: 120_000,
+      })
+    } catch (cause) {
+      if (replacementCreated) {
+        await command("docker", ["rm", "--force", instance.service]).catch(
+          () => undefined
+        )
+      }
+      await command("docker", ["rename", backupName, instance.service]).catch(
+        () => undefined
+      )
+      await command("docker", ["start", instance.service], {
+        timeout: 120_000,
+      }).catch(() => undefined)
+      throw new Error(
+        `Kiln could not apply web routes to ${instance.name}; the previous container was restored.`,
+        { cause }
+      )
+    }
+    await command("docker", ["rm", "--force", backupName], {
+      timeout: 90_000,
+    }).catch((cause: unknown) => {
+      console.warn(
+        `Kiln applied web routes to ${instance.name}, but could not remove backup container ${backupName}.`,
+        cause
+      )
+    })
+
+    const updated = (await this.inspectInstances()).find(
+      (item) => item.id === instance.id
+    )
     if (!updated) throw new Error(`Instance ${instance.id} disappeared`)
     return updated
   }
@@ -794,6 +931,72 @@ export class DockerDriver {
         rejectPromise(error)
       })
       statsRequest.end()
+    })
+  }
+
+  async #dockerJson(
+    method: "POST",
+    path: string,
+    body: unknown
+  ): Promise<unknown> {
+    return new Promise((resolvePromise, rejectPromise) => {
+      const encoded = Buffer.from(JSON.stringify(body))
+      const dockerRequest = request({
+        headers: {
+          "Content-Length": String(encoded.byteLength),
+          "Content-Type": "application/json",
+        },
+        method,
+        path,
+        socketPath: this.#config.dockerSocket,
+      })
+      const chunks: Array<Buffer> = []
+      let size = 0
+      const timer = setTimeout(() => {
+        dockerRequest.destroy(new Error("Docker API request timed out"))
+      }, 60_000)
+
+      dockerRequest.on("response", (response) => {
+        response.on("data", (chunk: Buffer) => {
+          size += chunk.length
+          if (size > 1024 * 1024) {
+            dockerRequest.destroy(
+              new Error("Docker API response was too large")
+            )
+            return
+          }
+          chunks.push(chunk)
+        })
+        response.on("end", () => {
+          clearTimeout(timer)
+          const text = Buffer.concat(chunks).toString("utf8")
+          if ((response.statusCode ?? 500) >= 400) {
+            let message = text
+            try {
+              const parsed = JSON.parse(text) as { message?: unknown }
+              if (typeof parsed.message === "string") message = parsed.message
+            } catch {
+              // Docker occasionally returns a plain-text proxy error.
+            }
+            rejectPromise(
+              new Error(
+                `Docker API returned HTTP ${response.statusCode ?? 500}: ${message || "request failed"}`
+              )
+            )
+            return
+          }
+          try {
+            resolvePromise(text ? (JSON.parse(text) as unknown) : null)
+          } catch (cause) {
+            rejectPromise(cause)
+          }
+        })
+      })
+      dockerRequest.on("error", (cause) => {
+        clearTimeout(timer)
+        rejectPromise(cause)
+      })
+      dockerRequest.end(encoded)
     })
   }
 

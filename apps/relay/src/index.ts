@@ -481,6 +481,7 @@ function scheduleTlsRefresh(): { close: () => void } {
 async function shutdownRelay(signal: NodeJS.Signals): Promise<void> {
   console.log(`Received ${signal}; shutting down relay`)
   tlsRefresh.close()
+  lifecycle.close()
   snapshotHub.close()
   await Promise.all([
     controlSocket.close(),
@@ -702,9 +703,17 @@ async function executeControlRequest(
     case "instance.action": {
       const instance = await requiredInstance(payload)
       const input = relayInstanceActionSchema.parse(payload)
-      return serializeInstanceMutation(instance.id, () =>
-        docker.runAction(instance, input.action)
-      )
+      const runAction = () =>
+        serializeInstanceMutation(instance.id, async () => {
+          const routes = await runRelayEffect(
+            "relay.network.routes.forAction",
+            startup.state.listInstanceRoutes(instance.id)
+          )
+          return lifecycle.runInstanceAction(instance, input.action, routes)
+        })
+      return input.action === "start" || input.action === "restart"
+        ? serializeWebRouteMutation(runAction)
+        : runAction()
     }
     case "instance.files.list":
       return filesystem.tree(await requiredInstance(payload))
@@ -740,10 +749,11 @@ async function executeControlRequest(
       return filesystem.latestLog(await requiredInstance(payload))
     case "instance.network.routes.read": {
       const instance = await requiredInstance(payload)
-      return runRelayEffect(
+      const routes = await runRelayEffect(
         "relay.network.routes.read",
         startup.state.listInstanceRoutes(instance.id)
       )
+      return lifecycle.webRouteState(instance.id, routes)
     }
     case "instance.network.routes.write": {
       return serializeWebRouteMutation(async () => {
@@ -793,7 +803,7 @@ async function executeControlRequest(
           )
           throw cause
         }
-        return routes
+        return lifecycle.webRouteState(instance.id, routes)
       })
     }
     case "relay.rename": {

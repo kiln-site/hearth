@@ -10,6 +10,7 @@ import {
   relayConsoleCompletionSchema,
   relayInstanceActionSchema,
   relayInstanceWebRoutesSchema,
+  relayInstanceWebRouteStateSchema,
   relayIdSchema,
   relayInstanceSchema,
   relayLatestLogSchema,
@@ -276,7 +277,7 @@ export const getInstanceWebRoutes = createServerFn({ method: "GET" })
       data.instanceId,
       data.relayId
     )
-    return relayInstanceWebRoutesSchema.parse(value)
+    return relayInstanceWebRouteStateSchema.parse(value)
   })
 
 export const updateInstanceWebRoutes = createServerFn({ method: "POST" })
@@ -294,7 +295,7 @@ export const updateInstanceWebRoutes = createServerFn({ method: "POST" })
       data.relayId,
       240_000
     )
-    return relayInstanceWebRoutesSchema.parse(value)
+    return relayInstanceWebRouteStateSchema.parse(value)
   })
 
 export const getRelayTree = createServerFn({ method: "GET" })

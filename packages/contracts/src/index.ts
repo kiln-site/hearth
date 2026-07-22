@@ -227,6 +227,17 @@ export const relayInstanceWebRoutesSchema = z
     })
   })
 
+export const relayInstanceWebRouteStateSchema = z
+  .object({
+    edgeConnected: z.boolean(),
+    message: z.string().min(1),
+    proxyConnected: z.boolean(),
+    requiresRestart: z.boolean(),
+    routes: relayInstanceWebRoutesSchema,
+    status: z.enum(["blocked", "pending_restart", "ready"]),
+  })
+  .strict()
+
 export const relayProxyDiagnosticsSchema = z
   .object({
     containerRunning: z.boolean(),
@@ -505,6 +516,9 @@ export type RelayProxyDiagnostics = z.infer<typeof relayProxyDiagnosticsSchema>
 export type RelayInstanceWebRoute = z.infer<typeof relayInstanceWebRouteSchema>
 export type RelayInstanceWebRoutes = z.infer<
   typeof relayInstanceWebRoutesSchema
+>
+export type RelayInstanceWebRouteState = z.infer<
+  typeof relayInstanceWebRouteStateSchema
 >
 export type RelayObservedState = z.infer<typeof relayObservedStateSchema>
 export type RelayInstanceResources = z.infer<

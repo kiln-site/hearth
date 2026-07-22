@@ -1,11 +1,23 @@
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { AlertTriangle, Globe2, LoaderCircle, Plus, Trash2 } from "lucide-react"
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Globe2,
+  LoaderCircle,
+  Plus,
+  RotateCw,
+  Trash2,
+} from "lucide-react"
 import { relayInstanceWebRouteSchema } from "@workspace/contracts"
-import type { RelayInstanceWebRoute } from "@workspace/contracts"
+import type {
+  RelayInstanceWebRoute,
+  RelayInstanceWebRouteState,
+} from "@workspace/contracts"
 
 import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
+import { dismissToast, showToast } from "@workspace/ui/components/sonner"
 import {
   Tooltip,
   TooltipContent,
@@ -15,12 +27,18 @@ import {
 import {
   useInstanceIdentity,
   useInstancePermissions,
+  useInstanceRelayConnected,
 } from "@/components/instance-workspace-context"
-import { getInstanceWebRoutes, updateInstanceWebRoutes } from "@/server/relay"
+import {
+  getInstanceWebRoutes,
+  performRelayAction,
+  updateInstanceWebRoutes,
+} from "@/server/relay"
 
 export function InstanceNetworkPage() {
   const instance = useInstanceIdentity()
   const permissions = useInstancePermissions()
+  const relayConnected = useInstanceRelayConnected()
   const queryClient = useQueryClient()
   const queryKey = React.useMemo(
     () => ["relay", instance.relayId, "web-routes", instance.id] as const,
@@ -44,6 +62,31 @@ export function InstanceNetworkPage() {
         },
       }),
     onSuccess: (next) => queryClient.setQueryData(queryKey, next),
+  })
+  const restart = useMutation({
+    mutationFn: () =>
+      performRelayAction({
+        data: {
+          action: "restart",
+          instanceId: instance.id,
+          relayId: instance.relayId,
+        },
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey })
+    },
+  })
+  const restartPendingRoutes = React.useCallback(() => {
+    if (!permissions.power || !relayConnected || restart.isPending) return
+    restart.mutate()
+  }, [permissions.power, relayConnected, restart])
+
+  usePendingRouteToast({
+    canRestart: permissions.power && relayConnected,
+    instanceId: instance.id,
+    onRestart: restartPendingRoutes,
+    restarting: restart.isPending,
+    state: routes.data,
   })
 
   if (!permissions.networkRead) {
@@ -70,24 +113,33 @@ export function InstanceNetworkPage() {
               </h1>
               <p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted-foreground">
                 Route a public hostname—or a path on one—to an HTTP service
-                running inside this Ember. Kiln does not create DNS records for
-                you.
+                running inside this Ember. Kiln prepares Traefik; you remain in
+                control of DNS.
               </p>
             </div>
           </div>
           <div className="mt-4 flex gap-2 border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-[11px] leading-relaxed text-amber-100/80">
             <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-amber-300" />
-            Point the hostname at this Relay first. Kiln applies route changes
-            dynamically; the Ember does not need to restart.
+            Point the hostname at this Relay first. Kiln validates the active
+            edge and tells you when a controlled restart is required.
           </div>
         </header>
+
+        {routes.data ? (
+          <RouteApplyState
+            state={routes.data}
+            canRestart={permissions.power && relayConnected}
+            restarting={restart.isPending}
+            onRestart={restartPendingRoutes}
+          />
+        ) : null}
 
         {permissions.networkWrite ? (
           <RouteForm
             disabled={update.isPending || routes.data === undefined}
             onAdd={async (route) => {
               if (!routes.data) throw new Error("Routes are not loaded yet")
-              await update.mutateAsync([...routes.data, route])
+              await update.mutateAsync([...routes.data.routes, route])
             }}
           />
         ) : null}
@@ -96,7 +148,7 @@ export function InstanceNetworkPage() {
           <div className="flex items-center justify-between border-b border-border/70 px-4 py-3">
             <h2 className="text-sm font-semibold">Configured routes</h2>
             <span className="font-mono text-[10px] text-muted-foreground">
-              {routes.data?.length ?? 0} / 16
+              {routes.data?.routes.length ?? 0} / 16
             </span>
           </div>
           {routes.isLoading ? (
@@ -108,9 +160,9 @@ export function InstanceNetworkPage() {
             <p className="px-4 py-8 text-center text-xs text-destructive">
               {errorMessage(routes.error)}
             </p>
-          ) : routes.data?.length ? (
+          ) : routes.data?.routes.length ? (
             <div className="divide-y divide-border/65">
-              {routes.data.map((route) => (
+              {routes.data.routes.map((route) => (
                 <RouteRow
                   key={route.id}
                   route={route}
@@ -118,7 +170,9 @@ export function InstanceNetworkPage() {
                   canRemove={permissions.networkWrite}
                   onRemove={() =>
                     update.mutateAsync(
-                      (routes.data ?? []).filter((item) => item.id !== route.id)
+                      (routes.data?.routes ?? []).filter(
+                        (item) => item.id !== route.id
+                      )
                     )
                   }
                 />
@@ -217,7 +271,7 @@ function RouteForm({
             </Button>
           </TooltipTrigger>
           <TooltipContent>
-            Applies dynamically without restarting the Ember
+            Kiln will show whether this edge mode requires a restart
           </TooltipContent>
         </Tooltip>
       </div>
@@ -269,6 +323,112 @@ const RouteRow = React.memo(function RouteRow({
     </div>
   )
 })
+
+function RouteApplyState({
+  state,
+  canRestart,
+  restarting,
+  onRestart,
+}: {
+  state: RelayInstanceWebRouteState
+  canRestart: boolean
+  restarting: boolean
+  onRestart: () => void
+}) {
+  if (state.status === "ready" && state.routes.length === 0) return null
+  const pending = state.status === "pending_restart"
+  const blocked = state.status === "blocked"
+  return (
+    <section
+      className={
+        blocked
+          ? "border border-destructive/35 bg-destructive/5"
+          : pending
+            ? "border border-amber-400/30 bg-[linear-gradient(100deg,rgba(251,191,36,0.08),transparent_65%)]"
+            : "border border-emerald-400/25 bg-emerald-400/5"
+      }
+      aria-live="polite"
+    >
+      <div className="flex flex-wrap items-center gap-3 px-4 py-3">
+        <div
+          className={`grid size-8 shrink-0 place-items-center border ${
+            blocked
+              ? "border-destructive/35 text-destructive"
+              : pending
+                ? "border-amber-300/35 text-amber-300"
+                : "border-emerald-300/30 text-emerald-300"
+          }`}
+        >
+          {pending ? (
+            <RotateCw className="size-3.5" />
+          ) : blocked ? (
+            <AlertTriangle className="size-3.5" />
+          ) : (
+            <CheckCircle2 className="size-3.5" />
+          )}
+        </div>
+        <div className="min-w-48 flex-1">
+          <p className="font-mono text-[10px] tracking-[0.1em]">
+            {pending
+              ? "Route changes staged"
+              : blocked
+                ? "Edge requires attention"
+                : "Edge configuration active"}
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            {state.message}
+          </p>
+        </div>
+        {pending && canRestart ? (
+          <Button size="sm" onClick={onRestart} disabled={restarting}>
+            <RotateCw className={restarting ? "animate-spin" : undefined} />
+            {restarting ? "Applying" : "Restart and apply"}
+          </Button>
+        ) : null}
+      </div>
+    </section>
+  )
+}
+
+function usePendingRouteToast({
+  canRestart,
+  instanceId,
+  onRestart,
+  restarting,
+  state,
+}: {
+  canRestart: boolean
+  instanceId: string
+  onRestart: () => void
+  restarting: boolean
+  state: RelayInstanceWebRouteState | undefined
+}) {
+  React.useEffect(() => {
+    const id = `kiln-web-routes-${instanceId}`
+    if (!state?.requiresRestart) {
+      dismissToast(id)
+      return
+    }
+    showToast({
+      type: "warning",
+      message: "Web route changes need a restart",
+      id,
+      description: state.message,
+      duration: Infinity,
+      ...(canRestart
+        ? {
+            action: {
+              label: restarting ? "Applying..." : "Restart and apply",
+              onClick: onRestart,
+            },
+          }
+        : {}),
+    })
+    return () => {
+      dismissToast(id)
+    }
+  }, [canRestart, instanceId, onRestart, restarting, state])
+}
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : "The network route failed."

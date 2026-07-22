@@ -53,8 +53,9 @@ Completed and locally verified:
   public browser probes, and automatic direct-to-Hearth runtime fallback.
 - Relay-authoritative Ember web routes with hostname/path uniqueness,
   permission-gated Hearth APIs, a minimal Network tab, dynamic bundled
-  Traefik configuration, and Docker-label carriers for an existing Traefik.
-  Route changes do not restart the Ember.
+  Traefik configuration, and direct Ember labels for an existing/Coolify
+  Traefik on a dedicated `kiln-edge` network. External-edge label changes are
+  staged until a controlled Ember restart with persistent UI feedback.
 - Development resolves `@workspace/contracts` from source. Clean package
   generation can replace `packages/contracts/dist` without restarting Relay,
   stranding Vite's package resolver, or returning a transient Hearth 500/502.
@@ -114,11 +115,11 @@ not have to be served on port 443.
 mode in `/data/proxy.json`; changing the environment later does not silently
 replace an operator's saved choice.
 
-| Mode      | Browser hot path                                             | Public Ember sites                              | Operator responsibility                                                                            |
-| --------- | ------------------------------------------------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `none`    | Direct Relay edge when trusted, then Hearth fallback         | Existing Traefik discovers Relay route carriers | Configure the Relay's direct public edge and an existing Traefik certificate resolver named `kiln` |
-| `hearth`  | Console, resources, commands, and supported files use Hearth | Not provided                                    | Keep Hearth reachable; add an external edge before enabling public Ember sites                     |
-| `traefik` | Public WSS/HTTPS on 443, then Hearth fallback                | Relay-managed dynamic routes                    | Point public DNS at Relay and expose public TCP 80/443                                             |
+| Mode      | Browser hot path                                             | Public Ember sites                             | Operator responsibility                                                          |
+| --------- | ------------------------------------------------------------ | ---------------------------------------------- | -------------------------------------------------------------------------------- |
+| `none`    | Direct Relay edge when trusted, then Hearth fallback         | Existing Traefik discovers direct Ember labels | Run Traefik with its Docker provider; Coolify's `coolify-proxy` is auto-detected |
+| `hearth`  | Console, resources, commands, and supported files use Hearth | Not provided                                   | Keep Hearth reachable; add an external edge before enabling public Ember sites   |
+| `traefik` | Public WSS/HTTPS on 443, then Hearth fallback                | Relay-managed dynamic routes                   | Point public DNS at Relay and expose public TCP 80/443                           |
 
 The bundled mode starts `kiln-traefik` from the exact pinned image configured
 by `KILN_RELAY_TRAEFIK_IMAGE` (default `traefik:v3.6.6`). Relay generates its
@@ -135,9 +136,17 @@ into the same actionable conflict error. Public reachability cannot be proven
 from inside Docker; Hearth exposes a browser-side trust probe that distinguishes
 DNS, firewall/NAT, and certificate/ACME failure from Relay control connectivity.
 
-Every Ember created by the new Relay lifecycle receives baseline Traefik
-metadata, but remains disabled for automatic Docker-provider exposure. A web
-route is an explicit Relay-owned record:
+`kiln-minecraft` remains the private game topology used by Ember backends,
+Velocity, CoreDNS, limbo, and bundled Traefik. Existing/Coolify edges use a
+separate Relay-owned `kiln-edge` network. Relay creates that network, detects a
+running `coolify-proxy` (or another Traefik owning ports 80/443), and attaches
+only that proxy plus Embers with configured routes. A 30-second reconciler
+repairs proxy attachment after Coolify recreates its proxy container. Relay
+does not edit Coolify's Traefik static or dynamic configuration and does not
+attach routed Embers to Coolify application networks.
+
+Every Ember created by the Relay lifecycle receives disabled baseline Traefik
+metadata. A web route is an explicit Relay-owned record:
 
 ```text
 https://<hostname>[/path] -> http://kiln-<instance-short-id>:<target-port>
@@ -146,11 +155,22 @@ https://<hostname>[/path] -> http://kiln-<instance-short-id>:<target-port>
 Hostname/path pairs are unique across the Relay, target ports are restricted to
 1–65535, and each Ember may have at most 16 routes. The user creates the DNS
 record. In bundled mode Relay atomically rewrites the watched dynamic
-configuration; in `none` mode it maintains a small Nginx route carrier bearing
-standard Traefik Docker labels. The carrier resolves Ember DNS lazily, so an
-offline/stopped Ember does not enter a restart loop. Both paths apply changes
-dynamically without restarting the Ember. Optional path stripping supports
-routes such as `https://donutsmp.com/map` to an Ember service root.
+configuration without restarting the Ember. In `none` mode Relay stages
+Coolify-compatible HTTP/HTTPS router, redirect, middleware, service-port, and
+certificate-resolver labels directly on the Ember. Docker labels are immutable,
+so Start or Restart performs a rollback-safe container recreation that preserves
+the image, runtime restrictions, ports, environment, and data mounts. The
+Network tab shows a persistent staged state and an infinite restart toast until
+the labels are applied. Optional path stripping supports routes such as
+`https://donutsmp.com/map` to an Ember service root.
+
+Adding the first route attaches the Ember to `kiln-edge` immediately, but no
+traffic is published until its labels are applied. Removing the final route
+disconnects the Ember immediately, cutting Traefik's path to its data even
+before the cleanup restart removes stale labels. Removing one of several routes
+keeps the edge attachment and stages the label removal. A normal power stop does
+not remove desired edge membership. Switching away from `none` disconnects all
+managed Embers and the external proxy, then removes `kiln-edge` when it is empty.
 
 The fallback boundary remains deliberate:
 

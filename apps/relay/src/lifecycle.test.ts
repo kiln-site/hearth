@@ -5,8 +5,9 @@ import { loadConfig } from "./config.js"
 import {
   coreDnsHostnamePattern,
   LifecycleDriver,
-  nginxRouteConfiguration,
+  routeLabelsRequireRestart,
   traefikDynamicConfiguration,
+  traefikRouteLabels,
   traefikStaticConfiguration,
   velocityForcedHosts,
 } from "./lifecycle.js"
@@ -116,11 +117,44 @@ describe("Traefik web routes", () => {
     expect(dynamicConfiguration).toContain("stripPrefix:")
   })
 
-  it("builds a label-carrier backend for an existing Traefik", () => {
-    const configuration = nginxRouteConfiguration(route)
-    expect(configuration).toContain("listen 8080")
-    expect(configuration).toContain('set $kiln_upstream "kiln-aaaaaaaa:8080"')
-    expect(configuration).toContain("proxy_pass http://$kiln_upstream")
+  it("builds direct Ember labels for a Coolify Traefik edge", () => {
+    const labels = traefikRouteLabels([route], {
+      certificateResolver: "letsencrypt",
+      httpEntryPoint: "http",
+      httpsEntryPoint: "https",
+    })
+    const name = "kiln-route-b00d442326204079845adac8c063987a"
+    expect(labels["traefik.enable"]).toBe("true")
+    expect(labels["traefik.docker.network"]).toBe("kiln-edge")
+    expect(labels[`traefik.http.routers.${name}-https.entrypoints`]).toBe(
+      "https"
+    )
+    expect(labels[`traefik.http.routers.${name}-https.tls.certresolver`]).toBe(
+      "letsencrypt"
+    )
+    expect(
+      labels[`traefik.http.services.${name}.loadbalancer.server.port`]
+    ).toBe("8080")
+    expect(labels["kiln.relay.web-routes.revision"]).toMatch(/^[a-f0-9]{64}$/u)
+  })
+
+  it("does not recreate an untouched Ember with no routes", () => {
+    const profile = {
+      certificateResolver: "letsencrypt",
+      httpEntryPoint: "http",
+      httpsEntryPoint: "https",
+    }
+    const desired = traefikRouteLabels([], profile)
+    expect(
+      routeLabelsRequireRestart({ "traefik.enable": "false" }, [], desired)
+    ).toBe(false)
+    expect(
+      routeLabelsRequireRestart(
+        traefikRouteLabels([route], profile),
+        [],
+        desired
+      )
+    ).toBe(true)
   })
 
   it("rejects paths that can escape a Traefik rule literal", () => {
