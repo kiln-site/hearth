@@ -186,7 +186,10 @@ when it is empty.
 Coolify. Relay discovers its public origin from `KILN_RELAY_PUBLIC_URL`, a
 generated `SERVICE_URL_*_<relay-port>` / `SERVICE_FQDN_*_<relay-port>`,
 `COOLIFY_URL`, or `COOLIFY_FQDN`, in that order. `KILN_RELAY_HOST` remains a
-valid explicit fallback. Only an origin-only HTTPS URL is accepted.
+valid explicit override. A port matching Relay's listener in a Coolify-generated
+URL selects the private container target and is not advertised publicly. Only
+an origin-only HTTPS URL is accepted; `KILN_RELAY_PUBLIC_URL` may explicitly
+select a nonstandard public port.
 
 Coolify's Traefik terminates public HTTPS and WSS and forwards private HTTP to
 Relay port 4100 over Coolify's Docker network. Relay never loads Coolify's

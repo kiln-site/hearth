@@ -158,13 +158,22 @@ function relayCoolifyPublicOrigin(
   environment: NodeJS.ProcessEnv,
   relayPort: number
 ): string | null {
+  const configuredUrl = environment.KILN_RELAY_PUBLIC_URL?.trim()
+  if (configuredUrl) return parseCoolifyPublicOrigin(configuredUrl)
+
+  const configuredHost = environment.KILN_RELAY_HOST?.trim()
+  if (configuredHost) {
+    return parseCoolifyPublicOrigin(
+      `https://${formatUrlHost(configuredHost)}`
+    )
+  }
+
   const generatedServiceUrls = Object.entries(environment)
     .filter(([name]) =>
       new RegExp(`^SERVICE_(?:URL|FQDN)_.+_${relayPort}$`, "u").test(name)
     )
     .map(([, value]) => value)
   const raw = [
-    environment.KILN_RELAY_PUBLIC_URL,
     environment[`SERVICE_URL_KILN_RELAY_${relayPort}`],
     environment[`SERVICE_FQDN_KILN_RELAY_${relayPort}`],
     ...generatedServiceUrls,
@@ -175,6 +184,14 @@ function relayCoolifyPublicOrigin(
     .map((value) => value.trim())
     .find(Boolean)
   if (!raw) return null
+  const url = new URL(parseCoolifyPublicOrigin(raw))
+  // In a Coolify domain, the suffix selects the private container port; the
+  // public proxy still serves HTTPS on 443.
+  if (url.port === String(relayPort)) url.port = ""
+  return url.origin
+}
+
+function parseCoolifyPublicOrigin(raw: string): string {
   const withScheme = raw.includes("://") ? raw : `https://${raw}`
   let url: URL
   try {

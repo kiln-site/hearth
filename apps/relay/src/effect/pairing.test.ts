@@ -101,6 +101,42 @@ describe("Relay pairing", () => {
     )
   })
 
+  it.live("advertises Coolify's public edge instead of its private port", () =>
+    Effect.gen(function* () {
+      const config = loadConfig({
+        KILN_RELAY_DATA_DIR: testDirectory,
+        KILN_RELAY_HOST: "relay.example.com",
+        KILN_RELAY_NAME: "Coolify Relay",
+        KILN_RELAY_PROXY: "coolify",
+        SERVICE_URL_KILN_RELAY_4100: "https://relay.example.com:4100",
+        NODE_ENV: "production",
+      })
+      const state = yield* RelayStateStore
+      const identity = yield* loadOrCreateRelayIdentity(config)
+      const invitation = yield* createPairingInvitation({
+        config,
+        identity,
+        role: "full_access",
+        state,
+        tls: null,
+      })
+      const decodedUri = decodePairingUri(invitation.uri)
+
+      assert.strictEqual(
+        decodedUri.browserOrigin,
+        "https://relay.example.com"
+      )
+      assert.strictEqual(
+        decodedUri.controlEndpoint,
+        "wss://relay.example.com/v1/socket"
+      )
+    }).pipe(
+      Effect.provide(
+        makeRelayStateLayer(join(testDirectory, "coolify-relay.sqlite"))
+      )
+    )
+  )
+
   it.live("replaces an automatic invitation when its bootstrap token rotates", () =>
     Effect.gen(function* () {
       const firstConfig = loadConfig({

@@ -57,7 +57,7 @@ describe("loadConfig", () => {
   it("uses Coolify's public HTTPS origin and keeps port 4100 private", () => {
     const config = loadConfig({
       KILN_RELAY_PROXY: "coolify",
-      SERVICE_URL_KILN_RELAY_4100: "https://relay.example.com",
+      SERVICE_URL_KILN_RELAY_4100: "https://relay.example.com:4100",
       NODE_ENV: "production",
     })
 
@@ -68,6 +68,35 @@ describe("loadConfig", () => {
     expect(config.publicPort).toBe(443)
     expect(config.browserOrigin).toBe("https://relay.example.com")
     expect(config.coolifyPublicOrigin).toBe("https://relay.example.com")
+  })
+
+  it("prefers an explicit Coolify host over generated service URLs", () => {
+    const config = loadConfig({
+      COOLIFY_FQDN: "relay.example.com:4100",
+      COOLIFY_URL: "https://relay.example.com:4100",
+      KILN_RELAY_HOST: "relay.example.com",
+      KILN_RELAY_PROXY: "coolify",
+      NODE_ENV: "production",
+    })
+
+    expect(config.publicPort).toBe(443)
+    expect(config.browserOrigin).toBe("https://relay.example.com")
+    expect(config.coolifyPublicOrigin).toBe("https://relay.example.com")
+  })
+
+  it("preserves an explicit nonstandard public Coolify port", () => {
+    const config = loadConfig({
+      KILN_RELAY_HOST: "relay.example.com",
+      KILN_RELAY_PROXY: "coolify",
+      KILN_RELAY_PUBLIC_URL: "https://relay.example.com:8443",
+      NODE_ENV: "production",
+    })
+
+    expect(config.publicPort).toBe(8443)
+    expect(config.browserOrigin).toBe("https://relay.example.com:8443")
+    expect(config.coolifyPublicOrigin).toBe(
+      "https://relay.example.com:8443"
+    )
   })
 
   it("requires a trusted public origin for Coolify mode", () => {
