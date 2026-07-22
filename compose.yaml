@@ -52,8 +52,15 @@ services:
       dockerfile: apps/relay/Dockerfile
     restart: unless-stopped
     environment:
-      KILN_RELAY_KEY: ${KILN_RELAY_KEY:?Set KILN_RELAY_KEY in .env}
+      KILN_RELAY_BOOTSTRAP_TOKEN: ${KILN_RELAY_BOOTSTRAP_TOKEN:-}
+      KILN_RELAY_BOOTSTRAP_TOKEN_FILE: ${KILN_RELAY_BOOTSTRAP_TOKEN_FILE:-}
+      KILN_RELAY_HOST: ${KILN_RELAY_HOST:-relay.hearth.orb.local}
+      KILN_RELAY_NAME: ${KILN_RELAY_NAME:-}
       KILN_RELAY_PORT: ${KILN_RELAY_PORT:-4100}
+      KILN_RELAY_SFTP_PORT: ${KILN_RELAY_SFTP_PORT:-2022}
+      KILN_RELAY_TLS_MODE: ${KILN_RELAY_TLS_MODE:-managed}
+      KILN_RELAY_TLS_CERT_FILE: ${KILN_RELAY_TLS_CERT_FILE:-}
+      KILN_RELAY_TLS_KEY_FILE: ${KILN_RELAY_TLS_KEY_FILE:-}
       KILN_BRICKS_CATALOG_URL: ${KILN_BRICKS_CATALOG_URL:-https://raw.githubusercontent.com/kiln-site/bricks/main/catalog.yml}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}
@@ -61,6 +68,7 @@ services:
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
     ports:
       - "${KILN_RELAY_PORT:-4100}:${KILN_RELAY_PORT:-4100}"
+      - "${KILN_RELAY_SFTP_PORT:-2022}:${KILN_RELAY_SFTP_PORT:-2022}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - relay-data:/data
@@ -97,9 +105,9 @@ services:
       CACHE_DATABASE: ${CACHE_DATABASE:-0}
       CACHE_TLS: ${CACHE_TLS:-false}
       KILN_ENABLE_SIGNUPS: ${KILN_ENABLE_SIGNUPS:-false}
-      KILN_RELAY_KEY: ${KILN_RELAY_KEY:?Set KILN_RELAY_KEY in .env}
-      KILN_RELAY_NAME: ${KILN_RELAY_NAME:-Local Relay}
-      KILN_RELAY_URL: http://relay:${KILN_RELAY_PORT:-4100}
+      KILN_RELAY_BOOTSTRAP_TOKEN: ${KILN_RELAY_BOOTSTRAP_TOKEN:-}
+      KILN_RELAY_HOST: ${KILN_RELAY_HOST:-relay.hearth.orb.local}
+      KILN_RELAY_PORT: ${KILN_RELAY_PORT:-4100}
       KILN_SUPER_USER_EMAIL: ${KILN_SUPER_USER_EMAIL:-}
       KILN_SUPER_USER_PASSWORD: ${KILN_SUPER_USER_PASSWORD:-}
       KILN_URL: ${KILN_URL:-http://localhost:3000}

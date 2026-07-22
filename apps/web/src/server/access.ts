@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto"
 
 import { createServerFn } from "@tanstack/react-start"
+import { relayIdSchema } from "@workspace/contracts"
 import type { RowDataPacket } from "mysql2/promise"
 import { Resend } from "resend"
 import { z } from "zod"
@@ -21,11 +22,11 @@ import { listPersistedRelays } from "@/lib/relay-registry"
 import { requireAuthenticatedUser } from "@/server/auth"
 
 const tokenSchema = z.object({ token: z.string().min(32).max(256) })
-const relayResourceIdSchema = z.object({ id: z.uuid(), relayId: z.uuid() })
+const relayResourceIdSchema = z.object({ id: z.uuid(), relayId: relayIdSchema })
 const invitationSchema = z.object({
   email: z.email().transform((value) => value.trim().toLowerCase()),
   instanceId: z.string().min(1).max(64).nullable(),
-  relayId: z.uuid(),
+  relayId: relayIdSchema,
   resourceName: z.string().trim().min(1).max(160),
   role: z.enum(accessRoles),
 })
@@ -69,7 +70,9 @@ export const getAccessCapabilities = createServerFn({ method: "GET" }).handler(
   async () => {
     const user = await requireAuthenticatedUser()
     const platformAdmin = isPlatformAdmin(user)
-    const relays = (await listPersistedRelays()).filter((relay) => relay.enabled)
+    const relays = (await listPersistedRelays()).filter(
+      (relay) => relay.enabled
+    )
     const grants = platformAdmin ? [] : await listUserGrants(user.id)
     const enabledRelayIds = new Set(relays.map((relay) => relay.id))
     return {
@@ -93,7 +96,9 @@ export const getAccessOverview = createServerFn({ method: "GET" }).handler(
   async () => {
     const user = await requireAuthenticatedUser()
     const platformAdmin = isPlatformAdmin(user)
-    const relays = (await listPersistedRelays()).filter((relay) => relay.enabled)
+    const relays = (await listPersistedRelays()).filter(
+      (relay) => relay.enabled
+    )
     const relayAccess = await Promise.all(
       relays.map(async (relay) => ({
         relay,

@@ -1,5 +1,6 @@
 import { createServer as createHttpServer } from "node:http"
 import { createServer as createHttpsServer } from "node:https"
+import { createHmac, randomBytes } from "node:crypto"
 import { mkdir } from "node:fs/promises"
 import * as Sentry from "@sentry/node"
 import { Effect } from "effect"
@@ -11,10 +12,14 @@ import {
   relayInstanceActionSchema,
   relayNetworkingSchema,
   relaySaveFileInputSchema,
+  relayBootstrapDiscoveryTranscript,
 } from "@workspace/contracts"
+import type { RelayControlRequest } from "@workspace/contracts"
 
 import { BrickCatalog } from "./bricks.js"
+import { attachBrowserSocket } from "./browser-socket.js"
 import { loadConfig } from "./config.js"
+import { attachControlSocket } from "./control-socket.js"
 import { DockerDriver } from "./docker.js"
 import { FilesystemDriver, RelayFilesystemError } from "./files.js"
 import { LifecycleDriver } from "./lifecycle.js"
@@ -41,8 +46,8 @@ import { RelayStateStore } from "./effect/state.js"
 import { loadRelayTls } from "./effect/tls.js"
 import { normalizedRoute } from "./route-label.js"
 import { closeRelayServer } from "./shutdown.js"
+import { attachSftpServer } from "./sftp-server.js"
 import type { IncomingMessage, ServerResponse } from "node:http"
-import type { RelayConfig } from "./config.js"
 
 const config = loadConfig()
 await mkdir(config.rootDirectory, { recursive: true })
@@ -128,8 +133,10 @@ const requestHandler = async (
   try {
     if (healthCheck(request, response)) return
     if (trustProbe(request, response)) return
+    if (bootstrapDiscovery(request, response)) return
     if (await pairingRequest(request, response)) return
-    if (!authorize(request, response, config)) return
+    if (await browserSocket.handleRequest(request, response)) return
+    if (!authorize(response)) return
     const requestUrl = new URL(request.url ?? "/", "http://relay")
     await runRelayEffect(
       `relay.http.${normalizedRoute(requestUrl.pathname)}`,
@@ -172,6 +179,28 @@ const server = startup.tls
     )
   : createHttpServer(requestHandler)
 
+const controlSocket = attachControlSocket({
+  execute: executeControlRequest,
+  identity: startup.identity,
+  initialSnapshot: () => relaySnapshot(),
+  runEffect: (effect) => runRelayEffect("relay.control.state", effect),
+  server,
+  state: startup.state,
+})
+const browserSocket = attachBrowserSocket({
+  docker,
+  filesystem,
+  identity: startup.identity,
+  runEffect: (effect) => runRelayEffect("relay.browser.state", effect),
+  server,
+  state: startup.state,
+})
+const sftpServer = await attachSftpServer({
+  config,
+  control: controlSocket,
+  docker,
+})
+
 server.listen(config.port, config.host, () => {
   console.log(
     `Relay ${startup.identity.fingerprint} (${startup.identity.name}) listening on ${startup.tls ? "https" : "http"}://${config.host}:${config.port}`
@@ -203,6 +232,7 @@ async function pairingRequest(
       const input = yield* Effect.tryPromise(() => readJson(request))
       const pairing = yield* decodePairingRequest(input)
       return yield* pairHearth({
+        bootstrapToken: config.bootstrapToken,
         identity: startup.identity,
         request: pairing,
         state: startup.state,
@@ -225,6 +255,28 @@ function trustProbe(
 ): boolean {
   const method = request.method ?? "GET"
   const url = new URL(request.url ?? "/", "http://relay")
+  if (
+    url.pathname === "/v1/trust/ca.pem" &&
+    (method === "GET" || method === "HEAD")
+  ) {
+    if (!startup.tls?.caCertificatePem) {
+      json(response, 404, { error: "Relay does not use a managed local CA" })
+      return true
+    }
+    response
+      .writeHead(200, {
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "public, max-age=3600",
+        "Content-Disposition": "attachment; filename=kiln-relay-ca.pem",
+        "Content-Length": String(
+          Buffer.byteLength(startup.tls.caCertificatePem)
+        ),
+        "Content-Type": "application/x-pem-file",
+        "X-Content-Type-Options": "nosniff",
+      })
+      .end(method === "HEAD" ? undefined : startup.tls.caCertificatePem)
+    return true
+  }
   if (url.pathname !== "/v1/trust" || (method !== "GET" && method !== "HEAD")) {
     return false
   }
@@ -247,8 +299,55 @@ function trustProbe(
   return true
 }
 
+function bootstrapDiscovery(
+  request: IncomingMessage,
+  response: ServerResponse
+): boolean {
+  const method = request.method ?? "GET"
+  const url = new URL(request.url ?? "/", "http://relay")
+  if (url.pathname !== "/v1/bootstrap" || method !== "GET") return false
+  const invitation = initialPairing.invitation
+  const clientNonce = url.searchParams.get("nonce")
+  if (
+    initialPairing.kind !== "automatic" ||
+    !invitation ||
+    !config.bootstrapToken ||
+    !clientNonce ||
+    Buffer.from(clientNonce, "base64url").length < 16
+  ) {
+    json(response, 404, { error: "Automatic pairing is not available" })
+    return true
+  }
+  const serverNonce = randomBytes(32).toString("base64url")
+  const transcript = {
+    clientNonce,
+    controlEndpoint: invitation.envelope.controlEndpoint,
+    expiresAt: invitation.envelope.expiresAt,
+    invitationId: invitation.envelope.invitationId,
+    relayFingerprint: invitation.envelope.relayFingerprint,
+    relayPublicKeyPem: invitation.envelope.relayPublicKeyPem,
+    serverNonce,
+    tlsFingerprint: startup.tls?.fingerprint ?? "development",
+  }
+  const { token: _token, ...envelope } = invitation.envelope
+  json(response, 200, {
+    envelope,
+    proof: createHmac("sha256", config.bootstrapToken)
+      .update(relayBootstrapDiscoveryTranscript(transcript))
+      .digest("base64url"),
+    serverNonce,
+    tlsFingerprint: transcript.tlsFingerprint,
+  })
+  return true
+}
+
 async function shutdownRelay(signal: NodeJS.Signals): Promise<void> {
   console.log(`Received ${signal}; shutting down relay`)
+  await Promise.all([
+    controlSocket.close(),
+    browserSocket.close(),
+    sftpServer.close(),
+  ])
   const result = await closeRelayServer(server, activeConsoleStreamControllers)
   if (result === "forced") {
     console.warn("Relay shutdown deadline reached; closed active connections")
@@ -265,6 +364,144 @@ async function shutdownRelay(signal: NodeJS.Signals): Promise<void> {
   process.exit(0)
 }
 
+async function relaySnapshot() {
+  const [node, instances] = await Promise.all([
+    nodeSnapshot(config, docker),
+    docker.inspectInstances(),
+  ])
+  return { node, instances }
+}
+
+async function executeControlRequest(
+  request: RelayControlRequest,
+  _client: unknown,
+  signal: AbortSignal
+): Promise<unknown> {
+  if (signal.aborted) throw new Error("Relay request was cancelled")
+  const payload = payloadRecord(request.payload)
+  switch (request.operation) {
+    case "relay.snapshot":
+      return relaySnapshot()
+    case "relay.networking.read":
+      return (await lifecycle.networking()) ?? null
+    case "relay.networking.write":
+      return lifecycle.configureNetworking(
+        relayNetworkingSchema.parse(request.payload)
+      )
+    case "relay.pairing.create": {
+      const role = payload.role === "read_only" ? "read_only" : "full_access"
+      const invitation = await runRelayEffect(
+        "relay.control.pairing.create",
+        createPairingInvitation({
+          config,
+          identity: startup.identity,
+          role,
+          state: startup.state,
+          tls: startup.tls,
+        })
+      )
+      console.log(
+        `Created pairing invitation ${invitation.envelope.invitationId}; its secret was returned only to the requesting Hearth.`
+      )
+      return invitation
+    }
+    case "relay.clients.list":
+      return runRelayEffect(
+        "relay.control.clients.list",
+        startup.state.listClients()
+      )
+    case "relay.clients.revoke": {
+      const clientId = requiredString(payload, "clientId")
+      const revoked = await runRelayEffect(
+        "relay.control.clients.revoke",
+        startup.state.revokeClient(clientId, Date.now())
+      )
+      if (revoked) controlSocket.revokeClient(clientId)
+      return { clientId, revoked }
+    }
+    case "brick.catalog":
+      return bricks.catalog()
+    case "brick.recipe":
+      return {
+        ...(await bricks.recipe(requiredString(payload, "source"))),
+        source: requiredString(payload, "source"),
+      }
+    case "instance.create":
+      return lifecycle.createInstance(
+        relayCreateInstanceSchema.parse(request.payload)
+      )
+    case "instance.delete": {
+      const instanceId = requiredString(payload, "instanceId")
+      await lifecycle.deleteInstance(instanceId, payload.deleteData === true)
+      return { deleted: true, instanceId }
+    }
+    case "instance.action": {
+      const instance = await requiredInstance(payload)
+      const input = relayInstanceActionSchema.parse(payload)
+      return docker.runAction(instance, input.action)
+    }
+    case "instance.files.list":
+      return filesystem.tree(await requiredInstance(payload))
+    case "instance.files.read":
+      return filesystem.read(
+        await requiredInstance(payload),
+        requiredString(payload, "path")
+      )
+    case "instance.files.write": {
+      const instance = await requiredInstance(payload)
+      const input = relaySaveFileInputSchema.parse(payload)
+      return filesystem.write(instance, requiredString(payload, "path"), input)
+    }
+    case "instance.console.history":
+      return docker.console(
+        await requiredInstance(payload),
+        typeof payload.limit === "number" ? payload.limit : 2_000
+      )
+    case "instance.console.write": {
+      const instance = await requiredInstance(payload)
+      const input = relayConsoleCommandSchema.parse(payload)
+      await docker.sendCommand(instance, input.command)
+      return { accepted: true, command: input.command }
+    }
+    case "instance.console.complete": {
+      const instance = await requiredInstance(payload)
+      const input = relayConsoleCompletionInputSchema.parse(payload)
+      return docker.completeCommand(instance, input.input, input.cursor)
+    }
+    case "instance.logs.latest":
+      return filesystem.latestLog(await requiredInstance(payload))
+    case "relay.rename":
+    case "browser.capability.issue":
+    case "sftp.authorization.resolve":
+      throw new Error(`${request.operation} is not available yet`)
+  }
+}
+
+function payloadRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Relay request payload must be an object")
+  }
+  return Object.fromEntries(Object.entries(value))
+}
+
+function requiredString(
+  value: Readonly<Record<string, unknown>>,
+  key: string
+): string {
+  const field = value[key]
+  if (typeof field !== "string" || !field) {
+    throw new Error(`${key} is required`)
+  }
+  return field
+}
+
+async function requiredInstance(payload: Readonly<Record<string, unknown>>) {
+  const instanceId = requiredString(payload, "instanceId")
+  const instance = await docker.findInstance(instanceId)
+  if (!instance) throw new Error("Instance not found")
+  return instance
+}
+
 function normalizedRequestOperation(url: string | undefined): string {
   return normalizedRoute(new URL(url ?? "/", "http://relay").pathname)
 }
@@ -277,11 +514,7 @@ async function route(
   const method = request.method ?? "GET"
 
   if (method === "GET" && url.pathname === "/v1/snapshot") {
-    const [node, instances] = await Promise.all([
-      nodeSnapshot(config, docker),
-      docker.inspectInstances(),
-    ])
-    json(response, 200, { node, instances })
+    json(response, 200, await relaySnapshot())
     return
   }
 
@@ -473,15 +706,11 @@ function healthCheck(
   return true
 }
 
-function authorize(
-  request: IncomingMessage,
-  response: ServerResponse,
-  relayConfig: RelayConfig
-): boolean {
-  if (!relayConfig.legacyToken) return true
-  if (request.headers.authorization === `Bearer ${relayConfig.legacyToken}`)
-    return true
-  json(response, 401, { error: "Unauthorized", code: "unauthorized" })
+function authorize(response: ServerResponse): boolean {
+  json(response, 426, {
+    error: "Relay control operations require kiln-relay.v1 WebSocket transport",
+    code: "websocket_required",
+  })
   return false
 }
 

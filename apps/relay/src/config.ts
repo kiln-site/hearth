@@ -33,7 +33,6 @@ export interface RelayConfig {
   dockerSocket: string
   dataDirectory: string
   host: string
-  legacyToken: string | null
   managedLabel: string
   serverIdLabel: string
   nodeId: string
@@ -70,7 +69,6 @@ export function loadConfig(
     dockerSocket: "/var/run/docker.sock",
     dataDirectory,
     host: environment.KILN_RELAY_BIND_HOST?.trim() || "0.0.0.0",
-    legacyToken: legacyRelayKey(environment),
     managedLabel: "kiln.relay.managed=true",
     nodeId: "kiln-relay",
     nodeName: environment.KILN_RELAY_NAME?.trim() || hostname() || "Kiln Relay",
@@ -100,14 +98,6 @@ function bootstrapToken(environment: NodeJS.ProcessEnv): string | null {
     value,
     file ? "Relay bootstrap token file" : "KILN_RELAY_BOOTSTRAP_TOKEN"
   )
-}
-
-function legacyRelayKey(environment: NodeJS.ProcessEnv): string | null {
-  const key = environment.KILN_RELAY_KEY?.trim() || null
-  if (key && key.length < 32) {
-    throw new Error("KILN_RELAY_KEY must contain at least 32 characters")
-  }
-  return key
 }
 
 function parsePort(

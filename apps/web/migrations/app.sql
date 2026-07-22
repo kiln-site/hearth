@@ -1,10 +1,17 @@
 CREATE TABLE IF NOT EXISTS kiln_relay (
-  id CHAR(36) NOT NULL PRIMARY KEY,
+  id CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
   name VARCHAR(120) NOT NULL,
   hostname VARCHAR(253) NOT NULL,
   port SMALLINT UNSIGNED NOT NULL DEFAULT 4100,
   use_tls BOOLEAN NOT NULL DEFAULT TRUE,
-  token_ciphertext TEXT NULL,
+  browser_origin VARCHAR(512) NOT NULL,
+  relay_public_key TEXT NOT NULL,
+  relay_ca_certificate TEXT NULL,
+  client_id CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  client_public_key TEXT NOT NULL,
+  client_private_key_ciphertext TEXT NOT NULL,
+  client_role ENUM('full_access', 'read_only', 'custom') NOT NULL,
+  client_actions JSON NOT NULL,
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   last_connected_at TIMESTAMP(3) NULL,
   last_error VARCHAR(512) NULL,
@@ -28,7 +35,7 @@ CREATE TABLE IF NOT EXISTS kiln_setting (
 );
 
 CREATE TABLE IF NOT EXISTS kiln_instance (
-  relay_id CHAR(36) NOT NULL,
+  relay_id CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   instance_id CHAR(40) NOT NULL,
   display_name VARCHAR(120) NULL,
   created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -40,7 +47,7 @@ CREATE TABLE IF NOT EXISTS kiln_instance (
 );
 
 CREATE TABLE IF NOT EXISTS kiln_file_activity (
-  relay_id CHAR(36) NOT NULL,
+  relay_id CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   instance_id CHAR(40) NOT NULL,
   path_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   path VARCHAR(2048) NOT NULL,
@@ -70,7 +77,7 @@ CREATE TABLE IF NOT EXISTS kiln_auth_audit (
 CREATE TABLE IF NOT EXISTS kiln_access_grant (
   id CHAR(36) NOT NULL PRIMARY KEY,
   user_id VARCHAR(36) NOT NULL,
-  relay_id CHAR(36) NOT NULL,
+  relay_id CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   resource_type ENUM('relay', 'instance') NOT NULL,
   resource_id VARCHAR(64) NOT NULL,
   role ENUM('owner', 'admin', 'operator', 'viewer') NOT NULL,
@@ -86,7 +93,7 @@ CREATE TABLE IF NOT EXISTS kiln_invitation (
   id CHAR(36) NOT NULL PRIMARY KEY,
   token_hash CHAR(64) NOT NULL,
   email VARCHAR(320) NOT NULL,
-  relay_id CHAR(36) NOT NULL,
+  relay_id CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   instance_id VARCHAR(64) NULL,
   role ENUM('owner', 'admin', 'operator', 'viewer') NOT NULL,
   invited_by VARCHAR(36) NOT NULL,

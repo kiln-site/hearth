@@ -19,6 +19,10 @@ export default defineConfig({
         "ws",
         "yaml",
       ],
+      // ssh2 treats cpu-features as an optional acceleration. Keeping that
+      // native package external lets its guarded require fall back to Node's
+      // portable crypto implementation in our distroless image.
+      neverBundle: ["cpu-features"],
       onlyBundle: false,
     },
     entry: ["src/index.ts", "instrument.mjs"],

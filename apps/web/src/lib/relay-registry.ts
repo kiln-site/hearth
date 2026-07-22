@@ -1,51 +1,128 @@
-import { randomUUID } from "node:crypto"
-
-import type { ResultSetHeader, RowDataPacket } from "mysql2/promise"
+import {
+  createHash,
+  createHmac,
+  createPublicKey,
+  generateKeyPairSync,
+  randomBytes,
+  sign,
+  timingSafeEqual,
+  verify,
+} from "node:crypto"
+import { request as httpRequest } from "node:http"
+import { request as httpsRequest } from "node:https"
+import { TLSSocket } from "node:tls"
+import type { RowDataPacket } from "mysql2/promise"
 import { Effect } from "effect"
-import { relaySnapshotSchema } from "@workspace/contracts"
+import { z } from "zod"
+
+import {
+  relayPairingRequestTranscript,
+  relayPairingResponseTranscript,
+  relayBootstrapDiscoveryTranscript,
+  relayBootstrapEnrollmentTranscript,
+  relaySnapshotSchema,
+} from "@workspace/contracts"
+import type {
+  RelayPairingRequestContract,
+  RelayPairingResponseContract,
+} from "@workspace/contracts"
 
 import { Database } from "@/effect/database"
 import { CredentialError, ResourceNotFoundError } from "@/effect/errors"
 import { runAppEffect } from "@/effect/runtime"
 import { databasePool } from "@/lib/database"
 import { databaseTable } from "@/lib/database-config"
-import { betterAuthSecrets, relayKey } from "@/lib/environment"
+import { betterAuthSecrets, kilnPublicUrl } from "@/lib/environment"
+import { syncInstanceRegistry } from "@/lib/instance-registry"
 
 import { decryptWithKeyring, encryptWithKeyring } from "../../keyring.mjs"
 
-const RELAY_CREDENTIAL_PURPOSE = "kiln-relay-credential"
+const RELAY_PRIVATE_KEY_PURPOSE = "kiln-relay-client-private-key"
 
 export interface PersistedRelay {
-  id: string
-  name: string
-  hostname: string
-  port: number
-  useTls: boolean
+  actions: ReadonlyArray<string>
+  browserOrigin: string
+  clientId: string
   enabled: boolean
+  hostname: string
+  id: string
   lastConnectedAt: string | null
   lastError: string | null
   managedEmberCount: number | null
+  managedTls: boolean
+  name: string
   nodeArch: string | null
   nodePlatform: string | null
   nodeVersion: string | null
-  tokenConfigured: boolean
+  paired: true
+  port: number
+  role: "custom" | "full_access" | "read_only"
+  useTls: boolean
+}
+
+export interface RelayCredentials {
+  caCertificatePem: string | null
+  clientId: string
+  clientPrivateKeyPem: string
+  clientPublicKeyPem: string
+  relayPublicKeyPem: string
 }
 
 interface RelayRow extends RowDataPacket {
-  id: string
-  name: string
-  hostname: string
-  port: number
-  use_tls: number
+  browser_origin: string
+  client_actions: string
+  client_id: string
+  client_private_key_ciphertext: string
+  client_public_key: string
+  client_role: "custom" | "full_access" | "read_only"
   enabled: number
+  hostname: string
+  id: string
   last_connected_at: Date | null
   last_error: string | null
   managed_ember_count: number | null
+  name: string
   node_arch: string | null
   node_platform: string | null
   node_version: string | null
-  token_ciphertext: string | null
+  port: number
+  relay_ca_certificate: string | null
+  relay_public_key: string
+  use_tls: number
 }
+
+const pairingEnvelopeSchema = z.object({
+  browserOrigin: z.url().max(512),
+  caCertificatePem: z.string().max(16_384).nullable(),
+  controlEndpoint: z.url().max(512),
+  expiresAt: z.number().int().positive(),
+  invitationId: z.uuid(),
+  relayFingerprint: z.string().regex(/^[A-Za-z\d_-]{43}$/u),
+  relayName: z.string().trim().min(1).max(120),
+  relayPublicKeyPem: z.string().min(80).max(2_048),
+  token: z.string().min(32).max(512),
+  version: z.literal(1),
+})
+
+const pairingResponseSchema = z.object({
+  actions: z.array(z.string().min(1).max(120)).max(128),
+  clientId: z.string().regex(/^[A-Za-z\d_-]{43}$/u),
+  expiresAt: z.number().int().positive(),
+  nonce: z.string().min(16).max(128),
+  relayFingerprint: z.string().regex(/^[A-Za-z\d_-]{43}$/u),
+  relayName: z.string().trim().min(1).max(120),
+  relayPublicKeyPem: z.string().min(80).max(2_048),
+  role: z.enum(["custom", "full_access", "read_only"]),
+  signature: z.string().min(32).max(512),
+  version: z.literal(1),
+})
+
+const bootstrapDiscoverySchema = z.object({
+  envelope: pairingEnvelopeSchema.omit({ token: true }),
+  proof: z.string().min(32).max(512),
+  serverNonce: z.string().min(16).max(128),
+  tlsFingerprint: z.string().min(1).max(256),
+})
 
 export async function listPersistedRelays(): Promise<Array<PersistedRelay>> {
   return runAppEffect("relays.list", listPersistedRelaysEffect())
@@ -55,74 +132,215 @@ export const listPersistedRelaysEffect = Effect.fn("relays.list")(function* () {
   const database = yield* Database
   const rows = yield* database.queryRows<RelayRow>(
     "relays_list",
-    `SELECT id, name, hostname, port, use_tls, enabled,
-              last_connected_at, last_error, managed_ember_count,
-              node_arch, node_platform, node_version, token_ciphertext
-         FROM ${databaseTable("relay")}
-        ORDER BY name ASC, created_at ASC`
+    `SELECT id, name, hostname, port, use_tls, browser_origin,
+            client_id, client_role, client_actions, enabled,
+            last_connected_at, last_error, managed_ember_count,
+            node_arch, node_platform, node_version,
+            relay_public_key, relay_ca_certificate,
+            client_public_key, client_private_key_ciphertext
+       FROM ${databaseTable("relay")}
+      ORDER BY name ASC, created_at ASC`
   )
   return rows.map(toPersistedRelay)
 })
 
-export async function createPersistedRelay(input: {
-  name: string
-  hostname: string
-  port: number
-  useTls: boolean
-  token: string
-}): Promise<PersistedRelay> {
-  const id = randomUUID()
+export async function pairPersistedRelay(pairingUri: string) {
+  const envelope = decodePairingUri(pairingUri)
+  return pairWithEnvelope(envelope, {
+    bootstrapProof: null,
+    token: envelope.token,
+  })
+}
+
+export async function initializeRelayFromEnvironment(): Promise<PersistedRelay | null> {
+  if ((await listPersistedRelays()).length > 0) return null
+  const token = process.env.KILN_RELAY_BOOTSTRAP_TOKEN?.trim()
+  const hostname = process.env.KILN_RELAY_HOST?.trim()
+  if (!token || !hostname) return null
+  if (Buffer.byteLength(token) < 32) {
+    throw new Error("KILN_RELAY_BOOTSTRAP_TOKEN must contain at least 32 bytes")
+  }
+  const port = Number(process.env.KILN_RELAY_PORT?.trim() || 4100)
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("KILN_RELAY_PORT must be a valid TCP port")
+  }
+  const clientNonce = randomBytes(32).toString("base64url")
+  const discovered = await getBootstrapDiscovery(
+    new URL(
+      `https://${formatHost(hostname)}:${port}/v1/bootstrap?nonce=${encodeURIComponent(clientNonce)}`
+    )
+  )
+  const bootstrap = bootstrapDiscoverySchema.parse(discovered.payload)
+  if (bootstrap.tlsFingerprint !== discovered.tlsFingerprint) {
+    throw new Error(
+      "Relay bootstrap response did not match its TLS certificate"
+    )
+  }
+  const transcript = relayBootstrapDiscoveryTranscript({
+    clientNonce,
+    controlEndpoint: bootstrap.envelope.controlEndpoint,
+    expiresAt: bootstrap.envelope.expiresAt,
+    invitationId: bootstrap.envelope.invitationId,
+    relayFingerprint: bootstrap.envelope.relayFingerprint,
+    relayPublicKeyPem: bootstrap.envelope.relayPublicKeyPem,
+    serverNonce: bootstrap.serverNonce,
+    tlsFingerprint: discovered.tlsFingerprint,
+  })
+  const expectedProof = createHmac("sha256", token).update(transcript).digest()
+  const actualProof = Buffer.from(bootstrap.proof, "base64url")
+  if (
+    expectedProof.length !== actualProof.length ||
+    !timingSafeEqual(expectedProof, actualProof)
+  ) {
+    throw new Error("Relay bootstrap proof is invalid")
+  }
+  const envelope = pairingEnvelopeSchema.parse({
+    ...bootstrap.envelope,
+    token,
+  })
+  return pairWithEnvelope(envelope, { bootstrapProof: "pending", token: null })
+}
+
+export async function maintainPersistedRelayConnections(): Promise<void> {
+  const relays = (await listPersistedRelays()).filter((relay) => relay.enabled)
+  const { relayRpc } = await import("@/lib/relay-connection")
+  await Promise.allSettled(
+    relays.map(async (relay) => {
+      const snapshot = relaySnapshotSchema.parse(
+        await relayRpc(relay, "relay.snapshot", {}, 5_000)
+      )
+      await syncInstanceRegistry(relay.id, snapshot.instances)
+    })
+  )
+}
+
+async function pairWithEnvelope(
+  envelope: z.infer<typeof pairingEnvelopeSchema>,
+  credential: { bootstrapProof: string | null; token: string | null }
+) {
+  if (envelope.expiresAt <= Date.now()) {
+    throw new Error("This Relay pairing invitation has expired")
+  }
+  const relayKeyFingerprint = publicKeyFingerprint(envelope.relayPublicKeyPem)
+  if (relayKeyFingerprint !== envelope.relayFingerprint) {
+    throw new Error("Relay pairing identity fingerprint does not match")
+  }
+  const controlEndpoint = new URL(envelope.controlEndpoint)
+  const browserOrigin = new URL(envelope.browserOrigin)
+  if (
+    (controlEndpoint.protocol !== "wss:" &&
+      controlEndpoint.protocol !== "ws:") ||
+    controlEndpoint.pathname !== "/v1/socket" ||
+    controlEndpoint.hostname !== browserOrigin.hostname ||
+    effectivePort(controlEndpoint) !== effectivePort(browserOrigin)
+  ) {
+    throw new Error("Relay pairing endpoints do not describe one listener")
+  }
+  if (
+    controlEndpoint.protocol === "wss:" &&
+    browserOrigin.protocol !== "https:"
+  ) {
+    throw new Error("Secure Relay control requires a secure browser origin")
+  }
+  if (
+    controlEndpoint.protocol === "ws:" &&
+    browserOrigin.protocol !== "http:"
+  ) {
+    throw new Error("Development Relay endpoints must use matching protocols")
+  }
+
+  const keys = generateKeyPairSync("ed25519", {
+    privateKeyEncoding: { format: "pem", type: "pkcs8" },
+    publicKeyEncoding: { format: "pem", type: "spki" },
+  })
+  const nonce = randomBytes(32).toString("base64url")
+  const requestBase = {
+    hearthName: `Hearth on ${kilnPublicUrl().hostname}`,
+    hearthOrigin: kilnPublicUrl().origin,
+    invitationId: envelope.invitationId,
+    nonce,
+    publicKeyPem: keys.publicKey,
+    version: 1 as const,
+  }
+  const bootstrapProof = credential.bootstrapProof
+    ? createHmac("sha256", envelope.token)
+        .update(relayBootstrapEnrollmentTranscript(requestBase))
+        .digest("base64url")
+    : null
+  const unsignedRequest: Omit<RelayPairingRequestContract, "signature"> = {
+    ...requestBase,
+    bootstrapProof,
+    token: credential.token,
+  }
+  const request: RelayPairingRequestContract = {
+    ...unsignedRequest,
+    signature: sign(
+      null,
+      Buffer.from(
+        relayPairingRequestTranscript({ ...unsignedRequest, signature: "" })
+      ),
+      keys.privateKey
+    ).toString("base64url"),
+  }
+  const response = pairingResponseSchema.parse(
+    await postPairingRequest(
+      new URL("/v1/pair", browserOrigin),
+      envelope.caCertificatePem,
+      request
+    )
+  )
+  verifyPairingResponse(envelope, nonce, response)
+
   await databasePool.execute(
-    `INSERT INTO ${databaseTable("relay")}
-      (id, name, hostname, port, use_tls, token_ciphertext, enabled)
-     VALUES (?, ?, ?, ?, ?, ?, TRUE)`,
+    `INSERT INTO ${databaseTable("relay")} (
+      id, name, hostname, port, use_tls, browser_origin,
+      relay_public_key, relay_ca_certificate,
+      client_id, client_public_key, client_private_key_ciphertext,
+      client_role, client_actions, enabled
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)`,
     [
-      id,
-      input.name,
-      input.hostname,
-      input.port,
-      input.useTls,
-      encryptRelayToken(input.token),
+      envelope.relayFingerprint,
+      response.relayName,
+      controlEndpoint.hostname,
+      effectivePort(controlEndpoint),
+      controlEndpoint.protocol === "wss:",
+      browserOrigin.origin,
+      envelope.relayPublicKeyPem,
+      envelope.caCertificatePem,
+      response.clientId,
+      keys.publicKey,
+      encryptPrivateKey(keys.privateKey),
+      response.role,
+      JSON.stringify(response.actions),
     ]
   )
-
-  await checkPersistedRelay(id)
-  const relay = (await listPersistedRelays()).find((item) => item.id === id)
-  if (!relay) throw new Error("Relay was saved but could not be read back")
-  return relay
+  try {
+    return await checkPersistedRelay(envelope.relayFingerprint)
+  } catch (cause) {
+    await databasePool.execute(
+      `DELETE FROM ${databaseTable("relay")} WHERE id = ?`,
+      [envelope.relayFingerprint]
+    )
+    throw cause
+  }
 }
 
 export async function updatePersistedRelay(input: {
-  id: string
-  name: string
   hostname: string
+  id: string
   port: number
-  token?: string
   useTls: boolean
 }): Promise<PersistedRelay> {
-  const tokenCiphertext = input.token
-    ? encryptRelayToken(input.token)
-    : undefined
-  const [result] = await databasePool.execute<ResultSetHeader>(
+  const [result] = await databasePool.execute<
+    import("mysql2/promise").ResultSetHeader
+  >(
     `UPDATE ${databaseTable("relay")}
-        SET name = ?, hostname = ?, port = ?, use_tls = ?,
-            token_ciphertext = COALESCE(?, token_ciphertext)
+        SET hostname = ?, port = ?, use_tls = ?
       WHERE id = ?`,
-    [
-      input.name,
-      input.hostname,
-      input.port,
-      input.useTls,
-      tokenCiphertext ?? null,
-      input.id,
-    ]
+    [input.hostname, input.port, input.useTls, input.id]
   )
   if (result.affectedRows !== 1) throw new Error("Relay not found")
-  const relay = (await listPersistedRelays()).find(
-    (item) => item.id === input.id
-  )
-  if (!relay) throw new Error("Relay was saved but could not be read back")
-  return relay.enabled ? checkPersistedRelay(input.id) : relay
+  return checkPersistedRelay(input.id)
 }
 
 export function setPersistedRelayEnabled(
@@ -167,13 +385,12 @@ export const setPersistedRelayEnabledEffect = Effect.fn("relays.setEnabled")(
 )
 
 export async function deletePersistedRelay(id: string): Promise<void> {
-  const [result] = await databasePool.execute<ResultSetHeader>(
-    `DELETE FROM ${databaseTable("relay")} WHERE id = ?`,
-    [id]
-  )
-  if (result.affectedRows !== 1) {
-    throw new Error("Relay not found")
-  }
+  const [result] = await databasePool.execute<
+    import("mysql2/promise").ResultSetHeader
+  >(`DELETE FROM ${databaseTable("relay")} WHERE id = ?`, [id])
+  if (result.affectedRows !== 1) throw new Error("Relay not found")
+  const { closeRelayConnection } = await import("@/lib/relay-connection")
+  closeRelayConnection(id)
 }
 
 export async function checkPersistedRelay(id: string): Promise<PersistedRelay> {
@@ -183,20 +400,19 @@ export async function checkPersistedRelay(id: string): Promise<PersistedRelay> {
 
   let error: string | null = null
   try {
-    const response = await fetch(`${relayUrl(relay)}/v1/snapshot`, {
-      headers: await relayHeaders(relay),
-      signal: AbortSignal.timeout(5_000),
-    })
-    if (!response.ok) throw new Error(`Relay returned HTTP ${response.status}`)
-    const snapshot = relaySnapshotSchema.parse(await response.json())
+    const { relayRpc } = await import("@/lib/relay-connection")
+    const snapshot = relaySnapshotSchema.parse(
+      await relayRpc(relay, "relay.snapshot", {}, 5_000)
+    )
     await databasePool.execute(
       `UPDATE ${databaseTable("relay")}
           SET last_connected_at = ?, last_error = NULL,
-              managed_ember_count = ?, node_arch = ?, node_platform = ?,
-              node_version = ?
+              name = ?, managed_ember_count = ?, node_arch = ?,
+              node_platform = ?, node_version = ?
         WHERE id = ?`,
       [
         new Date(),
+        snapshot.node.name,
         snapshot.instances.filter((instance) => instance.managedByRelay).length,
         snapshot.node.arch,
         snapshot.node.platform,
@@ -208,7 +424,7 @@ export async function checkPersistedRelay(id: string): Promise<PersistedRelay> {
     error = cause instanceof Error ? cause.message : "Could not reach Relay"
     await databasePool.execute(
       `UPDATE ${databaseTable("relay")} SET last_error = ? WHERE id = ?`,
-      [error, id]
+      [error.slice(0, 512), id]
     )
   }
   const checked = (await listPersistedRelays()).find((item) => item.id === id)
@@ -228,91 +444,282 @@ export const resolveDefaultRelayEffect = Effect.fn("relays.resolveDefault")(
   }
 )
 
-export async function relayHeaders(relay?: {
-  id: string
-}): Promise<Record<string, string>> {
-  return runAppEffect("relays.headers", relayHeadersEffect(relay))
+export function loadRelayCredentials(id: string): Promise<RelayCredentials> {
+  return runAppEffect("relays.credentials", loadRelayCredentialsEffect(id))
 }
 
-export const relayHeadersEffect = Effect.fn("relays.headers")(
-  function* (relay?: { id: string }) {
-    let token: string | null = null
-    if (relay) {
-      const database = yield* Database
-      const rows = yield* database.queryRows<
-        { token_ciphertext: string | null } & RowDataPacket
-      >(
-        "relay_token",
-        `SELECT token_ciphertext FROM ${databaseTable("relay")} WHERE id = ? LIMIT 1`,
-        [relay.id]
-      )
-      if (rows[0]?.token_ciphertext) {
-        const storedCiphertext = rows[0].token_ciphertext
-        const decrypted = yield* Effect.try({
-          try: () => decryptRelayToken(storedCiphertext),
-          catch: (cause) =>
-            CredentialError.make({ operation: "decrypt_relay_token", cause }),
+export const loadRelayCredentialsEffect = Effect.fn("relays.credentials")(
+  function* (id: string) {
+    const database = yield* Database
+    const rows = yield* database.queryRows<RelayRow>(
+      "relay_credentials",
+      `SELECT id, name, hostname, port, use_tls, browser_origin,
+              client_id, client_role, client_actions, enabled,
+              last_connected_at, last_error, managed_ember_count,
+              node_arch, node_platform, node_version,
+              relay_public_key, relay_ca_certificate,
+              client_public_key, client_private_key_ciphertext
+         FROM ${databaseTable("relay")} WHERE id = ? LIMIT 1`,
+      [id]
+    )
+    const row = rows[0]
+    if (!row) {
+      return yield* Effect.fail(
+        ResourceNotFoundError.make({
+          resource: "relay",
+          message: "Relay credentials not found",
         })
-        token = decrypted.plaintext
-        if (decrypted.needsRotation) {
-          const ciphertext = yield* Effect.try({
-            try: () => encryptRelayToken(decrypted.plaintext),
-            catch: (cause) =>
-              CredentialError.make({ operation: "encrypt_relay_token", cause }),
-          })
-          yield* database.execute(
-            "rotate_relay_token",
-            `UPDATE ${databaseTable("relay")}
-              SET token_ciphertext = ?
-            WHERE id = ? AND token_ciphertext = ?`,
-            [ciphertext, relay.id, storedCiphertext]
-          )
-        }
-      }
+      )
     }
-    token ??= relayKey()
-    const headers: Record<string, string> = token
-      ? { Authorization: `Bearer ${token}` }
-      : {}
-    return headers
+    const decrypted = yield* Effect.try({
+      try: () => decryptPrivateKey(row.client_private_key_ciphertext),
+      catch: (cause) =>
+        CredentialError.make({ operation: "decrypt_relay_private_key", cause }),
+    })
+    if (decrypted.needsRotation) {
+      const rotated = yield* Effect.try({
+        try: () => encryptPrivateKey(decrypted.plaintext),
+        catch: (cause) =>
+          CredentialError.make({
+            operation: "rotate_relay_private_key",
+            cause,
+          }),
+      })
+      yield* database.execute(
+        "rotate_relay_private_key",
+        `UPDATE ${databaseTable("relay")}
+            SET client_private_key_ciphertext = ?
+          WHERE id = ? AND client_private_key_ciphertext = ?`,
+        [rotated, id, row.client_private_key_ciphertext]
+      )
+    }
+    return {
+      caCertificatePem: row.relay_ca_certificate,
+      clientId: row.client_id,
+      clientPrivateKeyPem: decrypted.plaintext,
+      clientPublicKeyPem: row.client_public_key,
+      relayPublicKeyPem: row.relay_public_key,
+    } satisfies RelayCredentials
   }
 )
 
-function relayUrl(relay: PersistedRelay): string {
-  return `${relay.useTls ? "https" : "http"}://${relay.hostname}:${relay.port}`
+function decodePairingUri(value: string) {
+  const url = new URL(value.trim())
+  if (
+    url.protocol !== "kiln-relay:" ||
+    url.hostname !== "pair" ||
+    url.pathname !== "/v1"
+  ) {
+    throw new Error("Enter a valid Kiln Relay pairing URI")
+  }
+  const payload = url.searchParams.get("payload")
+  if (!payload || payload.length > 32_768) {
+    throw new Error("Relay pairing URI payload is missing or too large")
+  }
+  return pairingEnvelopeSchema.parse(
+    JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as unknown
+  )
+}
+
+async function postPairingRequest(
+  url: URL,
+  caCertificatePem: string | null,
+  body: RelayPairingRequestContract
+): Promise<unknown> {
+  const encoded = Buffer.from(JSON.stringify(body))
+  const request = url.protocol === "https:" ? httpsRequest : httpRequest
+  return new Promise((resolve, reject) => {
+    const outgoing = request(
+      url,
+      {
+        ca: caCertificatePem ?? undefined,
+        headers: {
+          Accept: "application/json",
+          "Content-Length": encoded.length,
+          "Content-Type": "application/json",
+        },
+        method: "POST",
+        rejectUnauthorized: url.protocol === "https:",
+        signal: AbortSignal.timeout(10_000),
+      },
+      (response) => {
+        const chunks: Array<Buffer> = []
+        let size = 0
+        response.on("data", (chunk: Buffer) => {
+          size += chunk.length
+          if (size > 256 * 1024)
+            response.destroy(new Error("Pairing response is too large"))
+          else chunks.push(chunk)
+        })
+        response.once("error", reject)
+        response.once("end", () => {
+          try {
+            const payload = JSON.parse(
+              Buffer.concat(chunks).toString("utf8")
+            ) as unknown
+            if (response.statusCode !== 201) {
+              const message = z.object({ error: z.string() }).safeParse(payload)
+              throw new Error(
+                message.success
+                  ? message.data.error
+                  : `Relay pairing failed with HTTP ${response.statusCode}`
+              )
+            }
+            resolve(payload)
+          } catch (cause) {
+            reject(cause)
+          }
+        })
+      }
+    )
+    outgoing.once("error", reject)
+    outgoing.end(encoded)
+  })
+}
+
+async function getBootstrapDiscovery(url: URL): Promise<{
+  payload: unknown
+  tlsFingerprint: string
+}> {
+  return new Promise((resolve, reject) => {
+    const outgoing = httpsRequest(
+      url,
+      {
+        method: "GET",
+        rejectUnauthorized: false,
+        signal: AbortSignal.timeout(10_000),
+      },
+      (response) => {
+        if (!(response.socket instanceof TLSSocket)) {
+          response.destroy(new Error("Relay bootstrap did not use TLS"))
+          return
+        }
+        const fingerprint = response.socket.getPeerCertificate().fingerprint256
+        if (!fingerprint) {
+          response.destroy(new Error("Relay TLS certificate is unavailable"))
+          return
+        }
+        const chunks: Array<Buffer> = []
+        let size = 0
+        response.on("data", (chunk: Buffer) => {
+          size += chunk.length
+          if (size > 256 * 1024) {
+            response.destroy(new Error("Relay bootstrap response is too large"))
+          } else {
+            chunks.push(chunk)
+          }
+        })
+        response.once("error", reject)
+        response.once("end", () => {
+          try {
+            if (response.statusCode !== 200) {
+              throw new Error(
+                `Relay automatic pairing returned HTTP ${response.statusCode}`
+              )
+            }
+            resolve({
+              payload: JSON.parse(
+                Buffer.concat(chunks).toString("utf8")
+              ) as unknown,
+              tlsFingerprint: fingerprint,
+            })
+          } catch (cause) {
+            reject(cause)
+          }
+        })
+      }
+    )
+    outgoing.once("error", reject)
+    outgoing.end()
+  })
+}
+
+function verifyPairingResponse(
+  envelope: z.infer<typeof pairingEnvelopeSchema>,
+  nonce: string,
+  response: RelayPairingResponseContract
+): void {
+  if (
+    response.nonce !== nonce ||
+    response.expiresAt <= Date.now() ||
+    response.relayFingerprint !== envelope.relayFingerprint ||
+    response.relayPublicKeyPem !== envelope.relayPublicKeyPem
+  ) {
+    throw new Error("Relay pairing response did not match the invitation")
+  }
+  if (
+    !verify(
+      null,
+      Buffer.from(relayPairingResponseTranscript(response)),
+      envelope.relayPublicKeyPem,
+      Buffer.from(response.signature, "base64url")
+    )
+  ) {
+    throw new Error("Relay pairing response signature is invalid")
+  }
 }
 
 function toPersistedRelay(row: RelayRow): PersistedRelay {
   return {
-    id: row.id,
-    name: row.name,
-    hostname: row.hostname,
-    port: Number(row.port),
-    useTls: Boolean(row.use_tls),
+    actions: z
+      .array(z.string())
+      .parse(
+        typeof row.client_actions === "string"
+          ? JSON.parse(row.client_actions)
+          : row.client_actions
+      ),
+    browserOrigin: row.browser_origin,
+    clientId: row.client_id,
     enabled: Boolean(row.enabled),
+    hostname: row.hostname,
+    id: row.id,
     lastConnectedAt: row.last_connected_at?.toISOString() ?? null,
     lastError: row.last_error,
     managedEmberCount:
       row.managed_ember_count === null ? null : Number(row.managed_ember_count),
+    managedTls: row.relay_ca_certificate !== null,
+    name: row.name,
     nodeArch: row.node_arch,
     nodePlatform: row.node_platform,
     nodeVersion: row.node_version,
-    tokenConfigured: Boolean(row.token_ciphertext || relayKey()),
+    paired: true,
+    port: Number(row.port),
+    role: row.client_role,
+    useTls: Boolean(row.use_tls),
   }
 }
 
-function encryptRelayToken(token: string): string {
+function publicKeyFingerprint(publicKeyPem: string): string {
+  return createHash("sha256")
+    .update(
+      createPublicKey(publicKeyPem).export({ format: "der", type: "spki" })
+    )
+    .digest("base64url")
+}
+
+function effectivePort(url: URL): number {
+  if (url.port) return Number(url.port)
+  return url.protocol === "https:" || url.protocol === "wss:" ? 443 : 80
+}
+
+function formatHost(hostname: string): string {
+  return hostname.includes(":") && !hostname.startsWith("[")
+    ? `[${hostname}]`
+    : hostname
+}
+
+function encryptPrivateKey(privateKey: string): string {
   return encryptWithKeyring(
-    token,
+    privateKey,
     betterAuthSecrets(),
-    RELAY_CREDENTIAL_PURPOSE
+    RELAY_PRIVATE_KEY_PURPOSE
   )
 }
 
-function decryptRelayToken(value: string) {
+function decryptPrivateKey(value: string) {
   return decryptWithKeyring(
     value,
     betterAuthSecrets(),
-    RELAY_CREDENTIAL_PURPOSE
+    RELAY_PRIVATE_KEY_PURPOSE
   )
 }

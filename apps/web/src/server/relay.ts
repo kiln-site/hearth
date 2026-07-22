@@ -10,6 +10,7 @@ import {
   relayFileContentSchema,
   relayFileTreeSchema,
   relayInstanceActionSchema,
+  relayIdSchema,
   relayInstanceSchema,
   relayLatestLogSchema,
   relaySaveFileInputSchema,
@@ -60,7 +61,7 @@ import { resolveMclogsApiUrl } from "@/lib/mclogs"
 
 const instanceInputSchema = z.object({
   instanceId: z.string().min(1),
-  relayId: z.uuid(),
+  relayId: relayIdSchema,
 })
 
 const treeInputSchema = instanceInputSchema.extend({

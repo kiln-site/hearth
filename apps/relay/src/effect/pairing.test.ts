@@ -54,6 +54,7 @@ describe("Relay pairing", () => {
           publicKeyEncoding: { format: "pem", type: "spki" },
         })
         const unsigned: Omit<PairingRequest, "signature"> = {
+          bootstrapProof: null,
           hearthName: "Hearth Test",
           hearthOrigin: "https://hearth.test",
           invitationId: invitation.envelope.invitationId,

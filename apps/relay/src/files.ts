@@ -1,5 +1,6 @@
 import {
   lstat,
+  open,
   opendir,
   readFile,
   realpath,
@@ -8,7 +9,8 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises"
-import { join, relative, resolve, sep } from "node:path"
+import { basename, dirname, join, relative, resolve, sep } from "node:path"
+import { randomUUID } from "node:crypto"
 import { gunzip } from "node:zlib"
 import { promisify } from "node:util"
 
@@ -25,6 +27,7 @@ const MAX_FILE_BYTES = 2 * 1024 * 1024
 const MAX_LOG_SHARE_BYTES = 10 * 1024 * 1024
 const MAX_TREE_ITEMS = 5_000
 const MAX_TREE_DEPTH = 10
+const MAX_TRANSFER_BYTES = 20 * 1024 * 1024 * 1024
 const gunzipAsync = promisify(gunzip)
 
 export class FilesystemDriver {
@@ -194,6 +197,80 @@ export class FilesystemDriver {
     }
   }
 
+  async download(
+    instance: RelayInstanceConfig,
+    requestedPath: string
+  ): Promise<{
+    absolutePath: string
+    modifiedAt: string
+    name: string
+    size: number
+  }> {
+    const absolutePath = await this.#existingFile(instance, requestedPath)
+    const metadata = await stat(absolutePath)
+    return {
+      absolutePath,
+      modifiedAt: metadata.mtime.toISOString(),
+      name: basename(absolutePath),
+      size: metadata.size,
+    }
+  }
+
+  async upload(
+    instance: RelayInstanceConfig,
+    requestedPath: string,
+    source: AsyncIterable<Uint8Array>
+  ): Promise<{ modifiedAt: string; path: string; size: number }> {
+    validateRelativePath(requestedPath)
+    const root = await this.#instanceRoot(instance)
+    const candidate = resolve(root, requestedPath)
+    ensureContained(root, candidate)
+    const parent = await realpath(dirname(candidate))
+    ensureContained(root, parent)
+    let target = resolve(parent, basename(candidate))
+    let mode = 0o644
+    try {
+      target = await realpath(candidate)
+      ensureContained(root, target)
+      const existing = await lstat(target)
+      if (!existing.isFile()) {
+        throw new RelayFilesystemError("not_a_file", "Path is not a file")
+      }
+      mode = existing.mode & 0o777
+    } catch (cause) {
+      if (!isMissingFile(cause)) throw cause
+    }
+
+    const temporary = resolve(parent, `.kiln-upload-${randomUUID()}`)
+    const file = await open(temporary, "wx", mode)
+    let size = 0
+    try {
+      for await (const chunk of source) {
+        size += chunk.byteLength
+        if (size > MAX_TRANSFER_BYTES) {
+          throw new RelayFilesystemError(
+            "file_too_large",
+            "Upload exceeds the 20 GiB transfer limit"
+          )
+        }
+        await file.write(chunk)
+      }
+      await file.sync()
+      await file.close()
+      await rename(temporary, target)
+    } catch (cause) {
+      await file.close().catch(() => undefined)
+      await unlink(temporary).catch(() => undefined)
+      throw cause
+    }
+    const metadata = await stat(target)
+    return {
+      modifiedAt: metadata.mtime.toISOString(),
+      path: requestedPath,
+      size,
+    }
+  }
+
   async #existingFile(
     instance: RelayInstanceConfig,
     requestedPath: string
@@ -216,6 +293,15 @@ export class FilesystemDriver {
     ensureContained(this.#config.rootDirectory, root)
     return root
   }
+}
+
+function isMissingFile(cause: unknown): boolean {
+  return Boolean(
+    cause &&
+    typeof cause === "object" &&
+    "code" in cause &&
+    cause.code === "ENOENT"
+  )
 }
 
 export class RelayFilesystemError extends Error {

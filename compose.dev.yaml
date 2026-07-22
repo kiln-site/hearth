@@ -6,6 +6,7 @@ services:
     working_dir: /workspace
     environment:
       NODE_ENV: development
+      KILN_RELAY_TLS_MODE: managed
     command:
       - /bin/sh
       - -lc
@@ -24,7 +25,7 @@ services:
           "CMD",
           "node",
           "-e",
-          "fetch('http://127.0.0.1:4100/health',{signal:AbortSignal.timeout(2500)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+          "require('node:https').get({host:'127.0.0.1',port:4100,path:'/health',rejectUnauthorized:false,timeout:2500},r=>process.exit(r.statusCode===204?0:1)).on('error',()=>process.exit(1))",
         ]
       interval: 10s
       timeout: 3s

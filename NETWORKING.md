@@ -1,6 +1,32 @@
 # Hearth ↔ Relay Networking Plan
 
-> Status: proposal for audit. No protocol or runtime changes have been made yet.
+> Status: implementation in progress on `networking-overhaul`.
+
+## Implementation checkpoints
+
+Completed and locally verified:
+
+- Persistent Relay identity, SQLite client/invitation state, one-time manual and
+  environment pairing, unique encrypted Hearth keypairs, and live revocation.
+- Mutually authenticated, multiplexed `kiln-relay.v1` WSS control sessions with
+  deadlines, cancellation, heartbeats, bounded buffers, reconnect jitter, and
+  multiple concurrent Hearth clients.
+- Relay-managed CA/leaf TLS lifecycle, external certificate validation, CA
+  download/trust probe, and browser trust guidance without requiring port 443.
+- Browser proof-of-possession capabilities, shared direct console streaming,
+  and direct HTTPS upload/download with exact Origin/path/action scope,
+  anti-replay nonces, atomic uploads, byte ranges, and no Hearth byte proxy.
+- Relay-owned SFTP on configurable `KILN_RELAY_SFTP_PORT` (default 2022), a
+  persistent host key, email/`dev123` development authentication, live Hearth
+  authorization, multi-instance virtual roots, read-only grants, and complete
+  shell/exec/PTY rejection.
+- Full-access/read-only foundations, stable action keys, Relay/instance cache
+  synchronization, and browser/Hearth/Relay disconnect recovery notices.
+
+Remaining checkpoints are tracked by the sections below: direct resource
+streams, the full client/invitation management surfaces, optional source-CIDR
+hardening, production SFTP credentials/keys, ACME and hot external-certificate
+reload, and the final observability/load/security validation pass.
 
 ## Summary
 

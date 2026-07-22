@@ -1,13 +1,18 @@
 import { createServerFn } from "@tanstack/react-start"
+import { relayIdSchema as relayFingerprintSchema } from "@workspace/contracts"
 import { z } from "zod"
 
 import { isPlatformAdmin } from "@/lib/access-control"
 import { requireAuthenticatedUser } from "@/server/auth"
 
-const relayIdSchema = z.object({ id: z.uuid() })
+const relayIdSchema = z.object({
+  id: relayFingerprintSchema,
+})
 const relayEnabledSchema = relayIdSchema.extend({ enabled: z.boolean() })
 const createRelaySchema = z.object({
-  name: z.string().trim().min(1).max(120),
+  pairingUri: z.string().trim().min(64).max(32_768),
+})
+const updateRelaySchema = relayIdSchema.extend({
   hostname: z
     .string()
     .trim()
@@ -18,11 +23,7 @@ const createRelaySchema = z.object({
       "Enter a hostname or IP address"
     ),
   port: z.number().int().min(1).max(65_535),
-  token: z.string().trim().min(32).max(512),
-})
-const updateRelaySchema = createRelaySchema.omit({ token: true }).extend({
-  id: z.uuid(),
-  token: z.string().trim().min(32).max(512).optional(),
+  useTls: z.boolean(),
 })
 
 export const getRelays = createServerFn({ method: "GET" }).handler(async () => {
@@ -39,8 +40,8 @@ export const addRelay = createServerFn({ method: "POST" })
     const user = await requireAuthenticatedUser()
     if (!isPlatformAdmin(user))
       throw new Error("Platform administrator access required")
-    const { createPersistedRelay } = await import("@/lib/relay-registry")
-    return createPersistedRelay({ ...data, useTls: true })
+    const { pairPersistedRelay } = await import("@/lib/relay-registry")
+    return pairPersistedRelay(data.pairingUri)
   })
 
 export const updateRelay = createServerFn({ method: "POST" })
@@ -50,7 +51,7 @@ export const updateRelay = createServerFn({ method: "POST" })
     if (!isPlatformAdmin(user))
       throw new Error("Platform administrator access required")
     const { updatePersistedRelay } = await import("@/lib/relay-registry")
-    return updatePersistedRelay({ ...data, useTls: true })
+    return updatePersistedRelay(data)
   })
 
 export const checkRelay = createServerFn({ method: "POST" })

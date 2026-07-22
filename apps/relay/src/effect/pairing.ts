@@ -1,5 +1,6 @@
 import {
   createHash,
+  createHmac,
   createPublicKey,
   randomBytes,
   randomUUID,
@@ -9,6 +10,12 @@ import {
 } from "node:crypto"
 import QRCode from "qrcode"
 import { Effect, Schema } from "effect"
+
+import {
+  relayPairingRequestTranscript,
+  relayPairingResponseTranscript,
+  relayBootstrapEnrollmentTranscript,
+} from "@workspace/contracts"
 
 import { actionsForRole } from "../permissions.js"
 import { RelayPairingError } from "./errors.js"
@@ -23,7 +30,6 @@ import type {
 } from "./state.js"
 
 const PAIRING_LIFETIME_MS = 15 * 60_000
-const PAIRING_PROTOCOL = "kiln-relay-pair.v1"
 
 export interface PairingInvitationBundle {
   readonly envelope: PairingEnvelope
@@ -45,13 +51,14 @@ export interface PairingEnvelope {
 }
 
 export interface PairingRequest {
+  readonly bootstrapProof: string | null
   readonly hearthName: string
   readonly hearthOrigin: string
   readonly invitationId: string
   readonly nonce: string
   readonly publicKeyPem: string
   readonly signature: string
-  readonly token: string
+  readonly token: string | null
   readonly version: 1
 }
 
@@ -74,13 +81,14 @@ export interface InitialPairingResult {
 }
 
 const PairingRequestSchema = Schema.Struct({
+  bootstrapProof: Schema.NullOr(Schema.String),
   hearthName: Schema.String,
   hearthOrigin: Schema.String,
   invitationId: Schema.String,
   nonce: Schema.String,
   publicKeyPem: Schema.String,
   signature: Schema.String,
-  token: Schema.String,
+  token: Schema.NullOr(Schema.String),
   version: Schema.Literal(1),
 })
 
@@ -98,7 +106,11 @@ export const initializePairing = Effect.fn("RelayPairing.initialize")(
       "networking_initial_invitation"
     )
     if (initialized) {
-      return { invitation: null, kind: "none" } satisfies InitialPairingResult
+      const restored = yield* restoreAutomaticInvitation(input, initialized)
+      return (
+        restored ??
+        ({ invitation: null, kind: "none" } satisfies InitialPairingResult)
+      )
     }
 
     const invitation = yield* createPairingInvitation({
@@ -116,7 +128,7 @@ export const initializePairing = Effect.fn("RelayPairing.initialize")(
       })
     )
     return {
-      invitation: kind === "manual" ? invitation : null,
+      invitation,
       kind,
     } satisfies InitialPairingResult
   }
@@ -162,13 +174,21 @@ export const pairHearth = Effect.fn("RelayPairing.pairHearth")(
     readonly identity: RelayIdentity
     readonly request: PairingRequest
     readonly state: RelayStateStore["Service"]
+    readonly bootstrapToken?: string | null
   }) {
     validatePairingRequest(input.request)
     const invitation = yield* input.state.findActiveInvitation(
       input.request.invitationId,
       Date.now()
     )
-    if (!invitation || !matchesToken(invitation, input.request.token)) {
+    if (
+      !invitation ||
+      !matchesPairingCredential(
+        invitation,
+        input.request,
+        input.bootstrapToken ?? null
+      )
+    ) {
       return yield* pairingFailure("invalid_or_expired_invitation")
     }
     const publicKey = yield* Effect.try({
@@ -247,33 +267,13 @@ export const pairHearth = Effect.fn("RelayPairing.pairHearth")(
 )
 
 export function pairingRequestTranscript(request: PairingRequest): string {
-  return JSON.stringify([
-    PAIRING_PROTOCOL,
-    "request",
-    request.invitationId,
-    request.token,
-    request.hearthName,
-    normalizeOrigin(request.hearthOrigin),
-    request.nonce,
-    request.publicKeyPem,
-  ])
+  return relayPairingRequestTranscript(request)
 }
 
 export function pairingResponseTranscript(
   response: Omit<PairingResponse, "signature">
 ): string {
-  return JSON.stringify([
-    PAIRING_PROTOCOL,
-    "response",
-    response.clientId,
-    response.relayFingerprint,
-    response.relayName,
-    response.relayPublicKeyPem,
-    response.role,
-    response.actions,
-    response.nonce,
-    response.expiresAt,
-  ])
+  return relayPairingResponseTranscript(response)
 }
 
 export function encodePairingUri(envelope: PairingEnvelope): string {
@@ -340,6 +340,9 @@ function pairingEnvelope(input: {
 }
 
 function validatePairingRequest(request: PairingRequest): void {
+  if (Boolean(request.token) === Boolean(request.bootstrapProof)) {
+    throw RelayPairingError.make({ code: "invalid_pairing_credential" })
+  }
   if (!request.hearthName.trim() || request.hearthName.length > 120) {
     throw RelayPairingError.make({ code: "invalid_hearth_name" })
   }
@@ -364,11 +367,73 @@ function normalizeOrigin(value: string): string {
   return origin.origin
 }
 
+function matchesPairingCredential(
+  invitation: RelayInvitation,
+  request: PairingRequest,
+  bootstrapToken: string | null
+): boolean {
+  if (request.token) return matchesToken(invitation, request.token)
+  if (!bootstrapToken || !request.bootstrapProof) return false
+  if (!matchesToken(invitation, bootstrapToken)) return false
+  const expected = Buffer.from(
+    createHmac("sha256", bootstrapToken)
+      .update(relayBootstrapEnrollmentTranscript(request))
+      .digest("hex"),
+    "hex"
+  )
+  const actual = Buffer.from(request.bootstrapProof, "base64url")
+  return expected.length === actual.length && timingSafeEqual(expected, actual)
+}
+
 function matchesToken(invitation: RelayInvitation, token: string): boolean {
   const expected = Buffer.from(invitation.tokenHash, "hex")
   const actual = Buffer.from(hashToken(token), "hex")
   return expected.length === actual.length && timingSafeEqual(expected, actual)
 }
+
+const restoreAutomaticInvitation = Effect.fn(
+  "RelayPairing.restoreAutomaticInvitation"
+)(function* (
+  input: {
+    readonly config: RelayConfig
+    readonly identity: RelayIdentity
+    readonly state: RelayStateStore["Service"]
+    readonly tls: RelayTlsMaterial | null
+  },
+  metadata: string
+) {
+  if (!input.config.bootstrapToken) return null
+  const parsed = yield* Effect.try({
+    try: () => JSON.parse(metadata) as unknown,
+    catch: () => null,
+  })
+  if (!parsed || typeof parsed !== "object") return null
+  const value = Object.fromEntries(Object.entries(parsed))
+  if (value.kind !== "automatic" || typeof value.invitationId !== "string") {
+    return null
+  }
+  const invitation = yield* input.state.findActiveInvitation(
+    value.invitationId,
+    Date.now()
+  )
+  if (!invitation) return null
+  const envelope = pairingEnvelope({
+    config: input.config,
+    expiresAt: invitation.expiresAt,
+    identity: input.identity,
+    invitationId: invitation.id,
+    tls: input.tls,
+    token: input.config.bootstrapToken,
+  })
+  return {
+    invitation: {
+      envelope,
+      token: input.config.bootstrapToken,
+      uri: encodePairingUri(envelope),
+    },
+    kind: "automatic",
+  } satisfies InitialPairingResult
+})
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex")

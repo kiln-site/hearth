@@ -10,7 +10,7 @@ import {
   writeCachedJson,
 } from "@/lib/cache"
 import type { CachePolicy } from "@/lib/cache"
-import { relayHeadersEffect } from "@/lib/relay-registry"
+import { relayRpc } from "@/lib/relay-connection"
 
 export interface RelayEndpoint {
   hostname: string
@@ -52,11 +52,6 @@ export const relayFetchEffect = Effect.fn("relay.fetch")(function* (
   init?: RequestInit,
   timeoutMs = 10_000
 ) {
-  const timeout = AbortSignal.timeout(timeoutMs)
-  const signal = init?.signal
-    ? AbortSignal.any([init.signal, timeout])
-    : timeout
-  const headers = yield* relayHeadersEffect(relay)
   const response = yield* Effect.tryPromise({
     try: () =>
       Sentry.startSpan(
@@ -65,23 +60,23 @@ export const relayFetchEffect = Effect.fn("relay.fetch")(function* (
           op: "http.client.relay",
           attributes: { "relay.id": relay.id },
         },
-        () =>
-          fetch(`${relayUrl(relay).replace(/\/$/u, "")}${path}`, {
-            ...init,
-            headers: {
-              Accept: "application/json",
-              ...(init?.body ? { "Content-Type": "application/json" } : {}),
-              ...headers,
-              ...init?.headers,
-            },
-            signal,
+        async () => {
+          const request = relayControlRequest(path, init)
+          const payload = await relayRpc(
+            relay,
+            request.operation,
+            request.payload,
+            timeoutMs
+          )
+          return new Response(JSON.stringify(payload), {
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+            status: 200,
           })
+        }
       ),
     catch: (cause) =>
       RelayUnavailableError.make({
-        message: timeout.aborted
-          ? `Relay request timed out after ${timeoutMs}ms`
-          : `Could not reach Relay: ${errorMessage(cause)}`,
+        message: `Could not reach Relay: ${errorMessage(cause)}`,
         cause,
       }),
   })
@@ -174,6 +169,110 @@ function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : "unknown network error"
 }
 
-function relayUrl(relay: RelayEndpoint): string {
-  return `${relay.useTls ? "https" : "http"}://${relay.hostname}:${relay.port}`
+function relayControlRequest(path: string, init?: RequestInit) {
+  const url = new URL(path, "http://relay")
+  const method = init?.method ?? "GET"
+  const body = requestBody(init?.body)
+  if (url.pathname === "/v1/snapshot" && method === "GET") {
+    return { operation: "relay.snapshot" as const, payload: {} }
+  }
+  if (url.pathname === "/v1/bricks" && method === "GET") {
+    return { operation: "brick.catalog" as const, payload: {} }
+  }
+  if (url.pathname === "/v1/bricks/recipe" && method === "GET") {
+    return {
+      operation: "brick.recipe" as const,
+      payload: { source: url.searchParams.get("source") },
+    }
+  }
+  if (url.pathname === "/v1/networking") {
+    if (method === "GET") {
+      return { operation: "relay.networking.read" as const, payload: {} }
+    }
+    if (method === "PUT") {
+      return { operation: "relay.networking.write" as const, payload: body }
+    }
+  }
+  if (url.pathname === "/v1/instances" && method === "POST") {
+    return { operation: "instance.create" as const, payload: body }
+  }
+  const match = url.pathname.match(
+    /^\/v1\/instances\/([^/]+)(?:\/(tree|file|actions|console|console-completions|latest-log))?$/u
+  )
+  if (!match) throw new Error("Unsupported Relay request")
+  const instanceId = decodeURIComponent(match[1])
+  const resource = match[2]
+  if (!resource && method === "DELETE") {
+    return {
+      operation: "instance.delete" as const,
+      payload: {
+        deleteData: url.searchParams.get("deleteData") === "true",
+        instanceId,
+      },
+    }
+  }
+  if (resource === "tree" && method === "GET") {
+    return {
+      operation: "instance.files.list" as const,
+      payload: { instanceId },
+    }
+  }
+  if (resource === "file") {
+    const payload = {
+      ...body,
+      instanceId,
+      path: url.searchParams.get("path") ?? "",
+    }
+    return method === "PUT"
+      ? { operation: "instance.files.write" as const, payload }
+      : { operation: "instance.files.read" as const, payload }
+  }
+  if (resource === "actions" && method === "POST") {
+    return {
+      operation: "instance.action" as const,
+      payload: { ...body, instanceId },
+    }
+  }
+  if (resource === "console") {
+    if (method === "POST") {
+      return {
+        operation: "instance.console.write" as const,
+        payload: { ...body, instanceId },
+      }
+    }
+    return {
+      operation: "instance.console.history" as const,
+      payload: {
+        instanceId,
+        limit: Number(url.searchParams.get("limit") ?? 2_000),
+      },
+    }
+  }
+  if (resource === "console-completions" && method === "POST") {
+    return {
+      operation: "instance.console.complete" as const,
+      payload: { ...body, instanceId },
+    }
+  }
+  if (resource === "latest-log" && method === "GET") {
+    return {
+      operation: "instance.logs.latest" as const,
+      payload: { instanceId },
+    }
+  }
+  throw new Error("Unsupported Relay request")
+}
+
+function requestBody(
+  body: BodyInit | null | undefined
+): Record<string, unknown> {
+  if (!body) return {}
+  if (typeof body !== "string") {
+    throw new Error("Relay JSON requests require a string body")
+  }
+  const value = JSON.parse(body) as unknown
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Relay JSON request body must be an object")
+  }
+  return Object.fromEntries(Object.entries(value))
 }

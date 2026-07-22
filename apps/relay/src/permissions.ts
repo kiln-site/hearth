@@ -51,6 +51,7 @@ const readOnlyActions = new Set<RelayAction>([
   "brick.read",
   "instance.read",
   "instance.console.read",
+  "instance.sftp.connect",
   "instance.files.list",
   "instance.files.read",
   "instance.files.download",
