@@ -187,7 +187,9 @@ class RelayConnection {
     let socket: WebSocket | null = null
     try {
       const { loadRelayCredentials } = await import("@/lib/relay-registry")
-      this.#credentials = await loadRelayCredentials(this.#relay.id)
+      const credentials = await loadRelayCredentials(this.#relay.id)
+      if (this.#closed) return
+      this.#credentials = credentials
       const protocol = this.#relay.useTls ? "wss" : "ws"
       const activeSocket = new WebSocket(
         `${protocol}://${formatHost(this.#relay.hostname)}:${this.#relay.port}/v1/socket`,

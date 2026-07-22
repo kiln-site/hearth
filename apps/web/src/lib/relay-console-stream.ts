@@ -7,6 +7,8 @@ import type { RelayConsoleStreamEvent } from "@workspace/contracts"
 
 import { issueConsoleCapability } from "@/server/relay-capability"
 
+const AUTHENTICATION_TIMEOUT_MS = 10_000
+
 export type RelayConsoleTransport = "direct" | "hearth"
 
 export type KilnConsoleStreamEvent =
@@ -132,7 +134,7 @@ async function* openDirectRelayConsoleStream(
   const inbox = createSocketInbox(socket, signal)
 
   try {
-    const challenge = await inbox.next()
+    const challenge = await nextAuthenticationMessage(inbox, "challenge")
     if (
       challenge.type !== "auth.challenge" ||
       challenge.relayId !== relayId ||
@@ -170,7 +172,7 @@ async function* openDirectRelayConsoleStream(
         v: 1,
       })
     )
-    const ready = await inbox.next()
+    const ready = await nextAuthenticationMessage(inbox, "confirmation")
     if (ready.type !== "auth.ready" || ready.instanceId !== instanceId) {
       throw new Error("Relay browser authentication failed")
     }
@@ -186,6 +188,26 @@ async function* openDirectRelayConsoleStream(
   } finally {
     inbox.close()
     socket.close(1000, "Console view closed")
+  }
+}
+
+async function nextAuthenticationMessage(
+  inbox: { next: () => Promise<Record<string, unknown>> },
+  stage: string
+): Promise<Record<string, unknown>> {
+  let timer: number | undefined
+  try {
+    return await Promise.race([
+      inbox.next(),
+      new Promise<never>((_, reject) => {
+        timer = window.setTimeout(
+          () => reject(new Error(`Relay authentication ${stage} timed out`)),
+          AUTHENTICATION_TIMEOUT_MS
+        )
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer)
   }
 }
 

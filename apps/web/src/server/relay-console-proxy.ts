@@ -15,6 +15,7 @@ import { issueConsoleCapabilityForUser } from "@/server/relay-capability-service
 
 const MAX_INBOX_BYTES = 2 * 1024 * 1024
 const MAX_INBOX_MESSAGES = 256
+const AUTHENTICATION_TIMEOUT_MS = 10_000
 
 export async function* openHearthRelayConsoleStream(input: {
   instanceId: string
@@ -62,7 +63,7 @@ export async function* openHearthRelayConsoleStream(input: {
   const inbox = createSocketInbox(socket, input.signal)
 
   try {
-    const challenge = await inbox.next()
+    const challenge = await nextAuthenticationMessage(inbox, "challenge")
     if (
       challenge.type !== "auth.challenge" ||
       challenge.relayId !== input.relayId ||
@@ -95,7 +96,7 @@ export async function* openHearthRelayConsoleStream(input: {
         v: 1,
       })
     )
-    const ready = await inbox.next()
+    const ready = await nextAuthenticationMessage(inbox, "confirmation")
     if (ready.type !== "auth.ready" || ready.instanceId !== input.instanceId) {
       throw new Error("Relay rejected the Hearth console proxy")
     }
@@ -116,6 +117,27 @@ export async function* openHearthRelayConsoleStream(input: {
   } finally {
     inbox.close()
     socket.close(1000, "Hearth console proxy closed")
+  }
+}
+
+async function nextAuthenticationMessage(
+  inbox: { next: () => Promise<Record<string, unknown>> },
+  stage: string
+): Promise<Record<string, unknown>> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      inbox.next(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`Relay authentication ${stage} timed out`)),
+          AUTHENTICATION_TIMEOUT_MS
+        )
+        timer.unref()
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
   }
 }
 
