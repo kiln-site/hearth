@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "NODE_OPTIONS='--import ./instrument.mjs' tsx watch src/index.ts",
+    "dev": "NODE_OPTIONS='--conditions=development --import ./instrument.mjs' tsx watch src/index.ts",
     "format": "vp fmt \"src/**/*.ts\"",
     "lint": "vp lint src",
     "start": "node --import ./dist/instrument.mjs dist/src/index.mjs"
