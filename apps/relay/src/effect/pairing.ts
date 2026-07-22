@@ -8,7 +8,6 @@ import {
   timingSafeEqual,
   verify,
 } from "node:crypto"
-import QRCode from "qrcode"
 import { Effect, Schema } from "effect"
 import * as Sentry from "@sentry/node"
 
@@ -378,14 +377,9 @@ export function decodePairingUri(value: string): PairingEnvelope {
   return decoded
 }
 
-export async function renderPairingInvitation(
+export function renderPairingInvitation(
   invitation: PairingInvitationBundle
-): Promise<string> {
-  const qr = await QRCode.toString(invitation.uri, {
-    errorCorrectionLevel: "L",
-    small: true,
-    type: "terminal",
-  })
+): string {
   const link = process.stdout.isTTY
     ? `\u001B]8;;${invitation.uri}\u0007Open Relay pairing\u001B]8;;\u0007`
     : invitation.uri
@@ -393,7 +387,6 @@ export async function renderPairingInvitation(
     "One-time Relay pairing invitation (expires in 15 minutes):",
     link,
     "Anyone with this URI can pair a Hearth until it expires or is used.",
-    qr,
   ].join("\n")
 }
 

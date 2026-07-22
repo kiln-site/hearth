@@ -52,8 +52,8 @@ stays private and the edge handles browser-trusted TLS. `none` leaves edge
 ownership manual, while `hearth` keeps supported browser traffic behind the
 Hearth fallback path.
 
-On a fresh `/data`, Relay prints a one-time pairing URI and QR code that expires
-after 15 minutes. Paste it into Hearth's Relay settings, review the Relay
+On a fresh `/data`, Relay prints a one-time pairing URI that expires after 15
+minutes. Paste it into Hearth's Relay settings, review the Relay
 identity and TLS fingerprint, and confirm. Later invitations are created in
 Hearth or with `kiln-relay pair create`; their secret URI is returned only to
 the caller. `kiln-relay pair list|revoke` and `kiln-relay hearth list|revoke`

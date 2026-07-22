@@ -108,7 +108,7 @@ if (initialPairing.kind === "automatic") {
     "Automatic Relay pairing is pending; the bootstrap token has been redacted."
   )
 } else if (initialPairing.invitation) {
-  console.log(await renderPairingInvitation(initialPairing.invitation))
+  console.log(renderPairingInvitation(initialPairing.invitation))
 }
 await lifecycle.initializeProxy(
   await runRelayEffect(
@@ -154,7 +154,7 @@ async function runRelayCli(arguments_: ReadonlyArray<string>): Promise<void> {
         return created
       })
     )
-    console.log(await renderPairingInvitation(invitation))
+    console.log(renderPairingInvitation(invitation))
     console.log(
       `Created ${role} invitation ${invitation.envelope.invitationId}; its token was displayed only in this terminal.`
     )

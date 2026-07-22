@@ -718,8 +718,7 @@ kiln-relay://pair/v1
 ```
 
 The final representation may use a base64url-encoded schema rather than query
-parameters, but it must remain copyable, QR-friendly, size-bounded, and
-forward-versioned.
+parameters, but it must remain copyable, size-bounded, and forward-versioned.
 
 The control endpoint, browser origin, Relay identity, TLS trust material,
 invitation ID, expiry, and token must all be covered by the pairing contract.
@@ -737,8 +736,7 @@ Hearth host or IP on Relay.
    single-use full-access invitation.
 5. On this first manual initialization only, Relay prints the URI to its
    container log.
-6. Relay also renders a terminal QR code when output capability/width supports
-   it and emits an OSC 8 clickable link when the terminal supports hyperlinks.
+6. Relay emits an OSC 8 clickable link when the terminal supports hyperlinks.
    Plain text is always present as the fallback.
 7. The log states the expiry and that anyone possessing the URI before it is
    consumed can pair a Hearth.
@@ -754,9 +752,9 @@ bootstrap bearer secret, but it is limited to 15 minutes and one successful
 use. The URI must never be sent to Sentry. Relay records that the initial URI
 was emitted and never logs it again, including after restarts.
 
-Later CLI- or Hearth-created invitations display their URI and QR code only to
-the requesting terminal/UI. Relay's service log may record a redacted notice
-with invitation ID, creator, and expiry, but never its token or full URI.
+Later CLI- or Hearth-created invitations display their URI only to the
+requesting terminal/UI. Relay's service log may record a redacted notice with
+invitation ID, creator, and expiry, but never its token or full URI.
 
 ### First Hearth enrollment
 
@@ -1479,8 +1477,8 @@ authentication cases have explicit expected outcomes.
   initialized Relay.
 - Implement the distroless-compatible `pair` and `hearth` administrative entry
   points.
-- Render the first-start URI, clickable link, and supported-terminal QR without
-  forwarding the secret into Sentry.
+- Render the first-start URI and clickable link without forwarding the secret
+  into Sentry.
 - Ensure secrets are redacted from logs and Sentry.
 
 **Gate:** restarting Relay preserves identity and authorized public keys;
