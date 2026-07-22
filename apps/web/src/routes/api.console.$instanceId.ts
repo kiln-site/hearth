@@ -11,6 +11,17 @@ export const Route = createFileRoute("/api/console/$instanceId")({
   server: {
     handlers: {
       GET: async ({ request }) => {
+        const user = await requireAuthenticatedUser().catch(() => null)
+        if (!user) {
+          return Response.json(
+            {
+              code: "authentication_required",
+              error: "Authentication required.",
+            },
+            { status: 401 }
+          )
+        }
+
         const url = new URL(request.url)
         const relayId = relayIdSchema.safeParse(url.searchParams.get("relayId"))
         const instanceId = decodeURIComponent(
@@ -27,7 +38,6 @@ export const Route = createFileRoute("/api/console/$instanceId")({
         }
 
         try {
-          const user = await requireAuthenticatedUser()
           const lifecycle = new AbortController()
           const abort = () => lifecycle.abort()
           request.signal.addEventListener("abort", abort, { once: true })
@@ -40,17 +50,53 @@ export const Route = createFileRoute("/api/console/$instanceId")({
           const first = await iterator.next()
           if (first.done) throw new Error("Relay console stream ended early")
 
+          let firstPending = true
+          let finished = false
+          const finish = () => {
+            if (finished) return
+            finished = true
+            request.signal.removeEventListener("abort", abort)
+          }
           const body = new ReadableStream<Uint8Array>({
-            start(controller) {
-              controller.enqueue(encodeRecord(first.value))
-              void pump(iterator, controller, lifecycle.signal).finally(() => {
-                request.signal.removeEventListener("abort", abort)
-              })
+            async pull(controller) {
+              try {
+                if (firstPending) {
+                  firstPending = false
+                  controller.enqueue(encodeRecord(first.value))
+                  return
+                }
+                const result = await iterator.next()
+                if (result.done) {
+                  finish()
+                  controller.close()
+                  return
+                }
+                if (!lifecycle.signal.aborted) {
+                  controller.enqueue(encodeRecord(result.value))
+                }
+              } catch (cause) {
+                finish()
+                if (lifecycle.signal.aborted) {
+                  controller.close()
+                  return
+                }
+                controller.enqueue(
+                  encodeRecord({
+                    code: "console_proxy_interrupted",
+                    message:
+                      cause instanceof Error
+                        ? cause.message
+                        : "The Hearth console proxy was interrupted.",
+                    type: "proxy.error",
+                  })
+                )
+                controller.close()
+              }
             },
-            cancel() {
+            async cancel() {
               lifecycle.abort()
-              request.signal.removeEventListener("abort", abort)
-              return iterator.return(undefined).then(() => undefined)
+              finish()
+              await iterator.return(undefined)
             },
           })
           return new Response(body, {
@@ -83,39 +129,6 @@ export const Route = createFileRoute("/api/console/$instanceId")({
     },
   },
 })
-
-async function pump(
-  iterator: AsyncGenerator<unknown>,
-  controller: ReadableStreamDefaultController<Uint8Array>,
-  signal: AbortSignal
-): Promise<void> {
-  try {
-    for (;;) {
-      // The upstream Relay stream is ordered, so reads must remain sequential.
-      // oxlint-disable-next-line react-doctor/async-await-in-loop
-      const result = await iterator.next()
-      if (result.done) break
-      if (signal.aborted) return
-      controller.enqueue(encodeRecord(result.value))
-    }
-    if (!signal.aborted) controller.close()
-  } catch (cause) {
-    if (signal.aborted) return
-    controller.enqueue(
-      encodeRecord({
-        code: "console_proxy_interrupted",
-        message:
-          cause instanceof Error
-            ? cause.message
-            : "The Hearth console proxy was interrupted.",
-        type: "proxy.error",
-      })
-    )
-    controller.close()
-  } finally {
-    await iterator.return(undefined)
-  }
-}
 
 function encodeRecord(value: unknown): Uint8Array {
   return encoder.encode(`${JSON.stringify(value)}\n`)

@@ -13,6 +13,9 @@ import { kilnPublicUrl } from "@/lib/environment"
 import { listPersistedRelays, loadRelayCredentials } from "@/lib/relay-registry"
 import { issueConsoleCapabilityForUser } from "@/server/relay-capability-service"
 
+const MAX_INBOX_BYTES = 2 * 1024 * 1024
+const MAX_INBOX_MESSAGES = 256
+
 export async function* openHearthRelayConsoleStream(input: {
   instanceId: string
   relayId: string
@@ -116,17 +119,34 @@ export async function* openHearthRelayConsoleStream(input: {
 }
 
 function createSocketInbox(socket: WebSocket, signal: AbortSignal) {
-  const messages: Array<Record<string, unknown>> = []
+  const messages: Array<{
+    bytes: number
+    value: Record<string, unknown>
+  }> = []
   const waiters: Array<{
     reject: (cause: Error) => void
     resolve: (value: Record<string, unknown>) => void
   }> = []
+  let queuedBytes = 0
+  let terminalError: Error | null = null
   const fail = (cause: Error) => {
+    terminalError ??= cause
+    messages.splice(0)
+    queuedBytes = 0
     for (const waiter of waiters.splice(0)) waiter.reject(cause)
   }
+  const failAndClose = (cause: Error, code: number, reason: string) => {
+    fail(cause)
+    if (socket.readyState === WebSocket.OPEN) socket.close(code, reason)
+  }
   const receive = (data: Buffer, binary: boolean) => {
+    if (terminalError) return
     if (binary) {
-      fail(new Error("Relay returned an unsupported binary console frame"))
+      failAndClose(
+        new Error("Relay returned an unsupported binary console frame"),
+        1003,
+        "Binary console frames are unsupported"
+      )
       return
     }
     try {
@@ -137,9 +157,23 @@ function createSocketInbox(socket: WebSocket, signal: AbortSignal) {
       const message = Object.fromEntries(Object.entries(value))
       const waiter = waiters.shift()
       if (waiter) waiter.resolve(message)
-      else messages.push(message)
+      else {
+        if (
+          messages.length >= MAX_INBOX_MESSAGES ||
+          queuedBytes + data.byteLength > MAX_INBOX_BYTES
+        ) {
+          failAndClose(
+            new Error("Relay console proxy exceeded its backpressure limit"),
+            1013,
+            "Console proxy backpressure exceeded"
+          )
+          return
+        }
+        messages.push({ bytes: data.byteLength, value: message })
+        queuedBytes += data.byteLength
+      }
     } catch (cause) {
-      fail(asError(cause))
+      failAndClose(asError(cause), 1007, "Invalid console message")
     }
   }
   const failed = (cause: Error) => fail(cause)
@@ -165,10 +199,15 @@ function createSocketInbox(socket: WebSocket, signal: AbortSignal) {
       socket.off("message", receive)
       socket.off("error", failed)
       socket.off("close", closed)
+      fail(new Error("Console proxy inbox closed"))
     },
     next: () => {
-      const message = messages.shift()
-      if (message) return Promise.resolve(message)
+      const queued = messages.shift()
+      if (queued) {
+        queuedBytes -= queued.bytes
+        return Promise.resolve(queued.value)
+      }
+      if (terminalError) return Promise.reject(terminalError)
       return new Promise<Record<string, unknown>>((resolve, reject) =>
         waiters.push({ reject, resolve })
       )

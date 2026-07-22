@@ -37,6 +37,12 @@ export const relayControlOperations = [
 
 export type RelayControlOperation = (typeof relayControlOperations)[number]
 
+export function relayControlDeadlineMs(
+  operation: RelayControlOperation
+): number {
+  return operation === "instance.network.routes.write" ? 240_000 : 30_000
+}
+
 export const RelayControlOperationSchema = Schema.Literals(
   relayControlOperations
 )

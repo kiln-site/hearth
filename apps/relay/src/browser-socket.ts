@@ -231,7 +231,6 @@ function authenticateBrowser(
     if (!capability) socket.close(4401, "Browser authentication timed out")
   }, AUTHENTICATION_WINDOW_MS)
   timer.unref()
-  let capabilityTimer: ReturnType<typeof setTimeout> | null = null
 
   socket.on("message", (data, binary) => {
     if (binary) {
@@ -318,7 +317,6 @@ function authenticateBrowser(
 
   socket.once("close", () => {
     clearTimeout(timer)
-    if (capabilityTimer) clearTimeout(capabilityTimer)
   })
 
   async function authenticate(value: unknown): Promise<void> {
@@ -365,11 +363,9 @@ function authenticateBrowser(
     capability = parsed.payload
     onAuthenticated(client.id)
     clearTimeout(timer)
-    capabilityTimer = setTimeout(
-      () => socket.close(4401, "Browser capability expired"),
-      Math.max(1, capability.expiresAt - Date.now())
-    )
-    capabilityTimer.unref()
+    // The short-lived capability limits replay during session establishment.
+    // Once proof-of-possession succeeds, the authenticated socket remains valid
+    // until it disconnects or its issuing Hearth identity is revoked.
     send(socket, {
       expiresAt: capability.expiresAt,
       instanceId: capability.instanceId,

@@ -167,7 +167,9 @@ function relayBrowserOrigin(
   advertisedHost: string,
   publicPort: number
 ): string {
-  return `${tlsMode === "development" ? "http" : "https"}://${formatUrlHost(advertisedHost)}${publicPort === 443 ? "" : `:${publicPort}`}`
+  const scheme = tlsMode === "development" ? "http" : "https"
+  const defaultPort = scheme === "https" ? 443 : 80
+  return `${scheme}://${formatUrlHost(advertisedHost)}${publicPort === defaultPort ? "" : `:${publicPort}`}`
 }
 
 function withTimeout<T>(promise: Promise<T>, delay: number): Promise<T> {

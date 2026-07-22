@@ -149,10 +149,7 @@ function RouteForm({
   const [error, setError] = React.useState<string | null>(null)
   return (
     <form
-      className="border border-border/80 bg-card/45 p-4"
-      onSubmit={(event) => {
-        event.preventDefault()
-        const form = new FormData(event.currentTarget)
+      action={async (form) => {
         const path = String(form.get("path") ?? "").trim()
         const parsed = relayInstanceWebRouteSchema.safeParse({
           hostname: String(form.get("hostname") ?? ""),
@@ -166,11 +163,13 @@ function RouteForm({
           return
         }
         setError(null)
-        const formElement = event.currentTarget
-        void onAdd(parsed.data)
-          .then(() => formElement.reset())
-          .catch((cause) => setError(errorMessage(cause)))
+        try {
+          await onAdd(parsed.data)
+        } catch (cause) {
+          setError(errorMessage(cause))
+        }
       }}
+      className="border border-border/80 bg-card/45 p-4"
     >
       <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(9rem,0.45fr)_7rem]">
         <label className="space-y-1.5 text-[11px] font-medium">

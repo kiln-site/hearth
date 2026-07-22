@@ -29,6 +29,16 @@ describe("loadConfig", () => {
     expect(config.browserOrigin).toBe("http://relay.test:8443")
   })
 
+  it("only elides the selected scheme's default port", () => {
+    const config = loadConfig({
+      KILN_RELAY_HOST: "relay.test",
+      KILN_RELAY_PUBLIC_PORT: "443",
+      NODE_ENV: "development",
+    })
+
+    expect(config.browserOrigin).toBe("http://relay.test:443")
+  })
+
   it("uses the standard HTTPS edge for bundled Traefik", () => {
     const config = loadConfig({
       KILN_RELAY_HOST: "relay.example.com",

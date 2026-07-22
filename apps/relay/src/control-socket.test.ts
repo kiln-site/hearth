@@ -31,7 +31,7 @@ describe("Relay control socket", () => {
       publicKeyEncoding: { format: "pem", type: "spki" },
     })
     const client: RelayClientRecord = {
-      actions: ["relay.read"],
+      actions: ["instance.network.write", "relay.read"],
       createdAt: Date.now(),
       id: fingerprint(hearthKeys.publicKey),
       invitationId: "test-invitation",
@@ -155,6 +155,36 @@ describe("Relay control socket", () => {
       if (response.type === "response") {
         expect(response.payload).toEqual({ ok: true })
       }
+      blockClientLookup = false
+
+      socket.send(
+        JSON.stringify({
+          deadline: Date.now() + 5_000,
+          id: randomBytes(12).toString("hex"),
+          operation: "relay.networking.write",
+          payload: {},
+          type: "request",
+          v: 1,
+        })
+      )
+      const relayNetworking = await inbox.next()
+      expect(relayNetworking.type).toBe("error")
+      if (relayNetworking.type === "error") {
+        expect(relayNetworking.code).toBe("forbidden")
+      }
+
+      socket.send(
+        JSON.stringify({
+          deadline: Date.now() + 120_000,
+          id: randomBytes(12).toString("hex"),
+          operation: "instance.network.routes.write",
+          payload: {},
+          type: "request",
+          v: 1,
+        })
+      )
+      const routeMutation = await inbox.next()
+      expect(routeMutation.type).toBe("response")
       pushSnapshot?.({ instances: [{ id: "updated" }], node: {} })
       const pushed = await inbox.next()
       expect(pushed.type).toBe("event")

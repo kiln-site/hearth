@@ -7,6 +7,7 @@ import {
   RelayControlServerMessageSchema,
   relayAuthChallengeTranscript,
   relayAuthResponseTranscript,
+  relayControlDeadlineMs,
   relayControlProtocol,
 } from "@workspace/contracts"
 import type {
@@ -124,7 +125,8 @@ class RelayConnection {
     }
     const id = randomUUID()
     const request: RelayControlRequest = {
-      deadline: Date.now() + Math.min(timeoutMs, 30_000),
+      deadline:
+        Date.now() + Math.min(timeoutMs, relayControlDeadlineMs(operation)),
       id,
       operation,
       payload,

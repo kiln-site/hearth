@@ -14,6 +14,7 @@ import {
   RelayControlClientMessageSchema,
   relayAuthChallengeTranscript,
   relayAuthResponseTranscript,
+  relayControlDeadlineMs,
   relayControlProtocol,
 } from "@workspace/contracts"
 import type {
@@ -37,7 +38,6 @@ const AUTHENTICATION_WINDOW_MS = 10_000
 const HEARTBEAT_INTERVAL_MS = 15_000
 const MAX_BUFFERED_BYTES = 4 * 1024 * 1024
 const MAX_IN_FLIGHT_REQUESTS = 32
-const MAX_REQUEST_DEADLINE_MS = 30_000
 const MAX_CONTROL_SESSIONS = 128
 const MAX_CONTROL_SESSIONS_PER_CLIENT = 4
 
@@ -356,7 +356,7 @@ function authenticateSocket(
       const now = Date.now()
       if (
         request.deadline <= now ||
-        request.deadline > now + MAX_REQUEST_DEADLINE_MS
+        request.deadline > now + relayControlDeadlineMs(request.operation)
       ) {
         sendError(
           socket,
@@ -498,7 +498,10 @@ function authenticateSocket(
         new Error("Hearth control connection is unavailable")
       )
     }
-    const duration = Math.min(Math.max(timeoutMs, 1), MAX_REQUEST_DEADLINE_MS)
+    const duration = Math.min(
+      Math.max(timeoutMs, 1),
+      relayControlDeadlineMs(operation)
+    )
     const id = randomUUID()
     const request: RelayControlRequest = {
       deadline: Date.now() + duration,
@@ -578,7 +581,7 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
     case "relay.networking.read":
       return "instance.network.read"
     case "relay.networking.write":
-      return "instance.network.write"
+      return "relay.configure"
     case "relay.proxy.read":
       return "relay.read"
     case "relay.proxy.write":

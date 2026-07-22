@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test"
+import { relayInstanceWebRoutesSchema } from "@workspace/contracts"
 
 import { loadConfig } from "./config.js"
 import {
@@ -120,6 +121,17 @@ describe("Traefik web routes", () => {
     expect(configuration).toContain("listen 8080")
     expect(configuration).toContain('set $kiln_upstream "kiln-aaaaaaaa:8080"')
     expect(configuration).toContain("proxy_pass http://$kiln_upstream")
+  })
+
+  it("rejects paths that can escape a Traefik rule literal", () => {
+    expect(() =>
+      relayInstanceWebRoutesSchema.parse([
+        {
+          ...route,
+          path: "/map`) || Host(`relay.example.com`)",
+        },
+      ])
+    ).toThrow("routing metacharacters")
   })
 
   it("restores the direct endpoint when bundled Traefik is disabled", () => {

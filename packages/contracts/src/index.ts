@@ -199,6 +199,10 @@ export const relayInstanceWebRouteSchema = z
       .min(1)
       .max(256)
       .regex(/^\/(?!\/)(?!.*(?:^|\/)\.\.?\/)(?:[^?#])*$/u)
+      .regex(
+        /^\/[A-Za-z0-9\-._~!$&'()*+,;=:@%/]*$/u,
+        "Use an encoded URL path without spaces or routing metacharacters"
+      )
       .nullable(),
     stripPrefix: z.boolean().default(true),
     targetPort: z.number().int().min(1).max(65_535),
