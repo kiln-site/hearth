@@ -1,4 +1,5 @@
-import { createServer } from "node:http"
+import { createServer as createHttpServer } from "node:http"
+import { createServer as createHttpsServer } from "node:https"
 import { mkdir } from "node:fs/promises"
 import * as Sentry from "@sentry/node"
 import { Effect } from "effect"
@@ -18,8 +19,26 @@ import { DockerDriver } from "./docker.js"
 import { FilesystemDriver, RelayFilesystemError } from "./files.js"
 import { LifecycleDriver } from "./lifecycle.js"
 import { nodeSnapshot } from "./node.js"
-import { BrickRecipeError, RelayOperationError } from "./effect/errors.js"
-import { disposeRelayRuntime, runRelayEffect } from "./effect/runtime.js"
+import {
+  BrickRecipeError,
+  RelayOperationError,
+  RelayPairingError,
+} from "./effect/errors.js"
+import { loadOrCreateRelayIdentity } from "./effect/identity.js"
+import {
+  decodePairingRequest,
+  createPairingInvitation,
+  initializePairing,
+  pairHearth,
+  renderPairingInvitation,
+} from "./effect/pairing.js"
+import {
+  disposeRelayRuntime,
+  initializeRelayRuntime,
+  runRelayEffect,
+} from "./effect/runtime.js"
+import { RelayStateStore } from "./effect/state.js"
+import { loadRelayTls } from "./effect/tls.js"
 import { normalizedRoute } from "./route-label.js"
 import { closeRelayServer } from "./shutdown.js"
 import type { IncomingMessage, ServerResponse } from "node:http"
@@ -27,6 +46,73 @@ import type { RelayConfig } from "./config.js"
 
 const config = loadConfig()
 await mkdir(config.rootDirectory, { recursive: true })
+await mkdir(`${config.dataDirectory}/network`, { recursive: true, mode: 0o700 })
+initializeRelayRuntime(config)
+const startup = await runRelayEffect(
+  "relay.startup",
+  Effect.gen(function* () {
+    const state = yield* RelayStateStore
+    const [identity, tls] = yield* Effect.all([
+      loadOrCreateRelayIdentity(config),
+      loadRelayTls(config),
+    ])
+    return { identity, state, tls }
+  })
+)
+const cliArguments = process.argv.slice(2)
+if (cliArguments[0] === "pair") {
+  const role = cliArguments.includes("--read-only")
+    ? "read_only"
+    : "full_access"
+  const invitation = await runRelayEffect(
+    "relay.cli.pair",
+    Effect.gen(function* () {
+      const created = yield* createPairingInvitation({
+        config,
+        identity: startup.identity,
+        role,
+        state: startup.state,
+        tls: startup.tls,
+      })
+      const initialized = yield* startup.state.getMetadata(
+        "networking_initial_invitation"
+      )
+      if (!initialized) {
+        yield* startup.state.setMetadata(
+          "networking_initial_invitation",
+          JSON.stringify({
+            createdAt: Date.now(),
+            invitationId: created.envelope.invitationId,
+            kind: "cli",
+          })
+        )
+      }
+      return created
+    })
+  )
+  console.log(await renderPairingInvitation(invitation))
+  console.log(
+    `Created ${role} invitation ${invitation.envelope.invitationId}; the URI was not written to Relay service logs.`
+  )
+  await disposeRelayRuntime()
+  process.exit(0)
+}
+const initialPairing = await runRelayEffect(
+  "relay.startup.pairing",
+  initializePairing({
+    config,
+    identity: startup.identity,
+    state: startup.state,
+    tls: startup.tls,
+  })
+)
+if (initialPairing.kind === "automatic") {
+  console.log(
+    "Automatic Relay pairing is pending; the bootstrap token has been redacted."
+  )
+} else if (initialPairing.invitation) {
+  console.log(await renderPairingInvitation(initialPairing.invitation))
+}
 const bricks = new BrickCatalog(config.brickCatalogUrl)
 const docker = new DockerDriver(config)
 const filesystem = new FilesystemDriver(config)
@@ -35,9 +121,14 @@ const activeConsoleStreams = new Map<string, number>()
 const activeConsoleStreamControllers = new Set<AbortController>()
 const MAX_CONSOLE_STREAMS_PER_INSTANCE = 6
 
-const server = createServer(async (request, response) => {
+const requestHandler = async (
+  request: IncomingMessage,
+  response: ServerResponse
+) => {
   try {
     if (healthCheck(request, response)) return
+    if (trustProbe(request, response)) return
+    if (await pairingRequest(request, response)) return
     if (!authorize(request, response, config)) return
     const requestUrl = new URL(request.url ?? "/", "http://relay")
     await runRelayEffect(
@@ -61,6 +152,10 @@ const server = createServer(async (request, response) => {
       json(response, 400, { error: cause.message, code: cause.code })
       return
     }
+    if (cause instanceof RelayPairingError) {
+      json(response, 401, { error: cause.message, code: cause.code })
+      return
+    }
     Sentry.captureException(cause, {
       tags: { "kiln.operation": normalizedRequestOperation(request.url) },
     })
@@ -68,11 +163,18 @@ const server = createServer(async (request, response) => {
     console.error(cause)
     json(response, 500, { error: message, code: "internal_error" })
   }
-})
+}
+
+const server = startup.tls
+  ? createHttpsServer(
+      { cert: startup.tls.certificatePem, key: startup.tls.keyPem },
+      requestHandler
+    )
+  : createHttpServer(requestHandler)
 
 server.listen(config.port, config.host, () => {
   console.log(
-    `Relay ${config.nodeId} listening on http://${config.host}:${config.port}`
+    `Relay ${startup.identity.fingerprint} (${startup.identity.name}) listening on ${startup.tls ? "https" : "http"}://${config.host}:${config.port}`
   )
   console.log(
     `Discovering ${config.managedLabel} containers in ${config.rootDirectory}`
@@ -86,6 +188,63 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     shutdownStarted = true
     void shutdownRelay(signal)
   })
+}
+
+async function pairingRequest(
+  request: IncomingMessage,
+  response: ServerResponse
+): Promise<boolean> {
+  const method = request.method ?? "GET"
+  const url = new URL(request.url ?? "/", "http://relay")
+  if (method !== "POST" || url.pathname !== "/v1/pair") return false
+  const result = await runRelayEffect(
+    "relay.pairing.enroll",
+    Effect.gen(function* () {
+      const input = yield* Effect.tryPromise(() => readJson(request))
+      const pairing = yield* decodePairingRequest(input)
+      return yield* pairHearth({
+        identity: startup.identity,
+        request: pairing,
+        state: startup.state,
+      })
+    }).pipe(
+      Effect.mapError((cause) =>
+        cause instanceof RelayPairingError
+          ? cause
+          : RelayPairingError.make({ code: "invalid_pairing_request", cause })
+      )
+    )
+  )
+  json(response, 201, result)
+  return true
+}
+
+function trustProbe(
+  request: IncomingMessage,
+  response: ServerResponse
+): boolean {
+  const method = request.method ?? "GET"
+  const url = new URL(request.url ?? "/", "http://relay")
+  if (url.pathname !== "/v1/trust" || (method !== "GET" && method !== "HEAD")) {
+    return false
+  }
+  response
+    .writeHead(200, {
+      "Access-Control-Allow-Origin": "*",
+      "Cache-Control": "no-store",
+      "Content-Type": "application/json; charset=utf-8",
+    })
+    .end(
+      method === "HEAD"
+        ? undefined
+        : JSON.stringify({
+            relayFingerprint: startup.identity.fingerprint,
+            relayName: startup.identity.name,
+            tlsFingerprint: startup.tls?.fingerprint ?? null,
+            version: 1,
+          })
+    )
+  return true
 }
 
 async function shutdownRelay(signal: NodeJS.Signals): Promise<void> {
@@ -319,8 +478,8 @@ function authorize(
   response: ServerResponse,
   relayConfig: RelayConfig
 ): boolean {
-  if (!relayConfig.token) return true
-  if (request.headers.authorization === `Bearer ${relayConfig.token}`)
+  if (!relayConfig.legacyToken) return true
+  if (request.headers.authorization === `Bearer ${relayConfig.legacyToken}`)
     return true
   json(response, 401, { error: "Unauthorized", code: "unauthorized" })
   return false

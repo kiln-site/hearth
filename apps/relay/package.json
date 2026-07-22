@@ -10,20 +10,31 @@
     "start": "node --import ./dist/instrument.mjs dist/src/index.mjs"
   },
   "dependencies": {
+    "@effect/sql-sqlite-node": "4.0.0-beta.99",
+    "@node-rs/argon2": "2.0.2",
     "@opentelemetry/api": "1.9.0",
     "@opentelemetry/core": "2.9.0",
+    "@peculiar/x509": "2.0.0",
     "@sentry/node": "^10.66.0",
     "@workspace/contracts": "workspace:*",
+    "acme-client": "5.4.0",
     "effect": "4.0.0-beta.99",
+    "qrcode": "1.5.4",
+    "reflect-metadata": "0.2.2",
+    "ssh2": "1.17.0",
+    "ws": "8.21.1",
     "yaml": "2.8.1"
   },
   "devDependencies": {
     "@effect/vitest": "4.0.0-beta.99",
     "@types/node": "^22",
+    "@types/qrcode": "1.5.6",
+    "@types/ssh2": "1.15.5",
+    "@types/ws": "8.18.1",
     "tsx": "^4.20.6",
     "typescript": "^6",
     "vite": "catalog:",
-    "vitest": "catalog:",
-    "vite-plus": "catalog:"
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
   }
 }
