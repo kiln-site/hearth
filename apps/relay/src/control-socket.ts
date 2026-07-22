@@ -304,7 +304,9 @@ function authenticateSocket(
       )
       return
     }
-    void executeRequest(message, authenticatedClient)
+    const controller = new AbortController()
+    inFlight.set(message.id, controller)
+    void executeRequest(message, authenticatedClient, controller)
   })
 
   socket.once("close", () => {
@@ -346,38 +348,48 @@ function authenticateSocket(
 
   async function executeRequest(
     request: RelayControlRequest,
-    sessionClient: RelayClientGrant
+    sessionClient: RelayClientGrant,
+    controller: AbortController
   ): Promise<void> {
-    const now = Date.now()
-    if (
-      request.deadline <= now ||
-      request.deadline > now + MAX_REQUEST_DEADLINE_MS
-    ) {
-      sendError(
-        socket,
-        request.id,
-        "invalid_deadline",
-        "Request deadline is invalid"
-      )
-      return
-    }
-    const currentClient = await options.runEffect(
-      options.state.findClientById(sessionClient.id)
-    )
-    if (!currentClient) {
-      socket.close(4403, "Hearth client was revoked")
-      return
-    }
-    const action = actionForRequest(request)
-    if (!action || !isActionAllowed(currentClient.actions, action)) {
-      sendError(socket, request.id, "forbidden", "Relay permission denied")
-      return
-    }
-    const controller = new AbortController()
-    inFlight.set(request.id, controller)
-    const timer = setTimeout(() => controller.abort(), request.deadline - now)
-    timer.unref()
+    let timer: ReturnType<typeof setTimeout> | null = null
     try {
+      const now = Date.now()
+      if (
+        request.deadline <= now ||
+        request.deadline > now + MAX_REQUEST_DEADLINE_MS
+      ) {
+        sendError(
+          socket,
+          request.id,
+          "invalid_deadline",
+          "Request deadline is invalid"
+        )
+        return
+      }
+      const currentClient = await options.runEffect(
+        options.state.findClientById(sessionClient.id)
+      )
+      if (!currentClient) {
+        socket.close(4403, "Hearth client was revoked")
+        return
+      }
+      const action = actionForRequest(request)
+      if (!action || !isActionAllowed(currentClient.actions, action)) {
+        sendError(socket, request.id, "forbidden", "Relay permission denied")
+        return
+      }
+      const remaining = request.deadline - Date.now()
+      if (remaining <= 0) {
+        sendError(
+          socket,
+          request.id,
+          "request_cancelled",
+          "Request deadline elapsed"
+        )
+        return
+      }
+      timer = setTimeout(() => controller.abort(), remaining)
+      timer.unref()
       const payload = await options.execute(
         request,
         currentClient,
@@ -419,7 +431,7 @@ function authenticateSocket(
           : safeErrorMessage(cause)
       )
     } finally {
-      clearTimeout(timer)
+      if (timer) clearTimeout(timer)
       inFlight.delete(request.id)
     }
   }
@@ -510,6 +522,11 @@ function authenticateSocket(
 
 function isAuditedMutation(operation: RelayControlOperation): boolean {
   return (
+    operation === "relay.rename" ||
+    operation === "relay.pairing.create" ||
+    operation === "relay.pairing.revoke" ||
+    operation === "relay.clients.update" ||
+    operation === "relay.clients.revoke" ||
     operation === "relay.networking.write" ||
     operation === "instance.create" ||
     operation === "instance.delete" ||

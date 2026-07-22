@@ -6,7 +6,7 @@ import {
   webcrypto,
   X509Certificate as NodeX509Certificate,
 } from "node:crypto"
-import { chmod, mkdir, open, readFile, rename } from "node:fs/promises"
+import { chmod, mkdir, open, readFile, rename, unlink } from "node:fs/promises"
 import { isIP } from "node:net"
 import { dirname, join } from "node:path"
 import {
@@ -73,6 +73,7 @@ const loadExternalTls = Effect.fn("RelayTls.loadExternal")(function* (
     keyPem,
     minimumExpiry: now + 60_000,
     mode: "external",
+    now,
   })
 })
 
@@ -204,6 +205,7 @@ const loadManagedLeaf = Effect.fn("RelayTls.loadManagedLeaf")(function* (
     keyPem: files.keyPem,
     minimumExpiry: now + LEAF_RENEWAL_WINDOW_MS,
     mode: "managed",
+    now,
   }).pipe(
     Effect.mapError((error) =>
       RelayTlsError.make({
@@ -269,6 +271,7 @@ const createManagedLeaf = Effect.fn("RelayTls.createManagedLeaf")(
       keyPem,
       minimumExpiry: input.now + LEAF_RENEWAL_WINDOW_MS,
       mode: "managed",
+      now: input.now,
     })
   }
 )
@@ -281,6 +284,7 @@ const validateMaterial = Effect.fn("RelayTls.validateMaterial")(
     readonly keyPem: string
     readonly minimumExpiry: number
     readonly mode: "external" | "managed"
+    readonly now: number
   }) {
     const certificate = yield* parseCertificate(
       input.certificatePem,
@@ -291,6 +295,38 @@ const validateMaterial = Effect.fn("RelayTls.validateMaterial")(
       input.keyPem,
       "validate_certificate_key"
     )
+    const validFrom = Date.parse(certificate.validFrom)
+    if (!Number.isFinite(validFrom) || validFrom > input.now) {
+      return yield* Effect.fail(
+        RelayTlsError.make({
+          operation: "validate_certificate_not_yet_valid",
+          cause: new Error("TLS certificate is not valid yet"),
+        })
+      )
+    }
+    if (input.mode === "managed" && input.caCertificatePem) {
+      const caCertificate = yield* parseCertificate(
+        input.caCertificatePem,
+        "parse_managed_ca_certificate"
+      )
+      const issuedByCa = yield* Effect.try({
+        try: () =>
+          certificate.checkIssued(caCertificate) &&
+          certificate.verify(caCertificate.publicKey),
+        catch: (cause) =>
+          RelayTlsError.make({ operation: "validate_managed_chain", cause }),
+      })
+      if (!issuedByCa) {
+        return yield* Effect.fail(
+          RelayTlsError.make({
+            operation: "validate_managed_chain",
+            cause: new Error(
+              "Managed TLS certificate was not issued by the current Relay CA"
+            ),
+          })
+        )
+      }
+    }
     const expiresAt = Date.parse(certificate.validTo)
     if (expiresAt <= input.minimumExpiry) {
       return yield* Effect.fail(
@@ -415,19 +451,25 @@ function protectKey(path: string) {
 function writeFileAtomic(path: string, value: string, mode: number) {
   return tryPromise("write_tls_file", async () => {
     const temporaryPath = join(dirname(path), `.${randomUUID()}.tmp`)
-    const file = await open(temporaryPath, "wx", mode)
+    let renamed = false
     try {
-      await file.writeFile(value, "utf8")
-      await file.sync()
+      const file = await open(temporaryPath, "wx", mode)
+      try {
+        await file.writeFile(value, "utf8")
+        await file.sync()
+      } finally {
+        await file.close()
+      }
+      await rename(temporaryPath, path)
+      renamed = true
+      const directory = await open(dirname(path), "r")
+      try {
+        await directory.sync()
+      } finally {
+        await directory.close()
+      }
     } finally {
-      await file.close()
-    }
-    await rename(temporaryPath, path)
-    const directory = await open(dirname(path), "r")
-    try {
-      await directory.sync()
-    } finally {
-      await directory.close()
+      if (!renamed) await unlink(temporaryPath).catch(() => undefined)
     }
   })
 }

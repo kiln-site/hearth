@@ -8,7 +8,6 @@ import {
   realpath,
   rename,
   rmdir,
-  stat,
   unlink,
   writeFile,
   lstat,
@@ -108,7 +107,11 @@ export async function attachSftpServer(options: {
           context.reject(["password"])
           return
         }
-        void authorizeUsername(options.control, context.username, options.clientActions)
+        void authorizeUsername(
+          options.control,
+          context.username,
+          options.clientActions
+        )
           .then((authorized) => {
             if (!authorized.length) {
               context.reject(["password"])
@@ -139,7 +142,11 @@ export async function attachSftpServer(options: {
         authorizationTimer = setInterval(() => {
           if (authorizationPending || !authenticatedUsername || !grants) return
           authorizationPending = true
-          void authorizeUsername(options.control, authenticatedUsername, options.clientActions)
+          void authorizeUsername(
+            options.control,
+            authenticatedUsername,
+            options.clientActions
+          )
             .then((authorized) => {
               if (!grants || !sameGrants(grants, authorized)) client.end()
             })
@@ -348,13 +355,25 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
   const statPath = (requestId: number, requestedPath: string) => {
     void respond(requestId, async () => {
       const target = await resolvePath(grants, requestedPath, true)
-      if (target.grant)
-        requireAction(target.grant, "instance.files.list")
+      if (target.grant) requireAction(target.grant, "instance.files.list")
       if (!target.physicalPath) {
         stream.attrs(requestId, virtualDirectoryAttributes())
         return
       }
-      stream.attrs(requestId, attributes(await stat(target.physicalPath)))
+      const file = await open(
+        target.physicalPath,
+        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW
+      )
+      try {
+        await verifyOpenPath(
+          target.grant?.root ?? "",
+          file,
+          target.physicalPath
+        )
+        stream.attrs(requestId, attributes(await file.stat()))
+      } finally {
+        await file.close()
+      }
     })
   }
   stream.on("STAT", statPath)
@@ -364,12 +383,14 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
     void respond(requestId, async () => {
       ensureHandleCapacity(handles)
       const target = await resolvePath(grants, requestedPath, true)
-      if (target.grant)
-        requireAction(target.grant, "instance.files.list")
+      if (target.grant) requireAction(target.grant, "instance.files.list")
       const entries = target.physicalPath
-        ? await physicalDirectoryEntries(target.physicalPath)
+        ? await physicalDirectoryEntries(
+            target.grant!.root,
+            target.physicalPath
+          )
         : target.grant
-          ? await physicalDirectoryEntries(target.grant.root)
+          ? await physicalDirectoryEntries(target.grant.root, target.grant.root)
           : grants.map((grant) => virtualDirectoryEntry(grant.id))
       const handle = nextHandle++
       handles.set(handle, { entries, index: 0, kind: "directory" })
@@ -411,11 +432,22 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
         requireAction(target.grant, "instance.files.create")
       if (writable || flags & OPEN_MODE.TRUNC)
         requireAction(target.grant, "instance.files.write")
-      const file = await open(
+      const file = await withAnchoredParent(
+        target.grant.root,
         target.physicalPath,
-        nodeOpenFlags(flags),
-        sanitizeMode(inputAttributes.mode, 0o644)
+        (anchoredPath) =>
+          open(
+            anchoredPath,
+            nodeOpenFlags(flags),
+            sanitizeMode(inputAttributes.mode, 0o644)
+          )
       )
+      try {
+        await verifyOpenPath(target.grant.root, file, target.physicalPath)
+      } catch (cause) {
+        await file.close()
+        throw cause
+      }
       const handle = nextHandle++
       handles.set(handle, {
         actions: target.grant.actions,
@@ -514,7 +546,16 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
         throw permissionDenied()
       requireAction(source.grant, "instance.files.rename")
       requireAction(destination.grant, "instance.files.rename")
-      await rename(source.physicalPath, destination.physicalPath)
+      await withAnchoredParent(
+        source.grant.root,
+        source.physicalPath,
+        (anchoredSource) =>
+          withAnchoredParent(
+            destination.grant!.root,
+            destination.physicalPath!,
+            (anchoredDestination) => rename(anchoredSource, anchoredDestination)
+          )
+      )
       stream.status(requestId, STATUS_CODE.OK)
     })
   })
@@ -529,7 +570,18 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
       )
         throw permissionDenied()
       requireAction(target.grant, "instance.files.chmod")
-      await chmod(target.physicalPath, sanitizeMode(inputAttributes.mode, 0o644))
+      const file = await withAnchoredParent(
+        target.grant.root,
+        target.physicalPath,
+        (anchoredPath) =>
+          open(anchoredPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+      )
+      try {
+        await verifyOpenPath(target.grant.root, file, target.physicalPath)
+        await file.chmod(sanitizeMode(inputAttributes.mode, 0o644))
+      } finally {
+        await file.close()
+      }
       stream.status(requestId, STATUS_CODE.OK)
     })
   })
@@ -575,7 +627,11 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
         throw permissionDenied()
       }
       requireAction(target.grant, action)
-      await operation(target.physicalPath)
+      await withAnchoredParent(
+        target.grant.root,
+        target.physicalPath,
+        operation
+      )
       Sentry.addBreadcrumb({
         category: "relay.sftp.operation",
         data: { action },
@@ -636,22 +692,79 @@ function normalizeVirtualPath(value: string): string {
 }
 
 async function physicalDirectoryEntries(
+  root: string,
   path: string
 ): Promise<Array<FileEntry>> {
-  const entries = await readdir(path, { withFileTypes: true })
-  if (entries.length > MAX_DIRECTORY_ENTRIES) {
-    throw new Error("Directory contains too many entries")
-  }
-  return Promise.all(
-    entries.map(async (entry) => {
-      const metadata = await lstat(resolve(path, entry.name))
-      return {
-        attrs: attributes(metadata),
-        filename: entry.name,
-        longname: longname(entry.name, metadata),
-      }
-    })
+  const directory = await open(
+    path,
+    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW
   )
+  try {
+    const anchored = fdPath(directory)
+    await verifyOpenPath(root, directory, path)
+    const ioPath = process.platform === "linux" ? anchored : path
+    const entries = await readdir(ioPath, { withFileTypes: true })
+    if (entries.length > MAX_DIRECTORY_ENTRIES) {
+      throw new Error("Directory contains too many entries")
+    }
+    const result: Array<FileEntry> = []
+    for (let index = 0; index < entries.length; index += DIRECTORY_BATCH_SIZE) {
+      const batch = entries.slice(index, index + DIRECTORY_BATCH_SIZE)
+      result.push(
+        ...(await Promise.all(
+          batch.map(async (entry) => {
+            const metadata = await lstat(resolve(ioPath, entry.name))
+            return {
+              attrs: attributes(metadata),
+              filename: entry.name,
+              longname: longname(entry.name, metadata),
+            }
+          })
+        ))
+      )
+    }
+    return result
+  } finally {
+    await directory.close()
+  }
+}
+
+async function withAnchoredParent<T>(
+  root: string,
+  path: string,
+  operation: (anchoredPath: string) => Promise<T>
+): Promise<T> {
+  const parent = await open(
+    dirname(path),
+    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW
+  )
+  try {
+    const anchoredParent = fdPath(parent)
+    await verifyOpenPath(root, parent, dirname(path))
+    return await operation(
+      resolve(
+        process.platform === "linux" ? anchoredParent : dirname(path),
+        posix.basename(path)
+      )
+    )
+  } finally {
+    await parent.close()
+  }
+}
+
+function fdPath(file: FileHandle): string {
+  return `${process.platform === "linux" ? "/proc/self/fd" : "/dev/fd"}/${file.fd}`
+}
+
+async function verifyOpenPath(
+  root: string,
+  file: FileHandle,
+  fallbackPath: string
+): Promise<void> {
+  const actual = await realpath(
+    process.platform === "linux" ? fdPath(file) : fallbackPath
+  )
+  ensureContained(root, actual)
 }
 
 function virtualDirectoryEntry(name: string): FileEntry {
@@ -788,11 +901,10 @@ function ensureContained(root: string, candidate: string): void {
 function safeEqual(input: string, expected: string): boolean {
   const inputBuffer = Buffer.from(input)
   const expectedBuffer = Buffer.from(expected)
-  const comparable =
-    inputBuffer.length === expectedBuffer.length ? expectedBuffer : inputBuffer
-  return (
-    timingSafeEqual(inputBuffer, comparable) && comparable === expectedBuffer
-  )
+  const comparable = Buffer.alloc(expectedBuffer.length)
+  inputBuffer.copy(comparable, 0, 0, expectedBuffer.length)
+  const contentsMatch = timingSafeEqual(comparable, expectedBuffer)
+  return inputBuffer.length === expectedBuffer.length && contentsMatch
 }
 
 function record(value: unknown): Readonly<Record<string, unknown>> | null {

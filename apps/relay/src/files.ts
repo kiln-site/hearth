@@ -9,6 +9,8 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises"
+import { constants as fsConstants } from "node:fs"
+import type { FileHandle } from "node:fs/promises"
 import { basename, dirname, join, relative, resolve, sep } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { gunzip } from "node:zlib"
@@ -201,18 +203,37 @@ export class FilesystemDriver {
     instance: RelayInstanceConfig,
     requestedPath: string
   ): Promise<{
-    absolutePath: string
+    file: FileHandle
     modifiedAt: string
     name: string
     size: number
   }> {
-    const absolutePath = await this.#existingFile(instance, requestedPath)
-    const metadata = await stat(absolutePath)
-    return {
-      absolutePath,
-      modifiedAt: metadata.mtime.toISOString(),
-      name: basename(absolutePath),
-      size: metadata.size,
+    validateRelativePath(requestedPath)
+    const root = await this.#instanceRoot(instance)
+    const candidate = resolve(root, requestedPath)
+    ensureContained(root, candidate)
+    const file = await open(
+      candidate,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW
+    )
+    try {
+      const actual = await realpath(
+        process.platform === "linux" ? fileDescriptorPath(file) : candidate
+      )
+      ensureContained(root, actual)
+      const metadata = await file.stat()
+      if (!metadata.isFile()) {
+        throw new RelayFilesystemError("not_a_file", "Path is not a file")
+      }
+      return {
+        file,
+        modifiedAt: metadata.mtime.toISOString(),
+        name: basename(candidate),
+        size: metadata.size,
+      }
+    } catch (cause) {
+      await file.close().catch(() => undefined)
+      throw cause
     }
   }
 
@@ -232,50 +253,67 @@ export class FilesystemDriver {
     ensureContained(root, candidate)
     const parent = await realpath(dirname(candidate))
     ensureContained(root, parent)
-    let target = resolve(parent, basename(candidate))
-    let mode = 0o644
+    const parentHandle = await open(
+      parent,
+      fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW
+    )
     try {
-      target = await realpath(candidate)
-      ensureContained(root, target)
-      const existing = await lstat(target)
-      if (!existing.isFile()) {
-        throw new RelayFilesystemError("not_a_file", "Path is not a file")
-      }
-      mode = existing.mode & 0o777
-    } catch (cause) {
-      if (!isMissingFile(cause)) throw cause
-    }
-
-    const temporary = resolve(parent, `.kiln-upload-${randomUUID()}`)
-    const file = await open(temporary, "wx", mode)
-    let size = 0
-    const digest = createHash("sha256")
-    try {
-      for await (const chunk of source) {
-        size += chunk.byteLength
-        if (size > MAX_TRANSFER_BYTES) {
-          throw new RelayFilesystemError(
-            "file_too_large",
-            "Upload exceeds the 20 GiB transfer limit"
-          )
+      const anchoredParent = fileDescriptorPath(parentHandle)
+      ensureContained(
+        root,
+        await realpath(process.platform === "linux" ? anchoredParent : parent)
+      )
+      const operationParent =
+        process.platform === "linux" ? anchoredParent : parent
+      const target = resolve(operationParent, basename(candidate))
+      let mode = 0o644
+      try {
+        const existing = await lstat(target)
+        if (!existing.isFile()) {
+          throw new RelayFilesystemError("not_a_file", "Path is not a file")
         }
-        digest.update(chunk)
-        await file.write(chunk)
+        mode = existing.mode & 0o777
+      } catch (cause) {
+        if (!isMissingFile(cause)) throw cause
       }
-      await file.sync()
-      await file.close()
-      await rename(temporary, target)
-    } catch (cause) {
-      await file.close().catch(() => undefined)
-      await unlink(temporary).catch(() => undefined)
-      throw cause
-    }
-    const metadata = await stat(target)
-    return {
-      modifiedAt: metadata.mtime.toISOString(),
-      path: requestedPath,
-      sha256: digest.digest("hex"),
-      size,
+
+      const temporary = resolve(operationParent, `.kiln-upload-${randomUUID()}`)
+      const file = await open(temporary, "wx", mode)
+      let size = 0
+      const digest = createHash("sha256")
+      try {
+        for await (const chunk of source) {
+          size += chunk.byteLength
+          if (size > MAX_TRANSFER_BYTES) {
+            throw new RelayFilesystemError(
+              "file_too_large",
+              "Upload exceeds the 20 GiB transfer limit"
+            )
+          }
+          digest.update(chunk)
+          await file.write(chunk)
+        }
+        await file.sync()
+        await file.close()
+        ensureContained(
+          root,
+          await realpath(process.platform === "linux" ? anchoredParent : parent)
+        )
+        await rename(temporary, target)
+      } catch (cause) {
+        await file.close().catch(() => undefined)
+        await unlink(temporary).catch(() => undefined)
+        throw cause
+      }
+      const metadata = await stat(target)
+      return {
+        modifiedAt: metadata.mtime.toISOString(),
+        path: requestedPath,
+        sha256: digest.digest("hex"),
+        size,
+      }
+    } finally {
+      await parentHandle.close()
     }
   }
 
@@ -295,12 +333,15 @@ export class FilesystemDriver {
   }
 
   async #instanceRoot(instance: RelayInstanceConfig): Promise<string> {
-    const root = await realpath(
-      resolve(this.#config.rootDirectory, instance.directory)
-    )
-    ensureContained(this.#config.rootDirectory, root)
+    const configuredRoot = await realpath(this.#config.rootDirectory)
+    const root = await realpath(resolve(configuredRoot, instance.directory))
+    ensureContained(configuredRoot, root)
     return root
   }
+}
+
+function fileDescriptorPath(file: FileHandle): string {
+  return `${process.platform === "linux" ? "/proc/self/fd" : "/dev/fd"}/${file.fd}`
 }
 
 function isMissingFile(cause: unknown): boolean {

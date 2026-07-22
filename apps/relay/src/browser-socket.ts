@@ -5,7 +5,7 @@ import {
   randomUUID,
   verify,
 } from "node:crypto"
-import { createReadStream } from "node:fs"
+import type { ReadStream } from "node:fs"
 import { Schema } from "effect"
 import { WebSocket, WebSocketServer } from "ws"
 import * as Sentry from "@sentry/node"
@@ -126,6 +126,7 @@ export function attachBrowserSocket(
   const sockets = new Set<WebSocket>()
   const socketIssuers = new Map<WebSocket, string>()
   const requestProofs = new Map<string, number>()
+  const pendingRequestProofs = new Set<string>()
   const transfers = { active: 0, byClient: new Map<string, number>() }
   const hubs = new ConsoleHubRegistry(options.docker)
   const resourceHubs = new ResourceHubRegistry(options.subscribeSnapshots)
@@ -160,12 +161,12 @@ export function attachBrowserSocket(
       socket.close(1013, "Relay browser session capacity reached")
       return
     }
-    sockets.add(socket)
     const origin = request.headers.origin
     if (!origin) {
       socket.close(4403, "Browser origin is required")
       return
     }
+    sockets.add(socket)
     authenticateBrowser(
       socket,
       origin,
@@ -196,6 +197,7 @@ export function attachBrowserSocket(
         request,
         response,
         options,
+        pendingRequestProofs,
         requestProofs,
         transfers
       ),
@@ -509,6 +511,7 @@ async function handleBrowserFileRequest(
   request: IncomingMessage,
   response: ServerResponse,
   options: BrowserSocketOptions,
+  pendingRequestProofs: Set<string>,
   requestProofs: Map<string, number>,
   transfers: { active: number; byClient: Map<string, number> }
 ): Promise<boolean> {
@@ -561,6 +564,7 @@ async function handleBrowserFileRequest(
       origin,
       path,
       request,
+      pendingRequestProofs,
       requestProofs,
     })
   } catch {
@@ -603,36 +607,51 @@ async function handleBrowserFileRequest(
       return true
     }
     const download = await options.filesystem.download(instance, path)
-    const range = parseRange(request.headers.range, download.size)
-    const headers = browserCorsHeaders(origin, {
-      "Accept-Ranges": "bytes",
-      "Cache-Control": "no-store",
-      "Content-Disposition": contentDisposition(download.name),
-      "Content-Length": String(
-        range ? range.end - range.start + 1 : download.size
-      ),
-      "Content-Type": "application/octet-stream",
-      "Last-Modified": new Date(download.modifiedAt).toUTCString(),
-      "X-Content-Type-Options": "nosniff",
-    })
-    if (range)
-      headers["Content-Range"] =
-        `bytes ${range.start}-${range.end}/${download.size}`
-    response.writeHead(range ? 206 : 200, headers)
-    if (method === "HEAD") {
-      response.end()
-      return true
+    try {
+      const range = parseRange(request.headers.range, download.size)
+      const headers = browserCorsHeaders(origin, {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-store",
+        "Content-Disposition": contentDisposition(download.name),
+        "Content-Length": String(
+          range ? range.end - range.start + 1 : download.size
+        ),
+        "Content-Type": "application/octet-stream",
+        "Last-Modified": new Date(download.modifiedAt).toUTCString(),
+        "X-Content-Type-Options": "nosniff",
+      })
+      if (range)
+        headers["Content-Range"] =
+          `bytes ${range.start}-${range.end}/${download.size}`
+      response.writeHead(range ? 206 : 200, headers)
+      if (method === "HEAD") {
+        response.end()
+        void auditBrowserTransfer(
+          options,
+          authentication,
+          method,
+          0,
+          "completed"
+        )
+        return true
+      }
+      const streamOptions = range
+        ? { autoClose: false, end: range.end, start: range.start }
+        : { autoClose: false }
+      const result = await streamDownload(
+        download.file.createReadStream(streamOptions),
+        response
+      )
+      void auditBrowserTransfer(
+        options,
+        authentication,
+        method,
+        result.bytes,
+        result.completed ? "completed" : "aborted"
+      )
+    } finally {
+      await download.file.close()
     }
-    await streamDownload(
-      createReadStream(download.absolutePath, range ?? undefined),
-      response
-    )
-    void auditBrowserTransfer(
-      options,
-      authentication,
-      method,
-      range ? range.end - range.start + 1 : download.size
-    )
   } catch (cause) {
     Sentry.captureException(cause, {
       tags: {
@@ -641,7 +660,11 @@ async function handleBrowserFileRequest(
         "kiln.relay_id": options.identity.fingerprint,
       },
     })
-    browserJson(response, 400, { error: safeBrowserError(cause) }, origin)
+    if (response.headersSent) {
+      response.destroy(cause instanceof Error ? cause : undefined)
+    } else {
+      browserJson(response, 400, { error: safeBrowserError(cause) }, origin)
+    }
   } finally {
     transfers.active -= 1
     const remaining = (transfers.byClient.get(clientId) ?? 1) - 1
@@ -658,6 +681,7 @@ async function authenticateBrowserRequest(input: {
   origin: string
   path: string
   request: IncomingMessage
+  pendingRequestProofs: Set<string>
   requestProofs: Map<string, number>
 }): Promise<{ capabilityId: string; clientId: string; subject: string }> {
   const authorization = header(input.request, "authorization")
@@ -665,23 +689,6 @@ async function authenticateBrowserRequest(input: {
   const parsed = decodeCapability(authorization.slice(5))
   const requiredAction =
     input.method === "PUT" ? "instance.files.upload" : "instance.files.download"
-  const client = await input.options.runEffect(
-    input.options.state.findClientById(parsed.payload.issuer)
-  )
-  if (!client) throw new Error("Capability issuer was revoked")
-  validateCapability(
-    parsed,
-    client,
-    input.origin,
-    input.options.identity.fingerprint,
-    requiredAction
-  )
-  if (
-    parsed.payload.instanceId !== input.instanceId ||
-    parsed.payload.path !== input.path
-  )
-    throw new Error("Capability scope does not match the file")
-
   const publicKeyJwk = Schema.decodeUnknownSync(BrowserPublicKeySchema)(
     JSON.parse(
       Buffer.from(
@@ -705,34 +712,61 @@ async function authenticateBrowserRequest(input: {
     if (expiresAt <= Date.now()) input.requestProofs.delete(key)
   }
   const replayKey = `${parsed.payload.capabilityId}:${nonce}`
-  if (input.requestProofs.has(replayKey))
-    throw new Error("Browser proof was replayed")
-
-  const browserKey = createPublicKey({ format: "jwk", key: publicKeyJwk })
-  const proof = Buffer.from(header(input.request, "x-kiln-proof"), "base64url")
-  const valid = verify(
-    "sha256",
-    Buffer.from(
-      relayBrowserRequestProofTranscript({
-        capabilityId: parsed.payload.capabilityId,
-        expiresAt: parsed.payload.expiresAt,
-        instanceId: input.instanceId,
-        method: input.method,
-        nonce,
-        path: input.path,
-        relayId: input.options.identity.fingerprint,
-        requestedAt,
-      })
-    ),
-    { dsaEncoding: "ieee-p1363", key: browserKey },
-    proof
+  if (
+    input.requestProofs.has(replayKey) ||
+    input.pendingRequestProofs.has(replayKey)
   )
-  if (!valid) throw new Error("Browser request proof is invalid")
-  input.requestProofs.set(replayKey, parsed.payload.expiresAt)
-  return {
-    capabilityId: parsed.payload.capabilityId,
-    clientId: client.id,
-    subject: parsed.payload.subject,
+    throw new Error("Browser proof was replayed")
+  input.pendingRequestProofs.add(replayKey)
+  try {
+    const client = await input.options.runEffect(
+      input.options.state.findClientById(parsed.payload.issuer)
+    )
+    if (!client) throw new Error("Capability issuer was revoked")
+    validateCapability(
+      parsed,
+      client,
+      input.origin,
+      input.options.identity.fingerprint,
+      requiredAction
+    )
+    if (
+      parsed.payload.instanceId !== input.instanceId ||
+      parsed.payload.path !== input.path
+    )
+      throw new Error("Capability scope does not match the file")
+
+    const browserKey = createPublicKey({ format: "jwk", key: publicKeyJwk })
+    const proof = Buffer.from(
+      header(input.request, "x-kiln-proof"),
+      "base64url"
+    )
+    const valid = verify(
+      "sha256",
+      Buffer.from(
+        relayBrowserRequestProofTranscript({
+          capabilityId: parsed.payload.capabilityId,
+          expiresAt: parsed.payload.expiresAt,
+          instanceId: input.instanceId,
+          method: input.method,
+          nonce,
+          path: input.path,
+          relayId: input.options.identity.fingerprint,
+          requestedAt,
+        })
+      ),
+      { dsaEncoding: "ieee-p1363", key: browserKey },
+      proof
+    )
+    if (!valid) throw new Error("Browser request proof is invalid")
+    input.requestProofs.set(replayKey, parsed.payload.expiresAt)
+    return {
+      capabilityId: parsed.payload.capabilityId,
+      clientId: client.id,
+      subject: parsed.payload.subject,
+    }
+  } finally {
+    input.pendingRequestProofs.delete(replayKey)
   }
 }
 
@@ -744,7 +778,8 @@ async function auditBrowserTransfer(
     subject: string
   },
   method: "GET" | "HEAD" | "PUT",
-  bytes: number
+  bytes: number,
+  outcome: "aborted" | "completed" = "completed"
 ): Promise<void> {
   try {
     await options.runEffect(
@@ -753,6 +788,7 @@ async function auditBrowserTransfer(
         details: {
           bytes,
           method,
+          outcome,
           subject: authentication.subject,
         },
         event:
@@ -806,21 +842,33 @@ function browserJson(
     .end(JSON.stringify(value))
 }
 
-function parseRange(
+export function parseRange(
   value: string | undefined,
   size: number
 ): { end: number; start: number } | null {
   if (!value) return null
-  const match = value.match(/^bytes=(\d+)-(\d*)$/u)
+  if (!Number.isSafeInteger(size) || size <= 0) {
+    throw new Error("Requested byte range is invalid")
+  }
+  const match = value.match(/^bytes=(\d*)-(\d*)$/u)
   if (!match) throw new Error("Only a single byte range is supported")
+  if (!match[1] && !match[2]) throw new Error("Requested byte range is invalid")
+  if (!match[1]) {
+    const suffixLength = Number(match[2])
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
+      throw new Error("Requested byte range is invalid")
+    }
+    return { end: size - 1, start: Math.max(0, size - suffixLength) }
+  }
   const start = Number(match[1])
-  const end = match[2] ? Number(match[2]) : size - 1
+  const requestedEnd = match[2] ? Number(match[2]) : size - 1
+  const end = Math.min(requestedEnd, size - 1)
   if (
     !Number.isSafeInteger(start) ||
-    !Number.isSafeInteger(end) ||
+    !Number.isSafeInteger(requestedEnd) ||
     start < 0 ||
     end < start ||
-    end >= size
+    start >= size
   ) {
     throw new Error("Requested byte range is invalid")
   }
@@ -833,14 +881,19 @@ function contentDisposition(name: string): string {
 }
 
 function streamDownload(
-  stream: ReturnType<typeof createReadStream>,
+  stream: ReadStream,
   response: ServerResponse
-): Promise<void> {
+): Promise<{ bytes: number; completed: boolean }> {
   return new Promise((resolveStream, reject) => {
+    let bytes = 0
     const cleanup = () => {
       stream.off("error", failed)
+      stream.off("data", received)
       response.off("finish", finished)
       response.off("close", closed)
+    }
+    const received = (chunk: Buffer | string) => {
+      bytes += Buffer.byteLength(chunk)
     }
     const failed = (cause: Error) => {
       cleanup()
@@ -848,14 +901,15 @@ function streamDownload(
     }
     const finished = () => {
       cleanup()
-      resolveStream()
+      resolveStream({ bytes, completed: true })
     }
     const closed = () => {
       stream.destroy()
       cleanup()
-      resolveStream()
+      resolveStream({ bytes, completed: false })
     }
     stream.once("error", failed)
+    stream.on("data", received)
     response.once("finish", finished)
     response.once("close", closed)
     stream.pipe(response)
@@ -875,6 +929,7 @@ function safeBrowserError(cause: unknown): string {
 class ConsoleHubRegistry {
   readonly #docker: DockerDriver
   readonly #hubs = new Map<string, ConsoleHub>()
+  readonly #pendingHubs = new Map<string, Promise<ConsoleHub>>()
   readonly #subscriptions = new Map<WebSocket, string>()
 
   constructor(docker: DockerDriver) {
@@ -885,12 +940,18 @@ class ConsoleHubRegistry {
     this.remove(socket)
     let hub = this.#hubs.get(instanceId)
     if (!hub) {
-      const instance = await this.#docker.findInstance(instanceId)
-      if (!instance) throw new Error("Instance not found")
-      hub = new ConsoleHub(this.#docker, instance, () => {
-        if (hub?.subscriberCount === 0) this.#hubs.delete(instanceId)
-      })
-      this.#hubs.set(instanceId, hub)
+      let pending = this.#pendingHubs.get(instanceId)
+      if (!pending) {
+        pending = this.#createHub(instanceId)
+        this.#pendingHubs.set(instanceId, pending)
+      }
+      try {
+        hub = await pending
+      } finally {
+        if (this.#pendingHubs.get(instanceId) === pending) {
+          this.#pendingHubs.delete(instanceId)
+        }
+      }
     }
     this.#subscriptions.set(socket, instanceId)
     hub.add(socket)
@@ -907,6 +968,16 @@ class ConsoleHubRegistry {
     for (const hub of this.#hubs.values()) hub.close()
     this.#hubs.clear()
     this.#subscriptions.clear()
+  }
+
+  async #createHub(instanceId: string): Promise<ConsoleHub> {
+    const instance = await this.#docker.findInstance(instanceId)
+    if (!instance) throw new Error("Instance not found")
+    const hub = new ConsoleHub(this.#docker, instance, () => {
+      if (hub.subscriberCount === 0) this.#hubs.delete(instanceId)
+    })
+    this.#hubs.set(instanceId, hub)
+    return hub
   }
 }
 
@@ -961,6 +1032,7 @@ class ConsoleHub {
   readonly #recent: Array<RelayConsoleLine> = []
   readonly #subscribers = new Set<WebSocket>()
   #graceTimer: ReturnType<typeof setTimeout> | null = null
+  #retryTimer: ReturnType<typeof setTimeout> | null = null
   #started = false
 
   constructor(
@@ -979,7 +1051,9 @@ class ConsoleHub {
 
   add(socket: WebSocket): void {
     if (this.#graceTimer) clearTimeout(this.#graceTimer)
+    if (this.#retryTimer) clearTimeout(this.#retryTimer)
     this.#graceTimer = null
+    this.#retryTimer = null
     this.#subscribers.add(socket)
     send(socket, { type: "ready", instanceId: this.#instance.id })
     for (const line of this.#recent) send(socket, { type: "line", line })
@@ -1000,7 +1074,9 @@ class ConsoleHub {
 
   close(): void {
     if (this.#graceTimer) clearTimeout(this.#graceTimer)
+    if (this.#retryTimer) clearTimeout(this.#retryTimer)
     this.#graceTimer = null
+    this.#retryTimer = null
     this.#abort.abort()
     this.#onEmpty()
   }
@@ -1016,14 +1092,26 @@ class ConsoleHub {
         const encoded = JSON.stringify({ type: "line", line })
         for (const socket of this.#subscribers) sendEncoded(socket, encoded)
       }
-    } catch {
+    } catch (cause) {
       if (!this.#abort.signal.aborted) {
-        for (const socket of this.#subscribers) {
-          socket.close(4500, "Console stream failed")
-        }
+        Sentry.captureException(cause, {
+          tags: { "kiln.operation": "browser.console.stream" },
+        })
       }
     } finally {
-      this.#onEmpty()
+      this.#started = false
+      if (this.#subscribers.size === 0 || this.#abort.signal.aborted) {
+        this.#onEmpty()
+      } else {
+        this.#retryTimer = setTimeout(() => {
+          this.#retryTimer = null
+          if (this.#subscribers.size > 0 && !this.#started) {
+            this.#started = true
+            void this.#run()
+          }
+        }, 1_000)
+        this.#retryTimer.unref()
+      }
     }
   }
 }

@@ -6,7 +6,7 @@ import {
   randomBytes,
   randomUUID,
 } from "node:crypto"
-import { chmod, mkdir, open, readFile, rename } from "node:fs/promises"
+import { chmod, mkdir, open, readFile, rename, unlink } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { Effect, Schema } from "effect"
 
@@ -179,19 +179,25 @@ function normalizeName(configuredName: string): string {
 function writeFileAtomic(path: string, value: string, mode: number) {
   return tryPromise("write_identity", async () => {
     const temporaryPath = join(dirname(path), `.${randomUUID()}.tmp`)
-    const file = await open(temporaryPath, "wx", mode)
+    let renamed = false
     try {
-      await file.writeFile(value, "utf8")
-      await file.sync()
+      const file = await open(temporaryPath, "wx", mode)
+      try {
+        await file.writeFile(value, "utf8")
+        await file.sync()
+      } finally {
+        await file.close()
+      }
+      await rename(temporaryPath, path)
+      renamed = true
+      const directory = await open(dirname(path), "r")
+      try {
+        await directory.sync()
+      } finally {
+        await directory.close()
+      }
     } finally {
-      await file.close()
-    }
-    await rename(temporaryPath, path)
-    const directory = await open(dirname(path), "r")
-    try {
-      await directory.sync()
-    } finally {
-      await directory.close()
+      if (!renamed) await unlink(temporaryPath).catch(() => undefined)
     }
   })
 }

@@ -203,9 +203,10 @@ function sftpDevAuthentication(environment: NodeJS.ProcessEnv): boolean {
 }
 
 function booleanEnvironment(value: string | undefined, fallback: boolean) {
-  if (!value?.trim()) return fallback
-  if (value === "true") return true
-  if (value === "false") return false
+  const normalized = value?.trim()
+  if (!normalized) return fallback
+  if (normalized === "true") return true
+  if (normalized === "false") return false
   throw new Error(`Expected true or false, received ${value}`)
 }
 

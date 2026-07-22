@@ -10,6 +10,7 @@ import {
 } from "node:crypto"
 import QRCode from "qrcode"
 import { Effect, Schema } from "effect"
+import * as Sentry from "@sentry/node"
 
 import {
   relayPairingRequestTranscript,
@@ -25,6 +26,7 @@ import type { RelayConfig } from "../config.js"
 import type { RelayIdentity } from "./identity.js"
 import type { RelayTlsMaterial } from "./tls.js"
 import type {
+  RelayClientGrant,
   RelayClientRole,
   RelayInvitation,
   RelayStateStore,
@@ -108,10 +110,25 @@ export const initializePairing = Effect.fn("RelayPairing.initialize")(
     )
     if (initialized) {
       const restored = yield* restoreAutomaticInvitation(input, initialized)
-      return (
-        restored ??
-        ({ invitation: null, kind: "none" } satisfies InitialPairingResult)
-      )
+      if (restored) return restored
+      const clients = yield* input.state.listClients()
+      if (input.config.bootstrapToken && clients.length === 0) {
+        const invitation = yield* createPairingInvitation({
+          ...input,
+          role: "full_access",
+          token: input.config.bootstrapToken,
+        })
+        yield* input.state.setMetadata(
+          "networking_initial_invitation",
+          JSON.stringify({
+            createdAt: Date.now(),
+            invitationId: invitation.envelope.invitationId,
+            kind: "automatic",
+          })
+        )
+        return { invitation, kind: "automatic" } satisfies InitialPairingResult
+      }
+      return { invitation: null, kind: "none" } satisfies InitialPairingResult
     }
 
     const invitation = yield* createPairingInvitation({
@@ -179,20 +196,6 @@ export const pairHearth = Effect.fn("RelayPairing.pairHearth")(
     readonly bootstrapToken?: string | null
   }) {
     validatePairingRequest(input.request)
-    const invitation = yield* input.state.findActiveInvitation(
-      input.request.invitationId,
-      Date.now()
-    )
-    if (
-      !invitation ||
-      !matchesPairingCredential(
-        invitation,
-        input.request,
-        input.bootstrapToken ?? null
-      )
-    ) {
-      return yield* pairingFailure("invalid_or_expired_invitation")
-    }
     const publicKey = yield* Effect.try({
       try: () => {
         const key = createPublicKey(input.request.publicKeyPem)
@@ -221,6 +224,55 @@ export const pairHearth = Effect.fn("RelayPairing.pairHearth")(
 
     const clientId = fingerprint(input.request.publicKeyPem)
     const pairedAt = Date.now()
+    const invitation = yield* input.state.findActiveInvitation(
+      input.request.invitationId,
+      pairedAt
+    )
+    if (!invitation) {
+      const [historicalInvitation, existingClient] = yield* Effect.all([
+        input.state.findInvitationById(input.request.invitationId),
+        input.state.findClientByPublicKey(input.request.publicKeyPem),
+      ])
+      const origin = normalizeOrigin(input.request.hearthOrigin)
+      if (
+        !historicalInvitation ||
+        !existingClient ||
+        existingClient.invitationId !== historicalInvitation.id ||
+        !existingClient.origins.includes(origin) ||
+        !matchesPairingCredential(
+          historicalInvitation,
+          input.request,
+          input.bootstrapToken ?? null
+        )
+      ) {
+        return yield* pairingFailure("invalid_or_expired_invitation")
+      }
+      return yield* signPairingResponse({
+        client: existingClient,
+        identity: input.identity,
+        nonce: input.request.nonce,
+        now: pairedAt,
+      })
+    }
+    if (
+      !matchesPairingCredential(
+        invitation,
+        input.request,
+        input.bootstrapToken ?? null
+      )
+    ) {
+      return yield* pairingFailure("invalid_or_expired_invitation")
+    }
+    const response = yield* signPairingResponse({
+      client: {
+        actions: invitation.actions,
+        id: clientId,
+        role: invitation.role,
+      },
+      identity: input.identity,
+      nonce: input.request.nonce,
+      now: pairedAt,
+    })
     yield* input.state.pairClient({
       actions: invitation.actions,
       id: clientId,
@@ -232,27 +284,47 @@ export const pairHearth = Effect.fn("RelayPairing.pairHearth")(
       role: invitation.role,
       sourceCidrs: [],
     })
-    yield* input.state.appendAudit({
-      clientId,
-      details: { invitationId: invitation.id, role: invitation.role },
-      event: "relay.client.paired",
-      id: randomUUID(),
-      occurredAt: pairedAt,
-      requestId: null,
-    })
+    yield* input.state
+      .appendAudit({
+        clientId,
+        details: { invitationId: invitation.id, role: invitation.role },
+        event: "relay.client.paired",
+        id: randomUUID(),
+        occurredAt: pairedAt,
+        requestId: null,
+      })
+      .pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() => {
+            Sentry.captureException(cause, {
+              tags: { "kiln.operation": "relay.pairing.audit" },
+            })
+          })
+        )
+      )
+    return response
+  }
+)
 
+const signPairingResponse = Effect.fn("RelayPairing.signResponse")(
+  function* (input: {
+    readonly client: Pick<RelayClientGrant, "actions" | "id" | "role">
+    readonly identity: RelayIdentity
+    readonly nonce: string
+    readonly now: number
+  }) {
     const responseWithoutSignature = {
-      actions: invitation.actions,
-      clientId,
-      expiresAt: pairedAt + 60_000,
-      nonce: input.request.nonce,
+      actions: input.client.actions,
+      clientId: input.client.id,
+      expiresAt: input.now + 60_000,
+      nonce: input.nonce,
       relayFingerprint: input.identity.fingerprint,
       relayName: input.identity.name,
       relayPublicKeyPem: input.identity.publicKeyPem,
-      role: invitation.role,
+      role: input.client.role,
       version: 1 as const,
     }
-    const responseSignature = yield* Effect.try({
+    const signature = yield* Effect.try({
       try: () =>
         sign(
           null,
@@ -262,10 +334,7 @@ export const pairHearth = Effect.fn("RelayPairing.pairHearth")(
       catch: (cause) =>
         RelayPairingError.make({ code: "sign_pairing_response", cause }),
     })
-    return {
-      ...responseWithoutSignature,
-      signature: responseSignature,
-    } satisfies PairingResponse
+    return { ...responseWithoutSignature, signature } satisfies PairingResponse
   }
 )
 
@@ -420,6 +489,7 @@ const restoreAutomaticInvitation = Effect.fn(
     Date.now()
   )
   if (!invitation) return null
+  if (!matchesToken(invitation, input.config.bootstrapToken)) return null
   const envelope = pairingEnvelope({
     config: input.config,
     expiresAt: invitation.expiresAt,

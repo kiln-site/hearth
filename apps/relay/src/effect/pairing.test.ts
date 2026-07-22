@@ -86,10 +86,16 @@ describe("Relay pairing", () => {
           )
         )
 
-        const secondAttempt = yield* Effect.result(
-          pairHearth({ identity, request, state })
+        const secondAttempt = yield* pairHearth({ identity, request, state })
+        assert.strictEqual(secondAttempt.clientId, response.clientId)
+        assert.isTrue(
+          verify(
+            null,
+            Buffer.from(pairingResponseTranscript(secondAttempt)),
+            identity.publicKeyPem,
+            Buffer.from(secondAttempt.signature, "base64url")
+          )
         )
-        assert.strictEqual(secondAttempt._tag, "Failure")
       })
     )
   })

@@ -51,6 +51,24 @@ describe("Relay managed TLS", () => {
           )).mode & 0o777,
           0o600
         )
+
+        yield* fromPromise(() =>
+          Promise.all([
+            rm(join(directory, "network", "tls", "ca.crt")),
+            rm(join(directory, "network", "tls", "ca.key")),
+          ])
+        )
+        const recovered = yield* loadRelayTls(
+          config,
+          now + 62 * 24 * 60 * 60 * 1_000
+        )
+        assert.isNotNull(recovered)
+        if (!recovered) return
+        assert.notStrictEqual(recovered.fingerprint, renewed.fingerprint)
+        assert.notStrictEqual(
+          caBeforeRenewal,
+          yield* fromPromise(() => readFile(caPath, "utf8"))
+        )
       })
     )
   )

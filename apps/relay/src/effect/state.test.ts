@@ -52,6 +52,7 @@ describe("Relay state", () => {
         assert.deepStrictEqual(paired, {
           actions: ["*"],
           id: "hearth-1",
+          invitationId: invitation.id,
           name: "Hearth One",
           origins: ["https://hearth.test"],
           publicKey: "public-key-1",

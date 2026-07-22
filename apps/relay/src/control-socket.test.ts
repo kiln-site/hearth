@@ -34,6 +34,7 @@ describe("Relay control socket", () => {
       actions: ["relay.read"],
       createdAt: Date.now(),
       id: fingerprint(hearthKeys.publicKey),
+      invitationId: "test-invitation",
       lastAddress: null,
       lastSeenAt: null,
       name: "Test Hearth",
@@ -42,13 +43,24 @@ describe("Relay control socket", () => {
       role: "read_only",
       sourceCidrs: [],
     }
+    let blockClientLookup = false
+    let releaseClientLookup: (() => void) | undefined
     const state = RelayStateStore.of({
       appendAudit: () => Effect.void,
       createInvitation: () => Effect.void,
       findActiveInvitation: () => Effect.succeed(null),
       findClientById: (clientId) =>
-        Effect.succeed(clientId === client.id ? client : null),
+        blockClientLookup
+          ? Effect.promise(
+              () =>
+                new Promise<RelayClientRecord | null>((resolve) => {
+                  releaseClientLookup = () =>
+                    resolve(clientId === client.id ? client : null)
+                })
+            )
+          : Effect.succeed(clientId === client.id ? client : null),
       findClientByPublicKey: () => Effect.succeed(null),
+      findInvitationById: () => Effect.succeed(null),
       getMetadata: () => Effect.succeed(null),
       listClients: () => Effect.succeed([client]),
       listAudits: () => Effect.succeed([]),
@@ -117,16 +129,24 @@ describe("Relay control socket", () => {
       expect((await inbox.next()).type).toBe("auth.ready")
       expect((await inbox.next()).type).toBe("event")
 
-      socket.send(
-        JSON.stringify({
-          deadline: Date.now() + 5_000,
-          id: randomBytes(12).toString("hex"),
-          operation: "relay.snapshot",
-          payload: {},
-          type: "request",
-          v: 1,
-        })
-      )
+      blockClientLookup = true
+      const request = {
+        deadline: Date.now() + 5_000,
+        id: randomBytes(12).toString("hex"),
+        operation: "relay.snapshot",
+        payload: {},
+        type: "request",
+        v: 1,
+      }
+      socket.send(JSON.stringify(request))
+      socket.send(JSON.stringify(request))
+      const duplicate = await inbox.next()
+      expect(duplicate.type).toBe("error")
+      if (duplicate.type === "error") {
+        expect(duplicate.code).toBe("duplicate_request")
+      }
+      await expect.poll(() => releaseClientLookup).toBeDefined()
+      releaseClientLookup?.()
       const response = await inbox.next()
       expect(response.type).toBe("response")
       if (response.type === "response") {
@@ -168,6 +188,7 @@ describe("Relay control socket", () => {
           actions: ["relay.read"],
           createdAt: Date.now(),
           id: fingerprint(keys.publicKey),
+          invitationId: "test-invitation",
           lastAddress: null,
           lastSeenAt: null,
           name,
@@ -187,6 +208,7 @@ describe("Relay control socket", () => {
           clients.find(({ record }) => record.id === clientId)?.record ?? null
         ),
       findClientByPublicKey: () => Effect.succeed(null),
+      findInvitationById: () => Effect.succeed(null),
       getMetadata: () => Effect.succeed(null),
       listClients: () => Effect.succeed(clients.map(({ record }) => record)),
       listAudits: () => Effect.succeed([]),

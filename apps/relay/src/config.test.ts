@@ -56,6 +56,22 @@ describe("loadConfig", () => {
     expect(config.sftpPort).toBe(22022)
   })
 
+  it("normalizes boolean environment values", async () => {
+    const config = loadConfig({
+      KILN_RELAY_DISCOVER_PUBLIC_IP: " false ",
+      KILN_RELAY_SFTP_DEV_AUTH: " true ",
+      NODE_ENV: "development",
+    })
+    await expect(
+      discoverRelayAdvertisedHost(
+        config,
+        { KILN_RELAY_DISCOVER_PUBLIC_IP: " false " },
+        async () => "203.0.113.10"
+      )
+    ).resolves.toBe("hostname")
+    expect(config.sftpDevAuthentication).toBe(true)
+  })
+
   it("rejects invalid ports", () => {
     expect(() =>
       loadConfig({

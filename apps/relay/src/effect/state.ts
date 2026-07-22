@@ -18,6 +18,7 @@ export interface RelayClientGrant {
 
 export interface RelayClientRecord extends RelayClientGrant {
   readonly createdAt: number
+  readonly invitationId: string
   readonly lastAddress: string | null
   readonly lastSeenAt: number | null
 }
@@ -66,6 +67,7 @@ const RelayClientRowSchema = Schema.Struct({
   actionsJson: Schema.String,
   createdAt: Schema.Number,
   id: Schema.String,
+  invitationId: Schema.String,
   lastAddress: Schema.NullOr(Schema.String),
   lastSeenAt: Schema.NullOr(Schema.Number),
   name: Schema.String,
@@ -98,6 +100,9 @@ export class RelayStateStore extends Context.Service<
     readonly findActiveInvitation: (
       invitationId: string,
       now: number
+    ) => Effect.Effect<RelayInvitation | null, RelayStateError>
+    readonly findInvitationById: (
+      invitationId: string
     ) => Effect.Effect<RelayInvitation | null, RelayStateError>
     readonly findClientByPublicKey: (
       publicKey: string
@@ -252,6 +257,7 @@ const makeRelayStateStore = Effect.gen(function* () {
       actions,
       createdAt: row.createdAt,
       id: row.id,
+      invitationId: row.invitationId,
       lastAddress: row.lastAddress,
       lastSeenAt: row.lastSeenAt,
       name: row.name,
@@ -270,6 +276,7 @@ const makeRelayStateStore = Effect.gen(function* () {
         id,
         name,
         created_at AS createdAt,
+        invitation_id AS invitationId,
         last_address AS lastAddress,
         last_seen_at AS lastSeenAt,
         public_key AS publicKey,
@@ -293,6 +300,7 @@ const makeRelayStateStore = Effect.gen(function* () {
           id,
           name,
           created_at AS createdAt,
+          invitation_id AS invitationId,
           last_address AS lastAddress,
           last_seen_at AS lastSeenAt,
           public_key AS publicKey,
@@ -377,6 +385,35 @@ const makeRelayStateStore = Effect.gen(function* () {
       run("find_client_by_public_key", findClientByPublicKey(publicKey)),
     findClientById: (clientId) =>
       run("find_client_by_id", findClientById(clientId)),
+    findInvitationById: (invitationId) =>
+      run(
+        "find_invitation_by_id",
+        Effect.gen(function* () {
+          const rows = yield* sql<Record<string, unknown>>`
+            SELECT
+              id,
+              role,
+              token_hash AS tokenHash,
+              actions_json AS actionsJson,
+              created_at AS createdAt,
+              expires_at AS expiresAt
+            FROM relay_invitations
+            WHERE id = ${invitationId} AND revoked_at IS NULL
+            LIMIT 1
+          `
+          const decoded = yield* decodeInvitationRows(rows)
+          const invitation = decoded[0]
+          if (!invitation) return null
+          return {
+            actions: yield* decodeJsonStringArray(invitation.actionsJson),
+            createdAt: invitation.createdAt,
+            expiresAt: invitation.expiresAt,
+            id: invitation.id,
+            role: invitation.role,
+            tokenHash: invitation.tokenHash,
+          } satisfies RelayInvitation
+        })
+      ),
     getMetadata: (key) =>
       run(
         "get_metadata",
@@ -396,6 +433,7 @@ const makeRelayStateStore = Effect.gen(function* () {
               id,
               name,
               created_at AS createdAt,
+              invitation_id AS invitationId,
               last_address AS lastAddress,
               last_seen_at AS lastSeenAt,
               public_key AS publicKey,

@@ -445,14 +445,30 @@ const RelayEditor = React.memo(function RelayEditor({
                 data: { name: requestedName, relayId: relay.id },
               })
             }
-            return updateMutation.mutateAsync({
-              data: {
-                hostname: String(formData.get("hostname") ?? ""),
-                id: relay.id,
-                port: Number(formData.get("port")),
-                useTls: relay.useTls,
-              },
-            })
+            try {
+              return await updateMutation.mutateAsync({
+                data: {
+                  hostname: String(formData.get("hostname") ?? ""),
+                  id: relay.id,
+                  port: Number(formData.get("port")),
+                  useTls: relay.useTls,
+                },
+              })
+            } catch (cause) {
+              if (requestedName !== relay.name) {
+                try {
+                  await renameMutation.mutateAsync({
+                    data: { name: relay.name, relayId: relay.id },
+                  })
+                } catch {
+                  throw new Error(
+                    "The connection update failed, and the Relay name could not be restored. Refresh to review its current state.",
+                    { cause }
+                  )
+                }
+              }
+              throw cause
+            }
           })()
         : await addMutation.mutateAsync({
             data: {
