@@ -180,7 +180,7 @@ const migrations = SqliteMigrator.fromRecord({
     yield* sql`
       CREATE TABLE relay_invitations (
         id TEXT PRIMARY KEY NOT NULL,
-        token_hash TEXT UNIQUE NOT NULL,
+        token_hash TEXT NOT NULL,
         role TEXT NOT NULL CHECK (role IN ('full_access', 'read_only', 'custom')),
         actions_json TEXT NOT NULL,
         created_at INTEGER NOT NULL,

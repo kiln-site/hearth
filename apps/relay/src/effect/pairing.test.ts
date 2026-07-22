@@ -2,7 +2,7 @@ import { generateKeyPairSync, randomBytes, sign, verify } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterAll, assert, describe, layer } from "@effect/vitest"
+import { afterAll, assert, describe, it, layer } from "@effect/vitest"
 import { Effect } from "effect"
 
 import { loadConfig } from "../config.js"
@@ -10,6 +10,7 @@ import { loadOrCreateRelayIdentity } from "./identity.js"
 import {
   createPairingInvitation,
   decodePairingUri,
+  initializePairing,
   pairingRequestTranscript,
   pairingResponseTranscript,
   pairHearth,
@@ -99,4 +100,54 @@ describe("Relay pairing", () => {
       })
     )
   })
+
+  it.live("replaces an automatic invitation when its bootstrap token rotates", () =>
+    Effect.gen(function* () {
+      const firstConfig = loadConfig({
+        KILN_RELAY_BOOTSTRAP_TOKEN: "a".repeat(32),
+        KILN_RELAY_DATA_DIR: testDirectory,
+        KILN_RELAY_HOST: "relay.test",
+        KILN_RELAY_NAME: "Pairing Relay",
+        NODE_ENV: "development",
+      })
+      const state = yield* RelayStateStore
+      const identity = yield* loadOrCreateRelayIdentity(firstConfig)
+      const first = yield* initializePairing({
+        config: firstConfig,
+        identity,
+        state,
+        tls: null,
+      })
+      assert.strictEqual(first.invitation?.token, "a".repeat(32))
+
+      const secondConfig = loadConfig({
+        KILN_RELAY_BOOTSTRAP_TOKEN: "b".repeat(32),
+        KILN_RELAY_DATA_DIR: testDirectory,
+        KILN_RELAY_HOST: "relay.test",
+        KILN_RELAY_NAME: "Pairing Relay",
+        NODE_ENV: "development",
+      })
+      const second = yield* initializePairing({
+        config: secondConfig,
+        identity,
+        state,
+        tls: null,
+      })
+      assert.strictEqual(second.invitation?.token, "b".repeat(32))
+      assert.lengthOf(yield* state.listInvitations(Date.now()), 1)
+
+      const rotatedBack = yield* initializePairing({
+        config: firstConfig,
+        identity,
+        state,
+        tls: null,
+      })
+      assert.strictEqual(rotatedBack.invitation?.token, "a".repeat(32))
+      assert.lengthOf(yield* state.listInvitations(Date.now()), 1)
+    }).pipe(
+      Effect.provide(
+        makeRelayStateLayer(join(testDirectory, "rotation-relay.sqlite"))
+      )
+    )
+  )
 })

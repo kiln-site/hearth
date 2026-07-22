@@ -113,6 +113,13 @@ export const initializePairing = Effect.fn("RelayPairing.initialize")(
       if (restored) return restored
       const clients = yield* input.state.listClients()
       if (input.config.bootstrapToken && clients.length === 0) {
+        const replacedInvitationId = initialInvitationId(initialized)
+        if (replacedInvitationId) {
+          yield* input.state.revokeInvitation(
+            replacedInvitationId,
+            Date.now()
+          )
+        }
         const invitation = yield* createPairingInvitation({
           ...input,
           role: "full_access",
@@ -510,6 +517,19 @@ const restoreAutomaticInvitation = Effect.fn(
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex")
+}
+
+function initialInvitationId(metadata: string): string | null {
+  try {
+    const value = JSON.parse(metadata) as unknown
+    if (!value || typeof value !== "object" || !("invitationId" in value)) {
+      return null
+    }
+    const invitationId = value.invitationId
+    return typeof invitationId === "string" ? invitationId : null
+  } catch {
+    return null
+  }
 }
 
 function pairingFailure(code: string) {
