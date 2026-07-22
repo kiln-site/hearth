@@ -53,6 +53,11 @@ export async function relayRpc(
   timeoutMs = 10_000
 ): Promise<unknown> {
   let connection = connections.get(relay.id)
+  if (connection && !connection.matches(relay)) {
+    connection.close()
+    connections.delete(relay.id)
+    connection = undefined
+  }
   if (!connection) {
     connection = new RelayConnection(relay)
     connections.set(relay.id, connection)
@@ -106,6 +111,14 @@ class RelayConnection {
 
   get state(): RelayConnectionState {
     return this.#state
+  }
+
+  matches(relay: RelayEndpoint): boolean {
+    return (
+      this.#relay.hostname === relay.hostname &&
+      this.#relay.port === relay.port &&
+      this.#relay.useTls === relay.useTls
+    )
   }
 
   async request(
