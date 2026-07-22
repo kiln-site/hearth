@@ -74,7 +74,7 @@ services:
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
     ports:
       - "${KILN_RELAY_PUBLISH_ADDRESS:-127.0.0.1}:${KILN_RELAY_PORT:-4100}:${KILN_RELAY_PORT:-4100}"
-      - "${KILN_RELAY_SFTP_PORT:-2022}:${KILN_RELAY_SFTP_PORT:-2022}"
+      - "${KILN_RELAY_PUBLISH_ADDRESS:-127.0.0.1}:${KILN_RELAY_SFTP_PORT:-2022}:${KILN_RELAY_SFTP_PORT:-2022}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - relay-data:/data

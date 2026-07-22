@@ -275,13 +275,15 @@ function directFallbackMessage(cause: Error): string {
     : "Direct Relay stream interrupted. Streaming through Hearth."
 }
 
-function createSocketInbox(socket: WebSocket, signal: AbortSignal) {
+export function createSocketInbox(socket: WebSocket, signal: AbortSignal) {
   const messages: Array<Record<string, unknown>> = []
+  let terminalError: Error | null = null
   const waiters: Array<{
     reject: (cause: Error) => void
     resolve: (value: Record<string, unknown>) => void
   }> = []
   const fail = (cause: Error) => {
+    terminalError ??= cause
     for (const waiter of waiters.splice(0)) waiter.reject(cause)
   }
   socket.addEventListener("message", (event) => {
@@ -318,6 +320,7 @@ function createSocketInbox(socket: WebSocket, signal: AbortSignal) {
     next: () => {
       const message = messages.shift()
       if (message) return Promise.resolve(message)
+      if (terminalError) return Promise.reject(terminalError)
       return new Promise<Record<string, unknown>>((resolve, reject) =>
         waiters.push({ reject, resolve })
       )

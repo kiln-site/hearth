@@ -1,22 +1,13 @@
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { resolve } from "node:path"
-import { afterEach, describe, expect, it } from "vite-plus/test"
+import { describe, expect, it, onTestFinished } from "vite-plus/test"
 
 import { loadConfig } from "./config.js"
 import { FilesystemDriver } from "./files.js"
 import type { RelayInstanceConfig } from "./config.js"
 
-const temporaryDirectories: Array<string> = []
 const describeLinux = process.platform === "linux" ? describe : describe.skip
-
-afterEach(async () => {
-  await Promise.all(
-    temporaryDirectories.splice(0).map((directory) =>
-      rm(directory, { force: true, recursive: true })
-    )
-  )
-})
 
 describeLinux("Relay direct file transfers", () => {
   it("atomically uploads and reads through a pinned file handle", async () => {
@@ -55,7 +46,7 @@ describeLinux("Relay direct file transfers", () => {
 
 async function setup() {
   const directory = await mkdtemp(resolve(tmpdir(), "kiln-files-test-"))
-  temporaryDirectories.push(directory)
+  onTestFinished(() => rm(directory, { force: true, recursive: true }))
   const root = resolve(directory, "instances", "instance-1")
   await mkdir(resolve(root, "world"), { recursive: true })
   const config = loadConfig({

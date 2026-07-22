@@ -2,12 +2,11 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { resolve } from "node:path"
 import ssh2 from "ssh2"
-import { afterEach, describe, expect, it } from "vite-plus/test"
+import { describe, expect, it, onTestFinished } from "vite-plus/test"
 
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
 import { attachSftpServer } from "./sftp-server.js"
 
-const temporaryDirectories: Array<string> = []
 const describeLinux = process.platform === "linux" ? describe : describe.skip
 const allowFileAccess = async () => [
   "instance.sftp.connect",
@@ -20,18 +19,9 @@ const allowFileAccess = async () => [
   "instance.files.chmod",
 ]
 
-afterEach(async () => {
-  await Promise.all(
-    temporaryDirectories
-      .splice(0)
-      .map((path) => rm(path, { force: true, recursive: true }))
-  )
-})
-
 describeLinux("Relay SFTP server", () => {
   it("exposes authorized instances, transfers files, and rejects SSH commands", async () => {
-    const dataDirectory = await mkdtemp(resolve(tmpdir(), "kiln-sftp-test-"))
-    temporaryDirectories.push(dataDirectory)
+    const dataDirectory = await temporaryDirectory()
     const instanceId = "a".repeat(40)
     const rootDirectory = resolve(dataDirectory, "instances")
     const instanceDirectory = resolve(rootDirectory, instanceId)
@@ -96,8 +86,7 @@ describeLinux("Relay SFTP server", () => {
   })
 
   it("rejects invalid development credentials", async () => {
-    const dataDirectory = await mkdtemp(resolve(tmpdir(), "kiln-sftp-test-"))
-    temporaryDirectories.push(dataDirectory)
+    const dataDirectory = await temporaryDirectory()
     await mkdir(resolve(dataDirectory, "instances"), { recursive: true })
     const server = await attachSftpServer({
       clientActions: allowFileAccess,
@@ -115,8 +104,7 @@ describeLinux("Relay SFTP server", () => {
   })
 
   it("rejects a Hearth without the SFTP connection action", async () => {
-    const dataDirectory = await mkdtemp(resolve(tmpdir(), "kiln-sftp-test-"))
-    temporaryDirectories.push(dataDirectory)
+    const dataDirectory = await temporaryDirectory()
     await mkdir(resolve(dataDirectory, "instances"), { recursive: true })
     const server = await attachSftpServer({
       clientActions: async () => ["instance.files.list", "instance.files.read"],
@@ -150,8 +138,7 @@ describeLinux("Relay SFTP server", () => {
   })
 
   it("intersects file operations with the paired Hearth grant", async () => {
-    const dataDirectory = await mkdtemp(resolve(tmpdir(), "kiln-sftp-test-"))
-    temporaryDirectories.push(dataDirectory)
+    const dataDirectory = await temporaryDirectory()
     const instanceId = "b".repeat(40)
     const instanceDirectory = resolve(dataDirectory, "instances", instanceId)
     await mkdir(instanceDirectory, { recursive: true })
@@ -214,8 +201,7 @@ describeLinux("Relay SFTP server", () => {
   })
 
   it("rejects an email claimed by more than one connected Hearth", async () => {
-    const dataDirectory = await mkdtemp(resolve(tmpdir(), "kiln-sftp-test-"))
-    temporaryDirectories.push(dataDirectory)
+    const dataDirectory = await temporaryDirectory()
     await mkdir(resolve(dataDirectory, "instances"), { recursive: true })
     const authorization = {
       instances: [
@@ -248,8 +234,7 @@ describeLinux("Relay SFTP server", () => {
   })
 
   it("persists a stable SSH host-key fingerprint", async () => {
-    const dataDirectory = await mkdtemp(resolve(tmpdir(), "kiln-sftp-test-"))
-    temporaryDirectories.push(dataDirectory)
+    const dataDirectory = await temporaryDirectory()
     await mkdir(resolve(dataDirectory, "instances"), { recursive: true })
     const options = {
       clientActions: allowFileAccess,
@@ -269,6 +254,12 @@ describeLinux("Relay SFTP server", () => {
     }
   })
 })
+
+async function temporaryDirectory(): Promise<string> {
+  const directory = await mkdtemp(resolve(tmpdir(), "kiln-sftp-test-"))
+  onTestFinished(() => rm(directory, { force: true, recursive: true }))
+  return directory
+}
 
 function connect(port: number, password: string): Promise<ssh2.Client> {
   const client = new ssh2.Client()
