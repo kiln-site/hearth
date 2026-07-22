@@ -83,12 +83,14 @@ export interface BrowserSocketServer {
     request: IncomingMessage,
     response: ServerResponse
   ) => Promise<boolean>
+  readonly revokeClient: (clientId: string) => void
 }
 
 export function attachBrowserSocket(
   options: BrowserSocketOptions
 ): BrowserSocketServer {
   const sockets = new Set<WebSocket>()
+  const socketIssuers = new Map<WebSocket, string>()
   const requestProofs = new Map<string, number>()
   const hubs = new ConsoleHubRegistry(options.docker)
   const wss = new WebSocketServer({
@@ -124,9 +126,12 @@ export function attachBrowserSocket(
       socket.close(4403, "Browser origin is required")
       return
     }
-    authenticateBrowser(socket, origin, options, hubs)
+    authenticateBrowser(socket, origin, options, hubs, (clientId) => {
+      socketIssuers.set(socket, clientId)
+    })
     socket.once("close", () => {
       sockets.delete(socket)
+      socketIssuers.delete(socket)
       hubs.remove(socket)
     })
   })
@@ -139,6 +144,11 @@ export function attachBrowserSocket(
     },
     handleRequest: (request, response) =>
       handleBrowserFileRequest(request, response, options, requestProofs),
+    revokeClient: (clientId) => {
+      for (const [socket, issuer] of socketIssuers) {
+        if (issuer === clientId) socket.close(4403, "Capability issuer changed")
+      }
+    },
   }
 }
 
@@ -146,7 +156,8 @@ function authenticateBrowser(
   socket: WebSocket,
   origin: string,
   options: BrowserSocketOptions,
-  hubs: ConsoleHubRegistry
+  hubs: ConsoleHubRegistry,
+  onAuthenticated: (clientId: string) => void
 ): void {
   const challenge = {
     expiresAt: Date.now() + AUTHENTICATION_WINDOW_MS,
@@ -248,6 +259,7 @@ function authenticateBrowser(
     )
     if (!validProof) throw new Error("Browser proof is invalid")
     capability = parsed.payload
+    onAuthenticated(client.id)
     clearTimeout(timer)
     capabilityTimer = setTimeout(
       () => socket.close(4401, "Browser capability expired"),

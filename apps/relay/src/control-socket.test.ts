@@ -18,7 +18,7 @@ import type {
 import { attachControlSocket } from "./control-socket.js"
 import { fingerprint } from "./effect/identity.js"
 import { RelayStateStore } from "./effect/state.js"
-import type { RelayClientGrant } from "./effect/state.js"
+import type { RelayClientRecord } from "./effect/state.js"
 
 describe("Relay control socket", () => {
   it("authenticates a paired Hearth and executes an authorized request", async () => {
@@ -30,13 +30,17 @@ describe("Relay control socket", () => {
       privateKeyEncoding: { format: "pem", type: "pkcs8" },
       publicKeyEncoding: { format: "pem", type: "spki" },
     })
-    const client: RelayClientGrant = {
+    const client: RelayClientRecord = {
       actions: ["relay.read"],
+      createdAt: Date.now(),
       id: fingerprint(hearthKeys.publicKey),
+      lastAddress: null,
+      lastSeenAt: null,
       name: "Test Hearth",
       origins: ["https://hearth.test"],
       publicKey: hearthKeys.publicKey,
       role: "read_only",
+      sourceCidrs: [],
     }
     const state = RelayStateStore.of({
       appendAudit: () => Effect.void,
@@ -47,10 +51,13 @@ describe("Relay control socket", () => {
       findClientByPublicKey: () => Effect.succeed(null),
       getMetadata: () => Effect.succeed(null),
       listClients: () => Effect.succeed([client]),
+      listInvitations: () => Effect.succeed([]),
       pairClient: () => Effect.void,
       revokeClient: () => Effect.succeed(false),
+      revokeInvitation: () => Effect.succeed(false),
       setMetadata: () => Effect.void,
       touchClient: () => Effect.void,
+      updateClient: () => Effect.succeed(false),
     })
     const server = createServer()
     const control = attachControlSocket({

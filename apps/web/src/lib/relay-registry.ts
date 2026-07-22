@@ -68,6 +68,30 @@ export interface RelayCredentials {
   relayPublicKeyPem: string
 }
 
+export interface RelayClientAdministration {
+  actions: ReadonlyArray<string>
+  createdAt: number
+  id: string
+  lastAddress: string | null
+  lastSeenAt: number | null
+  name: string
+  origins: ReadonlyArray<string>
+  role: "custom" | "full_access" | "read_only"
+  sourceCidrs: ReadonlyArray<string>
+}
+
+export interface RelayAdministration {
+  clients: ReadonlyArray<RelayClientAdministration>
+  invitations: ReadonlyArray<{
+    actions: ReadonlyArray<string>
+    createdAt: number
+    expiresAt: number
+    id: string
+    role: "custom" | "full_access" | "read_only"
+  }>
+  service: z.infer<typeof relaySnapshotSchema>["relay"]
+}
+
 interface RelayRow extends RowDataPacket {
   browser_origin: string
   client_actions: string
@@ -124,6 +148,31 @@ const bootstrapDiscoverySchema = z.object({
   tlsFingerprint: z.string().min(1).max(256),
 })
 
+const relayRoleSchema = z.enum(["custom", "full_access", "read_only"])
+const relayClientAdministrationSchema = z.object({
+  actions: z.array(z.string()),
+  createdAt: z.number().int().nonnegative(),
+  id: z.string().min(1),
+  lastAddress: z.string().nullable(),
+  lastSeenAt: z.number().int().nonnegative().nullable(),
+  name: z.string().min(1).max(120),
+  origins: z.array(z.url()),
+  role: relayRoleSchema,
+  sourceCidrs: z.array(z.string()),
+})
+const relayInvitationAdministrationSchema = z.object({
+  actions: z.array(z.string()),
+  createdAt: z.number().int().nonnegative(),
+  expiresAt: z.number().int().positive(),
+  id: z.uuid(),
+  role: relayRoleSchema,
+})
+const pairingInvitationBundleSchema = z.object({
+  envelope: pairingEnvelopeSchema,
+  token: z.string().min(32),
+  uri: z.string().startsWith("kiln-relay://pair/v1"),
+})
+
 export async function listPersistedRelays(): Promise<Array<PersistedRelay>> {
   return runAppEffect("relays.list", listPersistedRelaysEffect())
 }
@@ -150,6 +199,156 @@ export async function pairPersistedRelay(pairingUri: string) {
     bootstrapProof: null,
     token: envelope.token,
   })
+}
+
+export function previewPairingUri(pairingUri: string) {
+  const envelope = decodePairingUri(pairingUri)
+  return {
+    browserOrigin: envelope.browserOrigin,
+    controlEndpoint: envelope.controlEndpoint,
+    expiresAt: envelope.expiresAt,
+    managedTls: envelope.caCertificatePem !== null,
+    relayFingerprint: envelope.relayFingerprint,
+    relayName: envelope.relayName,
+  }
+}
+
+export async function getRelayAdministration(
+  relayId: string
+): Promise<RelayAdministration> {
+  const [relay, { relayRpc }] = await Promise.all([
+    requiredPersistedRelay(relayId),
+    import("@/lib/relay-connection"),
+  ])
+  const [clients, invitations, snapshot] = await Promise.all([
+    relayRpc(relay, "relay.clients.list", {}, 5_000).then((value) =>
+      z.array(relayClientAdministrationSchema).parse(value)
+    ),
+    relayRpc(relay, "relay.pairing.list", {}, 5_000).then((value) =>
+      z.array(relayInvitationAdministrationSchema).parse(value)
+    ),
+    relayRpc(relay, "relay.snapshot", {}, 5_000).then((value) =>
+      relaySnapshotSchema.parse(value)
+    ),
+  ])
+  return { clients, invitations, service: snapshot.relay }
+}
+
+export async function createRelayPairingInvitation(input: {
+  relayId: string
+  role: "full_access" | "read_only"
+}) {
+  const [relay, { relayRpc }] = await Promise.all([
+    requiredPersistedRelay(input.relayId),
+    import("@/lib/relay-connection"),
+  ])
+  return pairingInvitationBundleSchema.parse(
+    await relayRpc(relay, "relay.pairing.create", { role: input.role }, 5_000)
+  )
+}
+
+export async function revokeRelayPairingInvitation(input: {
+  invitationId: string
+  relayId: string
+}): Promise<boolean> {
+  const [relay, { relayRpc }] = await Promise.all([
+    requiredPersistedRelay(input.relayId),
+    import("@/lib/relay-connection"),
+  ])
+  const result = z
+    .object({ revoked: z.boolean() })
+    .parse(
+      await relayRpc(
+        relay,
+        "relay.pairing.revoke",
+        { invitationId: input.invitationId },
+        5_000
+      )
+    )
+  return result.revoked
+}
+
+export async function updateRelayClientPolicy(input: {
+  actions?: ReadonlyArray<string>
+  clientId: string
+  name: string
+  relayId: string
+  role: "custom" | "full_access" | "read_only"
+  sourceCidrs: ReadonlyArray<string>
+}) {
+  const [relay, { relayRpc }] = await Promise.all([
+    requiredPersistedRelay(input.relayId),
+    import("@/lib/relay-connection"),
+  ])
+  const response = z
+    .object({
+      actions: z.array(z.string()),
+      clientId: z.string(),
+      role: relayRoleSchema,
+      updated: z.boolean(),
+    })
+    .parse(
+      await relayRpc(
+        relay,
+        "relay.clients.update",
+        {
+          actions: input.actions,
+          clientId: input.clientId,
+          name: input.name,
+          role: input.role,
+          sourceCidrs: input.sourceCidrs,
+        },
+        5_000
+      )
+    )
+  if (response.updated && input.clientId === relay.clientId) {
+    await databasePool.execute(
+      `UPDATE ${databaseTable("relay")}
+          SET client_role = ?, client_actions = ?
+        WHERE id = ?`,
+      [response.role, JSON.stringify(response.actions), relay.id]
+    )
+  }
+  return response
+}
+
+export async function revokeRelayClient(input: {
+  clientId: string
+  relayId: string
+}): Promise<boolean> {
+  const [relay, { relayRpc }] = await Promise.all([
+    requiredPersistedRelay(input.relayId),
+    import("@/lib/relay-connection"),
+  ])
+  const response = z
+    .object({ revoked: z.boolean() })
+    .parse(
+      await relayRpc(
+        relay,
+        "relay.clients.revoke",
+        { clientId: input.clientId },
+        5_000
+      )
+    )
+  return response.revoked
+}
+
+export async function renamePersistedRelay(input: {
+  name: string
+  relayId: string
+}): Promise<PersistedRelay> {
+  const [relay, { relayRpc }] = await Promise.all([
+    requiredPersistedRelay(input.relayId),
+    import("@/lib/relay-connection"),
+  ])
+  const renamed = z
+    .object({ id: z.string(), name: z.string().min(1).max(120) })
+    .parse(await relayRpc(relay, "relay.rename", { name: input.name }, 5_000))
+  await databasePool.execute(
+    `UPDATE ${databaseTable("relay")} SET name = ? WHERE id = ?`,
+    [renamed.name, relay.id]
+  )
+  return requiredPersistedRelay(relay.id)
 }
 
 export async function initializeRelayFromEnvironment(): Promise<PersistedRelay | null> {
@@ -687,6 +886,13 @@ function toPersistedRelay(row: RelayRow): PersistedRelay {
     role: row.client_role,
     useTls: Boolean(row.use_tls),
   }
+}
+
+async function requiredPersistedRelay(id: string): Promise<PersistedRelay> {
+  const relay = (await listPersistedRelays()).find((item) => item.id === id)
+  if (!relay) throw new Error("Relay not found")
+  if (!relay.enabled) throw new Error("Relay is paused")
+  return relay
 }
 
 function publicKeyFingerprint(publicKeyPem: string): string {

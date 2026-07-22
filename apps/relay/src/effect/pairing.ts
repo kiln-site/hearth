@@ -18,6 +18,7 @@ import {
 } from "@workspace/contracts"
 
 import { actionsForRole } from "../permissions.js"
+import type { RelayAction } from "../permissions.js"
 import { RelayPairingError } from "./errors.js"
 import { fingerprint } from "./identity.js"
 import type { RelayConfig } from "../config.js"
@@ -139,6 +140,7 @@ export const createPairingInvitation = Effect.fn(
 )(function* (input: {
   readonly config: RelayConfig
   readonly identity: RelayIdentity
+  readonly actions?: ReadonlyArray<RelayAction>
   readonly role: RelayClientRole
   readonly state: RelayStateStore["Service"]
   readonly tls: RelayTlsMaterial | null
@@ -149,7 +151,7 @@ export const createPairingInvitation = Effect.fn(
   const invitationId = randomUUID()
   const expiresAt = now + PAIRING_LIFETIME_MS
   yield* input.state.createInvitation({
-    actions: actionsForRole(input.role),
+    actions: actionsForRole(input.role, input.actions),
     createdAt: now,
     expiresAt,
     id: invitationId,
@@ -228,6 +230,7 @@ export const pairHearth = Effect.fn("RelayPairing.pairHearth")(
       pairedAt,
       publicKey: input.request.publicKeyPem,
       role: invitation.role,
+      sourceCidrs: [],
     })
     yield* input.state.appendAudit({
       clientId,

@@ -22,11 +22,19 @@ Completed and locally verified:
   shell/exec/PTY rejection.
 - Full-access/read-only foundations, stable action keys, Relay/instance cache
   synchronization, and browser/Hearth/Relay disconnect recovery notices.
+- Relay-authoritative naming plus platform-admin management for pending pairing
+  invitations and paired Hearth clients in both the Hearth UI and host recovery
+  CLI, including live grant changes and revocation.
+- Optional per-Hearth source CIDR policies based on the actual TCP peer, with
+  observed-address shortcuts, persisted connection metadata, and forced
+  reauthentication after policy changes.
+- Relay setup surfaces for the advertised SFTP host, configurable port, stable
+  host-key fingerprint, and explicitly development-only credentials.
 
 Remaining checkpoints are tracked by the sections below: direct resource
-streams, the full client/invitation management surfaces, optional source-CIDR
-hardening, production SFTP credentials/keys, ACME and hot external-certificate
-reload, and the final observability/load/security validation pass.
+streams, production SFTP credentials/keys, ACME and hot
+external-certificate reload, and the final observability/load/security
+validation pass.
 
 ## Summary
 

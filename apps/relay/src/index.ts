@@ -1,6 +1,6 @@
 import { createServer as createHttpServer } from "node:http"
 import { createServer as createHttpsServer } from "node:https"
-import { createHmac, randomBytes } from "node:crypto"
+import { createHmac, randomBytes, randomUUID } from "node:crypto"
 import { mkdir } from "node:fs/promises"
 import * as Sentry from "@sentry/node"
 import { Effect } from "effect"
@@ -29,7 +29,10 @@ import {
   RelayOperationError,
   RelayPairingError,
 } from "./effect/errors.js"
-import { loadOrCreateRelayIdentity } from "./effect/identity.js"
+import {
+  loadOrCreateRelayIdentity,
+  renameRelayIdentity,
+} from "./effect/identity.js"
 import {
   decodePairingRequest,
   createPairingInvitation,
@@ -43,10 +46,14 @@ import {
   runRelayEffect,
 } from "./effect/runtime.js"
 import { RelayStateStore } from "./effect/state.js"
+import type { RelayClientGrant, RelayClientRole } from "./effect/state.js"
 import { loadRelayTls } from "./effect/tls.js"
 import { normalizedRoute } from "./route-label.js"
 import { closeRelayServer } from "./shutdown.js"
 import { attachSftpServer } from "./sftp-server.js"
+import { actionsForRole, relayActions } from "./permissions.js"
+import type { RelayAction } from "./permissions.js"
+import { normalizeSourceCidrs } from "./source-policy.js"
 import type { IncomingMessage, ServerResponse } from "node:http"
 
 const config = loadConfig()
@@ -65,40 +72,10 @@ const startup = await runRelayEffect(
   })
 )
 const cliArguments = process.argv.slice(2)
-if (cliArguments[0] === "pair") {
-  const role = cliArguments.includes("--read-only")
-    ? "read_only"
-    : "full_access"
-  const invitation = await runRelayEffect(
-    "relay.cli.pair",
-    Effect.gen(function* () {
-      const created = yield* createPairingInvitation({
-        config,
-        identity: startup.identity,
-        role,
-        state: startup.state,
-        tls: startup.tls,
-      })
-      const initialized = yield* startup.state.getMetadata(
-        "networking_initial_invitation"
-      )
-      if (!initialized) {
-        yield* startup.state.setMetadata(
-          "networking_initial_invitation",
-          JSON.stringify({
-            createdAt: Date.now(),
-            invitationId: created.envelope.invitationId,
-            kind: "cli",
-          })
-        )
-      }
-      return created
-    })
-  )
-  console.log(await renderPairingInvitation(invitation))
-  console.log(
-    `Created ${role} invitation ${invitation.envelope.invitationId}; the URI was not written to Relay service logs.`
-  )
+let relayIdentity = startup.identity
+config.nodeName = relayIdentity.name
+if (cliArguments[0] === "pair" || cliArguments[0] === "hearth") {
+  await runRelayCli(cliArguments)
   await disposeRelayRuntime()
   process.exit(0)
 }
@@ -106,7 +83,7 @@ const initialPairing = await runRelayEffect(
   "relay.startup.pairing",
   initializePairing({
     config,
-    identity: startup.identity,
+    identity: relayIdentity,
     state: startup.state,
     tls: startup.tls,
   })
@@ -125,6 +102,106 @@ const lifecycle = new LifecycleDriver(config, docker, bricks)
 const activeConsoleStreams = new Map<string, number>()
 const activeConsoleStreamControllers = new Set<AbortController>()
 const MAX_CONSOLE_STREAMS_PER_INSTANCE = 6
+
+async function runRelayCli(arguments_: ReadonlyArray<string>): Promise<void> {
+  const [resource, command = resource === "pair" ? "create" : "list"] =
+    arguments_
+  if (resource === "pair" && command === "create") {
+    const role = arguments_.includes("--read-only")
+      ? "read_only"
+      : "full_access"
+    const invitation = await runRelayEffect(
+      "relay.cli.pair.create",
+      Effect.gen(function* () {
+        const created = yield* createPairingInvitation({
+          config,
+          identity: relayIdentity,
+          role,
+          state: startup.state,
+          tls: startup.tls,
+        })
+        const initialized = yield* startup.state.getMetadata(
+          "networking_initial_invitation"
+        )
+        if (!initialized) {
+          yield* startup.state.setMetadata(
+            "networking_initial_invitation",
+            JSON.stringify({
+              createdAt: Date.now(),
+              invitationId: created.envelope.invitationId,
+              kind: "cli",
+            })
+          )
+        }
+        return created
+      })
+    )
+    console.log(await renderPairingInvitation(invitation))
+    console.log(
+      `Created ${role} invitation ${invitation.envelope.invitationId}; its token was displayed only in this terminal.`
+    )
+    return
+  }
+  if (resource === "pair" && command === "list") {
+    const invitations = await runRelayEffect(
+      "relay.cli.pair.list",
+      startup.state.listInvitations(Date.now())
+    )
+    console.log(
+      JSON.stringify(
+        invitations.map(
+          ({ tokenHash: _tokenHash, ...invitation }) => invitation
+        ),
+        null,
+        2
+      )
+    )
+    return
+  }
+  if (resource === "pair" && command === "revoke") {
+    const invitationId = requiredCliArgument(arguments_[2], "invitation ID")
+    const revoked = await runRelayEffect(
+      "relay.cli.pair.revoke",
+      startup.state.revokeInvitation(invitationId, Date.now())
+    )
+    console.log(revoked ? `Revoked ${invitationId}` : "Invitation not found")
+    return
+  }
+  if (resource === "hearth" && command === "list") {
+    const clients = await runRelayEffect(
+      "relay.cli.hearth.list",
+      startup.state.listClients()
+    )
+    console.log(
+      JSON.stringify(
+        clients.map(({ publicKey: _publicKey, ...client }) => client),
+        null,
+        2
+      )
+    )
+    return
+  }
+  if (resource === "hearth" && command === "revoke") {
+    const clientId = requiredCliArgument(arguments_[2], "client ID")
+    const revoked = await runRelayEffect(
+      "relay.cli.hearth.revoke",
+      startup.state.revokeClient(clientId, Date.now())
+    )
+    console.log(revoked ? `Revoked ${clientId}` : "Hearth client not found")
+    return
+  }
+  throw new Error(
+    "Usage: kiln-relay pair create|list|revoke or kiln-relay hearth list|revoke"
+  )
+}
+
+function requiredCliArgument(
+  value: string | undefined,
+  description: string
+): string {
+  if (!value?.trim()) throw new Error(`Missing ${description}`)
+  return value.trim()
+}
 
 const requestHandler = async (
   request: IncomingMessage,
@@ -181,7 +258,7 @@ const server = startup.tls
 
 const controlSocket = attachControlSocket({
   execute: executeControlRequest,
-  identity: startup.identity,
+  identity: relayIdentity,
   initialSnapshot: () => relaySnapshot(),
   runEffect: (effect) => runRelayEffect("relay.control.state", effect),
   server,
@@ -190,7 +267,7 @@ const controlSocket = attachControlSocket({
 const browserSocket = attachBrowserSocket({
   docker,
   filesystem,
-  identity: startup.identity,
+  identity: relayIdentity,
   runEffect: (effect) => runRelayEffect("relay.browser.state", effect),
   server,
   state: startup.state,
@@ -203,7 +280,7 @@ const sftpServer = await attachSftpServer({
 
 server.listen(config.port, config.host, () => {
   console.log(
-    `Relay ${startup.identity.fingerprint} (${startup.identity.name}) listening on ${startup.tls ? "https" : "http"}://${config.host}:${config.port}`
+    `Relay ${relayIdentity.fingerprint} (${relayIdentity.name}) listening on ${startup.tls ? "https" : "http"}://${config.host}:${config.port}`
   )
   console.log(
     `Discovering ${config.managedLabel} containers in ${config.rootDirectory}`
@@ -233,7 +310,7 @@ async function pairingRequest(
       const pairing = yield* decodePairingRequest(input)
       return yield* pairHearth({
         bootstrapToken: config.bootstrapToken,
-        identity: startup.identity,
+        identity: relayIdentity,
         request: pairing,
         state: startup.state,
       })
@@ -290,8 +367,8 @@ function trustProbe(
       method === "HEAD"
         ? undefined
         : JSON.stringify({
-            relayFingerprint: startup.identity.fingerprint,
-            relayName: startup.identity.name,
+            relayFingerprint: relayIdentity.fingerprint,
+            relayName: relayIdentity.name,
             tlsFingerprint: startup.tls?.fingerprint ?? null,
             version: 1,
           })
@@ -369,12 +446,32 @@ async function relaySnapshot() {
     nodeSnapshot(config, docker),
     docker.inspectInstances(),
   ])
-  return { node, instances }
+  return {
+    node,
+    instances,
+    relay: {
+      id: relayIdentity.fingerprint,
+      name: relayIdentity.name,
+      sftp: {
+        developmentAuthentication: config.sftpDevAuthentication,
+        host: config.advertisedHost,
+        hostKeyFingerprint: sftpServer.hostKeyFingerprint,
+        port: sftpServer.port,
+      },
+      tls: startup.tls
+        ? {
+            expiresAt: startup.tls.expiresAt,
+            fingerprint: startup.tls.fingerprint,
+            mode: startup.tls.mode,
+          }
+        : null,
+    },
+  }
 }
 
 async function executeControlRequest(
   request: RelayControlRequest,
-  _client: unknown,
+  client: RelayClientGrant,
   signal: AbortSignal
 ): Promise<unknown> {
   if (signal.aborted) throw new Error("Relay request was cancelled")
@@ -389,12 +486,14 @@ async function executeControlRequest(
         relayNetworkingSchema.parse(request.payload)
       )
     case "relay.pairing.create": {
-      const role = payload.role === "read_only" ? "read_only" : "full_access"
+      const role = relayClientRole(payload.role)
+      const customActions = relayActionSelection(payload.actions)
       const invitation = await runRelayEffect(
         "relay.control.pairing.create",
         createPairingInvitation({
           config,
-          identity: startup.identity,
+          actions: customActions,
+          identity: relayIdentity,
           role,
           state: startup.state,
           tls: startup.tls,
@@ -403,20 +502,87 @@ async function executeControlRequest(
       console.log(
         `Created pairing invitation ${invitation.envelope.invitationId}; its secret was returned only to the requesting Hearth.`
       )
+      await appendRelayAudit("invitation.created", client.id, request.id, {
+        invitationId: invitation.envelope.invitationId,
+        role,
+      })
       return invitation
     }
-    case "relay.clients.list":
-      return runRelayEffect(
+    case "relay.pairing.list": {
+      const invitations = await runRelayEffect(
+        "relay.control.pairing.list",
+        startup.state.listInvitations(Date.now())
+      )
+      return invitations.map(
+        ({ tokenHash: _tokenHash, ...invitation }) => invitation
+      )
+    }
+    case "relay.pairing.revoke": {
+      const invitationId = requiredString(payload, "invitationId")
+      const revoked = await runRelayEffect(
+        "relay.control.pairing.revoke",
+        startup.state.revokeInvitation(invitationId, Date.now())
+      )
+      if (revoked) {
+        await appendRelayAudit("invitation.revoked", client.id, request.id, {
+          invitationId,
+        })
+      }
+      return { invitationId, revoked }
+    }
+    case "relay.clients.list": {
+      const clients = await runRelayEffect(
         "relay.control.clients.list",
         startup.state.listClients()
       )
+      return clients.map(
+        ({ publicKey: _publicKey, ...relayClient }) => relayClient
+      )
+    }
+    case "relay.clients.update": {
+      const clientId = requiredString(payload, "clientId")
+      const role = relayClientRole(payload.role)
+      const name = requiredString(payload, "name").trim()
+      if (name.length > 120) throw new Error("Hearth name is too long")
+      const sourceCidrs = normalizeSourceCidrs(payload.sourceCidrs ?? [])
+      const actions = actionsForRole(
+        role,
+        relayActionSelection(payload.actions)
+      )
+      const updated = await runRelayEffect(
+        "relay.control.clients.update",
+        startup.state.updateClient({
+          actions,
+          clientId,
+          name,
+          role,
+          sourceCidrs,
+        })
+      )
+      if (updated) {
+        await appendRelayAudit("client.policy_changed", client.id, request.id, {
+          clientId,
+          role,
+          sourceCidrs,
+        })
+        browserSocket.revokeClient(clientId)
+        scheduleClientReconnect(clientId)
+      }
+      return { actions, clientId, role, updated }
+    }
     case "relay.clients.revoke": {
       const clientId = requiredString(payload, "clientId")
       const revoked = await runRelayEffect(
         "relay.control.clients.revoke",
         startup.state.revokeClient(clientId, Date.now())
       )
-      if (revoked) controlSocket.revokeClient(clientId)
+      if (revoked) {
+        await appendRelayAudit("client.revoked", client.id, request.id, {
+          clientId,
+        })
+        browserSocket.revokeClient(clientId)
+        scheduleClientRevocation(clientId)
+      }
       return { clientId, revoked }
     }
     case "brick.catalog":
@@ -470,11 +636,73 @@ async function executeControlRequest(
     }
     case "instance.logs.latest":
       return filesystem.latestLog(await requiredInstance(payload))
-    case "relay.rename":
+    case "relay.rename": {
+      relayIdentity = await runRelayEffect(
+        "relay.control.rename",
+        renameRelayIdentity(
+          config,
+          relayIdentity,
+          requiredString(payload, "name")
+        )
+      )
+      config.nodeName = relayIdentity.name
+      await appendRelayAudit("relay.renamed", client.id, request.id, {
+        name: relayIdentity.name,
+      })
+      return { id: relayIdentity.fingerprint, name: relayIdentity.name }
+    }
     case "browser.capability.issue":
     case "sftp.authorization.resolve":
       throw new Error(`${request.operation} is not available yet`)
   }
+}
+
+function relayClientRole(value: unknown): RelayClientRole {
+  if (value === "full_access" || value === "read_only" || value === "custom") {
+    return value
+  }
+  throw new Error("Relay client role is invalid")
+}
+
+function relayActionSelection(value: unknown): ReadonlyArray<RelayAction> {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > relayActions.length) {
+    throw new Error("Relay client actions are invalid")
+  }
+  const selected = new Set(value)
+  if ([...selected].some((action) => typeof action !== "string")) {
+    throw new Error("Relay client actions are invalid")
+  }
+  return relayActions.filter((action) => selected.has(action))
+}
+
+async function appendRelayAudit(
+  event: string,
+  clientId: string | null,
+  requestId: string | null,
+  details: Readonly<Record<string, unknown>>
+): Promise<void> {
+  await runRelayEffect(
+    `relay.audit.${event}`,
+    startup.state.appendAudit({
+      clientId,
+      details,
+      event,
+      id: randomUUID(),
+      occurredAt: Date.now(),
+      requestId,
+    })
+  )
+}
+
+function scheduleClientReconnect(clientId: string): void {
+  const timer = setTimeout(() => controlSocket.refreshClient(clientId), 25)
+  timer.unref()
+}
+
+function scheduleClientRevocation(clientId: string): void {
+  const timer = setTimeout(() => controlSocket.revokeClient(clientId), 25)
+  timer.unref()
 }
 
 function payloadRecord(value: unknown): Record<string, unknown> {

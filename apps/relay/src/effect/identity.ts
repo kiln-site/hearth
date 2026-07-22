@@ -50,6 +50,34 @@ export const loadOrCreateRelayIdentity = Effect.fn(
   } satisfies RelayIdentity
 })
 
+export const renameRelayIdentity = Effect.fn("RelayIdentity.rename")(function* (
+  config: RelayConfig,
+  identity: RelayIdentity,
+  value: string
+) {
+  const name = value.trim()
+  if (!name || name.length > 120) {
+    return yield* Effect.fail(
+      RelayIdentityError.make({
+        operation: "rename_identity",
+        cause: new Error("Relay name must contain 1 to 120 characters"),
+      })
+    )
+  }
+  const identityPath = join(
+    config.dataDirectory,
+    "network",
+    "identity",
+    "identity.json"
+  )
+  yield* writeFileAtomic(
+    identityPath,
+    `${JSON.stringify({ name, publicKeyPem: identity.publicKeyPem, version: 1 })}\n`,
+    0o600
+  )
+  return { ...identity, name } satisfies RelayIdentity
+})
+
 const loadExisting = Effect.fn("RelayIdentity.loadExisting")(function* (
   identityPath: string,
   privateKeyPath: string

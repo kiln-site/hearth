@@ -241,6 +241,25 @@ export const relayNodeSchema = z.object({
 export const relaySnapshotSchema = z.object({
   node: relayNodeSchema,
   instances: z.array(relayInstanceSchema),
+  relay: z
+    .object({
+      id: relayIdSchema,
+      name: z.string().min(1).max(120),
+      sftp: z.object({
+        developmentAuthentication: z.boolean(),
+        host: z.string().min(1).max(253),
+        hostKeyFingerprint: z.string().startsWith("SHA256:"),
+        port: z.number().int().min(1).max(65_535),
+      }),
+      tls: z
+        .object({
+          expiresAt: z.number().int().positive(),
+          fingerprint: z.string().min(1),
+          mode: z.enum(["external", "managed"]),
+        })
+        .nullable(),
+    })
+    .optional(),
 })
 
 export const relayFileTreeSchema = z.object({

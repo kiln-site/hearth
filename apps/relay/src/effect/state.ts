@@ -13,6 +13,13 @@ export interface RelayClientGrant {
   readonly origins: ReadonlyArray<string>
   readonly publicKey: string
   readonly role: RelayClientRole
+  readonly sourceCidrs: ReadonlyArray<string>
+}
+
+export interface RelayClientRecord extends RelayClientGrant {
+  readonly createdAt: number
+  readonly lastAddress: string | null
+  readonly lastSeenAt: number | null
 }
 
 export interface RelayInvitationInput {
@@ -55,11 +62,15 @@ const RelayClientRoleSchema = Schema.Literals([
 
 const RelayClientRowSchema = Schema.Struct({
   actionsJson: Schema.String,
+  createdAt: Schema.Number,
   id: Schema.String,
+  lastAddress: Schema.NullOr(Schema.String),
+  lastSeenAt: Schema.NullOr(Schema.Number),
   name: Schema.String,
   originsJson: Schema.String,
   publicKey: Schema.String,
   role: RelayClientRoleSchema,
+  sourceCidrsJson: Schema.String,
 })
 
 const RelayInvitationRowSchema = Schema.Struct({
@@ -88,22 +99,29 @@ export class RelayStateStore extends Context.Service<
     ) => Effect.Effect<RelayInvitation | null, RelayStateError>
     readonly findClientByPublicKey: (
       publicKey: string
-    ) => Effect.Effect<RelayClientGrant | null, RelayStateError>
+    ) => Effect.Effect<RelayClientRecord | null, RelayStateError>
     readonly findClientById: (
       clientId: string
-    ) => Effect.Effect<RelayClientGrant | null, RelayStateError>
+    ) => Effect.Effect<RelayClientRecord | null, RelayStateError>
     readonly getMetadata: (
       key: string
     ) => Effect.Effect<string | null, RelayStateError>
     readonly listClients: () => Effect.Effect<
-      ReadonlyArray<RelayClientGrant>,
+      ReadonlyArray<RelayClientRecord>,
       RelayStateError
     >
+    readonly listInvitations: (
+      now: number
+    ) => Effect.Effect<ReadonlyArray<RelayInvitation>, RelayStateError>
     readonly pairClient: (
       input: PairRelayClientInput
     ) => Effect.Effect<void, RelayStateError>
     readonly revokeClient: (
       clientId: string,
+      revokedAt: number
+    ) => Effect.Effect<boolean, RelayStateError>
+    readonly revokeInvitation: (
+      invitationId: string,
       revokedAt: number
     ) => Effect.Effect<boolean, RelayStateError>
     readonly setMetadata: (
@@ -112,8 +130,16 @@ export class RelayStateStore extends Context.Service<
     ) => Effect.Effect<void, RelayStateError>
     readonly touchClient: (
       clientId: string,
-      seenAt: number
+      seenAt: number,
+      address: string | null
     ) => Effect.Effect<void, RelayStateError>
+    readonly updateClient: (input: {
+      readonly actions: ReadonlyArray<string>
+      readonly clientId: string
+      readonly name: string
+      readonly role: RelayClientRole
+      readonly sourceCidrs: ReadonlyArray<string>
+    }) => Effect.Effect<boolean, RelayStateError>
   }
 >()("kiln/RelayStateStore") {}
 
@@ -172,6 +198,24 @@ const migrations = SqliteMigrator.fromRecord({
       ON relay_audit (occurred_at DESC)
     `
   }),
+  "2_client_policy_and_invitation_revocation": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`
+      ALTER TABLE relay_clients
+      ADD COLUMN source_cidrs_json TEXT NOT NULL DEFAULT '[]'
+    `
+    yield* sql`
+      ALTER TABLE relay_invitations
+      ADD COLUMN revoked_at INTEGER
+    `
+  }),
+  "3_client_observed_source": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`
+      ALTER TABLE relay_clients
+      ADD COLUMN last_address TEXT
+    `
+  }),
 })
 
 const makeRelayStateStore = Effect.gen(function* () {
@@ -194,18 +238,23 @@ const makeRelayStateStore = Effect.gen(function* () {
   const clientFromRow = Effect.fn("RelayStateStore.clientFromRow")(function* (
     row: typeof RelayClientRowSchema.Type
   ) {
-    const [actions, origins] = yield* Effect.all([
+    const [actions, origins, sourceCidrs] = yield* Effect.all([
       decodeJsonStringArray(row.actionsJson),
       decodeJsonStringArray(row.originsJson),
+      decodeJsonStringArray(row.sourceCidrsJson),
     ])
     return {
       actions,
+      createdAt: row.createdAt,
       id: row.id,
+      lastAddress: row.lastAddress,
+      lastSeenAt: row.lastSeenAt,
       name: row.name,
       origins,
       publicKey: row.publicKey,
       role: row.role,
-    } satisfies RelayClientGrant
+      sourceCidrs,
+    } satisfies RelayClientRecord
   })
 
   const findClientByPublicKey = Effect.fn(
@@ -215,10 +264,14 @@ const makeRelayStateStore = Effect.gen(function* () {
       SELECT
         id,
         name,
+        created_at AS createdAt,
+        last_address AS lastAddress,
+        last_seen_at AS lastSeenAt,
         public_key AS publicKey,
         role,
         actions_json AS actionsJson,
-        origins_json AS originsJson
+        origins_json AS originsJson,
+        source_cidrs_json AS sourceCidrsJson
       FROM relay_clients
       WHERE public_key = ${publicKey} AND revoked_at IS NULL
       LIMIT 1
@@ -234,10 +287,14 @@ const makeRelayStateStore = Effect.gen(function* () {
         SELECT
           id,
           name,
+          created_at AS createdAt,
+          last_address AS lastAddress,
+          last_seen_at AS lastSeenAt,
           public_key AS publicKey,
           role,
           actions_json AS actionsJson,
-          origins_json AS originsJson
+          origins_json AS originsJson,
+          source_cidrs_json AS sourceCidrsJson
         FROM relay_clients
         WHERE id = ${clientId} AND revoked_at IS NULL
         LIMIT 1
@@ -294,6 +351,7 @@ const makeRelayStateStore = Effect.gen(function* () {
             FROM relay_invitations
             WHERE id = ${invitationId}
               AND consumed_at IS NULL
+              AND revoked_at IS NULL
               AND expires_at > ${now}
             LIMIT 1
           `
@@ -332,16 +390,53 @@ const makeRelayStateStore = Effect.gen(function* () {
             SELECT
               id,
               name,
+              created_at AS createdAt,
+              last_address AS lastAddress,
+              last_seen_at AS lastSeenAt,
               public_key AS publicKey,
               role,
               actions_json AS actionsJson,
-              origins_json AS originsJson
+              origins_json AS originsJson,
+              source_cidrs_json AS sourceCidrsJson
             FROM relay_clients
             WHERE revoked_at IS NULL
             ORDER BY created_at ASC
           `
           const decoded = yield* decodeClientRows(rows)
           return yield* Effect.forEach(decoded, clientFromRow)
+        })
+      ),
+    listInvitations: (now) =>
+      run(
+        "list_invitations",
+        Effect.gen(function* () {
+          const rows = yield* sql<Record<string, unknown>>`
+            SELECT
+              id,
+              role,
+              token_hash AS tokenHash,
+              actions_json AS actionsJson,
+              created_at AS createdAt,
+              expires_at AS expiresAt
+            FROM relay_invitations
+            WHERE consumed_at IS NULL
+              AND revoked_at IS NULL
+              AND expires_at > ${now}
+            ORDER BY created_at DESC
+          `
+          const decoded = yield* decodeInvitationRows(rows)
+          return yield* Effect.forEach(decoded, (invitation) =>
+            decodeJsonStringArray(invitation.actionsJson).pipe(
+              Effect.map((actions) => ({
+                actions,
+                createdAt: invitation.createdAt,
+                expiresAt: invitation.expiresAt,
+                id: invitation.id,
+                role: invitation.role,
+                tokenHash: invitation.tokenHash,
+              }))
+            )
+          )
         })
       ),
     pairClient: (input) =>
@@ -354,6 +449,7 @@ const makeRelayStateStore = Effect.gen(function* () {
               FROM relay_invitations
               WHERE id = ${input.invitationId}
                 AND consumed_at IS NULL
+                AND revoked_at IS NULL
                 AND expires_at > ${input.pairedAt}
               LIMIT 1
             `
@@ -370,6 +466,7 @@ const makeRelayStateStore = Effect.gen(function* () {
                 role,
                 actions_json,
                 origins_json,
+                source_cidrs_json,
                 created_at,
                 last_seen_at,
                 invitation_id
@@ -380,6 +477,7 @@ const makeRelayStateStore = Effect.gen(function* () {
                 ${input.role},
                 ${JSON.stringify(input.actions)},
                 ${JSON.stringify(input.origins)},
+                ${JSON.stringify(input.sourceCidrs)},
                 ${input.pairedAt},
                 ${input.pairedAt},
                 ${input.invitationId}
@@ -414,6 +512,31 @@ const makeRelayStateStore = Effect.gen(function* () {
           })
         )
       ),
+    revokeInvitation: (invitationId, revokedAt) =>
+      run(
+        "revoke_invitation",
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{ id: string }>`
+              SELECT id
+              FROM relay_invitations
+              WHERE id = ${invitationId}
+                AND consumed_at IS NULL
+                AND revoked_at IS NULL
+              LIMIT 1
+            `
+            if (!rows[0]) return false
+            yield* sql`
+              UPDATE relay_invitations
+              SET revoked_at = ${revokedAt}
+              WHERE id = ${invitationId}
+                AND consumed_at IS NULL
+                AND revoked_at IS NULL
+            `
+            return true
+          })
+        )
+      ),
     setMetadata: (key, value) =>
       run(
         "set_metadata",
@@ -423,14 +546,38 @@ const makeRelayStateStore = Effect.gen(function* () {
           ON CONFLICT (key) DO UPDATE SET value = excluded.value
         `.pipe(Effect.asVoid)
       ),
-    touchClient: (clientId, seenAt) =>
+    touchClient: (clientId, seenAt, address) =>
       run(
         "touch_client",
         sql`
           UPDATE relay_clients
-          SET last_seen_at = ${seenAt}
+          SET last_seen_at = ${seenAt}, last_address = ${address}
           WHERE id = ${clientId} AND revoked_at IS NULL
         `.pipe(Effect.asVoid)
+      ),
+    updateClient: (input) =>
+      run(
+        "update_client",
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{ id: string }>`
+              SELECT id
+              FROM relay_clients
+              WHERE id = ${input.clientId} AND revoked_at IS NULL
+              LIMIT 1
+            `
+            if (!rows[0]) return false
+            yield* sql`
+              UPDATE relay_clients
+              SET name = ${input.name},
+                  role = ${input.role},
+                  actions_json = ${JSON.stringify(input.actions)},
+                  source_cidrs_json = ${JSON.stringify(input.sourceCidrs)}
+              WHERE id = ${input.clientId} AND revoked_at IS NULL
+            `
+            return true
+          })
+        )
       ),
   })
 })

@@ -9,6 +9,7 @@ const relayIdSchema = z.object({
   id: relayFingerprintSchema,
 })
 const relayEnabledSchema = relayIdSchema.extend({ enabled: z.boolean() })
+const relayRoleSchema = z.enum(["custom", "full_access", "read_only"])
 const createRelaySchema = z.object({
   pairingUri: z.string().trim().min(64).max(32_768),
 })
@@ -25,11 +26,40 @@ const updateRelaySchema = relayIdSchema.extend({
   port: z.number().int().min(1).max(65_535),
   useTls: z.boolean(),
 })
+const renameRelaySchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  relayId: relayFingerprintSchema,
+})
+const pairingRoleSchema = z.object({
+  relayId: relayFingerprintSchema,
+  role: z.enum(["full_access", "read_only"]),
+})
+const relayInvitationSchema = z.object({
+  invitationId: z.uuid(),
+  relayId: relayFingerprintSchema,
+})
+const relayClientSchema = z.object({
+  clientId: z.string().min(1).max(128),
+  relayId: relayFingerprintSchema,
+})
+const updateRelayClientSchema = relayClientSchema.extend({
+  actions: z.array(z.string().min(1).max(120)).max(128).optional(),
+  name: z.string().trim().min(1).max(120),
+  role: relayRoleSchema,
+  sourceCidrs: z.array(z.string().trim().min(1).max(128)).max(16),
+})
+const previewPairingSchema = z.object({
+  pairingUri: z.string().trim().min(64).max(32_768),
+})
 
-export const getRelays = createServerFn({ method: "GET" }).handler(async () => {
+async function requireRelayAdministrator() {
   const user = await requireAuthenticatedUser()
   if (!isPlatformAdmin(user))
     throw new Error("Platform administrator access required")
+}
+
+export const getRelays = createServerFn({ method: "GET" }).handler(async () => {
+  await requireRelayAdministrator()
   const { listPersistedRelays } = await import("@/lib/relay-registry")
   return listPersistedRelays()
 })
@@ -37,9 +67,7 @@ export const getRelays = createServerFn({ method: "GET" }).handler(async () => {
 export const addRelay = createServerFn({ method: "POST" })
   .validator(createRelaySchema)
   .handler(async ({ data }) => {
-    const user = await requireAuthenticatedUser()
-    if (!isPlatformAdmin(user))
-      throw new Error("Platform administrator access required")
+    await requireRelayAdministrator()
     const { pairPersistedRelay } = await import("@/lib/relay-registry")
     return pairPersistedRelay(data.pairingUri)
   })
@@ -47,9 +75,7 @@ export const addRelay = createServerFn({ method: "POST" })
 export const updateRelay = createServerFn({ method: "POST" })
   .validator(updateRelaySchema)
   .handler(async ({ data }) => {
-    const user = await requireAuthenticatedUser()
-    if (!isPlatformAdmin(user))
-      throw new Error("Platform administrator access required")
+    await requireRelayAdministrator()
     const { updatePersistedRelay } = await import("@/lib/relay-registry")
     return updatePersistedRelay(data)
   })
@@ -57,9 +83,7 @@ export const updateRelay = createServerFn({ method: "POST" })
 export const checkRelay = createServerFn({ method: "POST" })
   .validator(relayIdSchema)
   .handler(async ({ data }) => {
-    const user = await requireAuthenticatedUser()
-    if (!isPlatformAdmin(user))
-      throw new Error("Platform administrator access required")
+    await requireRelayAdministrator()
     const { checkPersistedRelay } = await import("@/lib/relay-registry")
     return checkPersistedRelay(data.id)
   })
@@ -67,9 +91,7 @@ export const checkRelay = createServerFn({ method: "POST" })
 export const setRelayEnabled = createServerFn({ method: "POST" })
   .validator(relayEnabledSchema)
   .handler(async ({ data }) => {
-    const user = await requireAuthenticatedUser()
-    if (!isPlatformAdmin(user))
-      throw new Error("Platform administrator access required")
+    await requireRelayAdministrator()
     const { setPersistedRelayEnabled } = await import("@/lib/relay-registry")
     return setPersistedRelayEnabled(data.id, data.enabled)
   })
@@ -77,10 +99,66 @@ export const setRelayEnabled = createServerFn({ method: "POST" })
 export const removeRelay = createServerFn({ method: "POST" })
   .validator(relayIdSchema)
   .handler(async ({ data }) => {
-    const user = await requireAuthenticatedUser()
-    if (!isPlatformAdmin(user))
-      throw new Error("Platform administrator access required")
+    await requireRelayAdministrator()
     const { deletePersistedRelay } = await import("@/lib/relay-registry")
     await deletePersistedRelay(data.id)
     return { removed: true }
+  })
+
+export const previewRelayPairing = createServerFn({ method: "POST" })
+  .validator(previewPairingSchema)
+  .handler(async ({ data }) => {
+    await requireRelayAdministrator()
+    const { previewPairingUri } = await import("@/lib/relay-registry")
+    return previewPairingUri(data.pairingUri)
+  })
+
+export const getRelayAdministration = createServerFn({ method: "GET" })
+  .validator(relayIdSchema)
+  .handler(async ({ data }) => {
+    await requireRelayAdministrator()
+    const registry = await import("@/lib/relay-registry")
+    return registry.getRelayAdministration(data.id)
+  })
+
+export const createRelayInvitation = createServerFn({ method: "POST" })
+  .validator(pairingRoleSchema)
+  .handler(async ({ data }) => {
+    await requireRelayAdministrator()
+    const { createRelayPairingInvitation } =
+      await import("@/lib/relay-registry")
+    return createRelayPairingInvitation(data)
+  })
+
+export const revokeRelayInvitation = createServerFn({ method: "POST" })
+  .validator(relayInvitationSchema)
+  .handler(async ({ data }) => {
+    await requireRelayAdministrator()
+    const { revokeRelayPairingInvitation } =
+      await import("@/lib/relay-registry")
+    return { revoked: await revokeRelayPairingInvitation(data) }
+  })
+
+export const updateRelayClient = createServerFn({ method: "POST" })
+  .validator(updateRelayClientSchema)
+  .handler(async ({ data }) => {
+    await requireRelayAdministrator()
+    const { updateRelayClientPolicy } = await import("@/lib/relay-registry")
+    return updateRelayClientPolicy(data)
+  })
+
+export const revokeHearthClient = createServerFn({ method: "POST" })
+  .validator(relayClientSchema)
+  .handler(async ({ data }) => {
+    await requireRelayAdministrator()
+    const { revokeRelayClient } = await import("@/lib/relay-registry")
+    return { revoked: await revokeRelayClient(data) }
+  })
+
+export const renameRelay = createServerFn({ method: "POST" })
+  .validator(renameRelaySchema)
+  .handler(async ({ data }) => {
+    await requireRelayAdministrator()
+    const { renamePersistedRelay } = await import("@/lib/relay-registry")
+    return renamePersistedRelay(data)
   })

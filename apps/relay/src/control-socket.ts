@@ -26,6 +26,7 @@ import type {
 } from "@workspace/contracts"
 
 import { isActionAllowed } from "./permissions.js"
+import { isSourceAllowed } from "./source-policy.js"
 import type { RelayAction } from "./permissions.js"
 import type { RelayIdentity } from "./effect/identity.js"
 import type { RelayClientGrant, RelayStateStore } from "./effect/state.js"
@@ -57,6 +58,7 @@ export interface ControlSocketServer {
     payload: unknown,
     timeoutMs?: number
   ) => Promise<ReadonlyArray<{ clientId: string; payload: unknown }>>
+  readonly refreshClient: (clientId: string) => void
   readonly revokeClient: (clientId: string) => void
   readonly sessions: ReadonlyMap<string, RelayClientGrant>
 }
@@ -99,7 +101,7 @@ export function attachControlSocket(
     })
   })
 
-  wss.on("connection", (socket) => {
+  wss.on("connection", (socket, request) => {
     sockets.add(socket)
     authenticateSocket(
       socket,
@@ -107,7 +109,8 @@ export function attachControlSocket(
       sessions,
       socketSessions,
       authenticatedSockets,
-      reverseRequesters
+      reverseRequesters,
+      request.socket.remoteAddress
     )
     socket.once("close", () => {
       sockets.delete(socket)
@@ -149,12 +152,19 @@ export function attachControlSocket(
         result.status === "fulfilled" ? [result.value] : []
       )
     },
+    refreshClient: (clientId) => {
+      closeClientSockets(
+        authenticatedSockets,
+        clientId,
+        "Hearth client policy changed"
+      )
+    },
     revokeClient: (clientId) => {
-      for (const [socket, client] of authenticatedSockets) {
-        if (client.id === clientId) {
-          socket.close(4403, "Hearth client was revoked")
-        }
-      }
+      closeClientSockets(
+        authenticatedSockets,
+        clientId,
+        "Hearth client was revoked"
+      )
     },
     sessions,
   }
@@ -177,7 +187,8 @@ function authenticateSocket(
       payload: unknown,
       timeoutMs: number
     ) => Promise<unknown>
-  >
+  >,
+  peerAddress: string | undefined
 ): void {
   const unsignedChallenge = {
     expiresAt: Date.now() + AUTHENTICATION_WINDOW_MS,
@@ -299,6 +310,7 @@ function authenticateSocket(
     )
     if (
       !client ||
+      !isSourceAllowed(peerAddress, client.sourceCidrs) ||
       !authenticationVerifier({
         challenge: unsignedChallenge,
         client,
@@ -381,7 +393,9 @@ function authenticateSocket(
     socketSessions.set(socket, challenge.sessionId)
     authenticatedSockets.set(socket, client)
     reverseRequesters.set(socket, requestClient)
-    await options.runEffect(options.state.touchClient(client.id, Date.now()))
+    await options.runEffect(
+      options.state.touchClient(client.id, Date.now(), peerAddress ?? null)
+    )
     const ready: RelayAuthReady = {
       actions: client.actions,
       clientId: client.id,
@@ -435,6 +449,16 @@ function authenticateSocket(
   }
 }
 
+function closeClientSockets(
+  authenticatedSockets: ReadonlyMap<WebSocket, RelayClientGrant>,
+  clientId: string,
+  reason: string
+): void {
+  for (const [socket, client] of authenticatedSockets) {
+    if (client.id === clientId) socket.close(4403, reason)
+  }
+}
+
 export function authenticationVerifier(options: {
   readonly challenge: Omit<RelayAuthChallenge, "signature">
   readonly client: RelayClientGrant
@@ -466,8 +490,14 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
       return "instance.network.write"
     case "relay.pairing.create":
       return "relay.pairing.create"
+    case "relay.pairing.list":
+      return "relay.pairing.list"
+    case "relay.pairing.revoke":
+      return "relay.pairing.revoke"
     case "relay.clients.list":
       return "relay.clients.list"
+    case "relay.clients.update":
+      return "relay.clients.update"
     case "relay.clients.revoke":
       return "relay.clients.revoke"
     case "brick.catalog":

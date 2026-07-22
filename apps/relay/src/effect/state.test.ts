@@ -32,6 +32,7 @@ describe("Relay state", () => {
         )
         assert.isNotNull(invitation)
         if (!invitation) return
+        assert.lengthOf(yield* store.listInvitations(now), 1)
 
         yield* store.pairClient({
           actions: invitation.actions,
@@ -42,6 +43,7 @@ describe("Relay state", () => {
           pairedAt: now + 1,
           publicKey: "public-key-1",
           role: invitation.role,
+          sourceCidrs: [],
         })
         assert.isNull(
           yield* store.findActiveInvitation("invitation-1", now + 2)
@@ -54,7 +56,26 @@ describe("Relay state", () => {
           origins: ["https://hearth.test"],
           publicKey: "public-key-1",
           role: "full_access",
+          sourceCidrs: [],
+          createdAt: now + 1,
+          lastAddress: null,
+          lastSeenAt: now + 1,
         })
+
+        assert.isTrue(
+          yield* store.updateClient({
+            actions: ["relay.read"],
+            clientId: "hearth-1",
+            name: "Hearth Renamed",
+            role: "read_only",
+            sourceCidrs: ["192.0.2.1/32"],
+          })
+        )
+        yield* store.touchClient("hearth-1", now + 2, "192.0.2.1")
+        const updated = yield* store.findClientById("hearth-1")
+        assert.strictEqual(updated?.name, "Hearth Renamed")
+        assert.strictEqual(updated?.lastAddress, "192.0.2.1")
+        assert.deepStrictEqual(updated?.sourceCidrs, ["192.0.2.1/32"])
 
         const duplicate = yield* Effect.result(
           store.pairClient({
@@ -66,10 +87,33 @@ describe("Relay state", () => {
             pairedAt: now + 3,
             publicKey: "public-key-2",
             role: invitation.role,
+            sourceCidrs: [],
           })
         )
         assert.strictEqual(duplicate._tag, "Failure")
       })
+    )
+
+    it.effect(
+      "lists and revokes pending invitations without exposing reuse",
+      () =>
+        Effect.gen(function* () {
+          const store = yield* RelayStateStore
+          const now = Date.UTC(2026, 0, 1)
+          yield* store.createInvitation({
+            actions: ["relay.read"],
+            createdAt: now,
+            expiresAt: now + 60_000,
+            id: "invitation-2",
+            role: "read_only",
+            tokenHash: "hash-2",
+          })
+          assert.isTrue(yield* store.revokeInvitation("invitation-2", now + 1))
+          assert.isNull(
+            yield* store.findActiveInvitation("invitation-2", now + 2)
+          )
+          assert.isFalse(yield* store.revokeInvitation("invitation-2", now + 3))
+        })
     )
 
     it.effect("revokes clients without deleting their durable record", () =>
