@@ -54,6 +54,8 @@ export interface RelayAuditInput {
   readonly requestId: string | null
 }
 
+export interface RelayAuditRecord extends RelayAuditInput {}
+
 const RelayClientRoleSchema = Schema.Literals([
   "custom",
   "full_access",
@@ -110,6 +112,9 @@ export class RelayStateStore extends Context.Service<
       ReadonlyArray<RelayClientRecord>,
       RelayStateError
     >
+    readonly listAudits: (
+      limit: number
+    ) => Effect.Effect<ReadonlyArray<RelayAuditRecord>, RelayStateError>
     readonly listInvitations: (
       now: number
     ) => Effect.Effect<ReadonlyArray<RelayInvitation>, RelayStateError>
@@ -404,6 +409,40 @@ const makeRelayStateStore = Effect.gen(function* () {
           `
           const decoded = yield* decodeClientRows(rows)
           return yield* Effect.forEach(decoded, clientFromRow)
+        })
+      ),
+    listAudits: (limit) =>
+      run(
+        "list_audits",
+        Effect.gen(function* () {
+          const boundedLimit = Math.min(Math.max(Math.trunc(limit), 1), 200)
+          const rows = yield* sql<{
+            clientId: string | null
+            detailsJson: string
+            event: string
+            id: string
+            occurredAt: number
+            requestId: string | null
+          }>`
+            SELECT
+              id,
+              event,
+              client_id AS clientId,
+              request_id AS requestId,
+              details_json AS detailsJson,
+              occurred_at AS occurredAt
+            FROM relay_audit
+            ORDER BY occurred_at DESC
+            LIMIT ${boundedLimit}
+          `
+          return rows.map((row) => ({
+            clientId: row.clientId,
+            details: JSON.parse(row.detailsJson) as Record<string, unknown>,
+            event: row.event,
+            id: row.id,
+            occurredAt: row.occurredAt,
+            requestId: row.requestId,
+          }))
         })
       ),
     listInvitations: (now) =>

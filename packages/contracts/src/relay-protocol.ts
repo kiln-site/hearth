@@ -7,6 +7,7 @@ export const relayPairingProtocol = "kiln-relay-pair.v1" as const
 export const relayControlOperations = [
   "relay.snapshot",
   "relay.rename",
+  "relay.audit.list",
   "relay.networking.read",
   "relay.networking.write",
   "relay.pairing.create",
@@ -27,7 +28,6 @@ export const relayControlOperations = [
   "instance.console.write",
   "instance.console.complete",
   "instance.logs.latest",
-  "browser.capability.issue",
   "sftp.authorization.resolve",
 ] as const
 

@@ -30,7 +30,12 @@ export async function uploadRelayFile(
   input: FileTransferInput & {
     file: File
   }
-): Promise<{ modifiedAt: string; path: string; size: number }> {
+): Promise<{
+  modifiedAt: string
+  path: string
+  sha256: string
+  size: number
+}> {
   const response = await relayFileRequest(input, "PUT", input.file)
   if (!response.ok) throw await transferError(response, "upload")
   const result = (await response.json()) as unknown
@@ -41,12 +46,15 @@ export async function uploadRelayFile(
   if (
     typeof value.modifiedAt !== "string" ||
     typeof value.path !== "string" ||
+    typeof value.sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(value.sha256) ||
     typeof value.size !== "number"
   )
     throw new Error("Relay returned an invalid upload response")
   return {
     modifiedAt: value.modifiedAt,
     path: value.path,
+    sha256: value.sha256,
     size: value.size,
   }
 }
@@ -70,7 +78,10 @@ async function relayFileRequest(
   }
   const issued = await issueFileCapability({
     data: {
-      action: method === "PUT" ? "instance.files.write" : "instance.files.read",
+      action:
+        method === "PUT"
+          ? "instance.files.upload"
+          : "instance.files.download",
       instanceId: input.instanceId,
       path: input.path,
       publicKeyJwk,

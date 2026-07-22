@@ -17,10 +17,11 @@ const browserCapabilityInputSchema = z.object({
     y: z.string().min(40).max(64),
   }),
   relayId: relayIdSchema,
+  write: z.boolean().optional().default(false),
 })
 
 const fileCapabilityInputSchema = browserCapabilityInputSchema.extend({
-  action: z.enum(["instance.files.read", "instance.files.write"]),
+  action: z.enum(["instance.files.download", "instance.files.upload"]),
   path: z
     .string()
     .min(1)
@@ -48,8 +49,42 @@ export const issueConsoleCapability = createServerFn({ method: "POST" })
       relayId: relay.id,
       user,
     })
+    if (data.write) {
+      await requireRelayPermission({
+        instanceId: data.instanceId,
+        permission: "instance.console.write",
+        relayId: relay.id,
+        user,
+      })
+    }
     return createBrowserCapability({
-      action: "instance.console.read",
+      actions: data.write
+        ? ["instance.console.read", "instance.console.write"]
+        : ["instance.console.read"],
+      instanceId: data.instanceId,
+      path: null,
+      publicKeyJwk: data.publicKeyJwk,
+      relay,
+      subject: user.id,
+    })
+  })
+
+export const issueResourceCapability = createServerFn({ method: "POST" })
+  .validator(browserCapabilityInputSchema)
+  .handler(async ({ data }) => {
+    const user = await requireAuthenticatedUser()
+    const relay = (await listPersistedRelays()).find(
+      (item) => item.enabled && item.id === data.relayId
+    )
+    if (!relay) throw new Error("Relay is not available")
+    await requireRelayPermission({
+      instanceId: data.instanceId,
+      permission: "instance.read",
+      relayId: relay.id,
+      user,
+    })
+    return createBrowserCapability({
+      actions: ["instance.read"],
       instanceId: data.instanceId,
       path: null,
       publicKeyJwk: data.publicKeyJwk,
@@ -68,12 +103,15 @@ export const issueFileCapability = createServerFn({ method: "POST" })
     if (!relay) throw new Error("Relay is not available")
     await requireRelayPermission({
       instanceId: data.instanceId,
-      permission: data.action,
+      permission:
+        data.action === "instance.files.upload"
+          ? "instance.files.write"
+          : "instance.files.read",
       relayId: relay.id,
       user,
     })
     return createBrowserCapability({
-      action: data.action,
+      actions: [data.action],
       instanceId: data.instanceId,
       path: data.path,
       publicKeyJwk: data.publicKeyJwk,
@@ -83,10 +121,13 @@ export const issueFileCapability = createServerFn({ method: "POST" })
   })
 
 async function createBrowserCapability(input: {
-  action:
+  actions: ReadonlyArray<
     | "instance.console.read"
-    | "instance.files.read"
-    | "instance.files.write"
+    | "instance.console.write"
+    | "instance.read"
+    | "instance.files.download"
+    | "instance.files.upload"
+  >
   instanceId: string
   path: string | null
   publicKeyJwk: { crv: "P-256"; kty: "EC"; x: string; y: string }
@@ -96,7 +137,7 @@ async function createBrowserCapability(input: {
   const credentials = await loadRelayCredentials(input.relay.id)
   const now = Date.now()
   const payload = {
-    actions: [input.action],
+    actions: input.actions,
     audience: input.relay.id,
     capabilityId: randomUUID(),
     expiresAt: now + 60_000,

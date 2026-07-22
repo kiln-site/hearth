@@ -1,11 +1,6 @@
 import { createServerFn } from "@tanstack/react-start"
 import { Effect } from "effect"
 import {
-  relayConsoleCommandResultSchema,
-  relayConsoleCommandSchema,
-  relayConsoleCompletionInputSchema,
-  relayConsoleCompletionSchema,
-  relayConsoleSchema,
   relayFileActivitySchema,
   relayFileContentSchema,
   relayFileTreeSchema,
@@ -72,10 +67,6 @@ const instanceNameInputSchema = instanceInputSchema.extend({
   name: z.string().trim().min(1).max(120),
 })
 
-const liveConsoleInputSchema = instanceInputSchema.extend({
-  requestedAt: z.number(),
-})
-
 const filePathSchema = z
   .string()
   .min(1)
@@ -98,14 +89,6 @@ const saveFileInputSchema = fileInputSchema.extend(
 
 const actionInputSchema = instanceInputSchema.extend(
   relayInstanceActionSchema.shape
-)
-
-const consoleCommandInputSchema = instanceInputSchema.extend(
-  relayConsoleCommandSchema.shape
-)
-
-const consoleCompletionInputSchema = instanceInputSchema.extend(
-  relayConsoleCompletionInputSchema.shape
 )
 
 const consoleShareInputSchema = instanceInputSchema.extend({
@@ -375,51 +358,6 @@ export const performRelayAction = createServerFn({ method: "POST" })
     ])
     return { ...displayInstance, relayId: relay.id }
   })
-
-export const getRelayConsole = createServerFn({ method: "POST" })
-  .validator(liveConsoleInputSchema)
-  .handler(async ({ data }) =>
-    relayConsoleSchema.parse(
-      await relayRequest(
-        `/v1/instances/${encodeURIComponent(data.instanceId)}/console?limit=3000`,
-        undefined,
-        "instance.console.read",
-        data.instanceId,
-        data.relayId
-      )
-    )
-  )
-
-export const sendRelayCommand = createServerFn({ method: "POST" })
-  .validator(consoleCommandInputSchema)
-  .handler(async ({ data }) =>
-    relayConsoleCommandResultSchema.parse(
-      await relayRequest(
-        `/v1/instances/${encodeURIComponent(data.instanceId)}/console`,
-        { method: "POST", body: JSON.stringify({ command: data.command }) },
-        "instance.console.write",
-        data.instanceId,
-        data.relayId
-      )
-    )
-  )
-
-export const completeRelayCommand = createServerFn({ method: "POST" })
-  .validator(consoleCompletionInputSchema)
-  .handler(async ({ data }) =>
-    relayConsoleCompletionSchema.parse(
-      await relayRequest(
-        `/v1/instances/${encodeURIComponent(data.instanceId)}/console-completions`,
-        {
-          method: "POST",
-          body: JSON.stringify({ input: data.input, cursor: data.cursor }),
-        },
-        "instance.console.write",
-        data.instanceId,
-        data.relayId
-      )
-    )
-  )
 
 export const uploadToMclogs = createServerFn({ method: "POST" })
   .validator(mclogsUploadInputSchema)

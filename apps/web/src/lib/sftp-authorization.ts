@@ -21,7 +21,7 @@ interface GrantRow extends RowDataPacket {
 }
 
 export interface SftpAuthorization {
-  instances: ReadonlyArray<{ id: string; readOnly: boolean }>
+  instances: ReadonlyArray<{ id: string; actions: ReadonlyArray<string> }>
   userId: string
   username: string
 }
@@ -53,8 +53,8 @@ export async function resolveSftpAuthorization(
   if (user.role === "admin") {
     return {
       instances: instances.map((instance) => ({
+        actions: sftpFileActions(true),
         id: instance.instance_id,
-        readOnly: false,
       })),
       userId: user.id,
       username: normalizedUsername,
@@ -68,30 +68,44 @@ export async function resolveSftpAuthorization(
     [user.id, relayId]
   )
   const instanceIds = new Set(instances.map((instance) => instance.instance_id))
-  const resolved = new Map<string, boolean>()
+  const resolved = new Map<string, Set<string>>()
   for (const grant of grants) {
     if (!isAccessRole(grant.role)) continue
     if (!roleHasPermission(grant.role, "instance.sftp.connect")) continue
-    const readOnly = !roleHasPermission(grant.role, "instance.files.write")
+    const actions = sftpFileActions(
+      roleHasPermission(grant.role, "instance.files.write")
+    )
     const grantedIds =
       grant.resource_type === "relay"
         ? instanceIds
         : new Set([grant.resource_id])
     for (const instanceId of grantedIds) {
       if (!instanceIds.has(instanceId)) continue
-      const existing = resolved.get(instanceId)
-      resolved.set(
-        instanceId,
-        existing === undefined ? readOnly : existing && readOnly
-      )
+      const existing = resolved.get(instanceId) ?? new Set<string>()
+      for (const action of actions) existing.add(action)
+      resolved.set(instanceId, existing)
     }
   }
   if (resolved.size === 0) return null
   return {
     instances: [...resolved]
-      .map(([id, readOnly]) => ({ id, readOnly }))
+      .map(([id, actions]) => ({ actions: [...actions].sort(), id }))
       .sort((left, right) => left.id.localeCompare(right.id)),
     userId: user.id,
     username: normalizedUsername,
   }
+}
+
+function sftpFileActions(writable: boolean): ReadonlyArray<string> {
+  return writable
+    ? [
+        "instance.files.list",
+        "instance.files.read",
+        "instance.files.create",
+        "instance.files.write",
+        "instance.files.delete",
+        "instance.files.rename",
+        "instance.files.chmod",
+      ]
+    : ["instance.files.list", "instance.files.read"]
 }

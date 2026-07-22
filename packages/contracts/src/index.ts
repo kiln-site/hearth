@@ -334,6 +334,12 @@ export const relayConsoleStreamEventSchema = z.discriminatedUnion("type", [
   }),
 ])
 
+export const relayResourceStreamEventSchema = z.object({
+  type: z.literal("resource"),
+  instance: relayInstanceSchema,
+  sequence: z.number().int().nonnegative(),
+})
+
 export const relayConsoleCommandSchema = z.object({
   command: z
     .string()
@@ -430,7 +436,13 @@ export type RelayConsole = z.infer<typeof relayConsoleSchema>
 export type RelayConsoleStreamEvent = z.infer<
   typeof relayConsoleStreamEventSchema
 >
+export type RelayResourceStreamEvent = z.infer<
+  typeof relayResourceStreamEventSchema
+>
 export type RelayConsoleCommand = z.infer<typeof relayConsoleCommandSchema>
+export type RelayConsoleCommandResult = z.infer<
+  typeof relayConsoleCommandResultSchema
+>
 export type RelayConsoleCompletionInput = z.infer<
   typeof relayConsoleCompletionInputSchema
 >

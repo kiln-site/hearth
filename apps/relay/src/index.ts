@@ -18,17 +18,13 @@ import type { RelayControlRequest } from "@workspace/contracts"
 
 import { BrickCatalog } from "./bricks.js"
 import { attachBrowserSocket } from "./browser-socket.js"
-import { loadConfig } from "./config.js"
+import { discoverRelayAdvertisedHost, loadConfig } from "./config.js"
 import { attachControlSocket } from "./control-socket.js"
 import { DockerDriver } from "./docker.js"
-import { FilesystemDriver, RelayFilesystemError } from "./files.js"
+import { FilesystemDriver } from "./files.js"
 import { LifecycleDriver } from "./lifecycle.js"
 import { nodeSnapshot } from "./node.js"
-import {
-  BrickRecipeError,
-  RelayOperationError,
-  RelayPairingError,
-} from "./effect/errors.js"
+import { RelayPairingError } from "./effect/errors.js"
 import {
   loadOrCreateRelayIdentity,
   renameRelayIdentity,
@@ -57,6 +53,17 @@ import { normalizeSourceCidrs } from "./source-policy.js"
 import type { IncomingMessage, ServerResponse } from "node:http"
 
 const config = loadConfig()
+const advertisedHostSource = await discoverRelayAdvertisedHost(config)
+if (advertisedHostSource !== "configured") {
+  console.warn(
+    advertisedHostSource === "public_ip"
+      ? `KILN_RELAY_HOST was not set; inferred ${config.advertisedHost} from public DNS.`
+      : `KILN_RELAY_HOST was not set; using hostname ${config.advertisedHost}.`
+  )
+  console.warn(
+    "The inferred Relay endpoint is unverified and may be unusable behind NAT, inside Docker, or when an origin address should remain hidden. Set KILN_RELAY_HOST explicitly after checking reachability."
+  )
+}
 await mkdir(config.rootDirectory, { recursive: true })
 await mkdir(`${config.dataDirectory}/network`, { recursive: true, mode: 0o700 })
 initializeRelayRuntime(config)
@@ -71,6 +78,7 @@ const startup = await runRelayEffect(
     return { identity, state, tls }
   })
 )
+let activeTls = startup.tls
 const cliArguments = process.argv.slice(2)
 let relayIdentity = startup.identity
 config.nodeName = relayIdentity.name
@@ -99,9 +107,7 @@ const bricks = new BrickCatalog(config.brickCatalogUrl)
 const docker = new DockerDriver(config)
 const filesystem = new FilesystemDriver(config)
 const lifecycle = new LifecycleDriver(config, docker, bricks)
-const activeConsoleStreams = new Map<string, number>()
-const activeConsoleStreamControllers = new Set<AbortController>()
-const MAX_CONSOLE_STREAMS_PER_INSTANCE = 6
+const instanceMutations = new Map<string, Promise<unknown>>()
 
 async function runRelayCli(arguments_: ReadonlyArray<string>): Promise<void> {
   const [resource, command = resource === "pair" ? "create" : "list"] =
@@ -213,29 +219,12 @@ const requestHandler = async (
     if (bootstrapDiscovery(request, response)) return
     if (await pairingRequest(request, response)) return
     if (await browserSocket.handleRequest(request, response)) return
-    if (!authorize(response)) return
-    const requestUrl = new URL(request.url ?? "/", "http://relay")
-    await runRelayEffect(
-      `relay.http.${normalizedRoute(requestUrl.pathname)}`,
-      Effect.tryPromise({
-        try: () => route(request, response),
-        catch: (cause) =>
-          RelayOperationError.make({
-            operation: normalizedRoute(requestUrl.pathname),
-            cause,
-          }),
-      })
-    )
+    json(response, 426, {
+      error: "Relay control operations require a WebSocket transport",
+      code: "websocket_required",
+    })
   } catch (error) {
-    const cause = error instanceof RelayOperationError ? error.cause : error
-    if (cause instanceof RelayFilesystemError) {
-      json(response, 400, { error: cause.message, code: cause.code })
-      return
-    }
-    if (cause instanceof BrickRecipeError) {
-      json(response, 400, { error: cause.message, code: cause.code })
-      return
-    }
+    const cause = error
     if (cause instanceof RelayPairingError) {
       json(response, 401, { error: cause.message, code: cause.code })
       return
@@ -249,9 +238,9 @@ const requestHandler = async (
   }
 }
 
-const server = startup.tls
+const server = activeTls
   ? createHttpsServer(
-      { cert: startup.tls.certificatePem, key: startup.tls.keyPem },
+      { cert: activeTls.certificatePem, key: activeTls.keyPem },
       requestHandler
     )
   : createHttpServer(requestHandler)
@@ -273,6 +262,13 @@ const browserSocket = attachBrowserSocket({
   state: startup.state,
 })
 const sftpServer = await attachSftpServer({
+  clientActions: async (clientId) =>
+    (
+      await runRelayEffect(
+        "relay.sftp.clientGrant",
+        startup.state.findClientById(clientId)
+      )
+    )?.actions ?? [],
   config,
   control: controlSocket,
   docker,
@@ -280,12 +276,13 @@ const sftpServer = await attachSftpServer({
 
 server.listen(config.port, config.host, () => {
   console.log(
-    `Relay ${relayIdentity.fingerprint} (${relayIdentity.name}) listening on ${startup.tls ? "https" : "http"}://${config.host}:${config.port}`
+    `Relay ${relayIdentity.fingerprint} (${relayIdentity.name}) listening on ${activeTls ? "https" : "http"}://${config.host}:${config.port}`
   )
   console.log(
     `Discovering ${config.managedLabel} containers in ${config.rootDirectory}`
   )
 })
+const tlsRefresh = scheduleTlsRefresh()
 
 let shutdownStarted = false
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -336,7 +333,7 @@ function trustProbe(
     url.pathname === "/v1/trust/ca.pem" &&
     (method === "GET" || method === "HEAD")
   ) {
-    if (!startup.tls?.caCertificatePem) {
+    if (!activeTls?.caCertificatePem) {
       json(response, 404, { error: "Relay does not use a managed local CA" })
       return true
     }
@@ -346,12 +343,12 @@ function trustProbe(
         "Cache-Control": "public, max-age=3600",
         "Content-Disposition": "attachment; filename=kiln-relay-ca.pem",
         "Content-Length": String(
-          Buffer.byteLength(startup.tls.caCertificatePem)
+          Buffer.byteLength(activeTls.caCertificatePem)
         ),
         "Content-Type": "application/x-pem-file",
         "X-Content-Type-Options": "nosniff",
       })
-      .end(method === "HEAD" ? undefined : startup.tls.caCertificatePem)
+      .end(method === "HEAD" ? undefined : activeTls.caCertificatePem)
     return true
   }
   if (url.pathname !== "/v1/trust" || (method !== "GET" && method !== "HEAD")) {
@@ -369,7 +366,7 @@ function trustProbe(
         : JSON.stringify({
             relayFingerprint: relayIdentity.fingerprint,
             relayName: relayIdentity.name,
-            tlsFingerprint: startup.tls?.fingerprint ?? null,
+            tlsFingerprint: activeTls?.fingerprint ?? null,
             version: 1,
           })
     )
@@ -404,7 +401,7 @@ function bootstrapDiscovery(
     relayFingerprint: invitation.envelope.relayFingerprint,
     relayPublicKeyPem: invitation.envelope.relayPublicKeyPem,
     serverNonce,
-    tlsFingerprint: startup.tls?.fingerprint ?? "development",
+    tlsFingerprint: activeTls?.fingerprint ?? "development",
   }
   const { token: _token, ...envelope } = invitation.envelope
   json(response, 200, {
@@ -418,14 +415,65 @@ function bootstrapDiscovery(
   return true
 }
 
+function scheduleTlsRefresh(): { close: () => void } {
+  if (!activeTls || !("setSecureContext" in server)) {
+    return { close: () => undefined }
+  }
+  let closed = false
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const schedule = (delay: number) => {
+    if (closed) return
+    timer = setTimeout(() => void refresh(), delay)
+    timer.unref()
+  }
+  const refresh = async () => {
+    try {
+      const material = await runRelayEffect(
+        "relay.tls.refresh",
+        loadRelayTls(config)
+      )
+      if (!material) throw new Error("TLS mode changed while Relay was running")
+      if (material.fingerprint !== activeTls?.fingerprint) {
+        server.setSecureContext({
+          cert: material.certificatePem,
+          key: material.keyPem,
+        })
+        console.log(
+          `Relay TLS certificate reloaded (${material.fingerprint})`
+        )
+      }
+      activeTls = material
+      schedule(material.mode === "external" ? 60_000 : 6 * 60 * 60_000)
+    } catch (cause) {
+      Sentry.captureException(cause, {
+        tags: { "kiln.operation": "relay.tls.refresh" },
+      })
+      console.error(
+        "Relay TLS refresh failed; retaining the last valid certificate",
+        cause
+      )
+      schedule(60_000)
+    }
+  }
+  schedule(activeTls.mode === "external" ? 60_000 : 6 * 60 * 60_000)
+  return {
+    close: () => {
+      closed = true
+      if (timer) clearTimeout(timer)
+      timer = null
+    },
+  }
+}
+
 async function shutdownRelay(signal: NodeJS.Signals): Promise<void> {
   console.log(`Received ${signal}; shutting down relay`)
+  tlsRefresh.close()
   await Promise.all([
     controlSocket.close(),
     browserSocket.close(),
     sftpServer.close(),
   ])
-  const result = await closeRelayServer(server, activeConsoleStreamControllers)
+  const result = await closeRelayServer(server, new Set())
   if (result === "forced") {
     console.warn("Relay shutdown deadline reached; closed active connections")
   }
@@ -458,11 +506,11 @@ async function relaySnapshot() {
         hostKeyFingerprint: sftpServer.hostKeyFingerprint,
         port: sftpServer.port,
       },
-      tls: startup.tls
+      tls: activeTls
         ? {
-            expiresAt: startup.tls.expiresAt,
-            fingerprint: startup.tls.fingerprint,
-            mode: startup.tls.mode,
+            expiresAt: activeTls.expiresAt,
+            fingerprint: activeTls.fingerprint,
+            mode: activeTls.mode,
           }
         : null,
     },
@@ -485,6 +533,13 @@ async function executeControlRequest(
       return lifecycle.configureNetworking(
         relayNetworkingSchema.parse(request.payload)
       )
+    case "relay.audit.list":
+      return runRelayEffect(
+        "relay.control.audit.list",
+        startup.state.listAudits(
+          typeof payload.limit === "number" ? payload.limit : 50
+        )
+      )
     case "relay.pairing.create": {
       const role = relayClientRole(payload.role)
       const customActions = relayActionSelection(payload.actions)
@@ -496,7 +551,7 @@ async function executeControlRequest(
           identity: relayIdentity,
           role,
           state: startup.state,
-          tls: startup.tls,
+          tls: activeTls,
         })
       )
       console.log(
@@ -598,13 +653,17 @@ async function executeControlRequest(
       )
     case "instance.delete": {
       const instanceId = requiredString(payload, "instanceId")
-      await lifecycle.deleteInstance(instanceId, payload.deleteData === true)
+      await serializeInstanceMutation(instanceId, () =>
+        lifecycle.deleteInstance(instanceId, payload.deleteData === true)
+      )
       return { deleted: true, instanceId }
     }
     case "instance.action": {
       const instance = await requiredInstance(payload)
       const input = relayInstanceActionSchema.parse(payload)
-      return docker.runAction(instance, input.action)
+      return serializeInstanceMutation(instance.id, () =>
+        docker.runAction(instance, input.action)
+      )
     }
     case "instance.files.list":
       return filesystem.tree(await requiredInstance(payload))
@@ -616,7 +675,9 @@ async function executeControlRequest(
     case "instance.files.write": {
       const instance = await requiredInstance(payload)
       const input = relaySaveFileInputSchema.parse(payload)
-      return filesystem.write(instance, requiredString(payload, "path"), input)
+      return serializeInstanceMutation(instance.id, () =>
+        filesystem.write(instance, requiredString(payload, "path"), input)
+      )
     }
     case "instance.console.history":
       return docker.console(
@@ -651,7 +712,6 @@ async function executeControlRequest(
       })
       return { id: relayIdentity.fingerprint, name: relayIdentity.name }
     }
-    case "browser.capability.issue":
     case "sftp.authorization.resolve":
       throw new Error(`${request.operation} is not available yet`)
   }
@@ -730,196 +790,24 @@ async function requiredInstance(payload: Readonly<Record<string, unknown>>) {
   return instance
 }
 
-function normalizedRequestOperation(url: string | undefined): string {
-  return normalizedRoute(new URL(url ?? "/", "http://relay").pathname)
+async function serializeInstanceMutation<T>(
+  instanceId: string,
+  mutate: () => Promise<T>
+): Promise<T> {
+  const previous = instanceMutations.get(instanceId) ?? Promise.resolve()
+  const current = previous.catch(() => undefined).then(mutate)
+  instanceMutations.set(instanceId, current)
+  try {
+    return await current
+  } finally {
+    if (instanceMutations.get(instanceId) === current) {
+      instanceMutations.delete(instanceId)
+    }
+  }
 }
 
-async function route(
-  request: IncomingMessage,
-  response: ServerResponse
-): Promise<void> {
-  const url = new URL(request.url ?? "/", `http://${request.headers.host}`)
-  const method = request.method ?? "GET"
-
-  if (method === "GET" && url.pathname === "/v1/snapshot") {
-    json(response, 200, await relaySnapshot())
-    return
-  }
-
-  if (method === "GET" && url.pathname === "/v1/bricks") {
-    json(response, 200, await bricks.catalog())
-    return
-  }
-
-  if (method === "GET" && url.pathname === "/v1/bricks/recipe") {
-    const source = url.searchParams.get("source")
-    if (!source) {
-      json(response, 400, {
-        error: "Recipe source is required",
-        code: "missing_recipe_source",
-      })
-      return
-    }
-    json(response, 200, { ...(await bricks.recipe(source)), source })
-    return
-  }
-
-  if (url.pathname === "/v1/networking") {
-    if (method === "GET") {
-      json(response, 200, (await lifecycle.networking()) ?? null)
-      return
-    }
-    if (method === "PUT") {
-      const input = relayNetworkingSchema.parse(await readJson(request))
-      json(response, 200, await lifecycle.configureNetworking(input))
-      return
-    }
-  }
-
-  if (method === "POST" && url.pathname === "/v1/instances") {
-    const input = relayCreateInstanceSchema.parse(await readJson(request))
-    json(response, 201, await lifecycle.createInstance(input))
-    return
-  }
-
-  const instanceRoot = url.pathname.match(/^\/v1\/instances\/([^/]+)$/u)
-  if (instanceRoot && method === "DELETE") {
-    await lifecycle.deleteInstance(
-      decodeURIComponent(instanceRoot[1]),
-      url.searchParams.get("deleteData") === "true"
-    )
-    response.writeHead(204).end()
-    return
-  }
-
-  const match = url.pathname.match(
-    /^\/v1\/instances\/([^/]+)\/(tree|file|actions|console|console-completions|console-stream|latest-log)$/u
-  )
-  if (!match) {
-    json(response, 404, { error: "Route not found", code: "not_found" })
-    return
-  }
-
-  const id = decodeURIComponent(match[1])
-  const instance = await docker.findInstance(id)
-  if (!instance) {
-    json(response, 404, { error: "Instance not found", code: "not_found" })
-    return
-  }
-
-  const resource = match[2]
-  if (method === "GET" && resource === "tree") {
-    json(response, 200, await filesystem.tree(instance))
-    return
-  }
-
-  if (resource === "file") {
-    const path = url.searchParams.get("path") ?? ""
-    if (method === "GET") {
-      json(response, 200, await filesystem.read(instance, path))
-      return
-    }
-    if (method === "PUT") {
-      const input = relaySaveFileInputSchema.parse(await readJson(request))
-      json(response, 200, await filesystem.write(instance, path, input))
-      return
-    }
-  }
-
-  if (method === "POST" && resource === "actions") {
-    const input = relayInstanceActionSchema.parse(await readJson(request))
-    json(response, 202, await docker.runAction(instance, input.action))
-    return
-  }
-
-  if (resource === "console") {
-    if (method === "GET") {
-      const limit = Number(url.searchParams.get("limit") ?? 2_000)
-      json(response, 200, await docker.console(instance, limit))
-      return
-    }
-    if (method === "POST") {
-      const input = relayConsoleCommandSchema.parse(await readJson(request))
-      await docker.sendCommand(instance, input.command)
-      json(response, 202, { accepted: true, command: input.command })
-      return
-    }
-  }
-
-  if (method === "POST" && resource === "console-completions") {
-    const input = relayConsoleCompletionInputSchema.parse(
-      await readJson(request)
-    )
-    json(
-      response,
-      200,
-      await docker.completeCommand(instance, input.input, input.cursor)
-    )
-    return
-  }
-
-  if (method === "GET" && resource === "console-stream") {
-    const activeStreams = activeConsoleStreams.get(instance.id) ?? 0
-    if (activeStreams >= MAX_CONSOLE_STREAMS_PER_INSTANCE) {
-      json(response, 429, {
-        error: "Too many active console streams for this instance",
-        code: "too_many_console_streams",
-      })
-      return
-    }
-    activeConsoleStreams.set(instance.id, activeStreams + 1)
-    const controller = new AbortController()
-    activeConsoleStreamControllers.add(controller)
-    const close = () => controller.abort()
-    response.once("close", close)
-    response.once("error", close)
-    response.writeHead(200, {
-      "Cache-Control": "no-cache, no-store",
-      Connection: "keep-alive",
-      "Content-Type": "application/x-ndjson; charset=utf-8",
-      "X-Accel-Buffering": "no",
-    })
-    response.flushHeaders()
-    let heartbeat: ReturnType<typeof setInterval> | null = null
-    try {
-      const ready = `${JSON.stringify({ type: "ready", instanceId: instance.id })}\n`
-      if (!(await writeStreamChunk(response, ready, controller.signal))) return
-      heartbeat = setInterval(() => {
-        if (!response.destroyed && !response.writableEnded) response.write("\n")
-      }, 15_000)
-      for await (const line of docker.streamConsole(
-        instance,
-        controller.signal
-      )) {
-        const chunk = `${JSON.stringify({ type: "line", line })}\n`
-        if (!(await writeStreamChunk(response, chunk, controller.signal))) break
-      }
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        console.error(`Console stream for ${instance.id} failed`, error)
-      }
-    } finally {
-      if (heartbeat) clearInterval(heartbeat)
-      response.off("close", close)
-      response.off("error", close)
-      activeConsoleStreamControllers.delete(controller)
-      const remaining = (activeConsoleStreams.get(instance.id) ?? 1) - 1
-      if (remaining > 0) activeConsoleStreams.set(instance.id, remaining)
-      else activeConsoleStreams.delete(instance.id)
-      if (!response.destroyed && !response.writableEnded) response.end()
-    }
-    return
-  }
-
-  if (method === "GET" && resource === "latest-log") {
-    json(response, 200, await filesystem.latestLog(instance))
-    return
-  }
-
-  json(response, 405, {
-    error: "Method not allowed",
-    code: "method_not_allowed",
-  })
+function normalizedRequestOperation(url: string | undefined): string {
+  return normalizedRoute(new URL(url ?? "/", "http://relay").pathname)
 }
 
 function healthCheck(
@@ -932,14 +820,6 @@ function healthCheck(
   if (url.pathname !== "/health") return false
   response.writeHead(204, { "Cache-Control": "no-store" }).end()
   return true
-}
-
-function authorize(response: ServerResponse): boolean {
-  json(response, 426, {
-    error: "Relay control operations require kiln-relay.v1 WebSocket transport",
-    code: "websocket_required",
-  })
-  return false
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
@@ -966,37 +846,4 @@ function json(response: ServerResponse, status: number, value: unknown): void {
     "Content-Type": "application/json; charset=utf-8",
   })
   response.end(JSON.stringify(value))
-}
-
-function writeStreamChunk(
-  response: ServerResponse,
-  chunk: string,
-  signal: AbortSignal
-): Promise<boolean> {
-  if (signal.aborted || response.destroyed || response.writableEnded) {
-    return Promise.resolve(false)
-  }
-  if (response.write(chunk)) return Promise.resolve(true)
-
-  return new Promise((resolvePromise) => {
-    const cleanup = () => {
-      response.off("drain", drained)
-      response.off("close", closed)
-      response.off("error", closed)
-      signal.removeEventListener("abort", closed)
-    }
-    const drained = () => {
-      cleanup()
-      resolvePromise(true)
-    }
-    const closed = () => {
-      cleanup()
-      resolvePromise(false)
-    }
-
-    response.once("drain", drained)
-    response.once("close", closed)
-    response.once("error", closed)
-    signal.addEventListener("abort", closed, { once: true })
-  })
 }

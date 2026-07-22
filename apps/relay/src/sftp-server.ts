@@ -30,13 +30,14 @@ const DEVELOPMENT_PASSWORD = "dev123"
 const MAX_OPEN_HANDLES = 128
 const DIRECTORY_BATCH_SIZE = 128
 const MAX_DIRECTORY_ENTRIES = 10_000
+const MAX_SFTP_CONNECTIONS = 64
 const DIRECTORY_MODE = fsConstants.S_IFDIR | 0o755
 const { Server, utils } = ssh2
 const { OPEN_MODE, STATUS_CODE } = utils.sftp
 
 interface SftpGrant {
+  actions: ReadonlyArray<string>
   id: string
-  readOnly: boolean
 }
 
 interface ResolvedGrant extends SftpGrant {
@@ -44,8 +45,10 @@ interface ResolvedGrant extends SftpGrant {
 }
 
 interface OpenFile {
+  actions: ReadonlyArray<string>
   file: FileHandle
   kind: "file"
+  readable: boolean
   writable: boolean
 }
 
@@ -70,6 +73,7 @@ export interface SftpServerHandle {
 }
 
 export async function attachSftpServer(options: {
+  clientActions?: (clientId: string) => Promise<ReadonlyArray<string>>
   config: RelayConfig
   control: Pick<ControlSocketServer, "requestClients">
   docker: Pick<DockerDriver, "findInstance">
@@ -85,6 +89,10 @@ export async function attachSftpServer(options: {
       keepaliveInterval: 15_000,
     },
     (client) => {
+      if (connections.size >= MAX_SFTP_CONNECTIONS) {
+        client.end()
+        return
+      }
       connections.add(client)
       let grants: ReadonlyArray<SftpGrant> | null = null
       let authenticatedUsername: string | null = null
@@ -100,7 +108,7 @@ export async function attachSftpServer(options: {
           context.reject(["password"])
           return
         }
-        void authorizeUsername(options.control, context.username)
+        void authorizeUsername(options.control, context.username, options.clientActions)
           .then((authorized) => {
             if (!authorized.length) {
               context.reject(["password"])
@@ -108,6 +116,11 @@ export async function attachSftpServer(options: {
             }
             grants = authorized
             authenticatedUsername = context.username.trim().toLowerCase()
+            Sentry.addBreadcrumb({
+              category: "relay.sftp",
+              level: "info",
+              message: "SFTP authentication accepted",
+            })
             context.accept()
           })
           .catch((cause: unknown) => {
@@ -126,7 +139,7 @@ export async function attachSftpServer(options: {
         authorizationTimer = setInterval(() => {
           if (authorizationPending || !authenticatedUsername || !grants) return
           authorizationPending = true
-          void authorizeUsername(options.control, authenticatedUsername)
+          void authorizeUsername(options.control, authenticatedUsername, options.clientActions)
             .then((authorized) => {
               if (!grants || !sameGrants(grants, authorized)) client.end()
             })
@@ -175,6 +188,11 @@ export async function attachSftpServer(options: {
       client.once("close", () => {
         if (authorizationTimer) clearInterval(authorizationTimer)
         connections.delete(client)
+        Sentry.addBreadcrumb({
+          category: "relay.sftp",
+          level: "info",
+          message: "SFTP connection closed",
+        })
       })
     }
   )
@@ -240,7 +258,8 @@ async function loadOrCreateHostKey(config: RelayConfig): Promise<Buffer> {
 
 async function authorizeUsername(
   control: Pick<ControlSocketServer, "requestClients">,
-  username: string
+  username: string,
+  clientActions?: (clientId: string) => Promise<ReadonlyArray<string>>
 ): Promise<ReadonlyArray<SftpGrant>> {
   const responses = await control.requestClients(
     "sftp.authorization.resolve",
@@ -254,18 +273,27 @@ async function authorizeUsername(
     if (payload.username.toLowerCase() !== username.trim().toLowerCase())
       continue
     if (!Array.isArray(payload.instances)) continue
-    const grants = new Map<string, boolean>()
+    const clientGrant = new Set(
+      clientActions ? await clientActions(response.clientId) : undefined
+    )
+    const grants = new Map<string, Set<string>>()
     for (const item of payload.instances) {
       const grant = record(item)
       if (!grant || typeof grant.id !== "string" || !grant.id) continue
-      if (typeof grant.readOnly !== "boolean") continue
-      const current = grants.get(grant.id)
-      grants.set(
-        grant.id,
-        current === undefined ? grant.readOnly : current && grant.readOnly
+      if (!Array.isArray(grant.actions)) continue
+      const actions = grant.actions.filter(
+        (action): action is string =>
+          typeof action === "string" &&
+          (!clientActions || clientGrant.has(action))
       )
+      if (!actions.includes("instance.files.list")) continue
+      const current = grants.get(grant.id) ?? new Set<string>()
+      for (const action of actions) current.add(action)
+      grants.set(grant.id, current)
     }
-    authorizations.push([...grants].map(([id, readOnly]) => ({ id, readOnly })))
+    authorizations.push(
+      [...grants].map(([id, actions]) => ({ actions: [...actions].sort(), id }))
+    )
   }
   if (authorizations.length !== 1) return []
   return authorizations[0] ?? []
@@ -276,8 +304,12 @@ function sameGrants(
   right: ReadonlyArray<SftpGrant>
 ): boolean {
   if (left.length !== right.length) return false
-  const expected = new Map(left.map((grant) => [grant.id, grant.readOnly]))
-  return right.every((grant) => expected.get(grant.id) === grant.readOnly)
+  const expected = new Map(
+    left.map((grant) => [grant.id, grant.actions.join("\0")])
+  )
+  return right.every(
+    (grant) => expected.get(grant.id) === grant.actions.join("\0")
+  )
 }
 
 async function resolveGrants(
@@ -316,6 +348,8 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
   const statPath = (requestId: number, requestedPath: string) => {
     void respond(requestId, async () => {
       const target = await resolvePath(grants, requestedPath, true)
+      if (target.grant)
+        requireAction(target.grant, "instance.files.list")
       if (!target.physicalPath) {
         stream.attrs(requestId, virtualDirectoryAttributes())
         return
@@ -330,6 +364,8 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
     void respond(requestId, async () => {
       ensureHandleCapacity(handles)
       const target = await resolvePath(grants, requestedPath, true)
+      if (target.grant)
+        requireAction(target.grant, "instance.files.list")
       const entries = target.physicalPath
         ? await physicalDirectoryEntries(target.physicalPath)
         : target.grant
@@ -363,20 +399,31 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
     void respond(requestId, async () => {
       ensureHandleCapacity(handles)
       const writable = Boolean(flags & (OPEN_MODE.WRITE | OPEN_MODE.APPEND))
+      const readable = Boolean(flags & OPEN_MODE.READ) || !writable
       const target = await resolvePath(
         grants,
         requestedPath,
         !(flags & OPEN_MODE.CREAT)
       )
       if (!target.grant || !target.physicalPath) throw missingPath()
-      if (writable && target.grant.readOnly) throw permissionDenied()
+      if (readable) requireAction(target.grant, "instance.files.read")
+      if (flags & OPEN_MODE.CREAT)
+        requireAction(target.grant, "instance.files.create")
+      if (writable || flags & OPEN_MODE.TRUNC)
+        requireAction(target.grant, "instance.files.write")
       const file = await open(
         target.physicalPath,
         nodeOpenFlags(flags),
         sanitizeMode(inputAttributes.mode, 0o644)
       )
       const handle = nextHandle++
-      handles.set(handle, { file, kind: "file", writable })
+      handles.set(handle, {
+        actions: target.grant.actions,
+        file,
+        kind: "file",
+        readable,
+        writable,
+      })
       stream.handle(requestId, encodeHandle(handle))
     })
   })
@@ -384,7 +431,7 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
   stream.on("READ", (requestId, encodedHandle, offset, length) => {
     void respond(requestId, async () => {
       const resource = findHandle(handles, encodedHandle)
-      if (!resource || resource.kind !== "file")
+      if (!resource || resource.kind !== "file" || !resource.readable)
         throw new Error("Invalid handle")
       const buffer = Buffer.allocUnsafe(Math.min(length, 256 * 1024))
       const result = await resource.file.read(buffer, 0, buffer.length, offset)
@@ -428,15 +475,26 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
   })
 
   stream.on("REMOVE", (requestId, requestedPath) => {
-    void mutate(requestId, requestedPath, async (path) => unlink(path))
+    void mutate(
+      requestId,
+      requestedPath,
+      "instance.files.delete",
+      async (path) => unlink(path)
+    )
   })
   stream.on("RMDIR", (requestId, requestedPath) => {
-    void mutate(requestId, requestedPath, async (path) => rmdir(path))
+    void mutate(
+      requestId,
+      requestedPath,
+      "instance.files.delete",
+      async (path) => rmdir(path)
+    )
   })
   stream.on("MKDIR", (requestId, requestedPath, inputAttributes) => {
     void mutate(
       requestId,
       requestedPath,
+      "instance.files.create",
       async (path) =>
         mkdir(path, { mode: sanitizeMode(inputAttributes.mode, 0o755) }),
       false
@@ -450,23 +508,48 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
         !source.grant ||
         !destination.grant ||
         source.grant.id !== destination.grant.id ||
-        source.grant.readOnly ||
         !source.physicalPath ||
         !destination.physicalPath
       )
         throw permissionDenied()
+      requireAction(source.grant, "instance.files.rename")
+      requireAction(destination.grant, "instance.files.rename")
       await rename(source.physicalPath, destination.physicalPath)
       stream.status(requestId, STATUS_CODE.OK)
     })
   })
 
-  for (const operation of [
-    "READLINK",
-    "SETSTAT",
-    "FSETSTAT",
-    "SYMLINK",
-    "EXTENDED",
-  ] as const) {
+  stream.on("SETSTAT", (requestId, requestedPath, inputAttributes) => {
+    void respond(requestId, async () => {
+      const target = await resolvePath(grants, requestedPath, true)
+      if (
+        !target.grant ||
+        !target.physicalPath ||
+        inputAttributes.mode === undefined
+      )
+        throw permissionDenied()
+      requireAction(target.grant, "instance.files.chmod")
+      await chmod(target.physicalPath, sanitizeMode(inputAttributes.mode, 0o644))
+      stream.status(requestId, STATUS_CODE.OK)
+    })
+  })
+  stream.on("FSETSTAT", (requestId, encodedHandle, inputAttributes) => {
+    void respond(requestId, async () => {
+      const resource = findHandle(handles, encodedHandle)
+      if (
+        !resource ||
+        resource.kind !== "file" ||
+        inputAttributes.mode === undefined
+      )
+        throw permissionDenied()
+      if (!resource.actions.includes("instance.files.chmod"))
+        throw permissionDenied()
+      await resource.file.chmod(sanitizeMode(inputAttributes.mode, 0o644))
+      stream.status(requestId, STATUS_CODE.OK)
+    })
+  })
+
+  for (const operation of ["READLINK", "SYMLINK", "EXTENDED"] as const) {
     stream.on(operation, (requestId: number) => {
       stream.status(requestId, STATUS_CODE.OP_UNSUPPORTED)
     })
@@ -482,15 +565,23 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
   async function mutate(
     requestId: number,
     requestedPath: string,
+    action: string,
     operation: (path: string) => Promise<unknown>,
     mustExist = true
   ) {
     await respond(requestId, async () => {
       const target = await resolvePath(grants, requestedPath, mustExist)
-      if (!target.grant || target.grant.readOnly || !target.physicalPath) {
+      if (!target.grant || !target.physicalPath) {
         throw permissionDenied()
       }
+      requireAction(target.grant, action)
       await operation(target.physicalPath)
+      Sentry.addBreadcrumb({
+        category: "relay.sftp.operation",
+        data: { action },
+        level: "info",
+        message: "SFTP mutation completed",
+      })
       stream.status(requestId, STATUS_CODE.OK)
     })
   }
@@ -503,6 +594,10 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
       stream.status(requestId, status, safeErrorMessage(cause))
     }
   }
+}
+
+function requireAction(grant: SftpGrant, action: string): void {
+  if (!grant.actions.includes(action)) throw permissionDenied()
 }
 
 async function resolvePath(

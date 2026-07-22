@@ -34,7 +34,20 @@ describe("Relay SFTP server", () => {
           {
             clientId: "hearth-test",
             payload: {
-              instances: [{ id: instanceId, readOnly: false }],
+              instances: [
+                {
+                  actions: [
+                    "instance.files.list",
+                    "instance.files.read",
+                    "instance.files.create",
+                    "instance.files.write",
+                    "instance.files.delete",
+                    "instance.files.rename",
+                    "instance.files.chmod",
+                  ],
+                  id: instanceId,
+                },
+              ],
               userId: "user-test",
               username: "user@example.test",
             },
@@ -88,12 +101,81 @@ describe("Relay SFTP server", () => {
     }
   })
 
+  it("intersects file operations with the paired Hearth grant", async () => {
+    const dataDirectory = await mkdtemp(resolve(tmpdir(), "kiln-sftp-test-"))
+    temporaryDirectories.push(dataDirectory)
+    const instanceId = "b".repeat(40)
+    const instanceDirectory = resolve(dataDirectory, "instances", instanceId)
+    await mkdir(instanceDirectory, { recursive: true })
+    await writeFile(resolve(instanceDirectory, "readable.txt"), "read only")
+    const server = await attachSftpServer({
+      clientActions: async () => [
+        "instance.sftp.connect",
+        "instance.files.list",
+        "instance.files.read",
+      ],
+      config: testConfig(dataDirectory),
+      control: {
+        requestClients: async () => [
+          {
+            clientId: "read-only-hearth",
+            payload: {
+              instances: [
+                {
+                  actions: [
+                    "instance.files.list",
+                    "instance.files.read",
+                    "instance.files.create",
+                    "instance.files.write",
+                  ],
+                  id: instanceId,
+                },
+              ],
+              userId: "user-test",
+              username: "user@example.test",
+            },
+          },
+        ],
+      },
+      docker: {
+        findInstance: async (id) =>
+          id === instanceId ? testInstance(instanceId) : null,
+      },
+    })
+    const client = await connect(server.port, "dev123")
+    try {
+      const stream = await sftp(client)
+      const readable = await sftpCall<Buffer>(
+        stream,
+        "readFile",
+        `/${instanceId}/readable.txt`
+      )
+      expect(readable.toString()).toBe("read only")
+      await expect(
+        sftpCall(
+          stream,
+          "writeFile",
+          `/${instanceId}/forbidden.txt`,
+          Buffer.from("no")
+        )
+      ).rejects.toThrow()
+    } finally {
+      client.end()
+      await server.close()
+    }
+  })
+
   it("rejects an email claimed by more than one connected Hearth", async () => {
     const dataDirectory = await mkdtemp(resolve(tmpdir(), "kiln-sftp-test-"))
     temporaryDirectories.push(dataDirectory)
     await mkdir(resolve(dataDirectory, "instances"), { recursive: true })
     const authorization = {
-      instances: [{ id: "a".repeat(40), readOnly: true }],
+      instances: [
+        {
+          actions: ["instance.files.list", "instance.files.read"],
+          id: "a".repeat(40),
+        },
+      ],
       userId: "user-test",
       username: "user@example.test",
     }
@@ -191,6 +273,7 @@ function execute(client: ssh2.Client, command: string): Promise<void> {
 function testConfig(dataDirectory: string): RelayConfig {
   return {
     advertisedHost: "127.0.0.1",
+    advertisedHostInferred: false,
     bootstrapToken: null,
     brickCatalogUrl: "https://example.test/catalog.yml",
     browserOrigin: "https://127.0.0.1:4100",
@@ -204,6 +287,7 @@ function testConfig(dataDirectory: string): RelayConfig {
     nodeId: "test",
     nodeName: "Test Relay",
     port: 4100,
+    publicPort: 4100,
     projectDirectory: resolve(dataDirectory, "instances"),
     projectName: "test",
     rootDirectory: resolve(dataDirectory, "instances"),

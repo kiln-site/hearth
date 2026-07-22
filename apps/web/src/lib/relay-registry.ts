@@ -81,6 +81,13 @@ export interface RelayClientAdministration {
 }
 
 export interface RelayAdministration {
+  audits: ReadonlyArray<{
+    clientId: string | null
+    event: string
+    id: string
+    occurredAt: number
+    requestId: string | null
+  }>
   clients: ReadonlyArray<RelayClientAdministration>
   invitations: ReadonlyArray<{
     actions: ReadonlyArray<string>
@@ -167,6 +174,13 @@ const relayInvitationAdministrationSchema = z.object({
   id: z.uuid(),
   role: relayRoleSchema,
 })
+const relayAuditAdministrationSchema = z.object({
+  clientId: z.string().nullable(),
+  event: z.string().min(1).max(120),
+  id: z.string().min(1),
+  occurredAt: z.number().int().nonnegative(),
+  requestId: z.string().nullable(),
+})
 const pairingInvitationBundleSchema = z.object({
   envelope: pairingEnvelopeSchema,
   token: z.string().min(32),
@@ -220,7 +234,10 @@ export async function getRelayAdministration(
     requiredPersistedRelay(relayId),
     import("@/lib/relay-connection"),
   ])
-  const [clients, invitations, snapshot] = await Promise.all([
+  const [audits, clients, invitations, snapshot] = await Promise.all([
+    relayRpc(relay, "relay.audit.list", { limit: 50 }, 5_000).then((value) =>
+      z.array(relayAuditAdministrationSchema).parse(value)
+    ),
     relayRpc(relay, "relay.clients.list", {}, 5_000).then((value) =>
       z.array(relayClientAdministrationSchema).parse(value)
     ),
@@ -231,7 +248,7 @@ export async function getRelayAdministration(
       relaySnapshotSchema.parse(value)
     ),
   ])
-  return { clients, invitations, service: snapshot.relay }
+  return { audits, clients, invitations, service: snapshot.relay }
 }
 
 export async function createRelayPairingInvitation(input: {

@@ -331,7 +331,7 @@ function pairingEnvelope(input: {
   return {
     browserOrigin: input.config.browserOrigin,
     caCertificatePem: input.tls?.caCertificatePem ?? null,
-    controlEndpoint: `${secure ? "wss" : "ws"}://${urlHost(input.config.advertisedHost)}:${input.config.port}/v1/socket`,
+    controlEndpoint: `${secure ? "wss" : "ws"}://${urlHost(input.config.advertisedHost)}:${input.config.publicPort}/v1/socket`,
     expiresAt: input.expiresAt,
     invitationId: input.invitationId,
     relayFingerprint: input.identity.fingerprint,

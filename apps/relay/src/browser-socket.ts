@@ -16,6 +16,10 @@ import {
   relayBrowserProtocol,
 } from "@workspace/contracts"
 import type { RelayConsoleLine } from "@workspace/contracts"
+import {
+  relayConsoleCommandSchema,
+  relayConsoleCompletionInputSchema,
+} from "@workspace/contracts"
 
 import type { DockerDriver } from "./docker.js"
 import type { FilesystemDriver } from "./files.js"
@@ -29,6 +33,9 @@ import type { IncomingMessage, ServerResponse } from "node:http"
 const AUTHENTICATION_WINDOW_MS = 10_000
 const MAX_BUFFERED_BYTES = 2 * 1024 * 1024
 const HTTP_PROOF_WINDOW_MS = 30_000
+const MAX_BROWSER_SESSIONS = 512
+const MAX_DIRECT_TRANSFERS = 32
+const MAX_DIRECT_TRANSFERS_PER_CLIENT = 8
 
 const BrowserAuthSchema = Schema.Struct({
   capability: Schema.String,
@@ -48,6 +55,29 @@ const BrowserPublicKeySchema = BrowserAuthSchema.fields.publicKeyJwk
 const BrowserSubscribeSchema = Schema.Struct({
   instanceId: Schema.String,
   type: Schema.Literal("console.subscribe"),
+  v: Schema.Literal(1),
+})
+
+const BrowserResourceSubscribeSchema = Schema.Struct({
+  instanceId: Schema.String,
+  type: Schema.Literal("resource.subscribe"),
+  v: Schema.Literal(1),
+})
+
+const BrowserConsoleWriteSchema = Schema.Struct({
+  command: Schema.String,
+  instanceId: Schema.String,
+  requestId: Schema.String,
+  type: Schema.Literal("console.write"),
+  v: Schema.Literal(1),
+})
+
+const BrowserConsoleCompleteSchema = Schema.Struct({
+  cursor: Schema.Number,
+  input: Schema.String,
+  instanceId: Schema.String,
+  requestId: Schema.String,
+  type: Schema.Literal("console.complete"),
   v: Schema.Literal(1),
 })
 
@@ -92,7 +122,9 @@ export function attachBrowserSocket(
   const sockets = new Set<WebSocket>()
   const socketIssuers = new Map<WebSocket, string>()
   const requestProofs = new Map<string, number>()
+  const transfers = { active: 0, byClient: new Map<string, number>() }
   const hubs = new ConsoleHubRegistry(options.docker)
+  const resourceHubs = new ResourceHubRegistry(options.docker)
   const wss = new WebSocketServer({
     clientTracking: false,
     handleProtocols: (protocols) =>
@@ -120,30 +152,42 @@ export function attachBrowserSocket(
   })
 
   wss.on("connection", (socket, request) => {
+    if (sockets.size >= MAX_BROWSER_SESSIONS) {
+      socket.close(1013, "Relay browser session capacity reached")
+      return
+    }
     sockets.add(socket)
     const origin = request.headers.origin
     if (!origin) {
       socket.close(4403, "Browser origin is required")
       return
     }
-    authenticateBrowser(socket, origin, options, hubs, (clientId) => {
+    authenticateBrowser(socket, origin, options, hubs, resourceHubs, (clientId) => {
       socketIssuers.set(socket, clientId)
     })
     socket.once("close", () => {
       sockets.delete(socket)
       socketIssuers.delete(socket)
       hubs.remove(socket)
+      resourceHubs.remove(socket)
     })
   })
 
   return {
     close: async () => {
       hubs.close()
+      resourceHubs.close()
       for (const socket of sockets) socket.close(1001, "Relay shutting down")
       await new Promise<void>((resolve) => wss.close(() => resolve()))
     },
     handleRequest: (request, response) =>
-      handleBrowserFileRequest(request, response, options, requestProofs),
+      handleBrowserFileRequest(
+        request,
+        response,
+        options,
+        requestProofs,
+        transfers
+      ),
     revokeClient: (clientId) => {
       for (const [socket, issuer] of socketIssuers) {
         if (issuer === clientId) socket.close(4403, "Capability issuer changed")
@@ -157,6 +201,7 @@ function authenticateBrowser(
   origin: string,
   options: BrowserSocketOptions,
   hubs: ConsoleHubRegistry,
+  resourceHubs: ResourceHubRegistry,
   onAuthenticated: (clientId: string) => void
 ): void {
   const challenge = {
@@ -194,9 +239,7 @@ function authenticateBrowser(
       return
     }
     try {
-      const subscription = Schema.decodeUnknownSync(BrowserSubscribeSchema)(
-        input
-      )
+      const subscription = Schema.decodeUnknownSync(BrowserSubscribeSchema)(input)
       if (
         subscription.instanceId !== capability.instanceId ||
         !capability.actions.includes("instance.console.read")
@@ -207,8 +250,50 @@ function authenticateBrowser(
       void hubs
         .subscribe(socket, subscription.instanceId)
         .catch(() => socket.close(4500, "Console stream failed"))
+      return
     } catch {
-      socket.close(4400, "Invalid browser subscription")
+      // Try the other supported subscription shape below.
+    }
+    try {
+      const subscription = Schema.decodeUnknownSync(BrowserResourceSubscribeSchema)(input)
+      if (
+        subscription.instanceId !== capability.instanceId ||
+        !capability.actions.includes("instance.read")
+      ) {
+        socket.close(4403, "Resource capability does not allow this instance")
+        return
+      }
+      resourceHubs.subscribe(socket, subscription.instanceId)
+      return
+    } catch {
+      // Try the supported console operations below.
+    }
+    try {
+      const request = Schema.decodeUnknownSync(BrowserConsoleWriteSchema)(input)
+      if (
+        request.instanceId !== capability.instanceId ||
+        !capability.actions.includes("instance.console.write")
+      ) {
+        socket.close(4403, "Console capability does not allow writes")
+        return
+      }
+      void executeConsoleWrite(socket, request, options.docker)
+      return
+    } catch {
+      // Try command completion below.
+    }
+    try {
+      const request = Schema.decodeUnknownSync(BrowserConsoleCompleteSchema)(input)
+      if (
+        request.instanceId !== capability.instanceId ||
+        !capability.actions.includes("instance.console.write")
+      ) {
+        socket.close(4403, "Console capability does not allow completion")
+        return
+      }
+      void executeConsoleCompletion(socket, request, options.docker)
+    } catch {
+      socket.close(4400, "Invalid browser operation")
     }
   })
 
@@ -232,7 +317,7 @@ function authenticateBrowser(
       client,
       origin,
       options.identity.fingerprint,
-      "instance.console.read"
+      null
     )
     if (
       browserKeyThumbprint(auth.publicKeyJwk) !== parsed.payload.keyThumbprint
@@ -275,6 +360,62 @@ function authenticateBrowser(
   }
 }
 
+async function executeConsoleWrite(
+  socket: WebSocket,
+  request: typeof BrowserConsoleWriteSchema.Type,
+  docker: DockerDriver
+): Promise<void> {
+  try {
+    const instance = await docker.findInstance(request.instanceId)
+    if (!instance) throw new Error("Instance not found")
+    const input = relayConsoleCommandSchema.parse({ command: request.command })
+    await docker.sendCommand(instance, input.command)
+    send(socket, {
+      operation: "console.write",
+      payload: { accepted: true, command: input.command },
+      requestId: request.requestId,
+      type: "operation.result",
+    })
+  } catch {
+    send(socket, {
+      code: "console_write_failed",
+      message: "Command could not be sent",
+      requestId: request.requestId,
+      type: "operation.error",
+    })
+  }
+}
+
+async function executeConsoleCompletion(
+  socket: WebSocket,
+  request: typeof BrowserConsoleCompleteSchema.Type,
+  docker: DockerDriver
+): Promise<void> {
+  try {
+    const instance = await docker.findInstance(request.instanceId)
+    if (!instance) throw new Error("Instance not found")
+    const input = relayConsoleCompletionInputSchema.parse(request)
+    const payload = await docker.completeCommand(
+      instance,
+      input.input,
+      input.cursor
+    )
+    send(socket, {
+      operation: "console.complete",
+      payload,
+      requestId: request.requestId,
+      type: "operation.result",
+    })
+  } catch {
+    send(socket, {
+      code: "console_completion_failed",
+      message: "Completions are unavailable",
+      requestId: request.requestId,
+      type: "operation.error",
+    })
+  }
+}
+
 function decodeCapability(value: string): {
   encoded: string
   payload: BrowserCapability
@@ -296,7 +437,7 @@ function validateCapability(
   client: RelayClientGrant,
   origin: string,
   relayId: string,
-  requiredAction: string
+  requiredAction: string | null
 ): void {
   if (
     capability.payload.audience !== relayId ||
@@ -304,8 +445,10 @@ function validateCapability(
     capability.payload.issuedAt > Date.now() + 5_000 ||
     capability.payload.origin !== origin ||
     !client.origins.includes(origin) ||
-    !client.actions.includes(requiredAction) ||
-    !capability.payload.actions.includes(requiredAction) ||
+    capability.payload.actions.length === 0 ||
+    (requiredAction !== null && !client.actions.includes(requiredAction)) ||
+    (requiredAction !== null &&
+      !capability.payload.actions.includes(requiredAction)) ||
     capability.payload.actions.some(
       (action) => !client.actions.includes(action)
     ) ||
@@ -324,7 +467,8 @@ async function handleBrowserFileRequest(
   request: IncomingMessage,
   response: ServerResponse,
   options: BrowserSocketOptions,
-  requestProofs: Map<string, number>
+  requestProofs: Map<string, number>,
+  transfers: { active: number; byClient: Map<string, number> }
 ): Promise<boolean> {
   const url = new URL(request.url ?? "/", "http://relay")
   const match = url.pathname.match(/^\/v1\/browser\/files\/([^/]+)$/u)
@@ -366,8 +510,9 @@ async function handleBrowserFileRequest(
   }
   const instanceId = decodeURIComponent(match[1])
   const path = url.searchParams.get("path") ?? ""
+  let authentication: Awaited<ReturnType<typeof authenticateBrowserRequest>>
   try {
-    await authenticateBrowserRequest({
+    authentication = await authenticateBrowserRequest({
       instanceId,
       method,
       options,
@@ -386,6 +531,23 @@ async function handleBrowserFileRequest(
     return true
   }
 
+  const clientId = authentication.clientId
+  const clientTransfers = transfers.byClient.get(clientId) ?? 0
+  if (
+    transfers.active >= MAX_DIRECT_TRANSFERS ||
+    clientTransfers >= MAX_DIRECT_TRANSFERS_PER_CLIENT
+  ) {
+    browserJson(
+      response,
+      429,
+      { error: "Relay file transfer capacity reached" },
+      origin
+    )
+    return true
+  }
+  transfers.active += 1
+  transfers.byClient.set(clientId, clientTransfers + 1)
+
   try {
     const instance = await options.docker.findInstance(instanceId)
     if (!instance) {
@@ -394,6 +556,7 @@ async function handleBrowserFileRequest(
     }
     if (method === "PUT") {
       const uploaded = await options.filesystem.upload(instance, path, request)
+      void auditBrowserTransfer(options, authentication, method, uploaded.size)
       browserJson(response, 200, uploaded, origin)
       return true
     }
@@ -422,6 +585,12 @@ async function handleBrowserFileRequest(
       createReadStream(download.absolutePath, range ?? undefined),
       response
     )
+    void auditBrowserTransfer(
+      options,
+      authentication,
+      method,
+      range ? range.end - range.start + 1 : download.size
+    )
   } catch (cause) {
     Sentry.captureException(cause, {
       tags: {
@@ -431,6 +600,11 @@ async function handleBrowserFileRequest(
       },
     })
     browserJson(response, 400, { error: safeBrowserError(cause) }, origin)
+  } finally {
+    transfers.active -= 1
+    const remaining = (transfers.byClient.get(clientId) ?? 1) - 1
+    if (remaining > 0) transfers.byClient.set(clientId, remaining)
+    else transfers.byClient.delete(clientId)
   }
   return true
 }
@@ -443,12 +617,14 @@ async function authenticateBrowserRequest(input: {
   path: string
   request: IncomingMessage
   requestProofs: Map<string, number>
-}): Promise<void> {
+}): Promise<{ capabilityId: string; clientId: string; subject: string }> {
   const authorization = header(input.request, "authorization")
   if (!authorization.startsWith("Kiln ")) throw new Error("Missing capability")
   const parsed = decodeCapability(authorization.slice(5))
   const requiredAction =
-    input.method === "PUT" ? "instance.files.write" : "instance.files.read"
+    input.method === "PUT"
+      ? "instance.files.upload"
+      : "instance.files.download"
   const client = await input.options.runEffect(
     input.options.state.findClientById(parsed.payload.issuer)
   )
@@ -513,6 +689,44 @@ async function authenticateBrowserRequest(input: {
   )
   if (!valid) throw new Error("Browser request proof is invalid")
   input.requestProofs.set(replayKey, parsed.payload.expiresAt)
+  return {
+    capabilityId: parsed.payload.capabilityId,
+    clientId: client.id,
+    subject: parsed.payload.subject,
+  }
+}
+
+async function auditBrowserTransfer(
+  options: BrowserSocketOptions,
+  authentication: {
+    capabilityId: string
+    clientId: string
+    subject: string
+  },
+  method: "GET" | "HEAD" | "PUT",
+  bytes: number
+): Promise<void> {
+  try {
+    await options.runEffect(
+      options.state.appendAudit({
+        clientId: authentication.clientId,
+        details: {
+          bytes,
+          method,
+          subject: authentication.subject,
+        },
+        event:
+          method === "PUT" ? "browser.file.upload" : "browser.file.download",
+        id: randomUUID(),
+        occurredAt: Date.now(),
+        requestId: authentication.capabilityId,
+      })
+    )
+  } catch (cause) {
+    Sentry.captureException(cause, {
+      tags: { "kiln.operation": "browser.file.audit" },
+    })
+  }
 }
 
 function header(request: IncomingMessage, name: string): string {
@@ -653,6 +867,66 @@ class ConsoleHubRegistry {
     for (const hub of this.#hubs.values()) hub.close()
     this.#hubs.clear()
     this.#subscriptions.clear()
+  }
+}
+
+class ResourceHubRegistry {
+  readonly #docker: DockerDriver
+  readonly #subscriptions = new Map<WebSocket, string>()
+  #sequence = 0
+  #timer: ReturnType<typeof setTimeout> | null = null
+  #closed = false
+
+  constructor(docker: DockerDriver) {
+    this.#docker = docker
+  }
+
+  subscribe(socket: WebSocket, instanceId: string): void {
+    this.#subscriptions.set(socket, instanceId)
+    if (!this.#timer) void this.#sample()
+  }
+
+  remove(socket: WebSocket): void {
+    this.#subscriptions.delete(socket)
+    if (this.#subscriptions.size === 0 && this.#timer) {
+      clearTimeout(this.#timer)
+      this.#timer = null
+    }
+  }
+
+  close(): void {
+    this.#closed = true
+    if (this.#timer) clearTimeout(this.#timer)
+    this.#timer = null
+    this.#subscriptions.clear()
+  }
+
+  async #sample(): Promise<void> {
+    if (this.#closed || this.#subscriptions.size === 0) return
+    try {
+      const instances = await this.#docker.inspectInstances()
+      const byId = new Map(instances.map((instance) => [instance.id, instance]))
+      for (const [socket, instanceId] of this.#subscriptions) {
+        const instance = byId.get(instanceId)
+        if (instance) {
+          send(socket, {
+            instance,
+            sequence: this.#sequence,
+            type: "resource",
+          })
+        }
+      }
+      this.#sequence += 1
+    } catch {
+      // A transient Docker sample failure must not tear down browser sessions.
+    } finally {
+      if (!this.#closed && this.#subscriptions.size > 0) {
+        this.#timer = setTimeout(() => void this.#sample(), 2_000)
+        this.#timer.unref()
+      } else {
+        this.#timer = null
+      }
+    }
   }
 }
 

@@ -47,6 +47,7 @@ import type {
 } from "@/components/instance-workspace-context"
 import { WorkspaceFrame } from "@/components/workspace-frame"
 import { roleHasPermission } from "@/lib/permissions"
+import { openRelayResourceStream } from "@/lib/relay-resource-stream"
 import {
   accessCapabilitiesQueryOptions,
   queryKeys,
@@ -137,9 +138,87 @@ function InstanceRelayConnectionBoundary({
 
   return (
     <InstanceRelayConnectedContext.Provider value={relayConnected}>
+      <RelayResourceStreamController
+        instance={instance}
+        relayConnected={relayConnected}
+      />
       {children}
     </InstanceRelayConnectedContext.Provider>
   )
+}
+
+function RelayResourceStreamController({
+  instance,
+  relayConnected,
+}: {
+  instance: InstanceWorkspaceInstance
+  relayConnected: boolean
+}) {
+  const queryClient = useQueryClient()
+
+  React.useEffect(() => {
+    if (!relayConnected) return
+    const lifecycle = new AbortController()
+    let cancelled = false
+
+    async function connect() {
+      let retryDelay = 500
+      while (!cancelled) {
+        try {
+          const stream = openRelayResourceStream(
+            instance.relayId,
+            instance.id,
+            lifecycle.signal
+          )
+          let lastSequence = -1
+          for await (const event of stream) {
+            if (cancelled) break
+            if (event.sequence <= lastSequence) continue
+            lastSequence = event.sequence
+            queryClient.setQueryData<RelayFleetSnapshot>(
+              queryKeys.relay.snapshot,
+              (snapshot) =>
+                snapshot
+                  ? {
+                      ...snapshot,
+                      instances: snapshot.instances.map((current) =>
+                        current.id === event.instance.id &&
+                        current.relayId === instance.relayId
+                          ? { ...current, ...event.instance }
+                          : current
+                      ),
+                    }
+                  : snapshot
+            )
+          }
+          if (!cancelled) throw new Error("Relay resource stream closed")
+        } catch {
+          if (cancelled) break
+          await new Promise<void>((resolve) => {
+            const finish = () => {
+              lifecycle.signal.removeEventListener("abort", abort)
+              resolve()
+            }
+            const timer = window.setTimeout(finish, retryDelay)
+            const abort = () => {
+              window.clearTimeout(timer)
+              finish()
+            }
+            lifecycle.signal.addEventListener("abort", abort, { once: true })
+          })
+          retryDelay = Math.min(retryDelay * 2, 5_000)
+        }
+      }
+    }
+
+    void connect()
+    return () => {
+      cancelled = true
+      lifecycle.abort()
+    }
+  }, [instance.id, instance.relayId, queryClient, relayConnected])
+
+  return null
 }
 
 type ServerAction = "start" | "stop" | "restart" | "kill"

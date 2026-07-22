@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises"
 import { basename, dirname, join, relative, resolve, sep } from "node:path"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { gunzip } from "node:zlib"
 import { promisify } from "node:util"
 
@@ -220,7 +220,12 @@ export class FilesystemDriver {
     instance: RelayInstanceConfig,
     requestedPath: string,
     source: AsyncIterable<Uint8Array>
-  ): Promise<{ modifiedAt: string; path: string; size: number }> {
+  ): Promise<{
+    modifiedAt: string
+    path: string
+    sha256: string
+    size: number
+  }> {
     validateRelativePath(requestedPath)
     const root = await this.#instanceRoot(instance)
     const candidate = resolve(root, requestedPath)
@@ -244,6 +249,7 @@ export class FilesystemDriver {
     const temporary = resolve(parent, `.kiln-upload-${randomUUID()}`)
     const file = await open(temporary, "wx", mode)
     let size = 0
+    const digest = createHash("sha256")
     try {
       for await (const chunk of source) {
         size += chunk.byteLength
@@ -253,6 +259,7 @@ export class FilesystemDriver {
             "Upload exceeds the 20 GiB transfer limit"
           )
         }
+        digest.update(chunk)
         await file.write(chunk)
       }
       await file.sync()
@@ -267,6 +274,7 @@ export class FilesystemDriver {
     return {
       modifiedAt: metadata.mtime.toISOString(),
       path: requestedPath,
+      sha256: digest.digest("hex"),
       size,
     }
   }

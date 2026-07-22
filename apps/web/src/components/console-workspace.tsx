@@ -48,16 +48,16 @@ import type {
   ConsoleUiStore,
 } from "@/components/console/console-stores"
 import { openRelayConsoleStream } from "@/lib/relay-console-stream"
+import {
+  completeDirectRelayCommand,
+  sendDirectRelayCommand,
+} from "@/lib/relay-console-command"
 import { redactSensitiveText } from "@/lib/redaction"
 import { queryKeys, relaySnapshotQueryOptions } from "@/lib/query-options"
 import { selectInstanceObservedState } from "@/lib/relay-selectors"
 import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
 import { useInstanceRelayConnected } from "@/components/instance-workspace-context"
-import {
-  completeRelayCommand,
-  sendRelayCommand,
-  uploadLatestLogToMclogs,
-} from "@/server/relay"
+import { uploadLatestLogToMclogs } from "@/server/relay"
 
 const consoleTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
@@ -1152,9 +1152,12 @@ function useConsoleCommand(
       suggestions: [],
     })
     try {
-      const result = await completeRelayCommand({
-        data: { instanceId, relayId, input, cursor },
-      })
+      const result = await completeDirectRelayCommand(
+        relayId,
+        instanceId,
+        input,
+        cursor
+      )
       if (completionRequest.current !== requestId) return
       if (!result.supported) {
         completionSessionActive.current = false
@@ -1315,9 +1318,7 @@ function useConsoleCommand(
     window.requestAnimationFrame(() => inputRef.current?.focus())
     setSending(true)
     try {
-      await sendRelayCommand({
-        data: { instanceId, relayId, command },
-      })
+      await sendDirectRelayCommand(relayId, instanceId, command)
       setError(null)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Command failed")

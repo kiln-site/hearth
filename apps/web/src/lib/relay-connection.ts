@@ -87,6 +87,9 @@ class RelayConnection {
       timer: ReturnType<typeof setTimeout>
     }
   >()
+  #hasPushedSnapshot = false
+  #pushedSnapshot: unknown = null
+  #eventSequence = 0
   #relay: RelayEndpoint
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null
   #socket: WebSocket | null = null
@@ -110,6 +113,11 @@ class RelayConnection {
     timeoutMs: number
   ): Promise<unknown> {
     await this.#connect()
+    if (operation === "relay.snapshot" && this.#hasPushedSnapshot) {
+      const snapshot = this.#pushedSnapshot
+      this.#hasPushedSnapshot = false
+      return snapshot
+    }
     const socket = this.#socket
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       throw new Error("Relay control socket is not connected")
@@ -171,6 +179,8 @@ class RelayConnection {
 
   async #open(): Promise<void> {
     this.#setState("connecting", null)
+    this.#eventSequence = 0
+    this.#hasPushedSnapshot = false
     const { loadRelayCredentials } = await import("@/lib/relay-registry")
     this.#credentials = await loadRelayCredentials(this.#relay.id)
     const protocol = this.#relay.useTls ? "wss" : "ws"
@@ -188,6 +198,7 @@ class RelayConnection {
     this.#socket = socket
     try {
       await new Promise<void>((resolve, reject) => {
+        let authenticated = false
         const authenticationTimer = setTimeout(
           () => reject(new Error("Relay authentication timed out")),
           10_000
@@ -219,10 +230,29 @@ class RelayConnection {
               reject(new Error("Relay authenticated the wrong Hearth identity"))
               return
             }
-            clearTimeout(authenticationTimer)
             this.#attempt = 0
             this.#setState("authenticated", null)
-            resolve()
+            authenticated = true
+            if (this.#hasPushedSnapshot) {
+              clearTimeout(authenticationTimer)
+              resolve()
+            }
+            return
+          }
+          if (message.type === "event") {
+            if (message.seq <= this.#eventSequence) {
+              reject(new Error("Relay event sequence moved backwards"))
+              return
+            }
+            this.#eventSequence = message.seq
+            if (message.event === "relay.snapshot") {
+              this.#pushedSnapshot = message.payload
+              this.#hasPushedSnapshot = true
+              if (authenticated) {
+                clearTimeout(authenticationTimer)
+                resolve()
+              }
+            }
             return
           }
           void this.#handleMessage(message)

@@ -37,6 +37,8 @@ const HEARTBEAT_INTERVAL_MS = 15_000
 const MAX_BUFFERED_BYTES = 4 * 1024 * 1024
 const MAX_IN_FLIGHT_REQUESTS = 32
 const MAX_REQUEST_DEADLINE_MS = 30_000
+const MAX_CONTROL_SESSIONS = 128
+const MAX_CONTROL_SESSIONS_PER_CLIENT = 4
 
 export interface ControlSocketOptions {
   readonly execute: (
@@ -102,6 +104,10 @@ export function attachControlSocket(
   })
 
   wss.on("connection", (socket, request) => {
+    if (sockets.size >= MAX_CONTROL_SESSIONS) {
+      socket.close(1013, "Relay control session capacity reached")
+      return
+    }
     sockets.add(socket)
     authenticateSocket(
       socket,
@@ -284,6 +290,15 @@ function authenticateSocket(
       )
       return
     }
+    if (inFlight.has(message.id)) {
+      sendError(
+        socket,
+        message.id,
+        "duplicate_request",
+        "A request with this ID is already in flight"
+      )
+      return
+    }
     void executeRequest(message, authenticatedClient)
   })
 
@@ -387,6 +402,13 @@ function authenticateSocket(
   async function completedAuthentication(
     client: RelayClientGrant
   ): Promise<void> {
+    const clientSessionCount = [...authenticatedSockets.values()].filter(
+      (authenticated) => authenticated.id === client.id
+    ).length
+    if (clientSessionCount >= MAX_CONTROL_SESSIONS_PER_CLIENT) {
+      socket.close(4429, "Hearth client session capacity reached")
+      return
+    }
     authenticatedClient = client
     clearTimeout(authenticationTimeout)
     sessions.set(challenge.sessionId, client)
@@ -484,6 +506,8 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
       return "relay.read"
     case "relay.rename":
       return "relay.rename"
+    case "relay.audit.list":
+      return "relay.audit.read"
     case "relay.networking.read":
       return "instance.network.read"
     case "relay.networking.write":
@@ -529,11 +553,10 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
       return "instance.console.read"
     case "instance.logs.latest":
       return "instance.logs.read"
-    case "browser.capability.issue":
-      return "relay.read"
     case "sftp.authorization.resolve":
       return "instance.sftp.connect"
   }
+  return null
 }
 
 function objectString(value: unknown, key: string): string | null {

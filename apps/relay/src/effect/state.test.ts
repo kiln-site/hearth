@@ -128,5 +128,30 @@ describe("Relay state", () => {
         )
       })
     )
+
+    it.effect("returns bounded security audit history newest first", () =>
+      Effect.gen(function* () {
+        const store = yield* RelayStateStore
+        yield* store.appendAudit({
+          clientId: "hearth-audit",
+          details: { role: "read_only" },
+          event: "client.updated",
+          id: "audit-1",
+          occurredAt: 10,
+          requestId: "request-1",
+        })
+        yield* store.appendAudit({
+          clientId: "hearth-audit",
+          details: {},
+          event: "client.revoked",
+          id: "audit-2",
+          occurredAt: 20,
+          requestId: "request-2",
+        })
+        const audits = yield* store.listAudits(1)
+        assert.lengthOf(audits, 1)
+        assert.strictEqual(audits[0]?.id, "audit-2")
+      })
+    )
   })
 })

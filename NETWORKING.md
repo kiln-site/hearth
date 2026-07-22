@@ -14,12 +14,13 @@ Completed and locally verified:
 - Relay-managed CA/leaf TLS lifecycle, external certificate validation, CA
   download/trust probe, and browser trust guidance without requiring port 443.
 - Browser proof-of-possession capabilities, shared direct console streaming,
-  and direct HTTPS upload/download with exact Origin/path/action scope,
-  anti-replay nonces, atomic uploads, byte ranges, and no Hearth byte proxy.
+  commands/completions and resource/status streaming, plus direct HTTPS
+  upload/download with exact Origin/path/action scope, anti-replay nonces,
+  atomic uploads, byte ranges, response hashes, and no Hearth byte proxy.
 - Relay-owned SFTP on configurable `KILN_RELAY_SFTP_PORT` (default 2022), a
   persistent host key, email/`dev123` development authentication, live Hearth
-  authorization, multi-instance virtual roots, read-only grants, and complete
-  shell/exec/PTY rejection.
+  authorization, multi-instance virtual roots, action-by-action filesystem
+  grants, bounded sessions/handles, and complete shell/exec/PTY rejection.
 - Full-access/read-only foundations, stable action keys, Relay/instance cache
   synchronization, and browser/Hearth/Relay disconnect recovery notices.
 - Relay-authoritative naming plus platform-admin management for pending pairing
@@ -30,11 +31,22 @@ Completed and locally verified:
   reauthentication after policy changes.
 - Relay setup surfaces for the advertised SFTP host, configurable port, stable
   host-key fingerprint, and explicitly development-only credentials.
+- Shared Relay resource sampling with ordered sequence numbers, initial pushed
+  control snapshots, per-instance mutation serialization, bounded control,
+  browser, transfer, and SFTP concurrency, and durable redacted security audit
+  history visible to platform administrators.
+- Managed-certificate renewal and mounted-certificate validation/hot reload on
+  the active listener while preserving the last valid certificate, plus
+  optional public host inference with explicit NAT/Docker/privacy warnings.
+- Legacy authenticated HTTP control routes and Hearth-proxied interactive
+  console operations removed after WSS parity.
 
-Remaining checkpoints are tracked by the sections below: direct resource
-streams, production SFTP credentials/keys, ACME and hot
-external-certificate reload, and the final observability/load/security
-validation pass.
+The deliberately deferred production extensions are provider-specific Relay
+ACME DNS-01 automation and production SFTP credential/public-key issuance. The
+first release uses Relay-managed private-CA TLS or mounted certificates from a
+standard ACME manager, and the requested email/`dev123` SFTP scaffold refuses
+to start in production. Remaining work is the final local integration,
+observability, load, and security validation pass.
 
 ## Summary
 

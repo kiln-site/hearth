@@ -51,6 +51,7 @@ describe("Relay control socket", () => {
       findClientByPublicKey: () => Effect.succeed(null),
       getMetadata: () => Effect.succeed(null),
       listClients: () => Effect.succeed([client]),
+      listAudits: () => Effect.succeed([]),
       listInvitations: () => Effect.succeed([]),
       pairClient: () => Effect.void,
       revokeClient: () => Effect.succeed(false),

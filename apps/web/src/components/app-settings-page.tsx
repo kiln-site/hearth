@@ -829,9 +829,44 @@ function RelayAdministrationPanel({ relay }: { relay: PersistedRelay }) {
               />
             ))}
           </div>
+          <RelayAuditTrail audits={query.data.audits} />
         </>
       ) : null}
     </div>
+  )
+}
+
+function RelayAuditTrail({
+  audits,
+}: {
+  audits: RelayAdministration["audits"]
+}) {
+  return (
+    <details className="rounded-lg border border-border/70 bg-background/30 p-3">
+      <summary className="cursor-pointer text-xs font-semibold">
+        Recent security activity ({audits.length})
+      </summary>
+      {audits.length ? (
+        <ol className="mt-3 max-h-64 space-y-2 overflow-y-auto">
+          {audits.map((audit) => (
+            <li key={audit.id} className="border-l border-primary/25 pl-2.5">
+              <p className="font-mono text-[9px] text-foreground">
+                {audit.event}
+              </p>
+              <p className="mt-0.5 font-mono text-[8px] text-muted-foreground">
+                {invitationTimeFormatter.format(new Date(audit.occurredAt))}
+                {audit.clientId ? ` · ${audit.clientId.slice(0, 8)}` : ""}
+                {audit.requestId ? ` · ${audit.requestId.slice(0, 8)}` : ""}
+              </p>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="mt-2 text-[9px] text-muted-foreground">
+          No security events have been recorded yet.
+        </p>
+      )}
+    </details>
   )
 }
 

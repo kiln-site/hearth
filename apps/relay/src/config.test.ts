@@ -3,16 +3,48 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vite-plus/test"
 
-import { loadConfig } from "./config.js"
+import { discoverRelayAdvertisedHost, loadConfig } from "./config.js"
 
 describe("loadConfig", () => {
   it("defaults the Relay and SFTP ports", () => {
     const config = loadConfig({ NODE_ENV: "development" })
 
     expect(config.port).toBe(4100)
+    expect(config.publicPort).toBe(4100)
     expect(config.sftpPort).toBe(2022)
     expect(config.tlsMode).toBe("development")
     expect(config.sftpDevAuthentication).toBe(true)
+  })
+
+  it("uses an independent advertised port", () => {
+    const config = loadConfig({
+      KILN_RELAY_HOST: "relay.test",
+      KILN_RELAY_PORT: "4100",
+      KILN_RELAY_PUBLIC_PORT: "8443",
+      NODE_ENV: "development",
+    })
+
+    expect(config.port).toBe(4100)
+    expect(config.publicPort).toBe(8443)
+    expect(config.browserOrigin).toBe("http://relay.test:8443")
+  })
+
+  it("infers a public address only when no host is configured", async () => {
+    const inferred = loadConfig({ NODE_ENV: "development" })
+    await expect(
+      discoverRelayAdvertisedHost(inferred, {}, async () => "203.0.113.8")
+    ).resolves.toBe("public_ip")
+    expect(inferred.advertisedHost).toBe("203.0.113.8")
+    expect(inferred.browserOrigin).toBe("http://203.0.113.8:4100")
+
+    const configured = loadConfig({
+      KILN_RELAY_HOST: "relay.test",
+      NODE_ENV: "development",
+    })
+    await expect(
+      discoverRelayAdvertisedHost(configured, {}, async () => "203.0.113.9")
+    ).resolves.toBe("configured")
+    expect(configured.advertisedHost).toBe("relay.test")
   })
 
   it("accepts a custom SFTP port", () => {
