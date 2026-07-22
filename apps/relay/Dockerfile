@@ -16,7 +16,9 @@ RUN --mount=type=cache,target=/home/vp/.local/share/pnpm/store,uid=1000,gid=1000
 COPY --chown=vp:vp tsconfig.json vite.config.ts ./
 COPY --chown=vp:vp apps/relay ./apps/relay
 COPY --chown=vp:vp packages/contracts ./packages/contracts
-RUN vp run relay#build
+RUN vp run relay#build && \
+  npm_config_ignore_scripts=true corepack pnpm --config.allowUnusedPatches=true \
+    --filter relay deploy --prod --no-optional --legacy /source/runtime
 
 FROM docker:29.6.2-cli AS docker-cli
 
@@ -29,10 +31,10 @@ WORKDIR /app
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
-COPY --from=build /source/apps/relay/dist ./dist
+COPY --from=build /source/runtime ./
 COPY --chmod=755 apps/relay/bin/kiln-relay.mjs /usr/local/bin/kiln-relay
 
 EXPOSE 4100 2022
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
-  CMD ["/nodejs/bin/node", "-e", "const request=require('node:https').get({host:'127.0.0.1',port:process.env.KILN_RELAY_PORT||'4100',path:'/health',rejectUnauthorized:false,timeout:2500},response=>process.exit(response.statusCode===204?0:1));request.on('error',()=>process.exit(1));request.on('timeout',()=>request.destroy())"]
+  CMD ["/nodejs/bin/node", "-e", "const proxy=process.env.KILN_RELAY_PROXY;const plain=proxy==='coolify'||proxy==='traefik';const request=require(plain?'node:http':'node:https').get({host:'127.0.0.1',port:process.env.KILN_RELAY_PORT||'4100',path:'/health',rejectUnauthorized:false,timeout:2500},response=>process.exit(response.statusCode===204?0:1));request.on('error',()=>process.exit(1));request.on('timeout',()=>request.destroy())"]
 CMD ["--import", "./dist/instrument.mjs", "dist/src/index.mjs"]
