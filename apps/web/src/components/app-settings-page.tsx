@@ -1,6 +1,7 @@
 import * as React from "react"
 import {
   useMutation,
+  useQuery,
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query"
@@ -8,10 +9,11 @@ import type { QueryClient } from "@tanstack/react-query"
 import {
   Check,
   CircleAlert,
-  Eye,
-  EyeOff,
+  Clipboard,
+  ExternalLink,
   KeyRound,
   LoaderCircle,
+  Network,
   Pause,
   Pencil,
   Play,
@@ -20,6 +22,8 @@ import {
   ServerCog,
   ShieldCheck,
   Trash2,
+  UserRound,
+  X,
 } from "lucide-react"
 
 import { Button } from "@workspace/ui/components/button"
@@ -28,13 +32,26 @@ import { dismissToast, showToast } from "@workspace/ui/components/sonner"
 
 import { RelayToastTitle } from "@/components/relay-toast-title"
 import { queryKeys, relaysQueryOptions } from "@/lib/query-options"
-import type { PersistedRelay } from "@/lib/relay-registry"
+import type {
+  PersistedRelay,
+  RelayAdministration,
+  RelayClientAdministration,
+} from "@/lib/relay-registry"
 import {
   addRelay,
   checkRelay,
+  createRelayInvitation,
+  getRelayAdministration,
+  getRelayProxy,
+  previewRelayPairing,
   removeRelay,
+  renameRelay,
+  revokeHearthClient,
+  revokeRelayInvitation,
   setRelayEnabled,
+  updateRelayClient,
   updateRelay,
+  updateRelayProxy,
 } from "@/server/relays"
 
 const relayConnectedFormatter = new Intl.DateTimeFormat("en-US", {
@@ -42,7 +59,17 @@ const relayConnectedFormatter = new Intl.DateTimeFormat("en-US", {
   timeStyle: "short",
   timeZone: "UTC",
 })
+const invitationTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  hour: "numeric",
+  minute: "2-digit",
+  timeZone: "UTC",
+  timeZoneName: "short",
+})
 const pendingRelayResumes = new Map<string, Promise<void>>()
+
+function relayAdministrationKey(relayId: string) {
+  return ["relays", "administration", relayId] as const
+}
 
 export function AppSettingsPage() {
   const { data: relays } = useSuspenseQuery(relaysQueryOptions())
@@ -372,9 +399,18 @@ const RelayEditor = React.memo(function RelayEditor({
 }: RelayEditorProps) {
   const queryClient = useQueryClient()
   const formRef = React.useRef<HTMLFormElement>(null)
-  const keyRef = React.useRef<HTMLInputElement>(null)
-  const [showKey, setShowKey] = React.useState(false)
   const [pending, setPending] = React.useState(false)
+  const [reviewedPairing, setReviewedPairing] = React.useState<{
+    pairingUri: string
+    preview: {
+      browserOrigin: string
+      controlEndpoint: string
+      expiresAt: number
+      managedTls: boolean
+      relayFingerprint: string
+      relayName: string
+    }
+  } | null>(null)
   const [feedback, setFeedback] = React.useState<{
     tone: "error" | "success"
     message: string
@@ -387,24 +423,61 @@ const RelayEditor = React.memo(function RelayEditor({
     mutationFn: updateRelay,
     onSuccess: () => invalidateRelayQueries(queryClient),
   })
+  const renameMutation = useMutation({
+    mutationFn: renameRelay,
+    onSuccess: () => invalidateRelayQueries(queryClient),
+  })
 
   async function save(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const formData = new FormData(event.currentTarget)
-    const token = String(formData.get("token") ?? "").trim()
     setPending(true)
     setFeedback(null)
     try {
-      const input = {
-        name: String(formData.get("name") ?? ""),
-        hostname: String(formData.get("hostname") ?? ""),
-        port: Number(formData.get("port")),
+      if (!relay && !reviewedPairing) {
+        const pairingUri = String(formData.get("pairingUri") ?? "").trim()
+        const preview = await previewRelayPairing({ data: { pairingUri } })
+        setReviewedPairing({ pairingUri, preview })
+        return
       }
       const saved = relay
-        ? await updateMutation.mutateAsync({
-            data: { ...input, id: relay.id, token: token || undefined },
+        ? await (async () => {
+            const requestedName = String(formData.get("name") ?? "").trim()
+            if (requestedName !== relay.name) {
+              await renameMutation.mutateAsync({
+                data: { name: requestedName, relayId: relay.id },
+              })
+            }
+            try {
+              return await updateMutation.mutateAsync({
+                data: {
+                  hostname: String(formData.get("hostname") ?? ""),
+                  id: relay.id,
+                  port: Number(formData.get("port")),
+                  useTls: relay.useTls,
+                },
+              })
+            } catch (cause) {
+              if (requestedName !== relay.name) {
+                try {
+                  await renameMutation.mutateAsync({
+                    data: { name: relay.name, relayId: relay.id },
+                  })
+                } catch {
+                  throw new Error(
+                    "The connection update failed, and the Relay name could not be restored. Refresh to review its current state.",
+                    { cause }
+                  )
+                }
+              }
+              throw cause
+            }
+          })()
+        : await addMutation.mutateAsync({
+            data: {
+              pairingUri: reviewedPairing?.pairingUri ?? "",
+            },
           })
-        : await addMutation.mutateAsync({ data: { ...input, token } })
       if (!saved.enabled) {
         setFeedback({
           tone: "success",
@@ -418,7 +491,10 @@ const RelayEditor = React.memo(function RelayEditor({
             : `${saved.name} is saved and connected.`,
         })
       }
-      if (!relay) formRef.current?.reset()
+      if (!relay) {
+        formRef.current?.reset()
+        setReviewedPairing(null)
+      }
     } catch (cause) {
       setFeedback({
         tone: "error",
@@ -427,26 +503,6 @@ const RelayEditor = React.memo(function RelayEditor({
     } finally {
       setPending(false)
     }
-  }
-
-  function toggleKeyVisibility() {
-    if (!keyRef.current?.value) {
-      setFeedback({
-        tone: "error",
-        message: relay
-          ? "The stored key cannot be revealed. Enter a replacement key to inspect it."
-          : "Enter or generate a key first.",
-      })
-      return
-    }
-    setShowKey((visible) => !visible)
-  }
-
-  function generateKey() {
-    if (!keyRef.current) return
-    keyRef.current.value = generateRelayKey()
-    keyRef.current.focus()
-    setFeedback(null)
   }
 
   return (
@@ -461,8 +517,8 @@ const RelayEditor = React.memo(function RelayEditor({
           </h2>
           <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
             {relay
-              ? "Update the endpoint or replace its encrypted access key."
-              : "Connect another Relay to Hearth over HTTPS."}
+              ? "Update where Hearth reaches this paired Relay."
+              : "Paste the one-time URI printed by Relay to pair securely."}
           </p>
         </div>
         {relay ? (
@@ -477,100 +533,71 @@ const RelayEditor = React.memo(function RelayEditor({
         className="mt-6 space-y-4"
         onSubmit={(event) => void save(event)}
       >
-        <Field label="Name" htmlFor="relay-name">
-          <Input
-            id="relay-name"
-            name="name"
-            defaultValue={relay?.name ?? ""}
-            placeholder="Production node"
-            required
-          />
-        </Field>
-
-        <div className="grid grid-cols-[minmax(0,1fr)_7rem] gap-3">
-          <Field label="Host" htmlFor="relay-hostname">
-            <div className="flex items-center rounded-md border border-input bg-transparent shadow-xs focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50">
-              <span className="pl-3 font-mono text-[10px] text-muted-foreground">
-                {relay?.useTls === false ? "http://" : "https://"}
-              </span>
+        {relay ? (
+          <>
+            <div className="rounded-lg border border-primary/15 bg-primary/[0.045] px-3 py-2 font-mono text-[9px] leading-4 text-muted-foreground">
+              Relay identity {relay.id.slice(0, 12)}… ·{" "}
+              {relay.role.replace("_", " ")}
+            </div>
+            <Field label="Relay name" htmlFor="relay-name">
               <Input
-                id="relay-hostname"
-                name="hostname"
-                defaultValue={relay?.hostname ?? ""}
-                placeholder="relay.example.com"
-                className="border-0 pl-1 shadow-none focus-visible:border-0 focus-visible:ring-0"
-                autoCapitalize="none"
-                spellCheck={false}
+                id="relay-name"
+                name="name"
+                defaultValue={relay.name}
+                maxLength={120}
                 required
               />
+            </Field>
+            <div className="grid grid-cols-[minmax(0,1fr)_7rem] gap-3">
+              <Field label="Host" htmlFor="relay-hostname">
+                <div className="flex items-center rounded-md border border-input bg-transparent shadow-xs focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50">
+                  <span className="pl-3 font-mono text-[10px] text-muted-foreground">
+                    {relay.useTls ? "wss://" : "ws://"}
+                  </span>
+                  <Input
+                    id="relay-hostname"
+                    name="hostname"
+                    defaultValue={relay.hostname}
+                    placeholder="relay.example.com"
+                    className="border-0 pl-1 shadow-none focus-visible:border-0 focus-visible:ring-0"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    required
+                  />
+                </div>
+              </Field>
+              <Field label="Port" htmlFor="relay-port">
+                <Input
+                  id="relay-port"
+                  name="port"
+                  defaultValue={String(relay.port)}
+                  type="number"
+                  min={1}
+                  max={65_535}
+                  required
+                />
+              </Field>
             </div>
-          </Field>
-          <Field label="Port" htmlFor="relay-port">
-            <Input
-              id="relay-port"
-              name="port"
-              defaultValue={String(relay?.port ?? 443)}
-              type="number"
-              min={1}
-              max={65_535}
+          </>
+        ) : reviewedPairing ? (
+          <PairingReview
+            pairing={reviewedPairing.preview}
+            onBack={() => setReviewedPairing(null)}
+          />
+        ) : (
+          <Field label="One-time pairing URI" htmlFor="relay-pairing-uri">
+            <textarea
+              id="relay-pairing-uri"
+              name="pairingUri"
+              className="min-h-36 w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-[10px] leading-4 shadow-xs transition-[color,box-shadow] outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              placeholder="kiln-relay://pair/v1?payload=…"
+              autoCapitalize="none"
+              autoComplete="off"
+              spellCheck={false}
               required
             />
           </Field>
-        </div>
-
-        <Field
-          label={relay ? "Replace access key" : "Access key"}
-          htmlFor="relay-token"
-        >
-          <div className="flex gap-2">
-            <Input
-              ref={keyRef}
-              id="relay-token"
-              name="token"
-              type={showKey ? "text" : "password"}
-              placeholder={
-                relay?.tokenConfigured
-                  ? "Stored securely — enter a replacement"
-                  : "Relay access key"
-              }
-              className="font-mono text-[10px]"
-              autoComplete="new-password"
-              autoCapitalize="none"
-              spellCheck={false}
-              minLength={32}
-              maxLength={512}
-              required={!relay}
-            />
-            <Button
-              type="button"
-              size="icon"
-              variant="outline"
-              title={showKey ? "Hide entered key" : "Show entered key"}
-              aria-label={showKey ? "Hide entered key" : "Show entered key"}
-              onClick={toggleKeyVisibility}
-            >
-              {showKey ? <EyeOff /> : <Eye />}
-            </Button>
-            {!relay ? (
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                title="Generate access key"
-                aria-label="Generate access key"
-                onClick={generateKey}
-              >
-                <KeyRound />
-              </Button>
-            ) : null}
-          </div>
-        </Field>
-
-        <div className="min-h-10 rounded-lg border border-primary/15 bg-primary/[0.045] px-3 py-2 font-mono text-[9px] leading-4 text-muted-foreground">
-          {relay
-            ? "The stored key stays encrypted and cannot be displayed. Leave this blank to keep it, or enter a replacement."
-            : "Use this same value as KILN_RELAY_KEY on Relay. Hearth encrypts it before storing it."}
-        </div>
+        )}
 
         {feedback ? (
           <div
@@ -592,9 +619,21 @@ const RelayEditor = React.memo(function RelayEditor({
 
         <Button className="w-full" disabled={pending}>
           {pending ? <LoaderCircle className="animate-spin" /> : <Check />}
-          {relay ? "Save changes" : "Save Relay"}
+          {relay
+            ? "Save Relay"
+            : reviewedPairing
+              ? "Confirm and pair"
+              : "Review pairing"}
         </Button>
       </form>
+
+      {relay ? (
+        <>
+          <RelayProxyConfiguration relay={relay} />
+          <RelayBrowserTrust relay={relay} />
+          <RelayAdministrationPanel relay={relay} />
+        </>
+      ) : null}
 
       <div className="mt-5 flex gap-2.5 border-t pt-4 text-[9px] leading-4 text-muted-foreground">
         <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-primary" />
@@ -606,6 +645,928 @@ const RelayEditor = React.memo(function RelayEditor({
     </section>
   )
 }, relayEditorPropsEqual)
+
+function PairingReview({
+  pairing,
+  onBack,
+}: {
+  pairing: {
+    browserOrigin: string
+    controlEndpoint: string
+    expiresAt: number
+    managedTls: boolean
+    relayFingerprint: string
+    relayName: string
+  }
+  onBack: () => void
+}) {
+  return (
+    <div className="rounded-lg border border-primary/20 bg-primary/[0.045] p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="font-mono text-[9px] tracking-[0.14em] text-primary uppercase">
+            Verify identity
+          </p>
+          <p className="mt-1 text-sm font-semibold">{pairing.relayName}</p>
+        </div>
+        <Button type="button" size="sm" variant="ghost" onClick={onBack}>
+          <X /> Back
+        </Button>
+      </div>
+      <dl className="mt-4 space-y-3 text-[10px]">
+        <div>
+          <dt className="text-muted-foreground">Relay fingerprint</dt>
+          <dd className="mt-1 font-mono break-all text-foreground">
+            {pairing.relayFingerprint}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Control endpoint</dt>
+          <dd className="mt-1 font-mono break-all text-foreground">
+            {pairing.controlEndpoint}
+          </dd>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <dt className="text-muted-foreground">TLS trust</dt>
+            <dd className="mt-1 text-foreground">
+              {pairing.managedTls ? "Relay-managed CA" : "System trust"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-muted-foreground">Invitation expires</dt>
+            <dd className="mt-1 text-foreground">
+              {invitationTimeFormatter.format(new Date(pairing.expiresAt))}
+            </dd>
+          </div>
+        </div>
+      </dl>
+      <p className="mt-4 text-[10px] leading-4 text-muted-foreground">
+        Confirm this fingerprint against the Relay terminal before pairing.
+        Hearth will generate a unique key that is never shared with another
+        Hearth.
+      </p>
+    </div>
+  )
+}
+
+function RelayAdministrationPanel({ relay }: { relay: PersistedRelay }) {
+  const queryClient = useQueryClient()
+  const query = useQuery({
+    enabled: relay.enabled && !relay.lastError,
+    queryFn: () => getRelayAdministration({ data: { id: relay.id } }),
+    queryKey: relayAdministrationKey(relay.id),
+    retry: false,
+    staleTime: 10_000,
+  })
+  const [role, setRole] = React.useState<"full_access" | "read_only">(
+    "full_access"
+  )
+  const [createdInvitation, setCreatedInvitation] = React.useState<{
+    uri: string
+    envelope: { expiresAt: number; invitationId: string }
+  } | null>(null)
+  const [pendingInvitation, setPendingInvitation] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+
+  async function createInvitation() {
+    setPendingInvitation(true)
+    setError(null)
+    try {
+      const invitation = await createRelayInvitation({
+        data: { relayId: relay.id, role },
+      })
+      setCreatedInvitation(invitation)
+      await queryClient.invalidateQueries({
+        queryKey: relayAdministrationKey(relay.id),
+      })
+    } catch (cause) {
+      setError(messageFrom(cause, "Could not create pairing invitation"))
+    } finally {
+      setPendingInvitation(false)
+    }
+  }
+
+  if (!relay.enabled) return null
+  return (
+    <div className="mt-5 space-y-4 border-t pt-5">
+      <div>
+        <p className="font-mono text-[9px] tracking-[0.16em] text-primary uppercase">
+          Relay access
+        </p>
+        <h3 className="mt-1 text-sm font-semibold">Hearth clients & SFTP</h3>
+      </div>
+      {query.isPending ? (
+        <div className="flex items-center gap-2 rounded-lg border p-3 text-[10px] text-muted-foreground">
+          <LoaderCircle className="size-3.5 animate-spin" /> Loading Relay
+          policy…
+        </div>
+      ) : query.error ? (
+        <div className="rounded-lg border border-destructive/25 bg-destructive/[0.05] p-3 text-[10px] text-destructive">
+          {messageFrom(query.error, "Could not load Relay administration")}
+        </div>
+      ) : query.data ? (
+        <>
+          <SftpConnectionDetails administration={query.data} />
+          <div className="rounded-lg border border-border/70 p-3">
+            <div className="flex flex-wrap items-end gap-2">
+              <Field label="New Hearth access" htmlFor="new-hearth-role">
+                <select
+                  id="new-hearth-role"
+                  className="h-8 rounded-md border border-input bg-background px-2 text-[10px]"
+                  value={role}
+                  onChange={(event) =>
+                    setRole(
+                      event.target.value === "read_only"
+                        ? "read_only"
+                        : "full_access"
+                    )
+                  }
+                >
+                  <option value="full_access">Full access</option>
+                  <option value="read_only">Read only</option>
+                </select>
+              </Field>
+              <Button
+                type="button"
+                size="sm"
+                disabled={pendingInvitation}
+                onClick={() => void createInvitation()}
+              >
+                {pendingInvitation ? (
+                  <LoaderCircle className="animate-spin" />
+                ) : (
+                  <KeyRound />
+                )}
+                Create invitation
+              </Button>
+            </div>
+            {createdInvitation ? (
+              <div className="mt-3 rounded-md border border-primary/20 bg-primary/[0.045] p-3">
+                <p className="text-[10px] font-semibold">
+                  Copy this one-time URI now
+                </p>
+                <p className="mt-1 text-[9px] text-muted-foreground">
+                  Expires{" "}
+                  {invitationTimeFormatter.format(
+                    new Date(createdInvitation.envelope.expiresAt)
+                  )}
+                  . Relay will never return its token again.
+                </p>
+                <textarea
+                  aria-label="One-time pairing URI"
+                  className="mt-2 min-h-24 w-full resize-y rounded-md border bg-background/70 p-2 font-mono text-[9px]"
+                  readOnly
+                  value={createdInvitation.uri}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    void navigator.clipboard.writeText(createdInvitation.uri)
+                  }
+                >
+                  <Clipboard /> Copy URI
+                </Button>
+              </div>
+            ) : null}
+            {error ? (
+              <p className="mt-2 text-[10px] text-destructive">{error}</p>
+            ) : null}
+            <PendingInvitations
+              invitations={query.data.invitations}
+              relayId={relay.id}
+            />
+          </div>
+          <div className="space-y-2">
+            {query.data.clients.map((client) => (
+              <RelayClientCard
+                key={clientPolicyKey(client)}
+                client={client}
+                currentClientId={relay.clientId}
+                relayId={relay.id}
+              />
+            ))}
+          </div>
+          <RelayAuditTrail audits={query.data.audits} />
+        </>
+      ) : null}
+    </div>
+  )
+}
+
+function RelayAuditTrail({
+  audits,
+}: {
+  audits: RelayAdministration["audits"]
+}) {
+  return (
+    <details className="rounded-lg border border-border/70 bg-background/30 p-3">
+      <summary className="cursor-pointer text-xs font-semibold">
+        Recent security activity ({audits.length})
+      </summary>
+      {audits.length ? (
+        <ol className="mt-3 max-h-64 space-y-2 overflow-y-auto">
+          {audits.map((audit) => (
+            <li key={audit.id} className="border-l border-primary/25 pl-2.5">
+              <p className="font-mono text-[9px] text-foreground">
+                {audit.event}
+              </p>
+              <p className="mt-0.5 font-mono text-[8px] text-muted-foreground">
+                {invitationTimeFormatter.format(new Date(audit.occurredAt))}
+                {audit.clientId ? ` · ${audit.clientId.slice(0, 8)}` : ""}
+                {audit.requestId ? ` · ${audit.requestId.slice(0, 8)}` : ""}
+              </p>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="mt-2 text-[9px] text-muted-foreground">
+          No security events have been recorded yet.
+        </p>
+      )}
+    </details>
+  )
+}
+
+function SftpConnectionDetails({
+  administration,
+}: {
+  administration: RelayAdministration
+}) {
+  const sftp = administration.service?.sftp
+  if (!sftp) return null
+  return (
+    <div className="rounded-lg border border-border/70 bg-background/30 p-3">
+      <div className="flex items-center gap-2">
+        <KeyRound className="size-3.5 text-primary" />
+        <p className="text-xs font-semibold">SFTP endpoint</p>
+      </div>
+      <p className="mt-2 font-mono text-[10px] text-foreground">
+        {sftp.host}:{sftp.port}
+      </p>
+      <p className="mt-1 font-mono text-[9px] break-all text-muted-foreground">
+        {sftp.hostKeyFingerprint}
+      </p>
+      {sftp.developmentAuthentication ? (
+        <p className="mt-2 text-[10px] leading-4 text-amber-300">
+          Development only: use your Hearth email as the username and dev123 as
+          the password. Set the username separately because email contains @.
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+function PendingInvitations({
+  invitations,
+  relayId,
+}: {
+  invitations: RelayAdministration["invitations"]
+  relayId: string
+}) {
+  const queryClient = useQueryClient()
+  if (!invitations.length) return null
+  return (
+    <div className="mt-3 space-y-1.5 border-t pt-3">
+      <p className="text-[9px] font-medium text-muted-foreground">
+        Pending invitations
+      </p>
+      {invitations.map((invitation) => (
+        <div
+          key={invitation.id}
+          className="flex items-center justify-between gap-2 text-[9px]"
+        >
+          <span className="truncate font-mono text-muted-foreground">
+            {invitation.id.slice(0, 8)} · {invitation.role.replace("_", " ")} ·{" "}
+            {invitationTimeFormatter.format(new Date(invitation.expiresAt))}
+          </span>
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            aria-label="Revoke pairing invitation"
+            onClick={() =>
+              void revokeRelayInvitation({
+                data: { invitationId: invitation.id, relayId },
+              }).then(() =>
+                queryClient.invalidateQueries({
+                  queryKey: relayAdministrationKey(relayId),
+                })
+              )
+            }
+          >
+            <X />
+          </Button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function RelayClientCard({
+  client,
+  currentClientId,
+  relayId,
+}: {
+  client: RelayClientAdministration
+  currentClientId: string
+  relayId: string
+}) {
+  const queryClient = useQueryClient()
+  const cidrInputRef = React.useRef<HTMLTextAreaElement>(null)
+  const [pending, setPending] = React.useState<"revoke" | "save" | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
+  const isCurrent = client.id === currentClientId
+
+  async function save(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (pending) return
+    const formData = new FormData(event.currentTarget)
+    const roleValue = String(formData.get("role"))
+    const role =
+      roleValue === "read_only"
+        ? "read_only"
+        : roleValue === "custom"
+          ? "custom"
+          : "full_access"
+    setPending("save")
+    setError(null)
+    try {
+      await updateRelayClient({
+        data: {
+          actions:
+            role === "custom"
+              ? splitLines(String(formData.get("actions") ?? ""))
+              : undefined,
+          clientId: client.id,
+          name: String(formData.get("name") ?? ""),
+          relayId,
+          role,
+          sourceCidrs: splitLines(String(formData.get("sourceCidrs") ?? "")),
+        },
+      })
+      await Promise.all([
+        invalidateRelayQueries(queryClient),
+        queryClient.invalidateQueries({
+          queryKey: relayAdministrationKey(relayId),
+        }),
+      ])
+    } catch (cause) {
+      setError(messageFrom(cause, "Could not update Hearth client"))
+    } finally {
+      setPending(null)
+    }
+  }
+
+  async function revoke() {
+    if (pending) return
+    if (
+      !window.confirm(
+        isCurrent
+          ? "Revoke this Hearth? It will immediately lose access to the Relay."
+          : `Revoke ${client.name}?`
+      )
+    )
+      return
+    setPending("revoke")
+    try {
+      await revokeHearthClient({ data: { clientId: client.id, relayId } })
+      await queryClient.invalidateQueries({
+        queryKey: relayAdministrationKey(relayId),
+      })
+    } catch (cause) {
+      setError(messageFrom(cause, "Could not revoke Hearth client"))
+    } finally {
+      setPending(null)
+    }
+  }
+
+  const observedCidr = client.lastAddress
+    ? exactAddressCidr(client.lastAddress)
+    : null
+  return (
+    <form
+      className="rounded-lg border border-border/70 p-3"
+      onSubmit={(event) => void save(event)}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <UserRound className="size-3.5 text-primary" />
+            <p className="truncate text-xs font-semibold">{client.name}</p>
+            {isCurrent ? (
+              <span className="rounded border px-1.5 py-0.5 font-mono text-[8px] text-muted-foreground">
+                this Hearth
+              </span>
+            ) : null}
+          </div>
+          <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground">
+            {client.id.slice(0, 16)}…
+          </p>
+        </div>
+        <Button
+          type="button"
+          size="icon-sm"
+          variant="ghost"
+          disabled={pending !== null}
+          aria-label={`Revoke ${client.name}`}
+          onClick={() => void revoke()}
+        >
+          {pending === "revoke" ? (
+            <LoaderCircle className="animate-spin" />
+          ) : (
+            <Trash2 />
+          )}
+        </Button>
+      </div>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <Field label="Client name" htmlFor={`client-name-${client.id}`}>
+          <Input
+            id={`client-name-${client.id}`}
+            name="name"
+            defaultValue={client.name}
+            maxLength={120}
+            required
+          />
+        </Field>
+        <Field label="Relay role" htmlFor={`client-role-${client.id}`}>
+          <select
+            id={`client-role-${client.id}`}
+            name="role"
+            className="h-9 w-full rounded-md border border-input bg-background px-2 text-[10px]"
+            defaultValue={client.role}
+          >
+            <option value="full_access">Full access</option>
+            <option value="read_only">Read only</option>
+            <option value="custom">Custom actions</option>
+          </select>
+        </Field>
+      </div>
+      <div className="mt-3">
+        <Field
+          label="Custom action keys (used only by the custom role)"
+          htmlFor={`client-actions-${client.id}`}
+        >
+          <textarea
+            id={`client-actions-${client.id}`}
+            name="actions"
+            className="min-h-24 w-full rounded-md border bg-transparent p-2 font-mono text-[9px]"
+            defaultValue={client.actions.join("\n")}
+          />
+        </Field>
+      </div>
+      <div className="mt-3">
+        <Field
+          label="Allowed source CIDRs (empty allows any source)"
+          htmlFor={`client-cidrs-${client.id}`}
+        >
+          <textarea
+            ref={cidrInputRef}
+            id={`client-cidrs-${client.id}`}
+            name="sourceCidrs"
+            className="min-h-16 w-full rounded-md border bg-transparent p-2 font-mono text-[9px]"
+            placeholder="203.0.113.8/32"
+            defaultValue={client.sourceCidrs.join("\n")}
+          />
+        </Field>
+        {observedCidr ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="mt-1"
+            onClick={() => {
+              if (cidrInputRef.current)
+                cidrInputRef.current.value = observedCidr
+            }}
+          >
+            <ShieldCheck /> Restrict to observed {observedCidr}
+          </Button>
+        ) : null}
+      </div>
+      {error ? (
+        <p className="mt-2 text-[10px] text-destructive">{error}</p>
+      ) : null}
+      <Button
+        type="submit"
+        size="sm"
+        className="mt-3"
+        disabled={pending !== null}
+      >
+        {pending === "save" ? (
+          <LoaderCircle className="animate-spin" />
+        ) : (
+          <Check />
+        )}
+        Save client policy
+      </Button>
+    </form>
+  )
+}
+
+function splitLines(value: string): Array<string> {
+  return [
+    ...new Set(
+      value
+        .split(/[,\n]/u)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    ),
+  ]
+}
+
+function clientPolicyKey(client: RelayClientAdministration): string {
+  return [
+    client.id,
+    client.name,
+    client.role,
+    client.actions.join(","),
+    client.sourceCidrs.join(","),
+    client.lastAddress ?? "",
+  ].join(":")
+}
+
+function exactAddressCidr(value: string): string {
+  const mapped = value.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/u)?.[1]
+  const address = mapped ?? value.split("%")[0] ?? value
+  return `${address}/${address.includes(":") ? 128 : 32}`
+}
+
+function RelayProxyConfiguration({ relay }: { relay: PersistedRelay }) {
+  const queryClient = useQueryClient()
+  const queryKey = React.useMemo(
+    () => ["relays", "proxy", relay.id] as const,
+    [relay.id]
+  )
+  const query = useQuery({
+    enabled: relay.enabled,
+    queryFn: () => getRelayProxy({ data: { id: relay.id } }),
+    queryKey,
+    retry: false,
+    staleTime: 10_000,
+  })
+  const update = useMutation({
+    mutationFn: updateRelayProxy,
+    onSuccess: (result) => queryClient.setQueryData(queryKey, result),
+  })
+  const [probe, setProbe] = React.useState<
+    "checking" | "idle" | "reachable" | "unreachable"
+  >("idle")
+  const settings = query.data?.settings
+  const diagnostics = query.data?.diagnostics
+
+  async function verifyPublicEdge() {
+    setProbe("checking")
+    const origin = diagnostics?.browserOrigin ?? relay.browserOrigin
+    try {
+      const response = await fetch(new URL("/v1/trust", origin), {
+        cache: "no-store",
+        mode: "cors",
+      })
+      if (!response.ok) {
+        setProbe("unreachable")
+        return
+      }
+      const identity = (await response.json().catch(() => null)) as {
+        relayFingerprint?: unknown
+      } | null
+      setProbe(
+        identity?.relayFingerprint === relay.id ? "reachable" : "unreachable"
+      )
+    } catch {
+      setProbe("unreachable")
+    }
+  }
+
+  return (
+    <section className="mt-5 border-t pt-5">
+      <div className="flex items-start gap-2">
+        <Network className="mt-0.5 size-4 text-primary" />
+        <div>
+          <p className="text-xs font-semibold">Relay edge</p>
+          <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
+            Choose how browsers reach high-volume Relay streams and files. Small
+            control operations continue through Hearth in every mode.
+          </p>
+        </div>
+      </div>
+
+      {query.isPending ? (
+        <div className="mt-3 flex items-center gap-2 border p-3 text-[10px] text-muted-foreground">
+          <LoaderCircle className="size-3.5 animate-spin" /> Reading edge
+          configuration…
+        </div>
+      ) : query.error ? (
+        <p className="mt-3 border border-destructive/20 bg-destructive/5 p-3 text-[10px] text-destructive">
+          {messageFrom(query.error, "Could not read Relay edge configuration")}
+        </p>
+      ) : settings && diagnostics ? (
+        <form
+          key={`${relay.id}:${settings.mode}:${settings.traefikImage}:${settings.acmeEmail ?? ""}`}
+          className="mt-3 space-y-3 border border-border/70 bg-background/30 p-3"
+        >
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Proxy mode" htmlFor={`relay-proxy-mode-${relay.id}`}>
+              <select
+                id={`relay-proxy-mode-${relay.id}`}
+                name="mode"
+                defaultValue={settings.mode}
+                className="h-9 w-full rounded-md border border-input bg-background px-2 text-[10px]"
+              >
+                <option value="none">None / existing Traefik</option>
+                <option value="hearth">Hearth proxy</option>
+                <option value="traefik">Bundled Traefik</option>
+                <option value="coolify">Coolify Traefik</option>
+              </select>
+            </Field>
+            <Field
+              label="Pinned Traefik image"
+              htmlFor={`traefik-image-${relay.id}`}
+            >
+              <Input
+                id={`traefik-image-${relay.id}`}
+                name="traefikImage"
+                defaultValue={settings.traefikImage}
+                required
+              />
+            </Field>
+          </div>
+          <Field
+            label="ACME account email (recommended)"
+            htmlFor={`acme-email-${relay.id}`}
+          >
+            <Input
+              id={`acme-email-${relay.id}`}
+              name="acmeEmail"
+              type="email"
+              defaultValue={settings.acmeEmail ?? ""}
+              placeholder="admin@example.com"
+            />
+          </Field>
+
+          {settings.mode === "coolify" ? (
+            <div className="border border-primary/20 bg-primary/5 px-3 py-2 text-[10px] leading-4 text-muted-foreground">
+              <p className="font-medium text-foreground">
+                TLS is owned by Coolify
+              </p>
+              <p className="mt-1">
+                Public HTTPS and WSS terminate at{" "}
+                <span className="font-mono text-foreground">
+                  {diagnostics.browserOrigin}
+                </span>
+                . Relay serves private HTTP on port 4100 and never reads
+                Coolify&apos;s certificate or ACME state.
+              </p>
+            </div>
+          ) : null}
+
+          <div
+            className={`border px-3 py-2 text-[10px] leading-4 ${
+              diagnostics.status === "blocked"
+                ? "border-destructive/25 bg-destructive/5 text-destructive"
+                : "border-border/70 text-muted-foreground"
+            }`}
+          >
+            <p className="font-medium text-foreground">
+              {diagnostics.status === "blocked"
+                ? diagnostics.mode === "coolify"
+                  ? "Coolify edge is not ready"
+                  : "Bundled Traefik is blocked"
+                : diagnostics.mode === "traefik" && diagnostics.containerRunning
+                  ? "kiln-traefik is running"
+                  : diagnostics.mode === "coolify" &&
+                      diagnostics.containerRunning
+                    ? "Coolify Traefik is connected"
+                  : diagnostics.mode === "hearth"
+                    ? "Kiln traffic is routed through Hearth"
+                    : "External/manual edge selected"}
+            </p>
+            <p className="mt-1">
+              Ports 80 / 443:{" "}
+              {diagnostics.ports
+                .map(
+                  (port) =>
+                    `${port.port} ${port.owner === "kiln-traefik" ? "served by kiln-traefik" : port.available ? "available" : `used by ${port.owner ?? "another process"}`}`
+                )
+                .join(" · ")}
+            </p>
+            {diagnostics.warnings.map((warning) => (
+              <p key={warning} className="mt-1">
+                {warning}
+              </p>
+            ))}
+            {probe === "unreachable" ? (
+              <p className="mt-1 text-destructive">
+                The browser cannot reach a trusted public Relay edge. Check DNS,
+                NAT/firewall rules, and ACME issuance.
+              </p>
+            ) : probe === "reachable" ? (
+              <p className="mt-1 text-emerald-300">
+                This browser can reach and trust the Relay edge.
+              </p>
+            ) : null}
+          </div>
+
+          {update.error ? (
+            <p className="text-[10px] text-destructive">
+              {messageFrom(update.error, "Could not update Relay edge")}
+            </p>
+          ) : null}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="sm"
+              disabled={update.isPending}
+              onClick={(event) => {
+                const formElement = event.currentTarget.form
+                if (!formElement) return
+                const form = new FormData(formElement)
+                update.mutate({
+                  data: {
+                    acmeEmail:
+                      String(form.get("acmeEmail") ?? "").trim() || null,
+                    mode:
+                      form.get("mode") === "coolify"
+                        ? "coolify"
+                        : form.get("mode") === "traefik"
+                        ? "traefik"
+                        : form.get("mode") === "hearth"
+                          ? "hearth"
+                          : "none",
+                    relayId: relay.id,
+                    traefikImage: String(form.get("traefikImage") ?? ""),
+                  },
+                })
+              }}
+            >
+              {update.isPending ? (
+                <LoaderCircle className="animate-spin" />
+              ) : (
+                <Check />
+              )}
+              Save edge mode
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={probe === "checking"}
+              onClick={() => void verifyPublicEdge()}
+            >
+              {probe === "checking" ? (
+                <LoaderCircle className="animate-spin" />
+              ) : (
+                <RefreshCw />
+              )}
+              Test public access
+            </Button>
+          </div>
+        </form>
+      ) : null}
+    </section>
+  )
+}
+
+function RelayBrowserTrust({ relay }: { relay: PersistedRelay }) {
+  const proxy = useQuery({
+    enabled: relay.enabled,
+    queryFn: () => getRelayProxy({ data: { id: relay.id } }),
+    queryKey: ["relays", "proxy", relay.id] as const,
+    retry: false,
+    staleTime: 10_000,
+  })
+  const proxyMode = proxy.data?.settings.mode ?? "none"
+  const [state, setState] = React.useState<
+    "idle" | "checking" | "trusted" | "untrusted"
+  >("idle")
+  const trustOrigin = React.useMemo(() => {
+    const url = new URL(
+      proxy.data?.diagnostics.browserOrigin ?? relay.browserOrigin
+    )
+    if (url.protocol === "wss:") url.protocol = "https:"
+    if (url.protocol === "ws:") url.protocol = "http:"
+    return url
+  }, [proxy.data?.diagnostics.browserOrigin, relay.browserOrigin])
+  const verify = React.useCallback(async () => {
+    setState("checking")
+    try {
+      const response = await fetch(new URL("/v1/trust", trustOrigin), {
+        cache: "no-store",
+        mode: "cors",
+      })
+      if (!response.ok) {
+        setState("untrusted")
+        return
+      }
+      const identity = (await response.json().catch(() => null)) as {
+        relayFingerprint?: unknown
+      } | null
+      setState(
+        identity?.relayFingerprint === relay.id ? "trusted" : "untrusted"
+      )
+    } catch {
+      setState("untrusted")
+    }
+  }, [relay.id, trustOrigin])
+
+  if (proxyMode === "hearth") {
+    return (
+      <div className="mt-5 rounded-lg border border-border/70 bg-background/30 p-3 text-left">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold">Browser transport</p>
+            <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
+              Direct Relay trust is not required in Hearth proxy mode. Console,
+              resource, and supported file traffic stays on this trusted Hearth
+              origin.
+            </p>
+          </div>
+          <span className="font-mono text-[9px] text-emerald-300">
+            HEARTH SECURED
+          </span>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mt-5 rounded-lg border border-border/70 bg-background/30 p-3 text-left">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold">Browser trust</p>
+          <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
+            {proxyMode === "traefik"
+              ? "Bundled Traefik must present a public ACME certificate on port 443."
+              : proxyMode === "coolify"
+                ? "Coolify's Traefik must present its public certificate and forward WSS/HTTPS to Relay's private port 4100."
+              : `Required for direct console streams and file transfers on port ${relay.port}.`}
+          </p>
+        </div>
+        <span
+          className={`mt-0.5 size-2 shrink-0 rounded-full ${
+            state === "trusted"
+              ? "bg-emerald-400"
+              : state === "untrusted"
+                ? "bg-destructive"
+                : "bg-muted-foreground/35"
+          }`}
+          aria-label={
+            state === "trusted"
+              ? "Browser trusts Relay"
+              : "Browser trust not verified"
+          }
+        />
+      </div>
+      <p className="mt-3 text-[10px] leading-4 text-muted-foreground">
+        {proxyMode === "traefik"
+          ? "Traefik requests and renews the public certificate automatically after DNS points here and ports 80/443 are publicly reachable. No Relay CA installation is needed."
+          : proxyMode === "coolify"
+            ? "Coolify owns certificate issuance and renewal. Relay never reads or copies Coolify's ACME state or private keys."
+          : relay.managedTls
+            ? "Install the Relay CA once on each device. Relay keeps that CA stable and renews its short-lived server certificate automatically."
+            : "This Relay uses an external certificate. Its public CA or reverse proxy must already be trusted by this browser."}
+      </p>
+      {state === "untrusted" ? (
+        <p className="mt-2 text-[10px] leading-4 text-destructive">
+          {proxyMode === "traefik"
+            ? "This browser could not reach a trusted Traefik edge. Check DNS, public ports 80/443, and ACME issuance, then verify again."
+            : proxyMode === "coolify"
+              ? "This browser could not reach the Relay through Coolify's trusted edge. Check the Coolify domain, certificate status, and WebSocket routing."
+            : "This browser could not establish trusted HTTPS to the Relay. Install the CA or correct the external certificate, then verify again."}
+        </p>
+      ) : null}
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={state === "checking"}
+          onClick={() => void verify()}
+        >
+          {state === "checking" ? (
+            <LoaderCircle className="animate-spin" />
+          ) : (
+            <ShieldCheck />
+          )}
+          {state === "trusted" ? "Trusted" : "Verify access"}
+        </Button>
+        {proxyMode === "none" && relay.managedTls ? (
+          <Button size="sm" variant="outline" asChild>
+            <a
+              href={new URL("/v1/trust/ca.pem", trustOrigin).toString()}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <ExternalLink /> Download Relay CA
+            </a>
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
 
 function Field({
   label,
@@ -754,19 +1715,14 @@ function relayEditorPropsEqual(
     previous.relay.name === next.relay.name &&
     previous.relay.hostname === next.relay.hostname &&
     previous.relay.port === next.relay.port &&
-    previous.relay.tokenConfigured === next.relay.tokenConfigured &&
-    previous.relay.useTls === next.relay.useTls
+    previous.relay.useTls === next.relay.useTls &&
+    previous.relay.enabled === next.relay.enabled &&
+    previous.relay.lastError === next.relay.lastError &&
+    previous.relay.browserOrigin === next.relay.browserOrigin &&
+    previous.relay.managedTls === next.relay.managedTls
   )
 }
 
 function messageFrom(cause: unknown, fallback: string): string {
   return cause instanceof Error ? cause.message : fallback
-}
-
-function generateRelayKey(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(48))
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/gu, "-")
-    .replace(/\//gu, "_")
-    .replace(/=+$/gu, "")
 }

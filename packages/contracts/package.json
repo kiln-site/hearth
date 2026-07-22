@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "effect": "4.0.0-beta.99",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -19,6 +20,7 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
       "default": "./dist/index.js"
     }
   }

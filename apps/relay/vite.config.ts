@@ -4,13 +4,25 @@ export default defineConfig({
   pack: {
     deps: {
       alwaysBundle: [
+        "@effect/sql-sqlite-node",
+        "@node-rs/argon2",
         "@opentelemetry/api",
         "@opentelemetry/core",
+        "@peculiar/x509",
         "@sentry/node",
         "@workspace/contracts",
+        "acme-client",
         "effect",
+        "qrcode",
+        "reflect-metadata",
+        "ssh2",
+        "ws",
         "yaml",
       ],
+      // ssh2 treats cpu-features as an optional acceleration. Keeping that
+      // native package external lets its guarded require fall back to Node's
+      // portable crypto implementation in our distroless image.
+      neverBundle: ["cpu-features"],
       onlyBundle: false,
     },
     entry: ["src/index.ts", "instrument.mjs"],

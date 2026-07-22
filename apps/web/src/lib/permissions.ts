@@ -18,13 +18,18 @@ export const accessPermissions = [
   "instance.power",
   "instance.settings",
   "instance.logs.share",
+  "instance.network.read",
+  "instance.network.write",
+  "instance.sftp.connect",
 ] as const
 
 export type AccessPermission = (typeof accessPermissions)[number]
 
 const rolePermissions: Record<AccessRole, ReadonlySet<AccessPermission>> = {
   owner: new Set(accessPermissions),
-  admin: new Set(accessPermissions.filter((permission) => permission !== "relay.delete")),
+  admin: new Set(
+    accessPermissions.filter((permission) => permission !== "relay.delete")
+  ),
   operator: new Set([
     "relay.read",
     "instance.read",
@@ -34,6 +39,9 @@ const rolePermissions: Record<AccessRole, ReadonlySet<AccessPermission>> = {
     "instance.files.write",
     "instance.power",
     "instance.logs.share",
+    "instance.network.read",
+    "instance.network.write",
+    "instance.sftp.connect",
   ]),
   viewer: new Set([
     "relay.read",
@@ -41,6 +49,8 @@ const rolePermissions: Record<AccessRole, ReadonlySet<AccessPermission>> = {
     "instance.console.read",
     "instance.files.read",
     "instance.logs.share",
+    "instance.network.read",
+    "instance.sftp.connect",
   ]),
 }
 

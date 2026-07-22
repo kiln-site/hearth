@@ -52,6 +52,7 @@ import {
   PopoverTrigger,
 } from "@workspace/ui/components/popover"
 import { floatingSurfaceClassName } from "@workspace/ui/lib/surface-styles"
+import { showToast } from "@workspace/ui/components/sonner"
 import {
   Tooltip,
   TooltipContent,
@@ -78,6 +79,7 @@ import type {
 } from "@/components/files/file-workspace-stores"
 import { redactSensitiveText } from "@/lib/redaction"
 import { fileLanguageForPath } from "@/lib/file-language"
+import { downloadRelayFile, uploadRelayFile } from "@/lib/relay-file-transfer"
 import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
 import {
   queryKeys,
@@ -871,6 +873,11 @@ function EditorOverflowMenu({
           loading={loading}
           sessionStore={sessionStore}
         />
+        <EditorDownloadActionMenuItem
+          instance={instance}
+          loading={loading}
+          path={filePath}
+        />
       </PopoverContent>
     </Popover>
   )
@@ -990,6 +997,51 @@ function EditorCopyActionMenuItem({
   )
 }
 
+function EditorDownloadActionMenuItem({
+  instance,
+  loading,
+  path,
+}: {
+  instance: InstanceWorkspaceInstance
+  loading: boolean
+  path: string
+}) {
+  const [downloading, setDownloading] = React.useState(false)
+  const download = React.useCallback(async () => {
+    setDownloading(true)
+    try {
+      await downloadRelayFile({
+        instanceId: instance.id,
+        path,
+        relayId: instance.relayId,
+      })
+    } catch (cause) {
+      showToast({
+        type: "error",
+        message: "Could not download file",
+        description:
+          cause instanceof Error
+            ? cause.message
+            : "The Relay could not complete the download.",
+      })
+    } finally {
+      setDownloading(false)
+    }
+  }, [instance.id, instance.relayId, path])
+
+  return (
+    <FileActionMenuItem
+      icon={
+        downloading ? <LoaderCircle className="animate-spin" /> : <Download />
+      }
+      label={downloading ? "Preparing download" : "Download"}
+      detail="Transfer directly from Relay"
+      disabled={loading || downloading}
+      onClick={() => void download()}
+    />
+  )
+}
+
 function EditorMobileOverflowMenu({
   canShare,
   canWrite,
@@ -1057,11 +1109,10 @@ function EditorMobileOverflowMenu({
           loading={loading}
           sessionStore={sessionStore}
         />
-        <FileActionMenuItem
-          icon={<Download />}
-          label="Download"
-          detail="Coming soon"
-          disabled
+        <EditorDownloadActionMenuItem
+          instance={instance}
+          loading={loading}
+          path={filePath}
         />
       </PopoverContent>
     </Popover>
@@ -1641,6 +1692,7 @@ function FileTreePanel({
   animateCollapsedChange,
   onCollapsedChange,
   initialWidth,
+  canWrite,
 }: {
   instance: InstanceWorkspaceInstance
   tree: RelayFileTree
@@ -1657,6 +1709,7 @@ function FileTreePanel({
   animateCollapsedChange: boolean
   onCollapsedChange: (collapsed: boolean) => void
   initialWidth: number | null
+  canWrite: boolean
 }) {
   const selectedPath = selectionStore.getSnapshot()
   const initialPath =
@@ -1708,6 +1761,65 @@ function FileTreePanel({
   const previousDocumentStyles = React.useRef({
     userSelect: "",
   })
+  const uploadInputRef = React.useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = React.useState(false)
+
+  const handleFilesSelected = React.useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const files = [...(event.target.files ?? [])]
+      event.target.value = ""
+      if (!files.length || !canWrite) return
+      setUploading(true)
+      let uploaded = 0
+      try {
+        const queue = [...files]
+        let failure: unknown = null
+        const uploadNext = async (): Promise<void> => {
+          if (failure) return
+          const file = queue.shift()
+          if (!file) return
+          try {
+            await uploadRelayFile({
+              file,
+              instanceId: instance.id,
+              path: file.name,
+              relayId: instance.relayId,
+            })
+            uploaded += 1
+            await uploadNext()
+          } catch (cause) {
+            failure ??= cause
+          }
+        }
+        await Promise.all(
+          Array.from({ length: Math.min(3, files.length) }, uploadNext)
+        )
+        if (failure) throw failure
+        showToast({
+          type: "success",
+          message:
+            uploaded === 1 ? "File uploaded" : `${uploaded} files uploaded`,
+          description: "Transferred directly to the Relay instance root.",
+        })
+        onRefresh()
+      } catch (cause) {
+        showToast({
+          type: "error",
+          message: uploaded
+            ? "Some files could not be uploaded"
+            : "Upload failed",
+          description:
+            cause instanceof Error
+              ? cause.message
+              : "The Relay could not complete the upload.",
+        })
+        if (uploaded) onRefresh()
+      } finally {
+        setUploading(false)
+      }
+    },
+    [canWrite, instance.id, instance.relayId, onRefresh]
+  )
 
   function workspaceWidth() {
     return (
@@ -2005,7 +2117,34 @@ function FileTreePanel({
               </p>
               <FileActionPreview icon={<FolderPlus />} label="New directory" />
               <FileActionPreview icon={<FilePlus />} label="New file" />
-              <FileActionPreview icon={<Upload />} label="Upload files" />
+              <button
+                type="button"
+                disabled={!canWrite || uploading || refreshDisabled}
+                className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-popover-accent/75 hover:text-foreground focus-visible:bg-popover-accent focus-visible:text-foreground focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40"
+                onClick={() => uploadInputRef.current?.click()}
+              >
+                <span className="grid size-7 shrink-0 place-items-center border border-border/70 bg-card [&>svg]:size-3.5">
+                  {uploading ? (
+                    <LoaderCircle className="animate-spin" />
+                  ) : (
+                    <Upload />
+                  )}
+                </span>
+                <span className="min-w-0 flex-1 text-foreground">
+                  {uploading ? "Uploading…" : "Upload files"}
+                </span>
+                <span className="font-mono text-[8px] tracking-wider text-primary uppercase">
+                  Direct
+                </span>
+              </button>
+              <input
+                ref={uploadInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                aria-label="Choose files to upload"
+                onChange={(event) => void handleFilesSelected(event)}
+              />
               <FileActionPreview icon={<Network />} label="Connect with SFTP" />
             </PopoverContent>
           </Popover>
@@ -2796,6 +2935,7 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
           }
           onCollapsedChange={handleTreeCollapsedChange}
           initialWidth={initialTreeWidth}
+          canWrite={canWrite}
         />
       ) : (
         <FileTreeLoadingPanel

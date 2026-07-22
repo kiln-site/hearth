@@ -47,17 +47,20 @@ import type {
   ConsoleStreamStore,
   ConsoleUiStore,
 } from "@/components/console/console-stores"
-import { openRelayConsoleStream } from "@/lib/relay-console-stream"
+import {
+  openRelayConsoleStream,
+  RelayConsoleConnectionError,
+} from "@/lib/relay-console-stream"
+import {
+  completeDirectRelayCommand,
+  sendDirectRelayCommand,
+} from "@/lib/relay-console-command"
 import { redactSensitiveText } from "@/lib/redaction"
 import { queryKeys, relaySnapshotQueryOptions } from "@/lib/query-options"
 import { selectInstanceObservedState } from "@/lib/relay-selectors"
 import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
-import { useInstanceRelayConnected } from "@/components/instance-workspace"
-import {
-  completeRelayCommand,
-  sendRelayCommand,
-  uploadLatestLogToMclogs,
-} from "@/server/relay"
+import { useInstanceRelayConnected } from "@/components/instance-workspace-context"
+import { uploadLatestLogToMclogs } from "@/server/relay"
 
 const consoleTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
@@ -158,7 +161,12 @@ function ConsoleStreamController({
     () =>
       relayConnected
         ? snapshot
-        : { ...snapshot, connection: "unavailable" as const, loading: false },
+        : {
+            ...snapshot,
+            connection: "unavailable" as const,
+            error: "Hearth cannot reach this Relay right now.",
+            loading: false,
+          },
     [relayConnected, snapshot]
   )
   React.useLayoutEffect(
@@ -178,11 +186,12 @@ const ConsoleLogViewportController = React.memo(
     streamStore: ConsoleStreamStore
     uiStore: ConsoleUiStore
   }) {
-    const { connection, consoleData, loading } = React.useSyncExternalStore(
+    const snapshot = React.useSyncExternalStore(
       streamStore.subscribe,
       streamStore.getSnapshot,
       streamStore.getSnapshot
     )
+    const { consoleData } = snapshot
     const filters = React.useSyncExternalStore(
       uiStore.subscribe,
       uiStore.getFilterSnapshot,
@@ -213,9 +222,8 @@ const ConsoleLogViewportController = React.memo(
       <ConsoleLogViewport
         active={active}
         consoleData={consoleData}
-        connection={connection}
         filteredLines={filteredLines}
-        loading={loading}
+        snapshot={snapshot}
         uiStore={uiStore}
       />
     )
@@ -653,21 +661,20 @@ function ConsoleTimestampButton({ uiStore }: { uiStore: ConsoleUiStore }) {
 
 interface ConsoleLogViewportProps {
   active: boolean
-  connection: ConsoleStreamSnapshot["connection"]
   consoleData: RelayConsole | null
   filteredLines: Array<RelayConsoleLine>
-  loading: boolean
+  snapshot: ConsoleStreamSnapshot
   uiStore: ConsoleUiStore
 }
 
 function ConsoleLogViewport({
   active,
-  connection,
   consoleData,
   filteredLines,
-  loading,
+  snapshot,
   uiStore,
 }: ConsoleLogViewportProps) {
+  const { connection, error, loading, transport } = snapshot
   const [autoScroll, setAutoScroll] = React.useState(true)
   const query = React.useSyncExternalStore(
     uiStore.subscribe,
@@ -784,13 +791,15 @@ function ConsoleLogViewport({
         </div>
       ) : null}
 
-      {connection !== "live" && consoleData ? (
+      {(connection !== "live" || transport === "hearth") && consoleData ? (
         <div className="pointer-events-none absolute top-3 left-1/2 z-20 -translate-x-1/2">
           <div className="flex items-center gap-1.5 border border-amber-400/20 bg-stone-950/90 px-2.5 py-1.5 font-mono text-[9px] text-amber-200 shadow-lg shadow-black/35 backdrop-blur-sm">
             <WifiOff className="size-3" />
             {connection === "connecting"
               ? "RECONNECTING · OUTPUT MAY BE DELAYED"
-              : "LIVE OUTPUT PAUSED · SHOWING LAST RECEIVED LINES"}
+              : connection === "live" && transport === "hearth"
+                ? "CONNECTED THROUGH HEARTH · DIRECT RELAY UNAVAILABLE"
+                : "LIVE OUTPUT PAUSED"}
           </div>
         </div>
       ) : null}
@@ -809,8 +818,7 @@ function ConsoleLogViewport({
             <WifiOff className="mx-auto size-5 text-amber-300" />
             <p className="mt-3 text-sm font-semibold">Console unavailable</p>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              Unable to connect to Relay. Last received output will appear here
-              when available.
+              {error ?? "The console stream could not be opened."}
             </p>
           </div>
         </div>
@@ -1153,9 +1161,12 @@ function useConsoleCommand(
       suggestions: [],
     })
     try {
-      const result = await completeRelayCommand({
-        data: { instanceId, relayId, input, cursor },
-      })
+      const result = await completeDirectRelayCommand(
+        relayId,
+        instanceId,
+        input,
+        cursor
+      )
       if (completionRequest.current !== requestId) return
       if (!result.supported) {
         completionSessionActive.current = false
@@ -1316,9 +1327,7 @@ function useConsoleCommand(
     window.requestAnimationFrame(() => inputRef.current?.focus())
     setSending(true)
     try {
-      await sendRelayCommand({
-        data: { instanceId, relayId, command },
-      })
+      await sendDirectRelayCommand(relayId, instanceId, command)
       setError(null)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Command failed")
@@ -1580,7 +1589,10 @@ function useRelayConsoleStream(
   const [snapshot, setSnapshot] = React.useState<ConsoleStreamSnapshot>(() => ({
     connection: relayConnected ? "connecting" : "unavailable",
     consoleData: consoleDataRef.current,
+    error: relayConnected ? null : "Hearth cannot reach this Relay right now.",
     loading: !consoleDataRef.current,
+    transport: null,
+    transportMessage: null,
   }))
 
   React.useEffect(() => {
@@ -1588,6 +1600,7 @@ function useRelayConsoleStream(
       setSnapshot((current) =>
         updateConsoleStreamSnapshot(current, {
           connection: "unavailable",
+          error: "Hearth cannot reach this Relay right now.",
           loading: false,
         })
       )
@@ -1609,6 +1622,7 @@ function useRelayConsoleStream(
     setSnapshot((current) =>
       updateConsoleStreamSnapshot(current, {
         connection: "connecting",
+        error: null,
         loading: !consoleDataRef.current,
       })
     )
@@ -1667,7 +1681,13 @@ function useRelayConsoleStream(
             // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
             if (cancelled) break
             if (result.done) throw new Error("Console stream closed")
-            if (result.value.type === "ready") {
+            if (result.value.type === "transport") {
+              commitSnapshot({
+                error: null,
+                transport: result.value.transport,
+                transportMessage: result.value.message,
+              })
+            } else if (result.value.type === "ready") {
               const nextConsole = consoleDataRef.current ?? {
                 instanceId,
                 lines: [],
@@ -1681,6 +1701,7 @@ function useRelayConsoleStream(
               commitSnapshot({
                 connection: "live",
                 consoleData: nextConsole,
+                error: null,
                 loading: false,
               })
               retryDelay = 400
@@ -1688,11 +1709,12 @@ function useRelayConsoleStream(
               append(result.value.line)
             }
           }
-        } catch {
+        } catch (cause) {
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           if (cancelled) break
           commitSnapshot({
             connection: "unavailable",
+            error: consoleConnectionMessage(cause),
             loading: false,
           })
           await waitForRetry(retryDelay, lifecycle.signal)
@@ -1721,9 +1743,19 @@ function updateConsoleStreamSnapshot(
   const next = { ...current, ...patch }
   return current.connection === next.connection &&
     current.consoleData === next.consoleData &&
-    current.loading === next.loading
+    current.error === next.error &&
+    current.loading === next.loading &&
+    current.transport === next.transport &&
+    current.transportMessage === next.transportMessage
     ? current
     : next
+}
+
+function consoleConnectionMessage(cause: unknown): string {
+  if (cause instanceof RelayConsoleConnectionError) return cause.message
+  return cause instanceof Error && cause.message
+    ? cause.message
+    : "The Relay is connected, but its console stream could not be read."
 }
 
 function waitForRetry(delay: number, signal: AbortSignal): Promise<void> {

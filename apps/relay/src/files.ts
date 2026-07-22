@@ -1,5 +1,6 @@
 import {
   lstat,
+  open,
   opendir,
   readFile,
   realpath,
@@ -8,7 +9,10 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises"
-import { join, relative, resolve, sep } from "node:path"
+import { constants as fsConstants } from "node:fs"
+import type { FileHandle } from "node:fs/promises"
+import { basename, dirname, join, relative, resolve, sep } from "node:path"
+import { createHash, randomUUID } from "node:crypto"
 import { gunzip } from "node:zlib"
 import { promisify } from "node:util"
 
@@ -25,6 +29,7 @@ const MAX_FILE_BYTES = 2 * 1024 * 1024
 const MAX_LOG_SHARE_BYTES = 10 * 1024 * 1024
 const MAX_TREE_ITEMS = 5_000
 const MAX_TREE_DEPTH = 10
+const MAX_TRANSFER_BYTES = 20 * 1024 * 1024 * 1024
 const gunzipAsync = promisify(gunzip)
 
 export class FilesystemDriver {
@@ -194,6 +199,117 @@ export class FilesystemDriver {
     }
   }
 
+  async download(
+    instance: RelayInstanceConfig,
+    requestedPath: string
+  ): Promise<{
+    file: FileHandle
+    modifiedAt: string
+    name: string
+    size: number
+  }> {
+    requireLinuxDescriptorAnchoring()
+    validateRelativePath(requestedPath)
+    const root = await this.#instanceRoot(instance)
+    const candidate = resolve(root, requestedPath)
+    ensureContained(root, candidate)
+    const file = await open(
+      candidate,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW
+    )
+    try {
+      const actual = await realpath(fileDescriptorPath(file))
+      ensureContained(root, actual)
+      const metadata = await file.stat()
+      if (!metadata.isFile()) {
+        throw new RelayFilesystemError("not_a_file", "Path is not a file")
+      }
+      return {
+        file,
+        modifiedAt: metadata.mtime.toISOString(),
+        name: basename(candidate),
+        size: metadata.size,
+      }
+    } catch (cause) {
+      await file.close().catch(() => undefined)
+      throw cause
+    }
+  }
+
+  async upload(
+    instance: RelayInstanceConfig,
+    requestedPath: string,
+    source: AsyncIterable<Uint8Array>
+  ): Promise<{
+    modifiedAt: string
+    path: string
+    sha256: string
+    size: number
+  }> {
+    requireLinuxDescriptorAnchoring()
+    validateRelativePath(requestedPath)
+    const root = await this.#instanceRoot(instance)
+    const candidate = resolve(root, requestedPath)
+    ensureContained(root, candidate)
+    const parent = await realpath(dirname(candidate))
+    ensureContained(root, parent)
+    const parentHandle = await open(
+      parent,
+      fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW
+    )
+    try {
+      const anchoredParent = fileDescriptorPath(parentHandle)
+      ensureContained(root, await realpath(anchoredParent))
+      const operationParent = anchoredParent
+      const target = resolve(operationParent, basename(candidate))
+      let mode = 0o644
+      try {
+        const existing = await lstat(target)
+        if (!existing.isFile()) {
+          throw new RelayFilesystemError("not_a_file", "Path is not a file")
+        }
+        mode = existing.mode & 0o777
+      } catch (cause) {
+        if (!isMissingFile(cause)) throw cause
+      }
+
+      const temporary = resolve(operationParent, `.kiln-upload-${randomUUID()}`)
+      const file = await open(temporary, "wx", mode)
+      let size = 0
+      const digest = createHash("sha256")
+      try {
+        for await (const chunk of source) {
+          size += chunk.byteLength
+          if (size > MAX_TRANSFER_BYTES) {
+            throw new RelayFilesystemError(
+              "file_too_large",
+              "Upload exceeds the 20 GiB transfer limit"
+            )
+          }
+          digest.update(chunk)
+          await writeFully(file, chunk, null)
+        }
+        await file.sync()
+        await file.close()
+        ensureContained(root, await realpath(anchoredParent))
+        await rename(temporary, target)
+      } catch (cause) {
+        await file.close().catch(() => undefined)
+        await unlink(temporary).catch(() => undefined)
+        throw cause
+      }
+      const metadata = await stat(target)
+      return {
+        modifiedAt: metadata.mtime.toISOString(),
+        path: requestedPath,
+        sha256: digest.digest("hex"),
+        size,
+      }
+    } finally {
+      await parentHandle.close()
+    }
+  }
+
   async #existingFile(
     instance: RelayInstanceConfig,
     requestedPath: string
@@ -210,12 +326,57 @@ export class FilesystemDriver {
   }
 
   async #instanceRoot(instance: RelayInstanceConfig): Promise<string> {
-    const root = await realpath(
-      resolve(this.#config.rootDirectory, instance.directory)
-    )
-    ensureContained(this.#config.rootDirectory, root)
+    const configuredRoot = await realpath(this.#config.rootDirectory)
+    const root = await realpath(resolve(configuredRoot, instance.directory))
+    ensureContained(configuredRoot, root)
     return root
   }
+}
+
+function fileDescriptorPath(file: FileHandle): string {
+  return `/proc/self/fd/${file.fd}`
+}
+
+function requireLinuxDescriptorAnchoring(): void {
+  if (process.platform !== "linux") {
+    throw new RelayFilesystemError(
+      "unsupported_platform",
+      "Secure direct file transfers require a Linux Relay host"
+    )
+  }
+}
+
+async function writeFully(
+  file: FileHandle,
+  data: Uint8Array,
+  position: number | null
+): Promise<void> {
+  const buffer = Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+  let written = 0
+  while (written < buffer.length) {
+    const result = await file.write(
+      buffer,
+      written,
+      buffer.length - written,
+      position === null ? null : position + written
+    )
+    if (result.bytesWritten <= 0) {
+      throw new RelayFilesystemError(
+        "write_incomplete",
+        "Filesystem stopped before the complete upload chunk was written"
+      )
+    }
+    written += result.bytesWritten
+  }
+}
+
+function isMissingFile(cause: unknown): boolean {
+  return Boolean(
+    cause &&
+    typeof cause === "object" &&
+    "code" in cause &&
+    cause.code === "ENOENT"
+  )
 }
 
 export class RelayFilesystemError extends Error {

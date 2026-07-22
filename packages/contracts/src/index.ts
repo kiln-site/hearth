@@ -1,5 +1,9 @@
 import { z } from "zod"
 
+export * from "./relay-protocol.js"
+
+export const relayIdSchema = z.string().regex(/^[A-Za-z\d_-]{43}$/u)
+
 export const relayObservedStateSchema = z.enum([
   "offline",
   "provisioning",
@@ -156,6 +160,107 @@ export const relayNetworkingSchema = z.object({
   proxyPort: z.number().int().min(1).max(65_535).default(25_565),
 })
 
+export const relayProxyModeSchema = z.enum([
+  "none",
+  "hearth",
+  "traefik",
+  "coolify",
+])
+
+export const relayProxySettingsSchema = z
+  .object({
+    mode: relayProxyModeSchema,
+    traefikImage: z
+      .string()
+      .trim()
+      .min(1)
+      .max(256)
+      .regex(
+        /^traefik(?:@sha256:[a-f0-9]{64}|:[A-Za-z0-9._-]+)$/u,
+        "Use an official pinned Traefik tag or digest"
+      ),
+    acmeEmail: z.email().max(320).nullable(),
+  })
+  .strict()
+
+const webRouteHostnameSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(1)
+  .max(253)
+  .regex(
+    /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/u,
+    "Enter a fully qualified hostname without a scheme or path"
+  )
+
+export const relayInstanceWebRouteSchema = z
+  .object({
+    id: z.uuid(),
+    hostname: webRouteHostnameSchema,
+    path: z
+      .string()
+      .trim()
+      .min(1)
+      .max(256)
+      .regex(/^\/(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))(?:[^?#])*$/u)
+      .regex(
+        /^\/[A-Za-z0-9\-._~!$&'()*+,;=:@%/]*$/u,
+        "Use an encoded URL path without spaces or routing metacharacters"
+      )
+      .nullable(),
+    stripPrefix: z.boolean().default(true),
+    targetPort: z.number().int().min(1).max(65_535),
+  })
+  .strict()
+
+export const relayInstanceWebRoutesSchema = z
+  .array(relayInstanceWebRouteSchema)
+  .max(16)
+  .superRefine((routes, context) => {
+    const seen = new Set<string>()
+    routes.forEach((route, index) => {
+      const key = `${route.hostname}\n${route.path ?? ""}`
+      if (seen.has(key)) {
+        context.addIssue({
+          code: "custom",
+          message: "Each hostname and path combination must be unique",
+          path: [index, "hostname"],
+        })
+      }
+      seen.add(key)
+    })
+  })
+
+export const relayInstanceWebRouteStateSchema = z
+  .object({
+    edgeConnected: z.boolean(),
+    message: z.string().min(1),
+    proxyConnected: z.boolean(),
+    requiresRestart: z.boolean(),
+    routes: relayInstanceWebRoutesSchema,
+    status: z.enum(["blocked", "pending_restart", "ready"]),
+  })
+  .strict()
+
+export const relayProxyDiagnosticsSchema = z
+  .object({
+    browserOrigin: z.url(),
+    containerRunning: z.boolean(),
+    mode: relayProxyModeSchema,
+    ports: z.array(
+      z.object({
+        available: z.boolean(),
+        owner: z.string().nullable(),
+        port: z.union([z.literal(80), z.literal(443)]),
+      })
+    ),
+    publicReachability: z.enum(["unknown", "reachable", "unreachable"]),
+    status: z.enum(["blocked", "disabled", "hearth", "ready", "starting"]),
+    warnings: z.array(z.string()),
+  })
+  .strict()
+
 export const relayInstanceResourcesSchema = z.object({
   sampledAt: z.string().datetime(),
   cpu: z.object({
@@ -237,6 +342,25 @@ export const relayNodeSchema = z.object({
 export const relaySnapshotSchema = z.object({
   node: relayNodeSchema,
   instances: z.array(relayInstanceSchema),
+  relay: z
+    .object({
+      id: relayIdSchema,
+      name: z.string().min(1).max(120),
+      sftp: z.object({
+        developmentAuthentication: z.boolean(),
+        host: z.string().min(1).max(253),
+        hostKeyFingerprint: z.string().startsWith("SHA256:"),
+        port: z.number().int().min(1).max(65_535),
+      }),
+      tls: z
+        .object({
+          expiresAt: z.number().int().positive(),
+          fingerprint: z.string().min(1),
+          mode: z.enum(["external", "managed"]),
+        })
+        .nullable(),
+    })
+    .optional(),
 })
 
 export const relayFileTreeSchema = z.object({
@@ -310,6 +434,12 @@ export const relayConsoleStreamEventSchema = z.discriminatedUnion("type", [
     line: relayConsoleLineSchema,
   }),
 ])
+
+export const relayResourceStreamEventSchema = z.object({
+  type: z.literal("resource"),
+  instance: relayInstanceSchema,
+  sequence: z.number().int().nonnegative(),
+})
 
 export const relayConsoleCommandSchema = z.object({
   command: z
@@ -386,6 +516,16 @@ export type Brick = z.infer<typeof brickSchema>
 export type RelayCatalog = z.infer<typeof relayCatalogSchema>
 export type RelayCreateInstance = z.infer<typeof relayCreateInstanceSchema>
 export type RelayNetworking = z.infer<typeof relayNetworkingSchema>
+export type RelayProxyMode = z.infer<typeof relayProxyModeSchema>
+export type RelayProxySettings = z.infer<typeof relayProxySettingsSchema>
+export type RelayProxyDiagnostics = z.infer<typeof relayProxyDiagnosticsSchema>
+export type RelayInstanceWebRoute = z.infer<typeof relayInstanceWebRouteSchema>
+export type RelayInstanceWebRoutes = z.infer<
+  typeof relayInstanceWebRoutesSchema
+>
+export type RelayInstanceWebRouteState = z.infer<
+  typeof relayInstanceWebRouteStateSchema
+>
 export type RelayObservedState = z.infer<typeof relayObservedStateSchema>
 export type RelayInstanceResources = z.infer<
   typeof relayInstanceResourcesSchema
@@ -407,7 +547,13 @@ export type RelayConsole = z.infer<typeof relayConsoleSchema>
 export type RelayConsoleStreamEvent = z.infer<
   typeof relayConsoleStreamEventSchema
 >
+export type RelayResourceStreamEvent = z.infer<
+  typeof relayResourceStreamEventSchema
+>
 export type RelayConsoleCommand = z.infer<typeof relayConsoleCommandSchema>
+export type RelayConsoleCommandResult = z.infer<
+  typeof relayConsoleCommandResultSchema
+>
 export type RelayConsoleCompletionInput = z.infer<
   typeof relayConsoleCompletionInputSchema
 >

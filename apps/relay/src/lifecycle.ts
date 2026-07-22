@@ -1,5 +1,5 @@
-import { randomBytes } from "node:crypto"
-import { chown, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { createHash, randomBytes } from "node:crypto"
+import { chmod, chown, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
 import { interpolateTemplate, resolveBrick } from "./bricks.js"
@@ -7,14 +7,25 @@ import { command } from "./command.js"
 import type {
   RelayCreateInstance,
   RelayInstance,
+  RelayInstanceWebRoute,
+  RelayInstanceWebRouteState,
   RelayNetworking,
+  RelayProxyDiagnostics,
+  RelayProxySettings,
 } from "@workspace/contracts"
+import { relayProxySettingsSchema } from "@workspace/contracts"
 import type { BrickCatalog } from "./bricks.js"
-import type { RelayConfig } from "./config.js"
+import type { RelayConfig, RelayInstanceConfig } from "./config.js"
 import type { DockerDriver } from "./docker.js"
+import type { RelayStoredWebRoute } from "./effect/state.js"
 
-const NETWORK_NAME = "kiln-minecraft"
+const GAME_NETWORK_NAME = "kiln-minecraft"
+const EDGE_NETWORK_NAME = "kiln-edge"
+const RELAY_EDGE_NETWORK_NAME = "kiln-relay-edge"
+const RELAY_EDGE_ALIAS = "kiln-relay"
+const WEB_ROUTE_REVISION_LABEL = "kiln.relay.web-routes.revision"
 const OWNED_LABEL = "kiln.relay.owned=true"
+const TRAEFIK_CONTAINER = "kiln-traefik"
 export interface BackendRoute {
   hostname: string
   implementation: string
@@ -27,7 +38,12 @@ export class LifecycleDriver {
   readonly #bricks: BrickCatalog
   readonly #config: RelayConfig
   readonly #docker: DockerDriver
+  #edgeMutation: Promise<void> = Promise.resolve()
+  #edgeReconciliationPending = false
+  #edgeReconciliationTimer: NodeJS.Timeout | null = null
   #hostDataDirectoryPromise: Promise<string> | null = null
+  #listenerMode: RelayProxySettings["mode"] | null = null
+  #webRoutes: ReadonlyArray<RelayStoredWebRoute> = []
 
   constructor(config: RelayConfig, docker: DockerDriver, bricks: BrickCatalog) {
     this.#bricks = bricks
@@ -60,6 +76,400 @@ export class LifecycleDriver {
     else await this.#removeInfrastructure()
     await this.#refreshVelocityConfigurations(input)
     return input
+  }
+
+  async proxySettings(): Promise<RelayProxySettings> {
+    try {
+      return relayProxySettingsSchema.parse(
+        JSON.parse(
+          await readFile(join(this.#config.dataDirectory, "proxy.json"), "utf8")
+        )
+      )
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause
+      const seeded = relayProxySettingsSchema.parse({
+        acmeEmail: this.#config.traefikAcmeEmail,
+        mode: this.#config.proxyMode,
+        traefikImage: this.#config.traefikImage,
+      })
+      await this.#writeProxySettings(seeded)
+      return seeded
+    }
+  }
+
+  async configureProxy(
+    input: RelayProxySettings,
+    routes: ReadonlyArray<RelayStoredWebRoute>
+  ): Promise<{
+    diagnostics: RelayProxyDiagnostics
+    settings: RelayProxySettings
+  }> {
+    const settings = relayProxySettingsSchema.parse(input)
+    if (
+      this.#listenerMode &&
+      usesProxyTlsTermination(this.#listenerMode) !==
+        usesProxyTlsTermination(settings.mode)
+    ) {
+      throw new Error(
+        "Switching proxy TLS termination on or off changes Relay's private listener protocol. Set KILN_RELAY_PROXY, remove /data/proxy.json once, and restart Relay."
+      )
+    }
+    await this.#writeProxySettings(settings)
+    this.hydrateProxySettings(settings)
+    await this.configureWebRoutes(routes, settings)
+    if (settings.mode === "traefik") {
+      const diagnostics = await this.proxyDiagnostics(settings)
+      if (diagnostics.status !== "blocked") {
+        await this.#ensureTraefik(settings, routes, true)
+      }
+    } else {
+      await this.#removeBundledTraefik()
+    }
+    this.#scheduleEdgeReconciliation(settings)
+    return { diagnostics: await this.proxyDiagnostics(settings), settings }
+  }
+
+  async initializeProxy(
+    routes: ReadonlyArray<RelayStoredWebRoute>,
+    configuredSettings?: RelayProxySettings
+  ): Promise<void> {
+    const settings = configuredSettings ?? (await this.proxySettings())
+    this.hydrateProxySettings(settings)
+    this.#listenerMode = settings.mode
+    await this.configureWebRoutes(routes, settings)
+    if (settings.mode === "traefik") {
+      const diagnostics = await this.proxyDiagnostics(settings)
+      if (diagnostics.status !== "blocked") {
+        await this.#ensureTraefik(settings, routes, false)
+      } else {
+        console.error(
+          "Bundled Traefik is configured but could not start:",
+          diagnostics.warnings.join(" ")
+        )
+      }
+    } else {
+      await this.#removeBundledTraefik()
+    }
+    this.#scheduleEdgeReconciliation(settings)
+  }
+
+  close(): void {
+    if (this.#edgeReconciliationTimer) {
+      clearInterval(this.#edgeReconciliationTimer)
+      this.#edgeReconciliationTimer = null
+    }
+  }
+
+  async assertPrivateProxyListener(): Promise<void> {
+    if (!usesProxyTlsTermination(this.#config.proxyMode)) return
+    const reference = process.env.HOSTNAME?.trim()
+    if (!reference) {
+      throw new Error(
+        "Proxy TLS mode could not identify the Relay container to verify that private HTTP port 4100 is not published."
+      )
+    }
+    const inspected = await command("docker", [
+      "inspect",
+      "--format",
+      "{{json .HostConfig.PortBindings}}",
+      reference,
+    ]).catch((cause: unknown) => {
+      throw new Error(
+        "Proxy TLS mode could not inspect its Relay container through the Docker socket. Keep the socket mounted so Relay can verify its private listener.",
+        { cause }
+      )
+    })
+    const bindings = JSON.parse(inspected.stdout) as Record<
+      string,
+      Array<{ HostIp?: string; HostPort?: string }> | null
+    > | null
+    const published = bindings?.[`${this.#config.port}/tcp`] ?? []
+    const unsafe = published.filter(
+      (binding) =>
+        binding.HostIp !== "127.0.0.1" && binding.HostIp !== "::1"
+    )
+    if (unsafe.length > 0) {
+      throw new Error(
+        `Proxy TLS mode refuses to start because Relay's private HTTP port ${this.#config.port} is published on the host. Remove the host port mapping and expose the port only to the private Traefik network.`
+      )
+    }
+  }
+
+  hydrateProxySettings(settings: RelayProxySettings): void {
+    this.#config.proxyMode = settings.mode
+    this.#config.traefikImage = settings.traefikImage
+    this.#config.traefikAcmeEmail = settings.acmeEmail
+    if (settings.mode === "traefik") {
+      this.#config.publicPort = 443
+      this.#config.browserOrigin = `https://${formatPublicHost(this.#config.advertisedHost)}`
+    } else if (settings.mode === "coolify") {
+      this.#config.publicPort = this.#config.coolifyPublicOrigin
+        ? effectiveUrlPort(new URL(this.#config.coolifyPublicOrigin))
+        : 443
+      this.#config.browserOrigin =
+        this.#config.coolifyPublicOrigin ??
+        `https://${formatPublicHost(this.#config.advertisedHost)}`
+    } else {
+      this.#config.publicPort = this.#config.directPublicPort
+      this.#config.browserOrigin = this.#config.directBrowserOrigin
+    }
+  }
+
+  async proxyDiagnostics(
+    configuredSettings?: RelayProxySettings
+  ): Promise<RelayProxyDiagnostics> {
+    const settings = configuredSettings ?? (await this.proxySettings())
+    const ports = await Promise.all(
+      ([80, 443] as const).map(async (port) => {
+        const result = await command("docker", [
+          "ps",
+          "--filter",
+          `publish=${port}`,
+          "--format",
+          "{{.Names}}",
+        ])
+        const owners = result.stdout
+          .split("\n")
+          .map((value) => value.trim())
+          .filter(Boolean)
+        const conflictingOwner = owners.find(
+          (owner) => owner !== TRAEFIK_CONTAINER
+        )
+        return {
+          available: !conflictingOwner,
+          owner: conflictingOwner ?? owners[0] ?? null,
+          port,
+        }
+      })
+    )
+    const bundledContainerRunning = await command("docker", [
+      "inspect",
+      "--format",
+      "{{.State.Running}}",
+      TRAEFIK_CONTAINER,
+    ])
+      .then((result) => result.stdout.trim() === "true")
+      .catch(() => false)
+    const coolifyProxy =
+      settings.mode === "coolify"
+        ? await this.#externalTraefikContainer(settings)
+        : null
+    const containerRunning =
+      settings.mode === "coolify"
+        ? Boolean(coolifyProxy)
+        : bundledContainerRunning
+    const conflicts = ports.filter((port) => !port.available)
+    const warnings: Array<string> = []
+    if (settings.mode === "traefik" && conflicts.length > 0) {
+      warnings.push(
+        conflicts
+          .map(
+            (port) =>
+              `Port ${port.port} is already used by ${port.owner ?? "another process"}.`
+          )
+          .join(" ")
+      )
+    }
+    if (settings.mode === "traefik") {
+      warnings.push(
+        "Public reachability and DNS cannot be proven from inside the Relay. Hearth and the browser must complete the external probe."
+      )
+    }
+    if (settings.mode === "hearth") {
+      warnings.push(
+        "Hearth proxy mode covers Kiln console and file traffic; public Ember websites require an external or bundled Traefik edge."
+      )
+    }
+    if (settings.mode === "none") {
+      warnings.push(
+        `Manual edge mode does not modify an external proxy. Attach it to ${EDGE_NETWORK_NAME} before publishing Ember routes.`
+      )
+    }
+    let coolifyReady = false
+    if (settings.mode === "coolify") {
+      if (!coolifyProxy) {
+        warnings.push(
+          "Coolify mode could not find a running coolify-proxy container. Confirm this Relay is on a Coolify host using its Traefik proxy."
+        )
+      } else if (!(await containerUsesNetwork(coolifyProxy, EDGE_NETWORK_NAME))) {
+        warnings.push(
+          `Coolify Traefik is not attached to ${EDGE_NETWORK_NAME}. Relay will keep retrying the private edge attachment.`
+        )
+      } else {
+        coolifyReady = true
+      }
+    }
+    return {
+      browserOrigin: this.#config.browserOrigin,
+      containerRunning,
+      mode: settings.mode,
+      ports,
+      publicReachability: "unknown",
+      status:
+        settings.mode === "none"
+          ? "disabled"
+          : settings.mode === "hearth"
+            ? "hearth"
+            : settings.mode === "coolify"
+              ? coolifyReady
+                ? "ready"
+                : "blocked"
+            : conflicts.length > 0
+              ? "blocked"
+              : containerRunning
+                ? "ready"
+                : "starting",
+      warnings,
+    }
+  }
+
+  async configureWebRoutes(
+    routes: ReadonlyArray<RelayStoredWebRoute>,
+    configuredSettings?: RelayProxySettings
+  ): Promise<void> {
+    const settings = configuredSettings ?? (await this.proxySettings())
+    this.#webRoutes = routes
+    const directory = join(
+      this.#config.dataDirectory,
+      "infrastructure",
+      "traefik",
+      "dynamic"
+    )
+    await mkdir(directory, { recursive: true, mode: 0o700 })
+    await writeFile(
+      join(directory, "kiln.yaml"),
+      traefikDynamicConfiguration(this.#config, routes, settings),
+      { mode: 0o600 }
+    )
+    if (settings.mode === "none" || settings.mode === "coolify") {
+      await this.#serializeEdgeMutation(() =>
+        this.#reconcileExternalTraefikRoutes(routes, settings)
+      )
+    } else {
+      await this.#removeExternalTraefikRoutes()
+      await this.#serializeEdgeMutation(() => this.#disableExternalEdge())
+    }
+  }
+
+  async webRouteState(
+    instanceId: string,
+    routes: ReadonlyArray<RelayInstanceWebRoute>
+  ): Promise<RelayInstanceWebRouteState> {
+    const settings = await this.proxySettings()
+    if (settings.mode === "traefik") {
+      return {
+        edgeConnected: false,
+        message: "Bundled Traefik applies this route dynamically.",
+        proxyConnected: true,
+        requiresRestart: false,
+        routes: [...routes],
+        status: "ready",
+      }
+    }
+    if (settings.mode === "hearth") {
+      return {
+        edgeConnected: false,
+        message:
+          "Hearth proxy mode does not publish Ember websites. Choose an existing or bundled Traefik edge.",
+        proxyConnected: false,
+        requiresRestart: false,
+        routes: [...routes],
+        status: routes.length > 0 ? "blocked" : "ready",
+      }
+    }
+
+    const instance = await this.#docker.findInstance(instanceId)
+    if (!instance) throw new Error("Instance not found")
+    const profile = this.#externalTraefikProfile(settings)
+    const desiredLabels = traefikRouteLabels(routes, profile)
+    const labels = await containerLabels(instance.service)
+    const requiresRestart = routeLabelsRequireRestart(
+      labels,
+      routes,
+      desiredLabels
+    )
+    const edgeConnected = await containerUsesNetwork(
+      instance.service,
+      EDGE_NETWORK_NAME
+    )
+    const proxy = await this.#externalTraefikContainer(settings)
+    const proxyConnected = Boolean(
+      proxy && (await containerUsesNetwork(proxy, EDGE_NETWORK_NAME))
+    )
+
+    if (requiresRestart) {
+      return {
+        edgeConnected,
+        message:
+          routes.length > 0
+            ? "Restart this Ember to apply its pending Traefik labels."
+            : "Public access is disabled now; restart once to remove stale Traefik labels.",
+        proxyConnected,
+        requiresRestart: true,
+        routes: [...routes],
+        status: "pending_restart",
+      }
+    }
+    if (routes.length > 0 && (!edgeConnected || !proxyConnected)) {
+      return {
+        edgeConnected,
+        message: proxy
+          ? `Relay found ${proxy}, but the ${EDGE_NETWORK_NAME} attachment is not ready yet.`
+          : settings.mode === "coolify"
+            ? "Relay could not find Coolify's running coolify-proxy container."
+            : `Attach your Traefik container to ${EDGE_NETWORK_NAME} to activate this route.`,
+        proxyConnected,
+        requiresRestart: false,
+        routes: [...routes],
+        status: "blocked",
+      }
+    }
+    return {
+      edgeConnected,
+      message:
+        routes.length > 0
+          ? "Traefik labels and edge network membership are applied."
+          : "This Ember is not exposed to the edge network.",
+      proxyConnected,
+      requiresRestart: false,
+      routes: [...routes],
+      status: "ready",
+    }
+  }
+
+  async runInstanceAction(
+    instance: RelayInstanceConfig,
+    action: "start" | "stop" | "restart" | "kill",
+    routes: ReadonlyArray<RelayInstanceWebRoute>
+  ): Promise<RelayInstance> {
+    const settings = await this.proxySettings()
+    if (
+      (settings.mode === "none" || settings.mode === "coolify") &&
+      instance.managedByRelay &&
+      (action === "start" || action === "restart")
+    ) {
+      const profile = this.#externalTraefikProfile(settings)
+      const desiredLabels = traefikRouteLabels(routes, profile)
+      const labels = await containerLabels(instance.service)
+      if (routeLabelsRequireRestart(labels, routes, desiredLabels)) {
+        await this.#ensureEdgeNetwork()
+        return this.#docker.recreateOwnedInstance(
+          instance,
+          desiredLabels,
+          routes.length > 0 ? EDGE_NETWORK_NAME : null
+        )
+      }
+    }
+    return this.#docker.runAction(instance, action)
+  }
+
+  async #writeProxySettings(settings: RelayProxySettings): Promise<void> {
+    await mkdir(this.#config.dataDirectory, { recursive: true })
+    await writeFile(
+      join(this.#config.dataDirectory, "proxy.json"),
+      `${JSON.stringify(settings, null, 2)}\n`,
+      { mode: 0o600 }
+    )
   }
 
   async createInstance(input: RelayCreateInstance): Promise<RelayInstance> {
@@ -160,7 +570,7 @@ export class LifecycleDriver {
       "--hostname",
       containerName,
       "--network",
-      NETWORK_NAME,
+      GAME_NETWORK_NAME,
       "--network-alias",
       containerName,
       "--interactive",
@@ -198,6 +608,14 @@ export class LifecycleDriver {
       `kiln.brick.network-mode=${definition.network.mode}`,
       "--label",
       `kiln.brick.primary-port=${primaryPort.container}`,
+      "--label",
+      "kiln.traefik.managed=true",
+      "--label",
+      `kiln.traefik.service.port=${primaryPort.container}`,
+      "--label",
+      `traefik.docker.network=${EDGE_NETWORK_NAME}`,
+      "--label",
+      "traefik.enable=false",
       "--label",
       `kiln.instance.name=${containerName}`,
       "--label",
@@ -295,17 +713,16 @@ export class LifecycleDriver {
       })
     }
     const networking = await this.networking()
-    if (networking?.enabled)
-      await this.#refreshCoreDnsConfiguration(networking)
+    if (networking?.enabled) await this.#refreshCoreDnsConfiguration(networking)
     if (instance.brickNetworkMode === "minecraft-backend")
       await this.#refreshVelocityConfigurations(networking)
   }
 
   async #ensureNetwork(): Promise<void> {
     try {
-      await command("docker", ["network", "inspect", NETWORK_NAME])
+      await command("docker", ["network", "inspect", GAME_NETWORK_NAME])
     } catch {
-      await command("docker", ["network", "create", NETWORK_NAME])
+      await command("docker", ["network", "create", GAME_NETWORK_NAME])
     }
   }
 
@@ -328,7 +745,10 @@ export class LifecycleDriver {
     const instances = await this.#docker.inspectInstances()
     await writeFile(
       join(coreDns, "Corefile"),
-      coreDnsConfiguration(networking, this.#dnsHostnames(instances, networking))
+      coreDnsConfiguration(
+        networking,
+        this.#dnsHostnames(instances, networking)
+      )
     )
     await writeFile(
       join(limbo, "server.toml"),
@@ -337,7 +757,7 @@ export class LifecycleDriver {
 
     await this.#ensureContainer("kiln-coredns", replace, [
       "--network",
-      NETWORK_NAME,
+      GAME_NETWORK_NAME,
       "--network-alias",
       "coredns",
       "--restart",
@@ -356,7 +776,7 @@ export class LifecycleDriver {
     ])
     await this.#ensureContainer("kiln-limbo", replace, [
       "--network",
-      NETWORK_NAME,
+      GAME_NETWORK_NAME,
       "--network-alias",
       "limbo",
       "--restart",
@@ -365,6 +785,295 @@ export class LifecycleDriver {
       `${join(hostInfrastructure, "limbo", "server.toml")}:/usr/src/app/server.toml:ro`,
       "ghcr.io/quozul/picolimbo:v1.13.1-mc26.2",
     ])
+  }
+
+  async #ensureTraefik(
+    settings: RelayProxySettings,
+    routes: ReadonlyArray<RelayStoredWebRoute>,
+    replace: boolean
+  ): Promise<void> {
+    const diagnostics = await this.proxyDiagnostics(settings)
+    const conflicts = diagnostics.ports.filter((port) => !port.available)
+    if (conflicts.length > 0) {
+      throw new Error(
+        conflicts
+          .map(
+            (port) =>
+              `Bundled Traefik cannot start because port ${port.port} is already in use by ${port.owner ?? "another process"}. Choose KILN_RELAY_PROXY=none for an existing proxy, or free ports 80 and 443.`
+          )
+          .join(" ")
+      )
+    }
+
+    await this.#ensureNetwork()
+    await this.#ensureRelayEdgeNetwork()
+    const relayContainer = requiredRelayContainerReference()
+    await connectNetworkWithAlias(
+      relayContainer,
+      RELAY_EDGE_NETWORK_NAME,
+      RELAY_EDGE_ALIAS
+    )
+    const infrastructure = join(
+      this.#config.dataDirectory,
+      "infrastructure",
+      "traefik"
+    )
+    const hostInfrastructure = join(
+      await this.#hostDataDirectory(),
+      "infrastructure",
+      "traefik"
+    )
+    await Promise.all([
+      mkdir(join(infrastructure, "dynamic"), {
+        recursive: true,
+        mode: 0o700,
+      }),
+      mkdir(join(infrastructure, "state"), {
+        recursive: true,
+        mode: 0o700,
+      }),
+    ])
+    await Promise.all([
+      writeFile(
+        join(infrastructure, "traefik.yaml"),
+        traefikStaticConfiguration(settings),
+        { mode: 0o600 }
+      ),
+      writeFile(
+        join(infrastructure, "dynamic", "kiln.yaml"),
+        traefikDynamicConfiguration(this.#config, routes, settings),
+        { mode: 0o600 }
+      ),
+      ensureProtectedFile(join(infrastructure, "state", "acme.json")),
+    ])
+
+    const arguments_ = [
+      "--network",
+      RELAY_EDGE_NETWORK_NAME,
+      "--restart",
+      "unless-stopped",
+      "--label",
+      "kiln.relay.infrastructure=traefik",
+      "--publish",
+      "80:80",
+      "--publish",
+      "443:443",
+      "--volume",
+      `${join(hostInfrastructure, "traefik.yaml")}:/etc/traefik/traefik.yaml:ro`,
+      "--volume",
+      `${join(hostInfrastructure, "dynamic")}:/etc/traefik/dynamic:ro`,
+      "--volume",
+      `${join(hostInfrastructure, "state")}:/var/lib/traefik`,
+    ]
+    arguments_.push(settings.traefikImage)
+    try {
+      await this.#ensureContainer(TRAEFIK_CONTAINER, replace, arguments_)
+      await connectNetwork(TRAEFIK_CONTAINER, RELAY_EDGE_NETWORK_NAME)
+      await connectNetwork(TRAEFIK_CONTAINER, GAME_NETWORK_NAME)
+    } catch (cause) {
+      if (isPortBindingFailure(cause)) {
+        throw new Error(
+          "Bundled Traefik could not bind ports 80 and 443. A host process may already own one of them even though Docker could not identify it. Free both ports or choose KILN_RELAY_PROXY=none for an existing/manual Traefik setup.",
+          { cause }
+        )
+      }
+      throw cause
+    }
+  }
+
+  async #reconcileExternalTraefikRoutes(
+    routes: ReadonlyArray<RelayStoredWebRoute>,
+    settings: RelayProxySettings
+  ): Promise<void> {
+    await this.#removeExternalTraefikRoutes()
+    await this.#ensureEdgeNetwork()
+    if (settings.mode === "coolify") {
+      const proxy = await this.#externalTraefikContainer(settings)
+      if (proxy) await connectNetwork(proxy, EDGE_NETWORK_NAME)
+    }
+
+    const routedInstances = new Set(routes.map((route) => route.instanceId))
+    const instances = await this.#docker.inspectInstances()
+    await Promise.all(
+      instances
+        .filter((instance) => instance.managedByRelay)
+        .map((instance) =>
+          routedInstances.has(instance.id)
+            ? connectNetwork(instance.service, EDGE_NETWORK_NAME)
+            : disconnectNetwork(instance.service, EDGE_NETWORK_NAME)
+        )
+    )
+  }
+
+  async #removeBundledTraefik(): Promise<void> {
+    await command("docker", ["rm", "--force", TRAEFIK_CONTAINER]).catch(
+      () => undefined
+    )
+    const relayContainer = process.env.HOSTNAME?.trim()
+    if (relayContainer) {
+      await disconnectNetwork(relayContainer, RELAY_EDGE_NETWORK_NAME)
+    }
+    await command("docker", ["network", "rm", RELAY_EDGE_NETWORK_NAME]).catch(
+      () => undefined
+    )
+  }
+
+  async #ensureEdgeNetwork(): Promise<void> {
+    const inspected = await command("docker", [
+      "network",
+      "inspect",
+      "--format",
+      '{{index .Labels "kiln.relay.network"}}',
+      EDGE_NETWORK_NAME,
+    ]).catch(() => null)
+    if (inspected) {
+      if (inspected.stdout.trim() === "edge") return
+      throw new Error(
+        `Docker network ${EDGE_NETWORK_NAME} already exists but is not owned by this Relay. Rename or remove that network before enabling Ember web routes.`
+      )
+    }
+    await command("docker", [
+      "network",
+      "create",
+      "--label",
+      "kiln.relay.network=edge",
+      EDGE_NETWORK_NAME,
+    ])
+  }
+
+  async #ensureRelayEdgeNetwork(): Promise<void> {
+    const inspected = await command("docker", [
+      "network",
+      "inspect",
+      "--format",
+      '{{index .Labels "kiln.relay.network"}}',
+      RELAY_EDGE_NETWORK_NAME,
+    ]).catch(() => null)
+    if (inspected) {
+      if (inspected.stdout.trim() === "relay-edge") return
+      throw new Error(
+        `Docker network ${RELAY_EDGE_NETWORK_NAME} already exists but is not owned by this Relay.`
+      )
+    }
+    await command("docker", [
+      "network",
+      "create",
+      "--label",
+      "kiln.relay.network=relay-edge",
+      RELAY_EDGE_NETWORK_NAME,
+    ])
+  }
+
+  async #externalTraefikContainer(
+    settings?: RelayProxySettings
+  ): Promise<string | null> {
+    if (settings?.mode === "coolify") {
+      return firstTraefikContainer(["coolify-proxy"])
+    }
+    const candidates = ["coolify-proxy"]
+    const ports = await Promise.all(
+      [80, 443].map((port) =>
+        command("docker", [
+          "ps",
+          "--filter",
+          `publish=${port}`,
+          "--format",
+          "{{.Names}}",
+        ]).catch(() => ({ stderr: "", stdout: "" }))
+      )
+    )
+    for (const result of ports) {
+      candidates.push(
+        ...result.stdout
+          .split("\n")
+          .map((value) => value.trim())
+          .filter(Boolean)
+      )
+    }
+    return firstTraefikContainer(Array.from(new Set(candidates)))
+  }
+
+  #externalTraefikProfile(
+    settings: RelayProxySettings
+  ): TraefikLabelProfile {
+    return settings.mode === "coolify"
+      ? {
+          certificateResolver: "letsencrypt",
+          httpEntryPoint: "http",
+          httpsEntryPoint: "https",
+        }
+      : {
+          certificateResolver: "kiln",
+          httpEntryPoint: "web",
+          httpsEntryPoint: "websecure",
+        }
+  }
+
+  #scheduleEdgeReconciliation(settings: RelayProxySettings): void {
+    if (this.#edgeReconciliationTimer) {
+      clearInterval(this.#edgeReconciliationTimer)
+      this.#edgeReconciliationTimer = null
+    }
+    if (settings.mode !== "coolify") return
+    this.#edgeReconciliationTimer = setInterval(() => {
+      if (this.#edgeReconciliationPending) return
+      this.#edgeReconciliationPending = true
+      void this.#serializeEdgeMutation(() =>
+        this.#reconcileExternalTraefikRoutes(this.#webRoutes, settings)
+      )
+        .catch((cause: unknown) => {
+          console.error(
+            "Relay could not reconcile the Coolify Traefik edge",
+            cause
+          )
+        })
+        .finally(() => {
+          this.#edgeReconciliationPending = false
+        })
+    }, 30_000)
+    this.#edgeReconciliationTimer.unref()
+  }
+
+  #serializeEdgeMutation(operation: () => Promise<void>): Promise<void> {
+    const result = this.#edgeMutation.catch(() => undefined).then(operation)
+    this.#edgeMutation = result.catch(() => undefined)
+    return result
+  }
+
+  async #disableExternalEdge(): Promise<void> {
+    const instances = await this.#docker.inspectInstances()
+    const proxy = await this.#externalTraefikContainer()
+    await Promise.all([
+      ...instances
+        .filter((instance) => instance.managedByRelay)
+        .map((instance) =>
+          disconnectNetwork(instance.service, EDGE_NETWORK_NAME)
+        ),
+      ...(proxy ? [disconnectNetwork(proxy, EDGE_NETWORK_NAME)] : []),
+    ])
+    await command("docker", ["network", "rm", EDGE_NETWORK_NAME]).catch(
+      () => undefined
+    )
+  }
+
+  async #removeExternalTraefikRoutes(): Promise<void> {
+    const result = await command("docker", [
+      "ps",
+      "--all",
+      "--filter",
+      "label=kiln.relay.web-route=true",
+      "--format",
+      "{{.Names}}",
+    ])
+    const names = result.stdout
+      .split("\n")
+      .map((name) => name.trim())
+      .filter((name) => name.startsWith("kiln-route-"))
+    await Promise.all(
+      names.map((name) =>
+        command("docker", ["rm", "--force", name]).catch(() => undefined)
+      )
+    )
   }
 
   async #removeInfrastructure(): Promise<void> {
@@ -381,7 +1090,10 @@ export class LifecycleDriver {
     const instances = await this.#docker.inspectInstances()
     await writeFile(
       join(this.#config.dataDirectory, "infrastructure", "coredns", "Corefile"),
-      coreDnsConfiguration(networking, this.#dnsHostnames(instances, networking))
+      coreDnsConfiguration(
+        networking,
+        this.#dnsHostnames(instances, networking)
+      )
     )
     await command("docker", ["restart", "kiln-coredns"], { timeout: 90_000 })
   }
@@ -395,9 +1107,7 @@ export class LifecycleDriver {
       ...instances
         .filter((instance) => instance.managedByRelay)
         .map((instance) => instance.connectAddress.split(":")[0] ?? ""),
-      ...routes.map(
-        (route) => `${route.implementation}.${networking.domain}`
-      ),
+      ...routes.map((route) => `${route.implementation}.${networking.domain}`),
     ]
   }
 
@@ -536,6 +1246,365 @@ export function velocityForcedHosts(
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")
+}
+
+async function ensureProtectedFile(path: string): Promise<void> {
+  try {
+    await writeFile(path, "{}\n", { flag: "wx", mode: 0o600 })
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause
+  }
+  await chmod(path, 0o600)
+}
+
+async function firstTraefikContainer(
+  names: ReadonlyArray<string>
+): Promise<string | null> {
+  for (const name of names) {
+    const inspected = await command("docker", [
+      "inspect",
+      "--format",
+      "{{.State.Running}} {{.Config.Image}}",
+      name,
+    ])
+      .then((result) => result.stdout.trim().toLowerCase())
+      .catch(() => "")
+    if (
+      inspected.startsWith("true traefik:") ||
+      inspected.startsWith("true traefik@")
+    ) {
+      return name
+    }
+  }
+  return null
+}
+
+async function containerUsesNetwork(
+  name: string,
+  network: string
+): Promise<boolean> {
+  return command("docker", [
+    "inspect",
+    "--format",
+    "{{json .NetworkSettings.Networks}}",
+    name,
+  ])
+    .then((result) => {
+      const networks = JSON.parse(result.stdout) as unknown
+      return Boolean(
+        networks && typeof networks === "object" && network in networks
+      )
+    })
+    .catch(() => false)
+}
+
+async function containerLabels(name: string): Promise<Record<string, string>> {
+  return command("docker", [
+    "inspect",
+    "--format",
+    "{{json .Config.Labels}}",
+    name,
+  ])
+    .then((result) => {
+      const labels = JSON.parse(result.stdout) as unknown
+      if (!labels || typeof labels !== "object" || Array.isArray(labels))
+        return {}
+      return Object.fromEntries(
+        Object.entries(labels).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string"
+        )
+      )
+    })
+    .catch(() => ({}))
+}
+
+async function connectNetwork(name: string, network: string): Promise<void> {
+  if (await containerUsesNetwork(name, network)) return
+  await command("docker", ["network", "connect", network, name])
+}
+
+async function connectNetworkWithAlias(
+  name: string,
+  network: string,
+  alias: string
+): Promise<void> {
+  if (await containerUsesNetworkAlias(name, network, alias)) return
+  if (await containerUsesNetwork(name, network)) {
+    await command("docker", ["network", "disconnect", network, name])
+  }
+  await command("docker", [
+    "network",
+    "connect",
+    "--alias",
+    alias,
+    network,
+    name,
+  ])
+}
+
+async function containerUsesNetworkAlias(
+  name: string,
+  network: string,
+  alias: string
+): Promise<boolean> {
+  return command("docker", [
+    "inspect",
+    "--format",
+    "{{json .NetworkSettings.Networks}}",
+    name,
+  ])
+    .then((result) => {
+      const networks = JSON.parse(result.stdout) as Record<
+        string,
+        { Aliases?: unknown }
+      >
+      const aliases = networks[network]?.Aliases
+      return Array.isArray(aliases) && aliases.includes(alias)
+    })
+    .catch(() => false)
+}
+
+async function disconnectNetwork(name: string, network: string): Promise<void> {
+  if (!(await containerUsesNetwork(name, network))) return
+  await command("docker", ["network", "disconnect", "--force", network, name])
+}
+
+export interface TraefikLabelProfile {
+  certificateResolver: string
+  httpEntryPoint: string
+  httpsEntryPoint: string
+}
+
+export function traefikRouteLabels(
+  routes: ReadonlyArray<RelayInstanceWebRoute>,
+  profile: TraefikLabelProfile
+): Record<string, string> {
+  const labels: Record<string, string> = {
+    "traefik.enable": routes.length > 0 ? "true" : "false",
+  }
+  if (routes.length > 0) labels["traefik.docker.network"] = EDGE_NETWORK_NAME
+
+  for (const route of routes) {
+    const name = traefikRouteName(route.id)
+    const httpRouter = `${name}-http`
+    const httpsRouter = `${name}-https`
+    const rule = route.path
+      ? `Host(\`${route.hostname}\`) && PathPrefix(\`${route.path}\`)`
+      : `Host(\`${route.hostname}\`)`
+    labels[`traefik.http.routers.${httpRouter}.entrypoints`] =
+      profile.httpEntryPoint
+    labels[`traefik.http.routers.${httpRouter}.middlewares`] =
+      `${name}-redirect`
+    labels[`traefik.http.routers.${httpRouter}.priority`] = String(
+      route.path ? 100 + route.path.length : 10
+    )
+    labels[`traefik.http.routers.${httpRouter}.rule`] = rule
+    labels[`traefik.http.routers.${httpRouter}.service`] = name
+    labels[`traefik.http.middlewares.${name}-redirect.redirectscheme.scheme`] =
+      "https"
+    labels[
+      `traefik.http.middlewares.${name}-redirect.redirectscheme.permanent`
+    ] = "true"
+    labels[`traefik.http.routers.${httpsRouter}.entrypoints`] =
+      profile.httpsEntryPoint
+    labels[`traefik.http.routers.${httpsRouter}.priority`] = String(
+      route.path ? 100 + route.path.length : 10
+    )
+    labels[`traefik.http.routers.${httpsRouter}.rule`] = rule
+    labels[`traefik.http.routers.${httpsRouter}.service`] = name
+    labels[`traefik.http.routers.${httpsRouter}.tls`] = "true"
+    labels[`traefik.http.routers.${httpsRouter}.tls.certresolver`] =
+      profile.certificateResolver
+    labels[`traefik.http.services.${name}.loadbalancer.server.port`] = String(
+      route.targetPort
+    )
+    if (route.path && route.stripPrefix) {
+      labels[`traefik.http.routers.${httpsRouter}.middlewares`] =
+        `${name}-strip`
+      labels[`traefik.http.middlewares.${name}-strip.stripprefix.prefixes`] =
+        route.path
+    }
+  }
+
+  const revision = createHash("sha256")
+    .update(
+      JSON.stringify(
+        Object.entries(labels).sort(([a], [b]) => a.localeCompare(b))
+      )
+    )
+    .digest("hex")
+  labels[WEB_ROUTE_REVISION_LABEL] = revision
+  return labels
+}
+
+export function routeLabelsRequireRestart(
+  current: Readonly<Record<string, string>>,
+  routes: ReadonlyArray<RelayInstanceWebRoute>,
+  desired: Readonly<Record<string, string>>
+): boolean {
+  if (routes.length > 0) {
+    return (
+      current[WEB_ROUTE_REVISION_LABEL] !== desired[WEB_ROUTE_REVISION_LABEL]
+    )
+  }
+  const hasManagedRouteLabels =
+    current[WEB_ROUTE_REVISION_LABEL] !== undefined ||
+    current["traefik.enable"] === "true" ||
+    Object.keys(current).some((label) => label.startsWith("traefik.http."))
+  return (
+    hasManagedRouteLabels &&
+    current[WEB_ROUTE_REVISION_LABEL] !== desired[WEB_ROUTE_REVISION_LABEL]
+  )
+}
+
+export function traefikStaticConfiguration(
+  settings: RelayProxySettings
+): string {
+  const email = settings.acmeEmail
+    ? `      email: ${JSON.stringify(settings.acmeEmail)}\n`
+    : ""
+  return `entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+certificatesResolvers:
+  kiln:
+    acme:
+${email}      storage: /var/lib/traefik/acme.json
+      httpChallenge:
+        entryPoint: web
+
+api:
+  dashboard: false
+log:
+  level: INFO
+accessLog: {}
+`
+}
+
+export function traefikDynamicConfiguration(
+  config: RelayConfig,
+  routes: ReadonlyArray<RelayStoredWebRoute>,
+  _settings: RelayProxySettings
+): string {
+  const lines = ["http:", "  routers:"]
+  if (isTraefikHostname(config.advertisedHost)) {
+    lines.push(
+      "    kiln-relay:",
+      `      rule: ${JSON.stringify(`Host(\`${config.advertisedHost}\`)`)}`,
+      "      entryPoints:",
+      "        - websecure",
+      "      service: kiln-relay",
+      "      tls:",
+      "        certResolver: kiln"
+    )
+  }
+  for (const route of routes) {
+    const name = traefikRouteName(route.id)
+    const rule = route.path
+      ? `Host(\`${route.hostname}\`) && PathPrefix(\`${route.path}\`)`
+      : `Host(\`${route.hostname}\`)`
+    lines.push(
+      `    ${name}:`,
+      `      rule: ${JSON.stringify(rule)}`,
+      `      priority: ${route.path ? 100 + route.path.length : 10}`,
+      "      entryPoints:",
+      "        - websecure",
+      `      service: ${name}`,
+      "      tls:",
+      "        certResolver: kiln"
+    )
+    if (route.path && route.stripPrefix) {
+      lines.push("      middlewares:", `        - ${name}-strip`)
+    }
+  }
+
+  lines.push("  services:")
+  if (isTraefikHostname(config.advertisedHost)) {
+    lines.push(
+      "    kiln-relay:",
+      "      loadBalancer:",
+      "        servers:",
+      `          - url: ${JSON.stringify(`http://${RELAY_EDGE_ALIAS}:${config.port}`)}`
+    )
+  }
+  for (const route of routes) {
+    const name = traefikRouteName(route.id)
+    lines.push(
+      `    ${name}:`,
+      "      loadBalancer:",
+      "        servers:",
+      `          - url: ${JSON.stringify(`http://kiln-${route.instanceId.slice(0, 8)}:${route.targetPort}`)}`
+    )
+  }
+
+  lines.push("  middlewares:")
+  for (const route of routes) {
+    if (!route.path || !route.stripPrefix) continue
+    const name = traefikRouteName(route.id)
+    lines.push(
+      `    ${name}-strip:`,
+      "      stripPrefix:",
+      "        prefixes:",
+      `          - ${JSON.stringify(route.path)}`
+    )
+  }
+  lines.push("")
+  return `${lines.join("\n")}\n`
+}
+
+function traefikRouteName(id: string): string {
+  return `kiln-route-${id.replaceAll("-", "")}`
+}
+
+function isTraefikHostname(value: string): boolean {
+  return /^[A-Za-z0-9.:[\]-]+$/u.test(value)
+}
+
+function formatPublicHost(hostname: string): string {
+  return hostname.includes(":") && !hostname.startsWith("[")
+    ? `[${hostname}]`
+    : hostname
+}
+
+function requiredRelayContainerReference(): string {
+  const reference = process.env.HOSTNAME?.trim()
+  if (reference) return reference
+  throw new Error(
+    "Bundled Traefik could not identify the Relay container through HOSTNAME"
+  )
+}
+
+function usesProxyTlsTermination(mode: RelayProxySettings["mode"]): boolean {
+  return mode === "coolify" || mode === "traefik"
+}
+
+function effectiveUrlPort(url: URL): number {
+  if (url.port) return Number(url.port)
+  return url.protocol === "https:" ? 443 : 80
+}
+
+function isPortBindingFailure(cause: unknown): boolean {
+  const message =
+    cause && typeof cause === "object" && "message" in cause
+      ? String(cause.message)
+      : ""
+  return /(?:address already in use|bind:|port is already allocated)/iu.test(
+    message
+  )
 }
 
 export function coreDnsHostnamePattern(

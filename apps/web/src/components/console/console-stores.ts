@@ -3,6 +3,7 @@ import type {
   RelayConsoleLevel,
   RelayConsoleLine,
 } from "@workspace/contracts"
+import type { RelayConsoleTransport } from "@/lib/relay-console-stream"
 
 export const consoleLevels: Array<RelayConsoleLevel> = [
   "info",
@@ -42,7 +43,10 @@ export interface ConsoleUiStore {
 export interface ConsoleStreamSnapshot {
   connection: "connecting" | "live" | "unavailable"
   consoleData: RelayConsole | null
+  error: string | null
   loading: boolean
+  transport: RelayConsoleTransport | null
+  transportMessage: string | null
 }
 
 export interface ConsoleStreamStore {
@@ -57,7 +61,10 @@ export function createConsoleStreamStore(): ConsoleStreamStore {
   let snapshot: ConsoleStreamSnapshot = {
     connection: "connecting",
     consoleData: null,
+    error: null,
     loading: true,
+    transport: null,
+    transportMessage: null,
   }
   const listeners = new Set<() => void>()
   return {
@@ -68,7 +75,10 @@ export function createConsoleStreamStore(): ConsoleStreamStore {
       if (
         snapshot.consoleData === nextSnapshot.consoleData &&
         snapshot.connection === nextSnapshot.connection &&
-        snapshot.loading === nextSnapshot.loading
+        snapshot.error === nextSnapshot.error &&
+        snapshot.loading === nextSnapshot.loading &&
+        snapshot.transport === nextSnapshot.transport &&
+        snapshot.transportMessage === nextSnapshot.transportMessage
       ) {
         return
       }

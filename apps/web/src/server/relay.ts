@@ -1,15 +1,17 @@
 import { createServerFn } from "@tanstack/react-start"
 import { Effect } from "effect"
 import {
+  relayFileActivitySchema,
+  relayFileContentSchema,
+  relayFileTreeSchema,
   relayConsoleCommandResultSchema,
   relayConsoleCommandSchema,
   relayConsoleCompletionInputSchema,
   relayConsoleCompletionSchema,
-  relayConsoleSchema,
-  relayFileActivitySchema,
-  relayFileContentSchema,
-  relayFileTreeSchema,
   relayInstanceActionSchema,
+  relayInstanceWebRoutesSchema,
+  relayInstanceWebRouteStateSchema,
+  relayIdSchema,
   relayInstanceSchema,
   relayLatestLogSchema,
   relaySaveFileInputSchema,
@@ -60,7 +62,7 @@ import { resolveMclogsApiUrl } from "@/lib/mclogs"
 
 const instanceInputSchema = z.object({
   instanceId: z.string().min(1),
-  relayId: z.uuid(),
+  relayId: relayIdSchema,
 })
 
 const treeInputSchema = instanceInputSchema.extend({
@@ -69,10 +71,6 @@ const treeInputSchema = instanceInputSchema.extend({
 
 const instanceNameInputSchema = instanceInputSchema.extend({
   name: z.string().trim().min(1).max(120),
-})
-
-const liveConsoleInputSchema = instanceInputSchema.extend({
-  requestedAt: z.number(),
 })
 
 const filePathSchema = z
@@ -98,6 +96,10 @@ const saveFileInputSchema = fileInputSchema.extend(
 const actionInputSchema = instanceInputSchema.extend(
   relayInstanceActionSchema.shape
 )
+
+const webRoutesInputSchema = instanceInputSchema.extend({
+  routes: relayInstanceWebRoutesSchema,
+})
 
 const consoleCommandInputSchema = instanceInputSchema.extend(
   relayConsoleCommandSchema.shape
@@ -229,6 +231,71 @@ export const updateInstanceName = createServerFn({ method: "POST" })
       ...relayInstanceSchema.parse({ ...instance, name: data.name }),
       relayId: relay.id,
     }
+  })
+
+export const sendRelayConsoleCommand = createServerFn({ method: "POST" })
+  .validator(consoleCommandInputSchema)
+  .handler(async ({ data }) => {
+    const value = await relayRequest(
+      `/v1/instances/${encodeURIComponent(data.instanceId)}/console`,
+      {
+        body: JSON.stringify({ command: data.command }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      },
+      "instance.console.write",
+      data.instanceId,
+      data.relayId
+    )
+    return relayConsoleCommandResultSchema.parse(value)
+  })
+
+export const completeRelayConsoleCommand = createServerFn({ method: "POST" })
+  .validator(consoleCompletionInputSchema)
+  .handler(async ({ data }) => {
+    const value = await relayRequest(
+      `/v1/instances/${encodeURIComponent(data.instanceId)}/console-completions`,
+      {
+        body: JSON.stringify({ cursor: data.cursor, input: data.input }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      },
+      "instance.console.read",
+      data.instanceId,
+      data.relayId
+    )
+    return relayConsoleCompletionSchema.parse(value)
+  })
+
+export const getInstanceWebRoutes = createServerFn({ method: "GET" })
+  .validator(instanceInputSchema)
+  .handler(async ({ data }) => {
+    const value = await relayRequest(
+      `/v1/instances/${encodeURIComponent(data.instanceId)}/web-routes`,
+      undefined,
+      "instance.network.read",
+      data.instanceId,
+      data.relayId
+    )
+    return relayInstanceWebRouteStateSchema.parse(value)
+  })
+
+export const updateInstanceWebRoutes = createServerFn({ method: "POST" })
+  .validator(webRoutesInputSchema)
+  .handler(async ({ data }) => {
+    const value = await relayRequest(
+      `/v1/instances/${encodeURIComponent(data.instanceId)}/web-routes`,
+      {
+        body: JSON.stringify({ routes: data.routes }),
+        headers: { "Content-Type": "application/json" },
+        method: "PUT",
+      },
+      "instance.network.write",
+      data.instanceId,
+      data.relayId,
+      240_000
+    )
+    return relayInstanceWebRouteStateSchema.parse(value)
   })
 
 export const getRelayTree = createServerFn({ method: "GET" })
@@ -375,51 +442,6 @@ export const performRelayAction = createServerFn({ method: "POST" })
     return { ...displayInstance, relayId: relay.id }
   })
 
-export const getRelayConsole = createServerFn({ method: "POST" })
-  .validator(liveConsoleInputSchema)
-  .handler(async ({ data }) =>
-    relayConsoleSchema.parse(
-      await relayRequest(
-        `/v1/instances/${encodeURIComponent(data.instanceId)}/console?limit=3000`,
-        undefined,
-        "instance.console.read",
-        data.instanceId,
-        data.relayId
-      )
-    )
-  )
-
-export const sendRelayCommand = createServerFn({ method: "POST" })
-  .validator(consoleCommandInputSchema)
-  .handler(async ({ data }) =>
-    relayConsoleCommandResultSchema.parse(
-      await relayRequest(
-        `/v1/instances/${encodeURIComponent(data.instanceId)}/console`,
-        { method: "POST", body: JSON.stringify({ command: data.command }) },
-        "instance.console.write",
-        data.instanceId,
-        data.relayId
-      )
-    )
-  )
-
-export const completeRelayCommand = createServerFn({ method: "POST" })
-  .validator(consoleCompletionInputSchema)
-  .handler(async ({ data }) =>
-    relayConsoleCompletionSchema.parse(
-      await relayRequest(
-        `/v1/instances/${encodeURIComponent(data.instanceId)}/console-completions`,
-        {
-          method: "POST",
-          body: JSON.stringify({ input: data.input, cursor: data.cursor }),
-        },
-        "instance.console.write",
-        data.instanceId,
-        data.relayId
-      )
-    )
-  )
-
 export const uploadToMclogs = createServerFn({ method: "POST" })
   .validator(mclogsUploadInputSchema)
   .handler(async ({ data }) => {
@@ -554,7 +576,8 @@ async function relayRequest(
   init: RequestInit | undefined,
   permission: AccessPermission,
   instanceId: string,
-  relayId: string
+  relayId: string,
+  timeoutMs?: number
 ): Promise<unknown> {
   const { relay, user } = await instanceRelayAccess(relayId)
   await requireRelayPermission({
@@ -563,7 +586,7 @@ async function relayRequest(
     permission,
     instanceId,
   })
-  const response = await relayFetch(relay, path, init)
+  const response = await relayFetch(relay, path, init, timeoutMs)
   return response.json()
 }
 
@@ -649,9 +672,13 @@ async function authorizedRelayEntry(
 async function relayFetch(
   relay: RelayEndpoint,
   path: string,
-  init?: RequestInit
+  init?: RequestInit,
+  timeoutMs?: number
 ): Promise<Response> {
-  return runAppEffect("relay.fetch", relayFetchEffect(relay, path, init))
+  return runAppEffect(
+    "relay.fetch",
+    relayFetchEffect(relay, path, init, timeoutMs)
+  )
 }
 
 async function authorize(

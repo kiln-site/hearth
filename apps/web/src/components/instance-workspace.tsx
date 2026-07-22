@@ -35,8 +35,19 @@ import {
 } from "@workspace/ui/components/tooltip"
 
 import { ToolbarSidebarTrigger } from "@/components/global-page-toolbar"
+import {
+  FileTreePreferencesContext,
+  InstanceIdentityContext,
+  InstancePermissionsContext,
+  InstanceRelayConnectedContext,
+} from "@/components/instance-workspace-context"
+import type {
+  FileTreePreferences,
+  InstanceWorkspacePermissions,
+} from "@/components/instance-workspace-context"
 import { WorkspaceFrame } from "@/components/workspace-frame"
 import { roleHasPermission } from "@/lib/permissions"
+import { openRelayResourceStream } from "@/lib/relay-resource-stream"
 import {
   accessCapabilitiesQueryOptions,
   queryKeys,
@@ -70,63 +81,6 @@ function clampResourcePercent(value: number | null | undefined): number {
   return value === null || value === undefined
     ? 0
     : Math.max(1, Math.min(value, 100))
-}
-
-export interface InstanceWorkspacePermissions {
-  consoleWrite: boolean
-  filesWrite: boolean
-  power: boolean
-  settings: boolean
-  shareLogs: boolean
-}
-
-export interface FileTreePreferences {
-  collapsed: boolean
-  width: number | null
-}
-
-const InstanceIdentityContext =
-  React.createContext<InstanceWorkspaceInstance | null>(null)
-const InstancePermissionsContext =
-  React.createContext<InstanceWorkspacePermissions | null>(null)
-const FileTreePreferencesContext =
-  React.createContext<FileTreePreferences | null>(null)
-const InstanceRelayConnectedContext = React.createContext<boolean | null>(null)
-
-function useRequiredContext<T>(
-  context: React.Context<T | null>,
-  hookName: string
-): T {
-  const value = React.useContext(context)
-  if (value === null) {
-    throw new Error(`${hookName} must be used within InstanceWorkspace`)
-  }
-  return value
-}
-
-export function useInstanceIdentity() {
-  return useRequiredContext(InstanceIdentityContext, "useInstanceIdentity")
-}
-
-export function useInstancePermissions() {
-  return useRequiredContext(
-    InstancePermissionsContext,
-    "useInstancePermissions"
-  )
-}
-
-export function useFileTreePreferences() {
-  return useRequiredContext(
-    FileTreePreferencesContext,
-    "useFileTreePreferences"
-  )
-}
-
-export function useInstanceRelayConnected() {
-  return useRequiredContext(
-    InstanceRelayConnectedContext,
-    "useInstanceRelayConnected"
-  )
 }
 
 export function InstanceWorkspace({
@@ -184,9 +138,87 @@ function InstanceRelayConnectionBoundary({
 
   return (
     <InstanceRelayConnectedContext.Provider value={relayConnected}>
+      <RelayResourceStreamController
+        instance={instance}
+        relayConnected={relayConnected}
+      />
       {children}
     </InstanceRelayConnectedContext.Provider>
   )
+}
+
+function RelayResourceStreamController({
+  instance,
+  relayConnected,
+}: {
+  instance: InstanceWorkspaceInstance
+  relayConnected: boolean
+}) {
+  const queryClient = useQueryClient()
+
+  React.useEffect(() => {
+    if (!relayConnected) return
+    const lifecycle = new AbortController()
+    let cancelled = false
+
+    async function connect() {
+      let retryDelay = 500
+      while (!cancelled) {
+        try {
+          const stream = openRelayResourceStream(
+            instance.relayId,
+            instance.id,
+            lifecycle.signal
+          )
+          let lastSequence = -1
+          for await (const event of stream) {
+            if (cancelled) break
+            if (event.sequence <= lastSequence) continue
+            lastSequence = event.sequence
+            queryClient.setQueryData<RelayFleetSnapshot>(
+              queryKeys.relay.snapshot,
+              (snapshot) =>
+                snapshot
+                  ? {
+                      ...snapshot,
+                      instances: snapshot.instances.map((current) =>
+                        current.id === event.instance.id &&
+                        current.relayId === instance.relayId
+                          ? { ...current, ...event.instance }
+                          : current
+                      ),
+                    }
+                  : snapshot
+            )
+          }
+          if (!cancelled) throw new Error("Relay resource stream closed")
+        } catch {
+          if (cancelled) break
+          await new Promise<void>((resolve) => {
+            const finish = () => {
+              lifecycle.signal.removeEventListener("abort", abort)
+              resolve()
+            }
+            const timer = window.setTimeout(finish, retryDelay)
+            const abort = () => {
+              window.clearTimeout(timer)
+              finish()
+            }
+            lifecycle.signal.addEventListener("abort", abort, { once: true })
+          })
+          retryDelay = Math.min(retryDelay * 2, 5_000)
+        }
+      }
+    }
+
+    void connect()
+    return () => {
+      cancelled = true
+      lifecycle.abort()
+    }
+  }, [instance.id, instance.relayId, queryClient, relayConnected])
+
+  return null
 }
 
 type ServerAction = "start" | "stop" | "restart" | "kill"
@@ -413,6 +445,7 @@ function InstanceRouteTitle() {
     select: (state) => {
       const pathname = state.location.pathname
       if (/\/files(?:\/|$)/.test(pathname)) return "Files"
+      if (pathname.endsWith("/network")) return "Network"
       if (pathname.endsWith("/info")) return "Info"
       return "Console"
     },

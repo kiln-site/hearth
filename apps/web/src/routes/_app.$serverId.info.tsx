@@ -6,7 +6,7 @@ import {
   useInstanceIdentity,
   useInstancePermissions,
   useInstanceRelayConnected,
-} from "@/components/instance-workspace"
+} from "@/components/instance-workspace-context"
 import { SettingsWorkspace } from "@/components/settings-workspace"
 import { pageTitle } from "@/lib/page-title"
 import { relaySnapshotQueryOptions } from "@/lib/query-options"

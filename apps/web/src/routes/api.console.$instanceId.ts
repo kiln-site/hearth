@@ -1,151 +1,142 @@
+import * as Sentry from "@sentry/tanstackstart-react"
 import { createFileRoute } from "@tanstack/react-router"
+import { relayIdSchema } from "@workspace/contracts"
+
+import { openHearthRelayConsoleStream } from "@/server/relay-console-proxy"
+import { requireAuthenticatedUser } from "@/server/auth"
+
+const encoder = new TextEncoder()
 
 export const Route = createFileRoute("/api/console/$instanceId")({
   server: {
     handlers: {
-      GET: async ({ request, params }) => {
-        const { getAuthenticatedUserFromHeaders } =
-          await import("@/lib/auth-session")
-        const user = await getAuthenticatedUserFromHeaders(request.headers)
+      GET: async ({ request }) => {
+        const user = await requireAuthenticatedUser().catch(() => null)
         if (!user) {
           return Response.json(
-            { error: "Authentication required" },
+            {
+              code: "authentication_required",
+              error: "Authentication required.",
+            },
             { status: 401 }
           )
         }
-        const relayId = new URL(request.url).searchParams.get("relayId")
-        if (!relayId) {
+
+        const url = new URL(request.url)
+        const relayId = relayIdSchema.safeParse(url.searchParams.get("relayId"))
+        const instanceId = decodePathSegment(url.pathname.split("/").at(-1))
+        if (!relayId.success || !instanceId || instanceId.length > 64) {
           return Response.json(
-            { error: "Relay identifier is required" },
+            {
+              code: "invalid_console_target",
+              error: "The console target is invalid.",
+            },
             { status: 400 }
           )
         }
-        const [{ requireRelayPermission }, { listPersistedRelays }] =
-          await Promise.all([
-            import("@/lib/access-control"),
-            import("@/lib/relay-registry"),
-          ])
-        const relay = (await listPersistedRelays()).find(
-          (item) => item.enabled && item.id === relayId
-        )
-        if (!relay) {
-          return Response.json(
-            { error: "No Relay owns this instance" },
-            { status: 503 }
-          )
-        }
+
         try {
-          await requireRelayPermission({
+          const lifecycle = new AbortController()
+          const abort = () => lifecycle.abort()
+          request.signal.addEventListener("abort", abort, { once: true })
+          if (request.signal.aborted) abort()
+          const iterator = openHearthRelayConsoleStream({
+            instanceId,
+            relayId: relayId.data,
+            signal: lifecycle.signal,
             user,
-            relayId: relay.id,
-            permission: "instance.console.read",
-            instanceId: params.instanceId,
           })
-        } catch (cause) {
-          return Response.json(
-            { error: cause instanceof Error ? cause.message : "Access denied" },
-            { status: 403 }
-          )
-        }
-        const relayUrl = `${relay.useTls ? "https" : "http"}://${relay.hostname}:${relay.port}`
-        const { relayHeaders } = await import("@/lib/relay-registry")
-        const upstreamController = new AbortController()
-        const abortUpstream = () =>
-          upstreamController.abort(request.signal.reason)
+          const first = await iterator.next()
+          if (first.done) throw new Error("Relay console stream ended early")
 
-        if (request.signal.aborted) abortUpstream()
-        else
-          request.signal.addEventListener("abort", abortUpstream, {
-            once: true,
-          })
-
-        const connectTimer = setTimeout(
-          () => upstreamController.abort(new Error("Relay stream timed out")),
-          10_000
-        )
-
-        let upstream: Response
-        try {
-          upstream = await fetch(
-            `${relayUrl.replace(/\/$/u, "")}/v1/instances/${encodeURIComponent(params.instanceId)}/console-stream`,
-            {
-              headers: {
-                Accept: "application/x-ndjson",
-                ...(await relayHeaders(relay)),
-              },
-              signal: upstreamController.signal,
-            }
-          )
-        } catch (cause) {
-          request.signal.removeEventListener("abort", abortUpstream)
-          if (request.signal.aborted) {
-            return new Response(null, { status: 499 })
+          let firstPending = true
+          let finished = false
+          const finish = () => {
+            if (finished) return
+            finished = true
+            request.signal.removeEventListener("abort", abort)
           }
+          const body = new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              try {
+                if (firstPending) {
+                  firstPending = false
+                  controller.enqueue(encodeRecord(first.value))
+                  return
+                }
+                const result = await iterator.next()
+                if (result.done) {
+                  finish()
+                  controller.close()
+                  return
+                }
+                if (!lifecycle.signal.aborted) {
+                  controller.enqueue(encodeRecord(result.value))
+                }
+              } catch (cause) {
+                finish()
+                if (lifecycle.signal.aborted) {
+                  controller.close()
+                  return
+                }
+                controller.enqueue(
+                  encodeRecord({
+                    code: "console_proxy_interrupted",
+                    message:
+                      cause instanceof Error
+                        ? cause.message
+                        : "The Hearth console proxy was interrupted.",
+                    type: "proxy.error",
+                  })
+                )
+                controller.close()
+              }
+            },
+            async cancel() {
+              lifecycle.abort()
+              finish()
+              await iterator.return(undefined)
+            },
+          })
+          return new Response(body, {
+            headers: {
+              "Cache-Control": "no-store, no-transform",
+              Connection: "keep-alive",
+              "Content-Type": "application/x-ndjson; charset=utf-8",
+              "X-Accel-Buffering": "no",
+            },
+          })
+        } catch (cause) {
+          Sentry.captureException(cause, {
+            tags: {
+              "kiln.operation": "console.proxy.connect",
+              "kiln.relay_id": relayId.data,
+            },
+          })
           return Response.json(
             {
+              code: "console_proxy_failed",
               error:
                 cause instanceof Error
-                  ? `Could not connect to Relay: ${cause.message}`
-                  : "Could not connect to Relay",
+                  ? cause.message
+                  : "Hearth could not open the Relay console stream.",
             },
             { status: 502 }
           )
-        } finally {
-          clearTimeout(connectTimer)
         }
-
-        if (!upstream.ok || !upstream.body) {
-          request.signal.removeEventListener("abort", abortUpstream)
-          const problem = (await upstream.json().catch(() => null)) as {
-            error?: string
-          } | null
-          return Response.json(
-            {
-              error:
-                problem?.error ??
-                (upstream.body
-                  ? `Relay returned HTTP ${upstream.status}`
-                  : "Relay returned an empty console stream"),
-            },
-            { status: upstream.ok ? 502 : upstream.status }
-          )
-        }
-
-        const reader = upstream.body.getReader()
-        const body = new ReadableStream<Uint8Array>({
-          async pull(controller) {
-            try {
-              const { done, value } = await reader.read()
-              if (done) {
-                request.signal.removeEventListener("abort", abortUpstream)
-                controller.close()
-              } else {
-                controller.enqueue(value)
-              }
-            } catch (cause) {
-              request.signal.removeEventListener("abort", abortUpstream)
-              if (request.signal.aborted || upstreamController.signal.aborted) {
-                controller.close()
-              } else {
-                controller.error(cause)
-              }
-            }
-          },
-          async cancel(reason) {
-            request.signal.removeEventListener("abort", abortUpstream)
-            upstreamController.abort(reason)
-            await reader.cancel(reason).catch(() => undefined)
-          },
-        })
-
-        return new Response(body, {
-          headers: {
-            "Cache-Control": "no-cache, no-store",
-            "Content-Type": "application/x-ndjson; charset=utf-8",
-            "X-Accel-Buffering": "no",
-          },
-        })
       },
     },
   },
 })
+
+function encodeRecord(value: unknown): Uint8Array {
+  return encoder.encode(`${JSON.stringify(value)}\n`)
+}
+
+function decodePathSegment(value: string | undefined): string | null {
+  try {
+    return decodeURIComponent(value ?? "")
+  } catch {
+    return null
+  }
+}

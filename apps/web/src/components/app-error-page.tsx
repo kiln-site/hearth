@@ -3,6 +3,7 @@ import * as Sentry from "@sentry/tanstackstart-react"
 import { useRouter } from "@tanstack/react-router"
 import type { AnyRouter } from "@tanstack/react-router"
 import { ArrowLeft, RefreshCw, TriangleAlert } from "lucide-react"
+import { createPortal } from "react-dom"
 
 import { Button } from "@workspace/ui/components/button"
 
@@ -134,8 +135,13 @@ function StatusPage({
   actions: React.ReactNode
   detail?: string
 }) {
-  return (
-    <main className="relative grid min-h-dvh place-items-center overflow-hidden bg-background px-5 py-10">
+  const [portalTarget, setPortalTarget] = React.useState<HTMLElement | null>(
+    null
+  )
+  React.useEffect(() => setPortalTarget(document.body), [])
+
+  const page = (
+    <main className="fixed inset-0 z-50 grid min-h-dvh place-items-center overflow-hidden bg-background px-5 py-10">
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute top-1/2 left-1/2 h-[38rem] w-[38rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/4 blur-3xl" />
         <div className="absolute inset-x-0 top-1/2 border-t border-border/35" />
@@ -189,4 +195,6 @@ function StatusPage({
       </section>
     </main>
   )
+
+  return portalTarget ? createPortal(page, portalTarget) : page
 }

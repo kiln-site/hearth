@@ -9,6 +9,10 @@ import viteReact from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
 
 const repositoryRoot = resolve(import.meta.dirname, "../..")
+const contractsSource = resolve(
+  repositoryRoot,
+  "packages/contracts/src/index.ts"
+)
 const reactScanProductionShim = resolve(
   import.meta.dirname,
   "node_modules/react-scan/dist/rsc-shim.mjs"
@@ -71,7 +75,12 @@ const config = defineConfig(({ command }) => {
       // Keep React Scan's instrumentation and toolbar out of production bundles.
       alias:
         command === "serve"
-          ? []
+          ? [
+              {
+                find: /^@workspace\/contracts$/,
+                replacement: contractsSource,
+              },
+            ]
           : [{ find: /^react-scan$/, replacement: reactScanProductionShim }],
       tsconfigPaths: true,
     },

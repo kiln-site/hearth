@@ -33,3 +33,51 @@ export class BrickRecipeError extends Schema.TaggedErrorClass<BrickRecipeError>(
     return `${this.reason} (${this.source})`
   }
 }
+
+export class RelayStateError extends Schema.TaggedErrorClass<RelayStateError>()(
+  "RelayStateError",
+  {
+    operation: Schema.String,
+    cause: Schema.Defect(),
+  }
+) {
+  override get message() {
+    return `Relay state operation ${this.operation} failed`
+  }
+}
+
+export class RelayIdentityError extends Schema.TaggedErrorClass<RelayIdentityError>()(
+  "RelayIdentityError",
+  {
+    operation: Schema.String,
+    cause: Schema.Defect(),
+  }
+) {
+  override get message() {
+    return `Relay identity operation ${this.operation} failed`
+  }
+}
+
+export class RelayTlsError extends Schema.TaggedErrorClass<RelayTlsError>()(
+  "RelayTlsError",
+  {
+    operation: Schema.String,
+    cause: Schema.Defect(),
+  }
+) {
+  override get message() {
+    return `Relay TLS operation ${this.operation} failed`
+  }
+}
+
+export class RelayPairingError extends Schema.TaggedErrorClass<RelayPairingError>()(
+  "RelayPairingError",
+  {
+    code: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  }
+) {
+  override get message() {
+    return this.code
+  }
+}

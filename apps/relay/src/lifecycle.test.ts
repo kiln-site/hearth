@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vite-plus/test"
+import { relayInstanceWebRoutesSchema } from "@workspace/contracts"
 
-import { coreDnsHostnamePattern, velocityForcedHosts } from "./lifecycle.js"
+import { loadConfig } from "./config.js"
+import {
+  coreDnsHostnamePattern,
+  LifecycleDriver,
+  routeLabelsRequireRestart,
+  traefikDynamicConfiguration,
+  traefikRouteLabels,
+  traefikStaticConfiguration,
+  velocityForcedHosts,
+} from "./lifecycle.js"
 
 describe("CoreDNS Brick hostnames", () => {
   it("matches only deployed hostnames and implementation aliases", () => {
@@ -69,5 +79,134 @@ describe("Velocity forced hosts", () => {
     expect(forcedHosts).toContain(
       '"paper.kiln.test" = ["kiln-paper-one", "limbo"]'
     )
+  })
+})
+
+describe("Traefik web routes", () => {
+  const settings = {
+    acmeEmail: "admin@example.com",
+    mode: "traefik" as const,
+    traefikImage: "traefik:v3.6.6",
+  }
+  const route = {
+    hostname: "donutsmp.example.com",
+    id: "b00d4423-2620-4079-845a-dac8c063987a",
+    instanceId: "a".repeat(40),
+    path: "/map",
+    stripPrefix: true,
+    targetPort: 8080,
+  }
+
+  it("configures ACME and applies routes without a Docker provider", () => {
+    const staticConfiguration = traefikStaticConfiguration(settings)
+    const dynamicConfiguration = traefikDynamicConfiguration(
+      loadConfig({
+        KILN_RELAY_HOST: "relay.example.com",
+        KILN_RELAY_PROXY: "traefik",
+        NODE_ENV: "development",
+      }),
+      [route],
+      settings
+    )
+
+    expect(staticConfiguration).toContain("httpChallenge:")
+    expect(staticConfiguration).toContain("admin@example.com")
+    expect(staticConfiguration).not.toContain("docker.sock")
+    expect(dynamicConfiguration).toContain("PathPrefix(`/map`)")
+    expect(dynamicConfiguration).toContain("http://kiln-relay:4100")
+    expect(dynamicConfiguration).toContain("http://kiln-aaaaaaaa:8080")
+    expect(dynamicConfiguration).not.toContain("rootCAs:")
+    expect(dynamicConfiguration).toContain("stripPrefix:")
+  })
+
+  it("builds direct Ember labels for a Coolify Traefik edge", () => {
+    const labels = traefikRouteLabels([route], {
+      certificateResolver: "letsencrypt",
+      httpEntryPoint: "http",
+      httpsEntryPoint: "https",
+    })
+    const name = "kiln-route-b00d442326204079845adac8c063987a"
+    expect(labels["traefik.enable"]).toBe("true")
+    expect(labels["traefik.docker.network"]).toBe("kiln-edge")
+    expect(labels[`traefik.http.routers.${name}-https.entrypoints`]).toBe(
+      "https"
+    )
+    expect(labels[`traefik.http.routers.${name}-https.tls.certresolver`]).toBe(
+      "letsencrypt"
+    )
+    expect(
+      labels[`traefik.http.services.${name}.loadbalancer.server.port`]
+    ).toBe("8080")
+    expect(labels["kiln.relay.web-routes.revision"]).toMatch(/^[a-f0-9]{64}$/u)
+  })
+
+  it("hydrates the trusted Coolify edge without advertising private port 4100", () => {
+    const config = loadConfig({
+      KILN_RELAY_PROXY: "coolify",
+      SERVICE_URL_KILN_RELAY_4100: "https://relay.example.com",
+      NODE_ENV: "production",
+    })
+    const lifecycle = new LifecycleDriver(config, null as never, null as never)
+
+    lifecycle.hydrateProxySettings({ ...settings, mode: "coolify" })
+
+    expect(config.publicPort).toBe(443)
+    expect(config.browserOrigin).toBe("https://relay.example.com")
+  })
+
+  it("does not recreate an untouched Ember with no routes", () => {
+    const profile = {
+      certificateResolver: "letsencrypt",
+      httpEntryPoint: "http",
+      httpsEntryPoint: "https",
+    }
+    const desired = traefikRouteLabels([], profile)
+    expect(
+      routeLabelsRequireRestart({ "traefik.enable": "false" }, [], desired)
+    ).toBe(false)
+    expect(
+      routeLabelsRequireRestart(
+        traefikRouteLabels([route], profile),
+        [],
+        desired
+      )
+    ).toBe(true)
+  })
+
+  it("rejects paths that can escape a Traefik rule literal", () => {
+    expect(() =>
+      relayInstanceWebRoutesSchema.parse([
+        {
+          ...route,
+          path: "/map`) || Host(`relay.example.com`)",
+        },
+      ])
+    ).toThrow("routing metacharacters")
+  })
+
+  it.each(["/.", "/..", "/map/.", "/map/.."])(
+    "rejects terminal dot-segment path %s",
+    (path) => {
+      expect(() =>
+        relayInstanceWebRoutesSchema.parse([{ ...route, path }])
+      ).toThrow()
+    }
+  )
+
+  it("restores the direct endpoint when bundled Traefik is disabled", () => {
+    const config = loadConfig({
+      KILN_RELAY_HOST: "relay.example.com",
+      KILN_RELAY_PROXY: "traefik",
+      NODE_ENV: "development",
+    })
+    const lifecycle = new LifecycleDriver(config, null as never, null as never)
+
+    lifecycle.hydrateProxySettings({ ...settings, mode: "none" })
+    expect(config.publicPort).toBe(4100)
+    expect(config.browserOrigin).toBe("http://relay.example.com:4100")
+
+    lifecycle.hydrateProxySettings(settings)
+    expect(config.publicPort).toBe(443)
+    expect(config.browserOrigin).toBe("https://relay.example.com")
   })
 })

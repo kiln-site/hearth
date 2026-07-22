@@ -5,6 +5,7 @@ import {
   relayCatalogSchema,
   relayCreateInstanceSchema,
   relayInstanceSchema,
+  relayIdSchema,
   relayNetworkingSchema,
   relaySnapshotSchema,
 } from "@workspace/contracts"
@@ -27,13 +28,15 @@ import {
 } from "@/lib/relay-client"
 import { requireAuthenticatedUser } from "@/server/auth"
 
-const relayIdSchema = z.object({ relayId: z.uuid() })
+const relayInputSchema = z.object({ relayId: relayIdSchema })
 const createInputSchema = relayCreateInstanceSchema.extend({
-  ...relayIdSchema.shape,
+  ...relayInputSchema.shape,
   name: z.string().trim().min(1).max(120),
 })
-const networkingInputSchema = relayNetworkingSchema.extend(relayIdSchema.shape)
-const recipeInputSchema = relayIdSchema.extend({ source: brickSourceSchema })
+const networkingInputSchema = relayNetworkingSchema.extend(
+  relayInputSchema.shape
+)
+const recipeInputSchema = relayInputSchema.extend({ source: brickSourceSchema })
 
 export const getBrickStudio = createServerFn({ method: "GET" }).handler(
   async () => {
