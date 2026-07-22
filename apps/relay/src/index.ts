@@ -10,7 +10,9 @@ import {
   relayConsoleCompletionInputSchema,
   relayCreateInstanceSchema,
   relayInstanceActionSchema,
+  relayInstanceWebRoutesSchema,
   relayNetworkingSchema,
+  relayProxySettingsSchema,
   relaySaveFileInputSchema,
   relayBootstrapDiscoveryTranscript,
 } from "@workspace/contracts"
@@ -83,6 +85,12 @@ let activeTls = startup.tls
 const cliArguments = process.argv.slice(2)
 let relayIdentity = startup.identity
 config.nodeName = relayIdentity.name
+const bricks = new BrickCatalog(config.brickCatalogUrl)
+const docker = new DockerDriver(config)
+const filesystem = new FilesystemDriver(config)
+const lifecycle = new LifecycleDriver(config, docker, bricks)
+const startupProxySettings = await lifecycle.proxySettings()
+lifecycle.hydrateProxySettings(startupProxySettings)
 if (cliArguments[0] === "pair" || cliArguments[0] === "hearth") {
   await runRelayCli(cliArguments)
   await disposeRelayRuntime()
@@ -104,11 +112,15 @@ if (initialPairing.kind === "automatic") {
 } else if (initialPairing.invitation) {
   console.log(await renderPairingInvitation(initialPairing.invitation))
 }
-const bricks = new BrickCatalog(config.brickCatalogUrl)
-const docker = new DockerDriver(config)
-const filesystem = new FilesystemDriver(config)
-const lifecycle = new LifecycleDriver(config, docker, bricks)
+await lifecycle.initializeProxy(
+  await runRelayEffect(
+    "relay.startup.webRoutes",
+    startup.state.listWebRoutes()
+  ),
+  startupProxySettings
+)
 const instanceMutations = new Map<string, Promise<unknown>>()
+let webRouteMutation: Promise<unknown> = Promise.resolve()
 const snapshotHub = new RelaySnapshotHub(relaySnapshot)
 
 async function runRelayCli(arguments_: ReadonlyArray<string>): Promise<void> {
@@ -535,6 +547,21 @@ async function executeControlRequest(
       return lifecycle.configureNetworking(
         relayNetworkingSchema.parse(request.payload)
       )
+    case "relay.proxy.read": {
+      const settings = await lifecycle.proxySettings()
+      return {
+        diagnostics: await lifecycle.proxyDiagnostics(settings),
+        settings,
+      }
+    }
+    case "relay.proxy.write": {
+      const settings = relayProxySettingsSchema.parse(request.payload)
+      const routes = await runRelayEffect(
+        "relay.proxy.routes",
+        startup.state.listWebRoutes()
+      )
+      return lifecycle.configureProxy(settings, routes)
+    }
     case "relay.audit.list":
       return runRelayEffect(
         "relay.control.audit.list",
@@ -658,6 +685,18 @@ async function executeControlRequest(
       await serializeInstanceMutation(instanceId, () =>
         lifecycle.deleteInstance(instanceId, payload.deleteData === true)
       )
+      await serializeWebRouteMutation(async () => {
+        await runRelayEffect(
+          "relay.network.routes.deleteInstance",
+          startup.state.replaceInstanceRoutes(instanceId, [])
+        )
+        await lifecycle.configureWebRoutes(
+          await runRelayEffect(
+            "relay.network.routes.afterDelete",
+            startup.state.listWebRoutes()
+          )
+        )
+      })
       return { deleted: true, instanceId }
     }
     case "instance.action": {
@@ -699,6 +738,64 @@ async function executeControlRequest(
     }
     case "instance.logs.latest":
       return filesystem.latestLog(await requiredInstance(payload))
+    case "instance.network.routes.read": {
+      const instance = await requiredInstance(payload)
+      return runRelayEffect(
+        "relay.network.routes.read",
+        startup.state.listInstanceRoutes(instance.id)
+      )
+    }
+    case "instance.network.routes.write": {
+      return serializeWebRouteMutation(async () => {
+        const instance = await requiredInstance(payload)
+        const routes = relayInstanceWebRoutesSchema.parse(payload.routes)
+        const configuredRoutes = await runRelayEffect(
+          "relay.network.routes.collisionCheck",
+          startup.state.listWebRoutes()
+        )
+        const collision = routes.find((route) =>
+          configuredRoutes.some(
+            (configured) =>
+              configured.instanceId !== instance.id &&
+              configured.hostname === route.hostname &&
+              configured.path === route.path
+          )
+        )
+        if (collision) {
+          throw new Error(
+            `Another Ember already uses https://${collision.hostname}${collision.path ?? ""}. Hostname and path routes must be unique on a Relay.`
+          )
+        }
+        const previous = await runRelayEffect(
+          "relay.network.routes.previous",
+          startup.state.listInstanceRoutes(instance.id)
+        )
+        await runRelayEffect(
+          "relay.network.routes.replace",
+          startup.state.replaceInstanceRoutes(instance.id, routes)
+        )
+        try {
+          const allRoutes = await runRelayEffect(
+            "relay.network.routes.all",
+            startup.state.listWebRoutes()
+          )
+          await lifecycle.configureWebRoutes(allRoutes)
+        } catch (cause) {
+          await runRelayEffect(
+            "relay.network.routes.rollback",
+            startup.state.replaceInstanceRoutes(instance.id, previous)
+          )
+          await lifecycle.configureWebRoutes(
+            await runRelayEffect(
+              "relay.network.routes.rollbackAll",
+              startup.state.listWebRoutes()
+            )
+          )
+          throw cause
+        }
+        return routes
+      })
+    }
     case "relay.rename": {
       relayIdentity = await runRelayEffect(
         "relay.control.rename",
@@ -806,6 +903,14 @@ async function serializeInstanceMutation<T>(
       instanceMutations.delete(instanceId)
     }
   }
+}
+
+async function serializeWebRouteMutation<T>(
+  mutate: () => Promise<T>
+): Promise<T> {
+  const current = webRouteMutation.catch(() => undefined).then(mutate)
+  webRouteMutation = current
+  return current
 }
 
 function normalizedRequestOperation(url: string | undefined): string {

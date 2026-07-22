@@ -193,11 +193,19 @@ function relayControlRequest(path: string, init?: RequestInit) {
       return { operation: "relay.networking.write" as const, payload: body }
     }
   }
+  if (url.pathname === "/v1/proxy") {
+    if (method === "GET") {
+      return { operation: "relay.proxy.read" as const, payload: {} }
+    }
+    if (method === "PUT") {
+      return { operation: "relay.proxy.write" as const, payload: body }
+    }
+  }
   if (url.pathname === "/v1/instances" && method === "POST") {
     return { operation: "instance.create" as const, payload: body }
   }
   const match = url.pathname.match(
-    /^\/v1\/instances\/([^/]+)(?:\/(tree|file|actions|console|console-completions|latest-log))?$/u
+    /^\/v1\/instances\/([^/]+)(?:\/(tree|file|actions|console|console-completions|latest-log|web-routes))?$/u
   )
   if (!match) throw new Error("Unsupported Relay request")
   const instanceId = decodeURIComponent(match[1])
@@ -259,6 +267,17 @@ function relayControlRequest(path: string, init?: RequestInit) {
       operation: "instance.logs.latest" as const,
       payload: { instanceId },
     }
+  }
+  if (resource === "web-routes") {
+    return method === "PUT"
+      ? {
+          operation: "instance.network.routes.write" as const,
+          payload: { instanceId, routes: body.routes },
+        }
+      : {
+          operation: "instance.network.routes.read" as const,
+          payload: { instanceId },
+        }
   }
   throw new Error("Unsupported Relay request")
 }

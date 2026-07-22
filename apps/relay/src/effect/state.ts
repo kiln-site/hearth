@@ -1,6 +1,7 @@
 import { SqliteClient, SqliteMigrator } from "@effect/sql-sqlite-node"
 import { Context, Effect, Layer, Schema } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
+import type { RelayInstanceWebRoute } from "@workspace/contracts"
 
 import { RelayStateError } from "./errors.js"
 
@@ -57,6 +58,10 @@ export interface RelayAuditInput {
 
 export interface RelayAuditRecord extends RelayAuditInput {}
 
+export interface RelayStoredWebRoute extends RelayInstanceWebRoute {
+  readonly instanceId: string
+}
+
 const RelayClientRoleSchema = Schema.Literals([
   "custom",
   "full_access",
@@ -87,6 +92,15 @@ const RelayInvitationRowSchema = Schema.Struct({
 })
 
 const StringArraySchema = Schema.Array(Schema.String)
+
+const RelayWebRouteRowSchema = Schema.Struct({
+  hostname: Schema.String,
+  id: Schema.String,
+  instanceId: Schema.String,
+  path: Schema.String,
+  stripPrefix: Schema.Number,
+  targetPort: Schema.Number,
+})
 
 export class RelayStateStore extends Context.Service<
   RelayStateStore,
@@ -123,6 +137,13 @@ export class RelayStateStore extends Context.Service<
     readonly listInvitations: (
       now: number
     ) => Effect.Effect<ReadonlyArray<RelayInvitation>, RelayStateError>
+    readonly listInstanceRoutes: (
+      instanceId: string
+    ) => Effect.Effect<ReadonlyArray<RelayInstanceWebRoute>, RelayStateError>
+    readonly listWebRoutes: () => Effect.Effect<
+      ReadonlyArray<RelayStoredWebRoute>,
+      RelayStateError
+    >
     readonly pairClient: (
       input: PairRelayClientInput
     ) => Effect.Effect<void, RelayStateError>
@@ -137,6 +158,10 @@ export class RelayStateStore extends Context.Service<
     readonly setMetadata: (
       key: string,
       value: string
+    ) => Effect.Effect<void, RelayStateError>
+    readonly replaceInstanceRoutes: (
+      instanceId: string,
+      routes: ReadonlyArray<RelayInstanceWebRoute>
     ) => Effect.Effect<void, RelayStateError>
     readonly touchClient: (
       clientId: string,
@@ -226,6 +251,26 @@ const migrations = SqliteMigrator.fromRecord({
       ADD COLUMN last_address TEXT
     `
   }),
+  "4_instance_web_routes": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`
+      CREATE TABLE relay_web_routes (
+        id TEXT PRIMARY KEY NOT NULL,
+        instance_id TEXT NOT NULL,
+        hostname TEXT NOT NULL,
+        path TEXT NOT NULL DEFAULT '',
+        strip_prefix INTEGER NOT NULL CHECK (strip_prefix IN (0, 1)),
+        target_port INTEGER NOT NULL CHECK (target_port BETWEEN 1 AND 65535),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE (hostname, path)
+      ) STRICT
+    `
+    yield* sql`
+      CREATE INDEX relay_web_routes_instance
+      ON relay_web_routes (instance_id)
+    `
+  }),
 })
 
 const makeRelayStateStore = Effect.gen(function* () {
@@ -244,6 +289,47 @@ const makeRelayStateStore = Effect.gen(function* () {
   const decodeInvitationRows = Schema.decodeUnknownEffect(
     Schema.Array(RelayInvitationRowSchema)
   )
+  const decodeWebRouteRows = Schema.decodeUnknownEffect(
+    Schema.Array(RelayWebRouteRowSchema)
+  )
+
+  const webRoutes = Effect.fn("RelayStateStore.webRoutes")(function* (
+    instanceId?: string
+  ) {
+    const rows = instanceId
+      ? yield* sql<Record<string, unknown>>`
+          SELECT
+            id,
+            instance_id AS instanceId,
+            hostname,
+            path,
+            strip_prefix AS stripPrefix,
+            target_port AS targetPort
+          FROM relay_web_routes
+          WHERE instance_id = ${instanceId}
+          ORDER BY created_at ASC
+        `
+      : yield* sql<Record<string, unknown>>`
+          SELECT
+            id,
+            instance_id AS instanceId,
+            hostname,
+            path,
+            strip_prefix AS stripPrefix,
+            target_port AS targetPort
+          FROM relay_web_routes
+          ORDER BY created_at ASC
+        `
+    const decoded = yield* decodeWebRouteRows(rows)
+    return decoded.map((row) => ({
+      hostname: row.hostname,
+      id: row.id,
+      instanceId: row.instanceId,
+      path: row.path || null,
+      stripPrefix: row.stripPrefix === 1,
+      targetPort: row.targetPort,
+    }))
+  })
 
   const clientFromRow = Effect.fn("RelayStateStore.clientFromRow")(function* (
     row: typeof RelayClientRowSchema.Type
@@ -516,6 +602,16 @@ const makeRelayStateStore = Effect.gen(function* () {
           )
         })
       ),
+    listInstanceRoutes: (instanceId) =>
+      run(
+        "list_instance_routes",
+        webRoutes(instanceId).pipe(
+          Effect.map((routes) =>
+            routes.map(({ instanceId: _instanceId, ...route }) => route)
+          )
+        )
+      ),
+    listWebRoutes: () => run("list_web_routes", webRoutes()),
     pairClient: (input) =>
       run(
         "pair_client",
@@ -622,6 +718,41 @@ const makeRelayStateStore = Effect.gen(function* () {
           VALUES (${key}, ${value})
           ON CONFLICT (key) DO UPDATE SET value = excluded.value
         `.pipe(Effect.asVoid)
+      ),
+    replaceInstanceRoutes: (instanceId, routes) =>
+      run(
+        "replace_instance_routes",
+        sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              DELETE FROM relay_web_routes WHERE instance_id = ${instanceId}
+            `
+            const now = Date.now()
+            for (const route of routes) {
+              yield* sql`
+                INSERT INTO relay_web_routes (
+                  id,
+                  instance_id,
+                  hostname,
+                  path,
+                  strip_prefix,
+                  target_port,
+                  created_at,
+                  updated_at
+                ) VALUES (
+                  ${route.id},
+                  ${instanceId},
+                  ${route.hostname},
+                  ${route.path ?? ""},
+                  ${route.stripPrefix ? 1 : 0},
+                  ${route.targetPort},
+                  ${now},
+                  ${now}
+                )
+              `
+            }
+          })
+        )
       ),
     touchClient: (clientId, seenAt, address) =>
       run(

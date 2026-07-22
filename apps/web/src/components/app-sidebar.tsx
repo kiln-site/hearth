@@ -12,6 +12,7 @@ import {
   ListTodo,
   LoaderCircle,
   LogOut,
+  Network,
   Settings,
   SlidersHorizontal,
   TerminalSquare,
@@ -74,7 +75,7 @@ import {
   uiPreferenceCookieMaxAge,
 } from "@/lib/ui-preference-cookies"
 
-export type InstanceTab = "console" | "files" | "info"
+export type InstanceTab = "console" | "files" | "info" | "network"
 
 const instanceItems: Array<{
   title: string
@@ -83,6 +84,7 @@ const instanceItems: Array<{
 }> = [
   { title: "Console", value: "console", icon: TerminalSquare },
   { title: "Files", value: "files", icon: Folder },
+  { title: "Network", value: "network", icon: Network },
   { title: "Info", value: "info", icon: SlidersHorizontal },
 ]
 
@@ -315,6 +317,13 @@ const InstanceNavigation = React.memo(function InstanceNavigation({
           replace,
         })
       }
+      if (tab === "network") {
+        return navigate({
+          to: "/$serverId/network",
+          params: { serverId: nextServerId },
+          replace,
+        })
+      }
       return navigate({
         to: "/$serverId/console",
         params: { serverId: nextServerId },
@@ -530,7 +539,12 @@ function CanonicalInstanceRoute({
       return
     }
     void navigate({
-      to: activeTab === "info" ? "/$serverId/info" : "/$serverId/console",
+      to:
+        activeTab === "info"
+          ? "/$serverId/info"
+          : activeTab === "network"
+            ? "/$serverId/network"
+            : "/$serverId/console",
       params: { serverId: instanceRouteId },
       replace: true,
     })
@@ -771,6 +785,7 @@ function globalSectionFromPathname(pathname: string): GlobalSection {
 function instanceTabFromPathname(pathname: string): InstanceTab | null {
   if (globalSectionFromPathname(pathname)) return null
   if (/\/files(?:\/|$)/.test(pathname)) return "files"
+  if (pathname.endsWith("/network")) return "network"
   if (pathname.endsWith("/info")) return "info"
   return "console"
 }

@@ -22,6 +22,7 @@ export interface RelayInstanceConfig {
 }
 
 export type RelayTlsMode = "development" | "external" | "managed"
+export type RelayProxyMode = "hearth" | "none" | "traefik"
 
 export interface RelayConfig {
   advertisedHost: string
@@ -32,6 +33,8 @@ export interface RelayConfig {
   composeFile: string
   connectDomain: string
   connectPort: number
+  directBrowserOrigin: string
+  directPublicPort: number
   dockerSocket: string
   dataDirectory: string
   host: string
@@ -43,12 +46,15 @@ export interface RelayConfig {
   publicPort: number
   projectDirectory: string
   projectName: string
+  proxyMode: RelayProxyMode
   rootDirectory: string
   sftpDevAuthentication: boolean
   sftpPort: number
   tlsCertificatePath: string | null
   tlsKeyPath: string | null
   tlsMode: RelayTlsMode
+  traefikAcmeEmail: string | null
+  traefikImage: string
 }
 
 export function loadConfig(
@@ -58,8 +64,19 @@ export function loadConfig(
   const advertisedHost =
     environment.KILN_RELAY_HOST?.trim() || hostname() || "localhost"
   const port = parsePort(environment, "KILN_RELAY_PORT", 4100)
-  const publicPort = parsePort(environment, "KILN_RELAY_PUBLIC_PORT", port)
+  const proxyMode = relayProxyMode(environment)
+  const directPublicPort = parsePort(
+    environment,
+    "KILN_RELAY_PUBLIC_PORT",
+    port
+  )
+  const publicPort = proxyMode === "traefik" ? 443 : directPublicPort
   const tlsMode = relayTlsMode(environment)
+  const directBrowserOrigin = relayBrowserOrigin(
+    tlsMode,
+    advertisedHost,
+    directPublicPort
+  )
   return {
     advertisedHost,
     advertisedHostInferred: !environment.KILN_RELAY_HOST?.trim(),
@@ -67,10 +84,15 @@ export function loadConfig(
       environment.KILN_BRICKS_CATALOG_URL?.trim() ||
       "https://raw.githubusercontent.com/kiln-site/bricks/main/catalog.yml",
     bootstrapToken: bootstrapToken(environment),
-    browserOrigin: `${tlsMode === "development" ? "http" : "https"}://${formatUrlHost(advertisedHost)}:${publicPort}`,
+    browserOrigin:
+      proxyMode === "traefik"
+        ? `https://${formatUrlHost(advertisedHost)}`
+        : directBrowserOrigin,
     composeFile: `${dataDirectory}/instances/compose.yaml`,
     connectDomain: "test",
     connectPort: 25_565,
+    directBrowserOrigin,
+    directPublicPort,
     dockerSocket: "/var/run/docker.sock",
     dataDirectory,
     host: environment.KILN_RELAY_BIND_HOST?.trim() || "0.0.0.0",
@@ -81,6 +103,7 @@ export function loadConfig(
     publicPort,
     projectDirectory: `${dataDirectory}/instances`,
     projectName: "mc-servers",
+    proxyMode,
     rootDirectory: `${dataDirectory}/instances`,
     serverIdLabel: "kiln.server.id",
     sftpDevAuthentication: sftpDevAuthentication(environment),
@@ -88,7 +111,27 @@ export function loadConfig(
     tlsCertificatePath: environment.KILN_RELAY_TLS_CERT_FILE?.trim() || null,
     tlsKeyPath: environment.KILN_RELAY_TLS_KEY_FILE?.trim() || null,
     tlsMode,
+    traefikAcmeEmail: environment.KILN_RELAY_ACME_EMAIL?.trim() || null,
+    traefikImage: traefikImage(environment),
   }
+}
+
+function relayProxyMode(environment: NodeJS.ProcessEnv): RelayProxyMode {
+  const value = environment.KILN_RELAY_PROXY?.trim() || "none"
+  if (value === "none" || value === "hearth" || value === "traefik") {
+    return value
+  }
+  throw new Error("KILN_RELAY_PROXY must be none, hearth, or traefik")
+}
+
+function traefikImage(environment: NodeJS.ProcessEnv): string {
+  const value = environment.KILN_RELAY_TRAEFIK_IMAGE?.trim() || "traefik:v3.6.6"
+  if (!/^traefik(?:@sha256:[a-f0-9]{64}|:[A-Za-z0-9._-]+)$/u.test(value)) {
+    throw new Error(
+      "KILN_RELAY_TRAEFIK_IMAGE must use an official pinned Traefik tag or digest"
+    )
+  }
+  return value
 }
 
 export async function discoverRelayAdvertisedHost(
@@ -104,11 +147,27 @@ export async function discoverRelayAdvertisedHost(
     const address = await withTimeout(discover(), 2_000)
     if (!address) return "hostname"
     config.advertisedHost = address
-    config.browserOrigin = `${config.tlsMode === "development" ? "http" : "https"}://${formatUrlHost(address)}:${config.publicPort}`
+    config.directBrowserOrigin = relayBrowserOrigin(
+      config.tlsMode,
+      address,
+      config.directPublicPort
+    )
+    config.browserOrigin =
+      config.proxyMode === "traefik"
+        ? `https://${formatUrlHost(address)}`
+        : config.directBrowserOrigin
     return "public_ip"
   } catch {
     return "hostname"
   }
+}
+
+function relayBrowserOrigin(
+  tlsMode: RelayTlsMode,
+  advertisedHost: string,
+  publicPort: number
+): string {
+  return `${tlsMode === "development" ? "http" : "https"}://${formatUrlHost(advertisedHost)}${publicPort === 443 ? "" : `:${publicPort}`}`
 }
 
 function withTimeout<T>(promise: Promise<T>, delay: number): Promise<T> {

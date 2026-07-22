@@ -10,6 +10,8 @@ export const relayControlOperations = [
   "relay.audit.list",
   "relay.networking.read",
   "relay.networking.write",
+  "relay.proxy.read",
+  "relay.proxy.write",
   "relay.pairing.create",
   "relay.pairing.list",
   "relay.pairing.revoke",
@@ -28,6 +30,8 @@ export const relayControlOperations = [
   "instance.console.write",
   "instance.console.complete",
   "instance.logs.latest",
+  "instance.network.routes.read",
+  "instance.network.routes.write",
   "sftp.authorization.resolve",
 ] as const
 

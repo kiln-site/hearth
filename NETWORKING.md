@@ -1,6 +1,7 @@
 # Hearth ↔ Relay Networking Plan
 
-> Status: implementation in progress on `networking-overhaul`.
+> Status: implementation and local integration validation complete on
+> `networking-overhaul`; awaiting PR audit.
 
 ## Implementation checkpoints
 
@@ -16,7 +17,10 @@ Completed and locally verified:
 - Browser proof-of-possession capabilities, shared direct console streaming,
   commands/completions and resource/status streaming, plus direct HTTPS
   upload/download with exact Origin/path/action scope, anti-replay nonces,
-  atomic uploads, byte ranges, response hashes, and no Hearth byte proxy.
+  atomic uploads, byte ranges, and response hashes. Direct console/resource
+  traffic automatically falls back through Hearth; UTF-8 files up to 2 MiB
+  have a safe Hearth fallback while large/binary transfers fail with actionable
+  edge guidance.
 - Relay-owned SFTP on configurable `KILN_RELAY_SFTP_PORT` (default 2022), a
   persistent host key, email/`dev123` development authentication, live Hearth
   authorization, multi-instance virtual roots, action-by-action filesystem
@@ -41,15 +45,28 @@ Completed and locally verified:
 - Managed-certificate renewal and mounted-certificate validation/hot reload on
   the active listener while preserving the last valid certificate, plus
   optional public host inference with explicit NAT/Docker/privacy warnings.
-- Legacy authenticated HTTP control routes and Hearth-proxied interactive
-  console operations removed after WSS parity.
+- Legacy authenticated HTTP control routes were removed. Hearth fallback opens
+  capability-authenticated browser WSS operations over the paired control
+  channel and streams console output as same-origin NDJSON.
+- Relay edge modes `none`, `hearth`, and `traefik`, including a pinned
+  Relay-managed Traefik, HTTP-01 ACME renewal, port-conflict diagnostics,
+  public browser probes, and automatic direct-to-Hearth runtime fallback.
+- Relay-authoritative Ember web routes with hostname/path uniqueness,
+  permission-gated Hearth APIs, a minimal Network tab, dynamic bundled
+  Traefik configuration, and Docker-label carriers for an existing Traefik.
+  Route changes do not restart the Ember.
+- Development resolves `@workspace/contracts` from source. Clean package
+  generation can replace `packages/contracts/dist` without restarting Relay,
+  stranding Vite's package resolver, or returning a transient Hearth 500/502.
 
-The deliberately deferred production extensions are provider-specific Relay
-ACME DNS-01 automation and production SFTP credential/public-key issuance. The
-first release uses Relay-managed private-CA TLS or mounted certificates from a
-standard ACME manager, and the requested email/`dev123` SFTP scaffold refuses
-to start in production. Remaining work is the final local integration,
-observability, load, and security validation pass.
+The deliberately deferred production extensions are ACME DNS-01 providers and
+production SFTP credential/public-key issuance. Bundled Traefik implements
+HTTP-01 issuance and renewal; DNS-01 remains useful for wildcard certificates
+or sites where public port 80 cannot be exposed. The requested email/`dev123`
+SFTP scaffold still refuses to start in production. Production rollout still
+requires deployment-specific public DNS/ACME, IPv6, load, and adversarial
+security validation; those are operational gates rather than unfinished local
+implementation.
 
 ## Summary
 
@@ -58,8 +75,10 @@ hybrid transport:
 
 - One long-lived, mutually authenticated WebSocket connection per
   Hearth–Relay pairing for the control plane.
-- Direct browser-to-Relay WSS for live console/log and resource streams.
-- Direct browser-to-Relay HTTPS for uploads and downloads.
+- Direct browser-to-Relay WSS for live console/log and resource streams when a
+  trusted public edge is available, with a same-origin Hearth fallback.
+- Direct browser-to-Relay HTTPS for large uploads and downloads. Small UTF-8
+  transfers may safely fall back through Hearth.
 - A Relay-owned, SFTP-only SSH listener for permission-scoped access to one or
   more instance filesystems.
 
@@ -79,7 +98,8 @@ Hearth A ── authenticated WSS ──┐
 Hearth B ── authenticated WSS ──┼──> Relay :4100
 Hearth C ── authenticated WSS ──┘
 
-Browser ── short-lived capability over WSS/HTTPS ──> Relay :4100
+Browser ── short-lived capability ──> Traefik :443 ──> Relay :4100
+    └──────────────── Hearth fallback ──────────────> Relay control WSS
 
 SFTP client ── user authentication over SSH/SFTP ──> Relay :2022
 ```
@@ -87,6 +107,82 @@ SFTP client ── user authentication over SSH/SFTP ──> Relay :2022
 One TLS listener and certificate can serve HTTPS and WSS on port 4100. The
 certificate must be trusted by the browser for direct browser traffic; it does
 not have to be served on port 443.
+
+## Edge delivery and Ember web routes
+
+`KILN_RELAY_PROXY` selects the initial edge mode. Relay persists the chosen
+mode in `/data/proxy.json`; changing the environment later does not silently
+replace an operator's saved choice.
+
+| Mode      | Browser hot path                                             | Public Ember sites                              | Operator responsibility                                                                            |
+| --------- | ------------------------------------------------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `none`    | Direct Relay edge when trusted, then Hearth fallback         | Existing Traefik discovers Relay route carriers | Configure the Relay's direct public edge and an existing Traefik certificate resolver named `kiln` |
+| `hearth`  | Console, resources, commands, and supported files use Hearth | Not provided                                    | Keep Hearth reachable; add an external edge before enabling public Ember sites                     |
+| `traefik` | Public WSS/HTTPS on 443, then Hearth fallback                | Relay-managed dynamic routes                    | Point public DNS at Relay and expose public TCP 80/443                                             |
+
+The bundled mode starts `kiln-traefik` from the exact pinned image configured
+by `KILN_RELAY_TRAEFIK_IMAGE` (default `traefik:v3.6.6`). Relay generates its
+static and dynamic file-provider configuration and mounts only those files,
+ACME state, and the Relay CA. The Traefik container does **not** receive the
+Docker socket. Traefik terminates public TLS, renews certificates with ACME
+HTTP-01, and validates Relay's managed upstream certificate with Relay's CA.
+Port 443 is therefore optional for the Relay listener but required by this
+convenience edge. A user-managed edge can publish any external port.
+
+Before starting bundled Traefik, Relay reports Docker owners of ports 80/443.
+Docker cannot see a non-container host process, so a bind failure is translated
+into the same actionable conflict error. Public reachability cannot be proven
+from inside Docker; Hearth exposes a browser-side trust probe that distinguishes
+DNS, firewall/NAT, and certificate/ACME failure from Relay control connectivity.
+
+Every Ember created by the new Relay lifecycle receives baseline Traefik
+metadata, but remains disabled for automatic Docker-provider exposure. A web
+route is an explicit Relay-owned record:
+
+```text
+https://<hostname>[/path] -> http://kiln-<instance-short-id>:<target-port>
+```
+
+Hostname/path pairs are unique across the Relay, target ports are restricted to
+1–65535, and each Ember may have at most 16 routes. The user creates the DNS
+record. In bundled mode Relay atomically rewrites the watched dynamic
+configuration; in `none` mode it maintains a small Nginx route carrier bearing
+standard Traefik Docker labels. The carrier resolves Ember DNS lazily, so an
+offline/stopped Ember does not enter a restart loop. Both paths apply changes
+dynamically without restarting the Ember. Optional path stripping supports
+routes such as `https://donutsmp.com/map` to an Ember service root.
+
+The fallback boundary remains deliberate:
+
+- instance lifecycle, metadata, route changes, file trees, and small control
+  calls always travel through Hearth;
+- console and resource streams prefer direct WSS and automatically retry via
+  Hearth with a visible `CONNECTED THROUGH HEARTH` notice;
+- commands follow the active console policy and fall back to the control WSS;
+- small valid UTF-8 files up to 2 MiB may be proxied by Hearth;
+- large or binary transfer bytes require a trusted direct edge and never
+  silently downgrade or reinterpret their contents.
+
+User-visible errors distinguish browser offline, Hearth unreachable, Relay
+control disconnected, direct edge trust failure, Hearth proxy failure, port
+conflict, and DNS/ACME reachability. Sentry spans/tags identify the Relay and
+operation without recording capabilities, proofs, file data, or pairing
+secrets.
+
+### Reset and compatibility notes
+
+There is intentionally no compatibility layer for bearer-token/HTTP Relays or
+old container naming. Existing deployments should recreate Relay pairing and
+recreate Embers so the new `kiln-<short-id>` network alias and baseline labels
+exist. Relay SQLite migration 4 creates `relay_web_routes`; a clean reset may
+drop `/data/network/relay.sqlite` and `/data/proxy.json` together with the rest
+of Relay identity/pairing state. There are no new Hearth MySQL tables for web
+routes because Relay is authoritative. Removing only `relay_web_routes` loses
+configured public routes but not Ember data. Operators must remove any stale
+`kiln-route-*` or `kiln-traefik` containers if manually abandoning the new edge
+state. In development, Hearth and Relay import `@workspace/contracts` through
+its source export, so resetting or regenerating `packages/contracts/dist` no
+longer creates a package-entry gap that can leave either dev server offline.
 
 ## Goals
 

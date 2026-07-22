@@ -445,6 +445,7 @@ function InstanceRouteTitle() {
     select: (state) => {
       const pathname = state.location.pathname
       if (/\/files(?:\/|$)/.test(pathname)) return "Files"
+      if (pathname.endsWith("/network")) return "Network"
       if (pathname.endsWith("/info")) return "Info"
       return "Console"
     },

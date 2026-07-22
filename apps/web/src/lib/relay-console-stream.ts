@@ -7,7 +7,95 @@ import type { RelayConsoleStreamEvent } from "@workspace/contracts"
 
 import { issueConsoleCapability } from "@/server/relay-capability"
 
+export type RelayConsoleTransport = "direct" | "hearth"
+
+export type KilnConsoleStreamEvent =
+  | RelayConsoleStreamEvent
+  | {
+      message: string | null
+      transport: RelayConsoleTransport
+      type: "transport"
+    }
+
+export class RelayConsoleConnectionError extends Error {
+  readonly code:
+    | "browser_offline"
+    | "console_unavailable"
+    | "direct_secure_channel_failed"
+    | "hearth_proxy_failed"
+
+  constructor(
+    code: RelayConsoleConnectionError["code"],
+    message: string,
+    options?: ErrorOptions
+  ) {
+    super(message, options)
+    this.name = "RelayConsoleConnectionError"
+    this.code = code
+  }
+}
+
 export async function* openRelayConsoleStream(
+  relayId: string,
+  instanceId: string,
+  signal: AbortSignal
+): AsyncGenerator<KilnConsoleStreamEvent> {
+  if (!navigator.onLine) {
+    throw new RelayConsoleConnectionError(
+      "browser_offline",
+      "You're offline. Reconnect to the internet to resume the console."
+    )
+  }
+
+  let directFailure: Error | null = null
+  try {
+    const direct = openDirectRelayConsoleStream(relayId, instanceId, signal)
+    const first = await direct.next()
+    if (first.done) throw new Error("Direct Relay console stream ended early")
+    yield { message: null, transport: "direct", type: "transport" }
+    yield first.value
+    for (;;) {
+      // Console frames are a single ordered stream.
+      // oxlint-disable-next-line react-doctor/async-await-in-loop
+      const result = await direct.next()
+      if (result.done) throw new Error("Direct Relay console stream closed")
+      yield result.value
+    }
+  } catch (cause) {
+    if (signal.aborted) throw asError(cause)
+    directFailure = asError(cause)
+  }
+
+  try {
+    const proxied = openHearthConsoleStream(relayId, instanceId, signal)
+    const first = await proxied.next()
+    if (first.done) throw new Error("Hearth console proxy ended early")
+    yield {
+      message: directFallbackMessage(directFailure),
+      transport: "hearth",
+      type: "transport",
+    }
+    yield first.value
+    for (;;) {
+      // Hearth preserves the Relay stream ordering.
+      // oxlint-disable-next-line react-doctor/async-await-in-loop
+      const result = await proxied.next()
+      if (result.done) throw new Error("Hearth console proxy closed")
+      yield result.value
+    }
+  } catch (cause) {
+    if (signal.aborted) throw asError(cause)
+    throw new RelayConsoleConnectionError(
+      "hearth_proxy_failed",
+      directFailure
+        ? "Hearth can reach this Relay, but neither the secure direct stream nor the Hearth fallback could read the console."
+        : "Hearth could not open the Relay console stream.",
+      { cause }
+    )
+  }
+}
+
+async function* openDirectRelayConsoleStream(
   relayId: string,
   instanceId: string,
   signal: AbortSignal
@@ -30,7 +118,14 @@ export async function* openRelayConsoleStream(
       relayId,
     },
   })
+  if (capability.proxyMode === "hearth") {
+    throw new RelayConsoleConnectionError(
+      "direct_secure_channel_failed",
+      "This Relay is configured to stream through Hearth."
+    )
+  }
   const relayOrigin = new URL(capability.browserOrigin)
+  await verifyDirectRelayChannel(relayOrigin, signal)
   relayOrigin.protocol = relayOrigin.protocol === "https:" ? "wss:" : "ws:"
   relayOrigin.pathname = "/v1/browser"
   const socket = new WebSocket(relayOrigin, relayBrowserProtocol)
@@ -82,8 +177,9 @@ export async function* openRelayConsoleStream(
     socket.send(JSON.stringify({ instanceId, type: "console.subscribe", v: 1 }))
 
     // Console frames are a single ordered stream; concurrent reads could reorder them.
-    // oxlint-disable-next-line react-doctor/async-await-in-loop
     for (;;) {
+      // This is an ordered, unbounded socket stream; parallel reads would reorder frames.
+      // oxlint-disable-next-line react-doctor/async-await-in-loop
       const message = await inbox.next()
       yield relayConsoleStreamEventSchema.parse(message)
     }
@@ -91,6 +187,100 @@ export async function* openRelayConsoleStream(
     inbox.close()
     socket.close(1000, "Console view closed")
   }
+}
+
+async function* openHearthConsoleStream(
+  relayId: string,
+  instanceId: string,
+  signal: AbortSignal
+): AsyncGenerator<RelayConsoleStreamEvent> {
+  const response = await fetch(
+    `/api/console/${encodeURIComponent(instanceId)}?relayId=${encodeURIComponent(relayId)}`,
+    { cache: "no-store", signal }
+  )
+  if (!response.ok || !response.body) {
+    const problem = (await response.json().catch(() => null)) as {
+      error?: unknown
+    } | null
+    throw new Error(
+      typeof problem?.error === "string"
+        ? problem.error
+        : `Hearth console proxy returned HTTP ${response.status}`
+    )
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffered = ""
+  try {
+    for (;;) {
+      // NDJSON chunks can split records at arbitrary byte boundaries.
+      // oxlint-disable-next-line react-doctor/async-await-in-loop
+      const result = await reader.read()
+      buffered += decoder.decode(result.value, { stream: !result.done })
+      const lines = buffered.split("\n")
+      buffered = lines.pop() ?? ""
+      for (const line of lines) {
+        if (!line) continue
+        const value = JSON.parse(line) as unknown
+        if (
+          value &&
+          typeof value === "object" &&
+          "type" in value &&
+          value.type === "proxy.error"
+        ) {
+          const message =
+            "message" in value && typeof value.message === "string"
+              ? value.message
+              : "Hearth console proxy was interrupted"
+          throw new Error(message)
+        }
+        yield relayConsoleStreamEventSchema.parse(value)
+      }
+      if (result.done) break
+    }
+    if (buffered.trim()) {
+      yield relayConsoleStreamEventSchema.parse(JSON.parse(buffered))
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined)
+  }
+}
+
+async function verifyDirectRelayChannel(
+  relayOrigin: URL,
+  signal: AbortSignal
+): Promise<void> {
+  const trustUrl = new URL("/v1/trust", relayOrigin)
+  const timeout = new AbortController()
+  const timer = window.setTimeout(() => timeout.abort(), 3_000)
+  const abort = () => timeout.abort()
+  signal.addEventListener("abort", abort, { once: true })
+  try {
+    const response = await fetch(trustUrl, {
+      cache: "no-store",
+      signal: timeout.signal,
+    })
+    if (!response.ok) {
+      throw new Error(`Relay trust probe returned HTTP ${response.status}`)
+    }
+  } catch (cause) {
+    throw new RelayConsoleConnectionError(
+      "direct_secure_channel_failed",
+      "The browser could not establish a trusted secure connection to the Relay.",
+      { cause }
+    )
+  } finally {
+    window.clearTimeout(timer)
+    signal.removeEventListener("abort", abort)
+  }
+}
+
+function directFallbackMessage(cause: Error): string {
+  return cause instanceof RelayConsoleConnectionError &&
+    cause.code === "direct_secure_channel_failed"
+    ? "Secure direct connection unavailable. Streaming through Hearth."
+    : "Direct Relay stream interrupted. Streaming through Hearth."
 }
 
 function createSocketInbox(socket: WebSocket, signal: AbortSignal) {

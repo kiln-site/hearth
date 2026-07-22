@@ -29,6 +29,21 @@ describe("loadConfig", () => {
     expect(config.browserOrigin).toBe("http://relay.test:8443")
   })
 
+  it("uses the standard HTTPS edge for bundled Traefik", () => {
+    const config = loadConfig({
+      KILN_RELAY_HOST: "relay.example.com",
+      KILN_RELAY_PROXY: "traefik",
+      NODE_ENV: "development",
+    })
+
+    expect(config.proxyMode).toBe("traefik")
+    expect(config.publicPort).toBe(443)
+    expect(config.browserOrigin).toBe("https://relay.example.com")
+    expect(config.directPublicPort).toBe(4100)
+    expect(config.directBrowserOrigin).toBe("http://relay.example.com:4100")
+    expect(config.traefikImage).toBe("traefik:v3.6.6")
+  })
+
   it("infers a public address only when no host is configured", async () => {
     const inferred = loadConfig({ NODE_ENV: "development" })
     await expect(
@@ -79,6 +94,18 @@ describe("loadConfig", () => {
         NODE_ENV: "development",
       })
     ).toThrow("KILN_RELAY_SFTP_PORT must be a valid TCP port")
+  })
+
+  it("rejects unknown proxy modes and unpinned images", () => {
+    expect(() =>
+      loadConfig({ KILN_RELAY_PROXY: "caddy", NODE_ENV: "development" })
+    ).toThrow("KILN_RELAY_PROXY must be none, hearth, or traefik")
+    expect(() =>
+      loadConfig({
+        KILN_RELAY_TRAEFIK_IMAGE: "example/traefik:latest",
+        NODE_ENV: "development",
+      })
+    ).toThrow("official pinned Traefik")
   })
 
   it("cannot enable development transport or SFTP auth in production", () => {

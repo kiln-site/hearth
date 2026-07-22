@@ -10,6 +10,10 @@ import type {
 } from "@workspace/contracts"
 
 import { issueConsoleCapability } from "@/server/relay-capability"
+import {
+  completeRelayConsoleCommand,
+  sendRelayConsoleCommand,
+} from "@/server/relay"
 
 const sessions = new Map<string, Promise<ConsoleCommandSession>>()
 
@@ -18,7 +22,14 @@ export async function sendDirectRelayCommand(
   instanceId: string,
   command: string
 ): Promise<RelayConsoleCommandResult> {
-  const session = await commandSession(relayId, instanceId)
+  let session: ConsoleCommandSession
+  try {
+    session = await commandSession(relayId, instanceId)
+  } catch {
+    return sendRelayConsoleCommand({
+      data: { command, instanceId, relayId },
+    })
+  }
   return relayConsoleCommandResultSchema.parse(
     await session.request("console.write", { command })
   )
@@ -30,7 +41,14 @@ export async function completeDirectRelayCommand(
   input: string,
   cursor: number
 ): Promise<RelayConsoleCompletion> {
-  const session = await commandSession(relayId, instanceId)
+  let session: ConsoleCommandSession
+  try {
+    session = await commandSession(relayId, instanceId)
+  } catch {
+    return completeRelayConsoleCommand({
+      data: { cursor, input, instanceId, relayId },
+    })
+  }
   return relayConsoleCompletionSchema.parse(
     await session.request("console.complete", { cursor, input })
   )
@@ -105,6 +123,11 @@ class ConsoleCommandSession {
         write: true,
       },
     })
+    if (capability.proxyMode === "hearth") {
+      throw new Error(
+        "This Relay is configured to send commands through Hearth"
+      )
+    }
     const relayOrigin = new URL(capability.browserOrigin)
     relayOrigin.protocol = relayOrigin.protocol === "https:" ? "wss:" : "ws:"
     relayOrigin.pathname = "/v1/browser"
@@ -214,7 +237,8 @@ class ConsoleCommandSession {
         if (!pending) continue
         clearTimeout(pending.timer)
         this.#pending.delete(requestId)
-        if (message.type === "operation.result") pending.resolve(message.payload)
+        if (message.type === "operation.result")
+          pending.resolve(message.payload)
         else if (message.type === "operation.error") {
           pending.reject(
             new Error(

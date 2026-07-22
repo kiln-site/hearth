@@ -6,6 +6,7 @@ import {
 import type { RelayResourceStreamEvent } from "@workspace/contracts"
 
 import { issueResourceCapability } from "@/server/relay-capability"
+import { getRelaySnapshot } from "@/server/relay"
 
 export async function* openRelayResourceStream(
   relayId: string,
@@ -30,6 +31,10 @@ export async function* openRelayResourceStream(
       relayId,
     },
   })
+  if (capability.proxyMode === "hearth") {
+    yield* openHearthResourceStream(relayId, instanceId, signal)
+    return
+  }
   const relayOrigin = new URL(capability.browserOrigin)
   relayOrigin.protocol = relayOrigin.protocol === "https:" ? "wss:" : "ws:"
   relayOrigin.pathname = "/v1/browser"
@@ -88,10 +93,50 @@ export async function* openRelayResourceStream(
       // oxlint-disable-next-line react-doctor/async-await-in-loop
       yield relayResourceStreamEventSchema.parse(await inbox.next())
     }
+  } catch (cause) {
+    if (signal.aborted) throw cause
+    yield* openHearthResourceStream(relayId, instanceId, signal)
   } finally {
     inbox.close()
     socket.close(1000, "Resource view closed")
   }
+}
+
+async function* openHearthResourceStream(
+  relayId: string,
+  instanceId: string,
+  signal: AbortSignal
+): AsyncGenerator<RelayResourceStreamEvent> {
+  let sequence = Date.now()
+  while (!signal.aborted) {
+    // Polls are deliberately sequential so only one snapshot request is in flight.
+    // oxlint-disable-next-line react-doctor/async-await-in-loop
+    const snapshot = await getRelaySnapshot()
+    const instance = snapshot.instances.find(
+      (candidate) =>
+        candidate.id === instanceId && candidate.relayId === relayId
+    )
+    if (!instance) throw new Error("Instance is no longer available")
+    yield relayResourceStreamEventSchema.parse({
+      instance,
+      sequence: sequence++,
+      type: "resource",
+    })
+    await waitForPoll(signal)
+  }
+}
+
+function waitForPoll(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve()
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(done, 2_000)
+    function done() {
+      window.clearTimeout(timer)
+      signal.removeEventListener("abort", done)
+      resolve()
+    }
+    signal.addEventListener("abort", done, { once: true })
+  })
 }
 
 function createSocketInbox(socket: WebSocket, signal: AbortSignal) {

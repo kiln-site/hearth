@@ -55,6 +55,8 @@ export const InstanceRouteFrame = React.memo(function InstanceRouteFrame({
     return {
       consoleWrite: can("instance.console.write"),
       filesWrite: can("instance.files.write"),
+      networkRead: can("instance.network.read"),
+      networkWrite: can("instance.network.write"),
       power: can("instance.power"),
       settings: can("instance.settings"),
       shareLogs: can("instance.logs.share"),

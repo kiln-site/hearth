@@ -1,5 +1,9 @@
 import { createServerFn } from "@tanstack/react-start"
-import { relayIdSchema as relayFingerprintSchema } from "@workspace/contracts"
+import {
+  relayIdSchema as relayFingerprintSchema,
+  relayProxyDiagnosticsSchema,
+  relayProxySettingsSchema,
+} from "@workspace/contracts"
 import { z } from "zod"
 
 import { isPlatformAdmin } from "@/lib/access-control"
@@ -9,6 +13,13 @@ const relayIdSchema = z.object({
   id: relayFingerprintSchema,
 })
 const relayEnabledSchema = relayIdSchema.extend({ enabled: z.boolean() })
+const relayProxyInputSchema = relayProxySettingsSchema.extend({
+  relayId: relayFingerprintSchema,
+})
+const relayProxyResponseSchema = z.object({
+  diagnostics: relayProxyDiagnosticsSchema,
+  settings: relayProxySettingsSchema,
+})
 const relayRoleSchema = z.enum(["custom", "full_access", "read_only"])
 const createRelaySchema = z.object({
   pairingUri: z.string().trim().min(64).max(32_768),
@@ -161,4 +172,43 @@ export const renameRelay = createServerFn({ method: "POST" })
     await requireRelayAdministrator()
     const { renamePersistedRelay } = await import("@/lib/relay-registry")
     return renamePersistedRelay(data)
+  })
+
+export const getRelayProxy = createServerFn({ method: "GET" })
+  .validator(relayIdSchema)
+  .handler(async ({ data }) => {
+    await requireRelayAdministrator()
+    const [{ listPersistedRelays }, { relayRpc }] = await Promise.all([
+      import("@/lib/relay-registry"),
+      import("@/lib/relay-connection"),
+    ])
+    const relay = (await listPersistedRelays()).find(
+      (candidate) => candidate.enabled && candidate.id === data.id
+    )
+    if (!relay) throw new Error("Relay is not configured or is paused")
+    return relayProxyResponseSchema.parse(
+      await relayRpc(relay, "relay.proxy.read", {}, 15_000)
+    )
+  })
+
+export const updateRelayProxy = createServerFn({ method: "POST" })
+  .validator(relayProxyInputSchema)
+  .handler(async ({ data }) => {
+    await requireRelayAdministrator()
+    const [{ listPersistedRelays }, { relayRpc }] = await Promise.all([
+      import("@/lib/relay-registry"),
+      import("@/lib/relay-connection"),
+    ])
+    const relay = (await listPersistedRelays()).find(
+      (candidate) => candidate.enabled && candidate.id === data.relayId
+    )
+    if (!relay) throw new Error("Relay is not configured or is paused")
+    const settings = relayProxySettingsSchema.parse({
+      acmeEmail: data.acmeEmail,
+      mode: data.mode,
+      traefikImage: data.traefikImage,
+    })
+    return relayProxyResponseSchema.parse(
+      await relayRpc(relay, "relay.proxy.write", settings, 240_000)
+    )
   })

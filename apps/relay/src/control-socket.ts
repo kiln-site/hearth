@@ -528,11 +528,13 @@ function isAuditedMutation(operation: RelayControlOperation): boolean {
     operation === "relay.clients.update" ||
     operation === "relay.clients.revoke" ||
     operation === "relay.networking.write" ||
+    operation === "relay.proxy.write" ||
     operation === "instance.create" ||
     operation === "instance.delete" ||
     operation === "instance.action" ||
     operation === "instance.files.write" ||
-    operation === "instance.console.write"
+    operation === "instance.console.write" ||
+    operation === "instance.network.routes.write"
   )
 }
 
@@ -577,6 +579,10 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
       return "instance.network.read"
     case "relay.networking.write":
       return "instance.network.write"
+    case "relay.proxy.read":
+      return "relay.read"
+    case "relay.proxy.write":
+      return "relay.configure"
     case "relay.pairing.create":
       return "relay.pairing.create"
     case "relay.pairing.list":
@@ -618,6 +624,10 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
       return "instance.console.read"
     case "instance.logs.latest":
       return "instance.logs.read"
+    case "instance.network.routes.read":
+      return "instance.network.read"
+    case "instance.network.routes.write":
+      return "instance.network.write"
     case "sftp.authorization.resolve":
       return "instance.sftp.connect"
   }

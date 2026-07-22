@@ -30,6 +30,7 @@ import { Route as AppServerIdIndexRouteImport } from './routes/_app.$serverId.in
 import { Route as AppServerIdConsoleRouteImport } from './routes/_app.$serverId.console'
 import { Route as AppServerIdFilesRouteImport } from './routes/_app.$serverId.files'
 import { Route as AppServerIdInfoRouteImport } from './routes/_app.$serverId.info'
+import { Route as AppServerIdNetworkRouteImport } from './routes/_app.$serverId.network'
 import { Route as AppSettingsIndexRouteImport } from './routes/_app.settings.index'
 import { Route as AppSettingsAccountRouteImport } from './routes/_app.settings.account'
 import { Route as AppSettingsAppearanceRouteImport } from './routes/_app.settings.appearance'
@@ -143,6 +144,11 @@ const AppServerIdInfoRoute = AppServerIdInfoRouteImport.update({
   path: '/info',
   getParentRoute: () => AppServerIdRoute,
 } as any)
+const AppServerIdNetworkRoute = AppServerIdNetworkRouteImport.update({
+  id: '/network',
+  path: '/network',
+  getParentRoute: () => AppServerIdRoute,
+} as any)
 const AppSettingsIndexRoute = AppSettingsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -204,6 +210,7 @@ export interface FileRoutesByFullPath {
   '/$serverId/console': typeof AppServerIdConsoleRoute
   '/$serverId/files': typeof AppServerIdFilesRouteWithChildren
   '/$serverId/info': typeof AppServerIdInfoRoute
+  '/$serverId/network': typeof AppServerIdNetworkRoute
   '/settings/account': typeof AppSettingsAccountRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
   '/settings/billing': typeof AppSettingsBillingRoute
@@ -232,6 +239,7 @@ export interface FileRoutesByTo {
   '/$serverId/console': typeof AppServerIdConsoleRoute
   '/$serverId/files': typeof AppServerIdFilesRouteWithChildren
   '/$serverId/info': typeof AppServerIdInfoRoute
+  '/$serverId/network': typeof AppServerIdNetworkRoute
   '/settings/account': typeof AppSettingsAccountRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
   '/settings/billing': typeof AppSettingsBillingRoute
@@ -264,6 +272,7 @@ export interface FileRoutesById {
   '/_app/$serverId/console': typeof AppServerIdConsoleRoute
   '/_app/$serverId/files': typeof AppServerIdFilesRouteWithChildren
   '/_app/$serverId/info': typeof AppServerIdInfoRoute
+  '/_app/$serverId/network': typeof AppServerIdNetworkRoute
   '/_app/settings/account': typeof AppSettingsAccountRoute
   '/_app/settings/appearance': typeof AppSettingsAppearanceRoute
   '/_app/settings/billing': typeof AppSettingsBillingRoute
@@ -296,6 +305,7 @@ export interface FileRouteTypes {
     | '/$serverId/console'
     | '/$serverId/files'
     | '/$serverId/info'
+    | '/$serverId/network'
     | '/settings/account'
     | '/settings/appearance'
     | '/settings/billing'
@@ -324,6 +334,7 @@ export interface FileRouteTypes {
     | '/$serverId/console'
     | '/$serverId/files'
     | '/$serverId/info'
+    | '/$serverId/network'
     | '/settings/account'
     | '/settings/appearance'
     | '/settings/billing'
@@ -355,6 +366,7 @@ export interface FileRouteTypes {
     | '/_app/$serverId/console'
     | '/_app/$serverId/files'
     | '/_app/$serverId/info'
+    | '/_app/$serverId/network'
     | '/_app/settings/account'
     | '/_app/settings/appearance'
     | '/_app/settings/billing'
@@ -532,6 +544,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppServerIdInfoRouteImport
       parentRoute: typeof AppServerIdRoute
     }
+    '/_app/$serverId/network': {
+      id: '/_app/$serverId/network'
+      path: '/network'
+      fullPath: '/$serverId/network'
+      preLoaderRoute: typeof AppServerIdNetworkRouteImport
+      parentRoute: typeof AppServerIdRoute
+    }
     '/_app/settings/': {
       id: '/_app/settings/'
       path: '/'
@@ -606,6 +625,7 @@ interface AppServerIdRouteChildren {
   AppServerIdConsoleRoute: typeof AppServerIdConsoleRoute
   AppServerIdFilesRoute: typeof AppServerIdFilesRouteWithChildren
   AppServerIdInfoRoute: typeof AppServerIdInfoRoute
+  AppServerIdNetworkRoute: typeof AppServerIdNetworkRoute
   AppServerIdIndexRoute: typeof AppServerIdIndexRoute
 }
 
@@ -613,6 +633,7 @@ const AppServerIdRouteChildren: AppServerIdRouteChildren = {
   AppServerIdConsoleRoute: AppServerIdConsoleRoute,
   AppServerIdFilesRoute: AppServerIdFilesRouteWithChildren,
   AppServerIdInfoRoute: AppServerIdInfoRoute,
+  AppServerIdNetworkRoute: AppServerIdNetworkRoute,
   AppServerIdIndexRoute: AppServerIdIndexRoute,
 }
 

@@ -1,6 +1,11 @@
 import { relayBrowserRequestProofTranscript } from "@workspace/contracts"
 
 import { issueFileCapability } from "@/server/relay-capability"
+import { getRelayFile, saveRelayFile } from "@/server/relay"
+
+const HEARTH_FILE_FALLBACK_LIMIT = 2 * 1024 * 1024
+
+class DirectRelayTransferError extends Error {}
 
 interface FileTransferInput {
   instanceId: string
@@ -11,14 +16,32 @@ interface FileTransferInput {
 export async function downloadRelayFile(
   input: FileTransferInput
 ): Promise<void> {
-  const response = await relayFileRequest(input, "GET")
-  if (!response.ok) throw await transferError(response, "download")
-  const blob = await response.blob()
+  let blob: Blob
+  try {
+    const response = await relayFileRequest(input, "GET")
+    if (!response.ok) throw await transferError(response, "download")
+    blob = await response.blob()
+  } catch (cause) {
+    if (!isDirectConnectionFailure(cause)) throw cause
+    try {
+      const file = await getRelayFile({ data: input })
+      if (file.encoding !== "utf8") {
+        throw new Error("Archived files require the direct transfer edge")
+      }
+      blob = new Blob([file.content], { type: "text/plain;charset=utf-8" })
+    } catch (fallbackCause) {
+      throw directTransferUnavailable("download", fallbackCause)
+    }
+  }
+  triggerDownload(blob, input.path)
+}
+
+function triggerDownload(blob: Blob, path: string): void {
   const objectUrl = URL.createObjectURL(blob)
   try {
     const anchor = document.createElement("a")
     anchor.href = objectUrl
-    anchor.download = input.path.split("/").filter(Boolean).at(-1) || "download"
+    anchor.download = path.split("/").filter(Boolean).at(-1) || "download"
     anchor.rel = "noopener"
     anchor.click()
   } finally {
@@ -36,9 +59,40 @@ export async function uploadRelayFile(
   sha256: string
   size: number
 }> {
-  const response = await relayFileRequest(input, "PUT", input.file)
-  if (!response.ok) throw await transferError(response, "upload")
-  const result = (await response.json()) as unknown
+  let result: unknown
+  try {
+    const response = await relayFileRequest(input, "PUT", input.file)
+    if (!response.ok) throw await transferError(response, "upload")
+    result = (await response.json()) as unknown
+  } catch (cause) {
+    if (!isDirectConnectionFailure(cause)) throw cause
+    if (input.file.size > HEARTH_FILE_FALLBACK_LIMIT) {
+      throw directTransferUnavailable("upload", cause)
+    }
+    try {
+      const bytes = new Uint8Array(await input.file.arrayBuffer())
+      const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+      const saved = await saveRelayFile({
+        data: {
+          content,
+          instanceId: input.instanceId,
+          path: input.path,
+          relayId: input.relayId,
+        },
+      })
+      const digest = await crypto.subtle.digest("SHA-256", bytes)
+      return {
+        modifiedAt: saved.modifiedAt,
+        path: saved.path,
+        sha256: Array.from(new Uint8Array(digest), (byte) =>
+          byte.toString(16).padStart(2, "0")
+        ).join(""),
+        size: bytes.byteLength,
+      }
+    } catch (fallbackCause) {
+      throw directTransferUnavailable("upload", fallbackCause)
+    }
+  }
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     throw new Error("Relay returned an invalid upload response")
   }
@@ -79,15 +133,18 @@ async function relayFileRequest(
   const issued = await issueFileCapability({
     data: {
       action:
-        method === "PUT"
-          ? "instance.files.upload"
-          : "instance.files.download",
+        method === "PUT" ? "instance.files.upload" : "instance.files.download",
       instanceId: input.instanceId,
       path: input.path,
       publicKeyJwk,
       relayId: input.relayId,
     },
   })
+  if (issued.proxyMode === "hearth") {
+    throw new DirectRelayTransferError(
+      "This Relay is configured to transfer through Hearth"
+    )
+  }
   const payload = capabilityPayload(issued.capability)
   const nonceBytes = crypto.getRandomValues(new Uint8Array(32))
   const nonce = bytesToBase64Url(nonceBytes)
@@ -113,20 +170,41 @@ async function relayFileRequest(
     issued.browserOrigin
   )
   url.searchParams.set("path", input.path)
-  return fetch(url, {
-    ...(body === undefined ? {} : { body }),
-    headers: {
-      Authorization: `Kiln ${issued.capability}`,
-      "X-Kiln-Nonce": nonce,
-      "X-Kiln-Proof": bytesToBase64Url(new Uint8Array(proof)),
-      "X-Kiln-Public-Key": bytesToBase64Url(
-        new TextEncoder().encode(JSON.stringify(publicKeyJwk))
-      ),
-      "X-Kiln-Requested-At": String(requestedAt),
-    },
-    method,
-    mode: "cors",
-  })
+  try {
+    return await fetch(url, {
+      ...(body === undefined ? {} : { body }),
+      headers: {
+        Authorization: `Kiln ${issued.capability}`,
+        "X-Kiln-Nonce": nonce,
+        "X-Kiln-Proof": bytesToBase64Url(new Uint8Array(proof)),
+        "X-Kiln-Public-Key": bytesToBase64Url(
+          new TextEncoder().encode(JSON.stringify(publicKeyJwk))
+        ),
+        "X-Kiln-Requested-At": String(requestedAt),
+      },
+      method,
+      mode: "cors",
+    })
+  } catch (cause) {
+    throw new DirectRelayTransferError(
+      "The browser could not establish the direct Relay transfer",
+      { cause }
+    )
+  }
+}
+
+function isDirectConnectionFailure(cause: unknown): boolean {
+  return cause instanceof DirectRelayTransferError
+}
+
+function directTransferUnavailable(
+  operation: "download" | "upload",
+  cause: unknown
+): Error {
+  return new Error(
+    `The secure direct ${operation} edge is unavailable, and Hearth could not safely proxy this file. Configure bundled Traefik or a trusted existing Traefik edge and try again.`,
+    { cause }
+  )
 }
 
 function capabilityPayload(capability: string): {

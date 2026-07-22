@@ -13,6 +13,7 @@ import {
   ExternalLink,
   KeyRound,
   LoaderCircle,
+  Network,
   Pause,
   Pencil,
   Play,
@@ -41,6 +42,7 @@ import {
   checkRelay,
   createRelayInvitation,
   getRelayAdministration,
+  getRelayProxy,
   previewRelayPairing,
   removeRelay,
   renameRelay,
@@ -49,6 +51,7 @@ import {
   setRelayEnabled,
   updateRelayClient,
   updateRelay,
+  updateRelayProxy,
 } from "@/server/relays"
 
 const relayConnectedFormatter = new Intl.DateTimeFormat("en-US", {
@@ -626,6 +629,7 @@ const RelayEditor = React.memo(function RelayEditor({
 
       {relay ? (
         <>
+          <RelayProxyConfiguration relay={relay} />
           <RelayBrowserTrust relay={relay} />
           <RelayAdministrationPanel relay={relay} />
         </>
@@ -1190,16 +1194,234 @@ function exactAddressCidr(value: string): string {
   return `${address}/${address.includes(":") ? 128 : 32}`
 }
 
+function RelayProxyConfiguration({ relay }: { relay: PersistedRelay }) {
+  const queryClient = useQueryClient()
+  const queryKey = React.useMemo(
+    () => ["relays", "proxy", relay.id] as const,
+    [relay.id]
+  )
+  const query = useQuery({
+    enabled: relay.enabled,
+    queryFn: () => getRelayProxy({ data: { id: relay.id } }),
+    queryKey,
+    retry: false,
+    staleTime: 10_000,
+  })
+  const update = useMutation({
+    mutationFn: updateRelayProxy,
+    onSuccess: (result) => queryClient.setQueryData(queryKey, result),
+  })
+  const [probe, setProbe] = React.useState<
+    "checking" | "idle" | "reachable" | "unreachable"
+  >("idle")
+  const settings = query.data?.settings
+  const diagnostics = query.data?.diagnostics
+
+  async function verifyPublicEdge() {
+    setProbe("checking")
+    const origin =
+      settings?.mode === "traefik"
+        ? `https://${relay.hostname.includes(":") ? `[${relay.hostname}]` : relay.hostname}`
+        : relay.browserOrigin
+    try {
+      const response = await fetch(new URL("/v1/trust", origin), {
+        cache: "no-store",
+        mode: "cors",
+      })
+      setProbe(response.ok ? "reachable" : "unreachable")
+    } catch {
+      setProbe("unreachable")
+    }
+  }
+
+  return (
+    <section className="mt-5 border-t pt-5">
+      <div className="flex items-start gap-2">
+        <Network className="mt-0.5 size-4 text-primary" />
+        <div>
+          <p className="text-xs font-semibold">Relay edge</p>
+          <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
+            Choose how browsers reach high-volume Relay streams and files. Small
+            control operations continue through Hearth in every mode.
+          </p>
+        </div>
+      </div>
+
+      {query.isPending ? (
+        <div className="mt-3 flex items-center gap-2 border p-3 text-[10px] text-muted-foreground">
+          <LoaderCircle className="size-3.5 animate-spin" /> Reading edge
+          configuration…
+        </div>
+      ) : query.error ? (
+        <p className="mt-3 border border-destructive/20 bg-destructive/5 p-3 text-[10px] text-destructive">
+          {messageFrom(query.error, "Could not read Relay edge configuration")}
+        </p>
+      ) : settings && diagnostics ? (
+        <form
+          key={`${relay.id}:${settings.mode}:${settings.traefikImage}:${settings.acmeEmail ?? ""}`}
+          className="mt-3 space-y-3 border border-border/70 bg-background/30 p-3"
+        >
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Proxy mode" htmlFor={`relay-proxy-mode-${relay.id}`}>
+              <select
+                id={`relay-proxy-mode-${relay.id}`}
+                name="mode"
+                defaultValue={settings.mode}
+                className="h-9 w-full rounded-md border border-input bg-background px-2 text-[10px]"
+              >
+                <option value="none">None / existing Traefik</option>
+                <option value="hearth">Hearth proxy</option>
+                <option value="traefik">Bundled Traefik</option>
+              </select>
+            </Field>
+            <Field
+              label="Pinned Traefik image"
+              htmlFor={`traefik-image-${relay.id}`}
+            >
+              <Input
+                id={`traefik-image-${relay.id}`}
+                name="traefikImage"
+                defaultValue={settings.traefikImage}
+                required
+              />
+            </Field>
+          </div>
+          <Field
+            label="ACME account email (recommended)"
+            htmlFor={`acme-email-${relay.id}`}
+          >
+            <Input
+              id={`acme-email-${relay.id}`}
+              name="acmeEmail"
+              type="email"
+              defaultValue={settings.acmeEmail ?? ""}
+              placeholder="admin@example.com"
+            />
+          </Field>
+
+          <div
+            className={`border px-3 py-2 text-[10px] leading-4 ${
+              diagnostics.status === "blocked"
+                ? "border-destructive/25 bg-destructive/5 text-destructive"
+                : "border-border/70 text-muted-foreground"
+            }`}
+          >
+            <p className="font-medium text-foreground">
+              {diagnostics.status === "blocked"
+                ? "Bundled Traefik is blocked"
+                : diagnostics.mode === "traefik" && diagnostics.containerRunning
+                  ? "kiln-traefik is running"
+                  : diagnostics.mode === "hearth"
+                    ? "Kiln traffic is routed through Hearth"
+                    : "External/manual edge selected"}
+            </p>
+            <p className="mt-1">
+              Ports 80 / 443:{" "}
+              {diagnostics.ports
+                .map(
+                  (port) =>
+                    `${port.port} ${port.owner === "kiln-traefik" ? "served by kiln-traefik" : port.available ? "available" : `used by ${port.owner ?? "another process"}`}`
+                )
+                .join(" · ")}
+            </p>
+            {diagnostics.warnings.map((warning) => (
+              <p key={warning} className="mt-1">
+                {warning}
+              </p>
+            ))}
+            {probe === "unreachable" ? (
+              <p className="mt-1 text-destructive">
+                The browser cannot reach a trusted public Relay edge. Check DNS,
+                NAT/firewall rules, and ACME issuance.
+              </p>
+            ) : probe === "reachable" ? (
+              <p className="mt-1 text-emerald-300">
+                This browser can reach and trust the Relay edge.
+              </p>
+            ) : null}
+          </div>
+
+          {update.error ? (
+            <p className="text-[10px] text-destructive">
+              {messageFrom(update.error, "Could not update Relay edge")}
+            </p>
+          ) : null}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="sm"
+              disabled={update.isPending}
+              onClick={(event) => {
+                const formElement = event.currentTarget.form
+                if (!formElement) return
+                const form = new FormData(formElement)
+                update.mutate({
+                  data: {
+                    acmeEmail:
+                      String(form.get("acmeEmail") ?? "").trim() || null,
+                    mode:
+                      form.get("mode") === "traefik"
+                        ? "traefik"
+                        : form.get("mode") === "hearth"
+                          ? "hearth"
+                          : "none",
+                    relayId: relay.id,
+                    traefikImage: String(form.get("traefikImage") ?? ""),
+                  },
+                })
+              }}
+            >
+              {update.isPending ? (
+                <LoaderCircle className="animate-spin" />
+              ) : (
+                <Check />
+              )}
+              Save edge mode
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={probe === "checking"}
+              onClick={() => void verifyPublicEdge()}
+            >
+              {probe === "checking" ? (
+                <LoaderCircle className="animate-spin" />
+              ) : (
+                <RefreshCw />
+              )}
+              Test public access
+            </Button>
+          </div>
+        </form>
+      ) : null}
+    </section>
+  )
+}
+
 function RelayBrowserTrust({ relay }: { relay: PersistedRelay }) {
+  const proxy = useQuery({
+    enabled: relay.enabled,
+    queryFn: () => getRelayProxy({ data: { id: relay.id } }),
+    queryKey: ["relays", "proxy", relay.id] as const,
+    retry: false,
+    staleTime: 10_000,
+  })
+  const proxyMode = proxy.data?.settings.mode ?? "none"
   const [state, setState] = React.useState<
     "idle" | "checking" | "trusted" | "untrusted"
   >("idle")
   const trustOrigin = React.useMemo(() => {
+    if (proxyMode === "traefik") {
+      return new URL(
+        `https://${relay.hostname.includes(":") ? `[${relay.hostname}]` : relay.hostname}`
+      )
+    }
     const url = new URL(relay.browserOrigin)
     if (url.protocol === "wss:") url.protocol = "https:"
     if (url.protocol === "ws:") url.protocol = "http:"
     return url
-  }, [relay.browserOrigin])
+  }, [proxyMode, relay.browserOrigin, relay.hostname])
   const verify = React.useCallback(async () => {
     setState("checking")
     try {
@@ -1213,14 +1435,35 @@ function RelayBrowserTrust({ relay }: { relay: PersistedRelay }) {
     }
   }, [trustOrigin])
 
+  if (proxyMode === "hearth") {
+    return (
+      <div className="mt-5 rounded-lg border border-border/70 bg-background/30 p-3 text-left">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold">Browser transport</p>
+            <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
+              Direct Relay trust is not required in Hearth proxy mode. Console,
+              resource, and supported file traffic stays on this trusted Hearth
+              origin.
+            </p>
+          </div>
+          <span className="font-mono text-[9px] text-emerald-300">
+            HEARTH SECURED
+          </span>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="mt-5 rounded-lg border border-border/70 bg-background/30 p-3 text-left">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-xs font-semibold">Browser trust</p>
           <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
-            Required for direct console streams and file transfers on port{" "}
-            {relay.port}.
+            {proxyMode === "traefik"
+              ? "Bundled Traefik must present a public ACME certificate on port 443."
+              : `Required for direct console streams and file transfers on port ${relay.port}.`}
           </p>
         </div>
         <span
@@ -1239,14 +1482,17 @@ function RelayBrowserTrust({ relay }: { relay: PersistedRelay }) {
         />
       </div>
       <p className="mt-3 text-[10px] leading-4 text-muted-foreground">
-        {relay.managedTls
-          ? "Install the Relay CA once on each device. Relay keeps that CA stable and renews its short-lived server certificate automatically."
-          : "This Relay uses an external certificate. Its public CA or reverse proxy must already be trusted by this browser."}
+        {proxyMode === "traefik"
+          ? "Traefik requests and renews the public certificate automatically after DNS points here and ports 80/443 are publicly reachable. No Relay CA installation is needed."
+          : relay.managedTls
+            ? "Install the Relay CA once on each device. Relay keeps that CA stable and renews its short-lived server certificate automatically."
+            : "This Relay uses an external certificate. Its public CA or reverse proxy must already be trusted by this browser."}
       </p>
       {state === "untrusted" ? (
         <p className="mt-2 text-[10px] leading-4 text-destructive">
-          This browser could not establish trusted HTTPS to the Relay. Install
-          the CA or correct the external certificate, then verify again.
+          {proxyMode === "traefik"
+            ? "This browser could not reach a trusted Traefik edge. Check DNS, public ports 80/443, and ACME issuance, then verify again."
+            : "This browser could not establish trusted HTTPS to the Relay. Install the CA or correct the external certificate, then verify again."}
         </p>
       ) : null}
       <div className="mt-3 flex flex-wrap gap-2">
@@ -1264,7 +1510,7 @@ function RelayBrowserTrust({ relay }: { relay: PersistedRelay }) {
           )}
           {state === "trusted" ? "Trusted" : "Verify access"}
         </Button>
-        {relay.managedTls ? (
+        {proxyMode === "none" && relay.managedTls ? (
           <Button size="sm" variant="outline" asChild>
             <a
               href={new URL("/v1/trust/ca.pem", trustOrigin).toString()}

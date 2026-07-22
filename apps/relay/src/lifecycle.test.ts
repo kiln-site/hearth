@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vite-plus/test"
 
-import { coreDnsHostnamePattern, velocityForcedHosts } from "./lifecycle.js"
+import { loadConfig } from "./config.js"
+import {
+  coreDnsHostnamePattern,
+  LifecycleDriver,
+  nginxRouteConfiguration,
+  traefikDynamicConfiguration,
+  traefikStaticConfiguration,
+  velocityForcedHosts,
+} from "./lifecycle.js"
 
 describe("CoreDNS Brick hostnames", () => {
   it("matches only deployed hostnames and implementation aliases", () => {
@@ -69,5 +77,65 @@ describe("Velocity forced hosts", () => {
     expect(forcedHosts).toContain(
       '"paper.kiln.test" = ["kiln-paper-one", "limbo"]'
     )
+  })
+})
+
+describe("Traefik web routes", () => {
+  const settings = {
+    acmeEmail: "admin@example.com",
+    mode: "traefik" as const,
+    traefikImage: "traefik:v3.6.6",
+  }
+  const route = {
+    hostname: "donutsmp.example.com",
+    id: "b00d4423-2620-4079-845a-dac8c063987a",
+    instanceId: "a".repeat(40),
+    path: "/map",
+    stripPrefix: true,
+    targetPort: 8080,
+  }
+
+  it("configures ACME and applies routes without a Docker provider", () => {
+    const staticConfiguration = traefikStaticConfiguration(settings)
+    const dynamicConfiguration = traefikDynamicConfiguration(
+      loadConfig({
+        KILN_RELAY_HOST: "relay.example.com",
+        KILN_RELAY_PROXY: "traefik",
+        NODE_ENV: "development",
+      }),
+      [route],
+      settings
+    )
+
+    expect(staticConfiguration).toContain("httpChallenge:")
+    expect(staticConfiguration).toContain("admin@example.com")
+    expect(staticConfiguration).not.toContain("docker.sock")
+    expect(dynamicConfiguration).toContain("PathPrefix(`/map`)")
+    expect(dynamicConfiguration).toContain("http://kiln-aaaaaaaa:8080")
+    expect(dynamicConfiguration).toContain("stripPrefix:")
+  })
+
+  it("builds a label-carrier backend for an existing Traefik", () => {
+    const configuration = nginxRouteConfiguration(route)
+    expect(configuration).toContain("listen 8080")
+    expect(configuration).toContain('set $kiln_upstream "kiln-aaaaaaaa:8080"')
+    expect(configuration).toContain("proxy_pass http://$kiln_upstream")
+  })
+
+  it("restores the direct endpoint when bundled Traefik is disabled", () => {
+    const config = loadConfig({
+      KILN_RELAY_HOST: "relay.example.com",
+      KILN_RELAY_PROXY: "traefik",
+      NODE_ENV: "development",
+    })
+    const lifecycle = new LifecycleDriver(config, null as never, null as never)
+
+    lifecycle.hydrateProxySettings({ ...settings, mode: "none" })
+    expect(config.publicPort).toBe(4100)
+    expect(config.browserOrigin).toBe("http://relay.example.com:4100")
+
+    lifecycle.hydrateProxySettings(settings)
+    expect(config.publicPort).toBe(443)
+    expect(config.browserOrigin).toBe("https://relay.example.com")
   })
 })

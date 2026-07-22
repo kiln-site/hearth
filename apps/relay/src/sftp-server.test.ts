@@ -119,10 +119,7 @@ describeLinux("Relay SFTP server", () => {
     temporaryDirectories.push(dataDirectory)
     await mkdir(resolve(dataDirectory, "instances"), { recursive: true })
     const server = await attachSftpServer({
-      clientActions: async () => [
-        "instance.files.list",
-        "instance.files.read",
-      ],
+      clientActions: async () => ["instance.files.list", "instance.files.read"],
       config: testConfig(dataDirectory),
       control: {
         requestClients: async () => [
@@ -334,6 +331,8 @@ function testConfig(dataDirectory: string): RelayConfig {
     connectDomain: "test",
     connectPort: 25_565,
     dataDirectory,
+    directBrowserOrigin: "https://127.0.0.1:4100",
+    directPublicPort: 4100,
     dockerSocket: "/var/run/docker.sock",
     host: "127.0.0.1",
     managedLabel: "kiln.relay.managed=true",
@@ -343,6 +342,7 @@ function testConfig(dataDirectory: string): RelayConfig {
     publicPort: 4100,
     projectDirectory: resolve(dataDirectory, "instances"),
     projectName: "test",
+    proxyMode: "none",
     rootDirectory: resolve(dataDirectory, "instances"),
     serverIdLabel: "kiln.server.id",
     sftpDevAuthentication: true,
@@ -350,6 +350,8 @@ function testConfig(dataDirectory: string): RelayConfig {
     tlsCertificatePath: null,
     tlsKeyPath: null,
     tlsMode: "development",
+    traefikAcmeEmail: null,
+    traefikImage: "traefik:v3.6.6",
   }
 }
 

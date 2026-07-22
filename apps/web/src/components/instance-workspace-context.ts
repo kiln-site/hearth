@@ -5,6 +5,8 @@ import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
 export interface InstanceWorkspacePermissions {
   consoleWrite: boolean
   filesWrite: boolean
+  networkRead: boolean
+  networkWrite: boolean
   power: boolean
   settings: boolean
   shareLogs: boolean

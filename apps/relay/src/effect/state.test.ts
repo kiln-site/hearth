@@ -154,5 +154,43 @@ describe("Relay state", () => {
         assert.strictEqual(audits[0]?.id, "audit-2")
       })
     )
+
+    it.effect(
+      "replaces instance web routes and rejects hostname collisions",
+      () =>
+        Effect.gen(function* () {
+          const store = yield* RelayStateStore
+          const first = {
+            hostname: "map.example.com",
+            id: "15c524a6-c257-4eca-8fe8-460fab8123d4",
+            path: null,
+            stripPrefix: true,
+            targetPort: 8080,
+          }
+          yield* store.replaceInstanceRoutes("instance-a", [first])
+          assert.deepStrictEqual(
+            yield* store.listInstanceRoutes("instance-a"),
+            [first]
+          )
+          assert.deepInclude((yield* store.listWebRoutes())[0], {
+            ...first,
+            instanceId: "instance-a",
+          })
+
+          const collision = yield* Effect.result(
+            store.replaceInstanceRoutes("instance-b", [
+              {
+                ...first,
+                id: "d76cfc41-28d3-490a-b955-550b972dace7",
+              },
+            ])
+          )
+          assert.strictEqual(collision._tag, "Failure")
+          assert.isEmpty(yield* store.listInstanceRoutes("instance-b"))
+
+          yield* store.replaceInstanceRoutes("instance-a", [])
+          assert.isEmpty(yield* store.listWebRoutes())
+        })
+    )
   })
 })
