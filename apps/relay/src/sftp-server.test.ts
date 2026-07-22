@@ -9,6 +9,16 @@ import { attachSftpServer } from "./sftp-server.js"
 
 const temporaryDirectories: Array<string> = []
 const describeLinux = process.platform === "linux" ? describe : describe.skip
+const allowFileAccess = async () => [
+  "instance.sftp.connect",
+  "instance.files.list",
+  "instance.files.read",
+  "instance.files.create",
+  "instance.files.write",
+  "instance.files.delete",
+  "instance.files.rename",
+  "instance.files.chmod",
+]
 
 afterEach(async () => {
   await Promise.all(
@@ -29,6 +39,7 @@ describeLinux("Relay SFTP server", () => {
     await writeFile(resolve(instanceDirectory, "existing.txt"), "existing")
     const instance = testInstance(instanceId)
     const server = await attachSftpServer({
+      clientActions: allowFileAccess,
       config: testConfig(dataDirectory),
       control: {
         requestClients: async () => [
@@ -89,12 +100,51 @@ describeLinux("Relay SFTP server", () => {
     temporaryDirectories.push(dataDirectory)
     await mkdir(resolve(dataDirectory, "instances"), { recursive: true })
     const server = await attachSftpServer({
+      clientActions: allowFileAccess,
       config: testConfig(dataDirectory),
       control: { requestClients: async () => [] },
       docker: { findInstance: async () => null },
     })
     try {
       await expect(connect(server.port, "wrong-password")).rejects.toThrow(
+        "All configured authentication methods failed"
+      )
+    } finally {
+      await server.close()
+    }
+  })
+
+  it("rejects a Hearth without the SFTP connection action", async () => {
+    const dataDirectory = await mkdtemp(resolve(tmpdir(), "kiln-sftp-test-"))
+    temporaryDirectories.push(dataDirectory)
+    await mkdir(resolve(dataDirectory, "instances"), { recursive: true })
+    const server = await attachSftpServer({
+      clientActions: async () => [
+        "instance.files.list",
+        "instance.files.read",
+      ],
+      config: testConfig(dataDirectory),
+      control: {
+        requestClients: async () => [
+          {
+            clientId: "revoked-hearth",
+            payload: {
+              instances: [
+                {
+                  actions: ["instance.files.list", "instance.files.read"],
+                  id: "a".repeat(40),
+                },
+              ],
+              userId: "user-test",
+              username: "user@example.test",
+            },
+          },
+        ],
+      },
+      docker: { findInstance: async () => null },
+    })
+    try {
+      await expect(connect(server.port, "dev123")).rejects.toThrow(
         "All configured authentication methods failed"
       )
     } finally {
@@ -181,6 +231,7 @@ describeLinux("Relay SFTP server", () => {
       username: "user@example.test",
     }
     const server = await attachSftpServer({
+      clientActions: allowFileAccess,
       config: testConfig(dataDirectory),
       control: {
         requestClients: async () => [
@@ -204,6 +255,7 @@ describeLinux("Relay SFTP server", () => {
     temporaryDirectories.push(dataDirectory)
     await mkdir(resolve(dataDirectory, "instances"), { recursive: true })
     const options = {
+      clientActions: allowFileAccess,
       config: testConfig(dataDirectory),
       control: { requestClients: async () => [] },
       docker: { findInstance: async () => null },

@@ -72,7 +72,7 @@ export interface SftpServerHandle {
 }
 
 export async function attachSftpServer(options: {
-  clientActions?: (clientId: string) => Promise<ReadonlyArray<string>>
+  clientActions: (clientId: string) => Promise<ReadonlyArray<string>>
   config: RelayConfig
   control: Pick<ControlSocketServer, "requestClients">
   docker: Pick<DockerDriver, "findInstance">
@@ -269,7 +269,7 @@ async function loadOrCreateHostKey(config: RelayConfig): Promise<Buffer> {
 async function authorizeUsername(
   control: Pick<ControlSocketServer, "requestClients">,
   username: string,
-  clientActions?: (clientId: string) => Promise<ReadonlyArray<string>>
+  clientActions: (clientId: string) => Promise<ReadonlyArray<string>>
 ): Promise<ReadonlyArray<SftpGrant>> {
   const responses = await control.requestClients(
     "sftp.authorization.resolve",
@@ -283,9 +283,8 @@ async function authorizeUsername(
     if (payload.username.toLowerCase() !== username.trim().toLowerCase())
       continue
     if (!Array.isArray(payload.instances)) continue
-    const clientGrant = new Set(
-      clientActions ? await clientActions(response.clientId) : undefined
-    )
+    const clientGrant = new Set(await clientActions(response.clientId))
+    if (!clientGrant.has("instance.sftp.connect")) continue
     const grants = new Map<string, Set<string>>()
     for (const item of payload.instances) {
       const grant = record(item)
@@ -293,8 +292,7 @@ async function authorizeUsername(
       if (!Array.isArray(grant.actions)) continue
       const actions = grant.actions.filter(
         (action): action is string =>
-          typeof action === "string" &&
-          (!clientActions || clientGrant.has(action))
+          typeof action === "string" && clientGrant.has(action)
       )
       if (!actions.includes("instance.files.list")) continue
       const current = grants.get(grant.id) ?? new Set<string>()
