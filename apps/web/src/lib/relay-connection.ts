@@ -53,6 +53,12 @@ export async function relayRpc(
   timeoutMs = 10_000
 ): Promise<unknown> {
   let connection = connections.get(relay.id)
+  // Vite preserves global state across SSR reloads, but class prototypes change.
+  if (connection && !(connection instanceof RelayConnection)) {
+    connection.close()
+    connections.delete(relay.id)
+    connection = undefined
+  }
   if (connection && !connection.matches(relay)) {
     connection.close()
     connections.delete(relay.id)
