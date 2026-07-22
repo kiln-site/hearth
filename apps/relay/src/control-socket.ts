@@ -8,6 +8,7 @@ import {
 import { Schema } from "effect"
 import type { Effect } from "effect"
 import { WebSocket, WebSocketServer } from "ws"
+import * as Sentry from "@sentry/node"
 
 import {
   RelayControlClientMessageSchema,
@@ -48,6 +49,9 @@ export interface ControlSocketOptions {
   ) => Promise<unknown>
   readonly identity: RelayIdentity
   readonly initialSnapshot: () => Promise<unknown>
+  readonly subscribeSnapshots: (
+    listener: (snapshot: unknown) => void
+  ) => () => void
   readonly runEffect: <T, E>(effect: Effect.Effect<T, E>) => Promise<T>
   readonly server: Server
   readonly state: RelayStateStore["Service"]
@@ -215,6 +219,7 @@ function authenticateSocket(
   send(socket, challenge)
 
   let authenticatedClient: RelayClientGrant | null = null
+  let unsubscribeSnapshots: (() => void) | null = null
   let eventSequence = 0
   const inFlight = new Map<string, AbortController>()
   const reversePending = new Map<
@@ -304,6 +309,8 @@ function authenticateSocket(
 
   socket.once("close", () => {
     clearTimeout(authenticationTimeout)
+    unsubscribeSnapshots?.()
+    unsubscribeSnapshots = null
     for (const controller of inFlight.values()) controller.abort()
     inFlight.clear()
     for (const pending of reversePending.values()) {
@@ -376,6 +383,24 @@ function authenticateSocket(
         currentClient,
         controller.signal
       )
+      if (isAuditedMutation(request.operation)) {
+        void options
+          .runEffect(
+            options.state.appendAudit({
+              clientId: currentClient.id,
+              details: { operation: request.operation },
+              event: "control.mutation",
+              id: randomUUID(),
+              occurredAt: Date.now(),
+              requestId: request.id,
+            })
+          )
+          .catch((cause) =>
+            Sentry.captureException(cause, {
+              tags: { "kiln.operation": "relay.control.audit" },
+            })
+          )
+      }
       const response: RelayControlResponse = {
         id: randomUUID(),
         payload,
@@ -437,6 +462,18 @@ function authenticateSocket(
       v: 1,
     }
     send(socket, snapshot)
+    if (socket.readyState !== WebSocket.OPEN) return
+    unsubscribeSnapshots = options.subscribeSnapshots((payload) => {
+      const update: RelayControlEvent = {
+        event: "relay.snapshot",
+        id: randomUUID(),
+        payload,
+        seq: ++eventSequence,
+        type: "event",
+        v: 1,
+      }
+      send(socket, update)
+    })
   }
 
   function requestClient(
@@ -469,6 +506,17 @@ function authenticateSocket(
       send(socket, request)
     })
   }
+}
+
+function isAuditedMutation(operation: RelayControlOperation): boolean {
+  return (
+    operation === "relay.networking.write" ||
+    operation === "instance.create" ||
+    operation === "instance.delete" ||
+    operation === "instance.action" ||
+    operation === "instance.files.write" ||
+    operation === "instance.console.write"
+  )
 }
 
 function closeClientSockets(

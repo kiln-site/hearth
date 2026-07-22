@@ -50,6 +50,7 @@ import { attachSftpServer } from "./sftp-server.js"
 import { actionsForRole, relayActions } from "./permissions.js"
 import type { RelayAction } from "./permissions.js"
 import { normalizeSourceCidrs } from "./source-policy.js"
+import { RelaySnapshotHub } from "./snapshot-hub.js"
 import type { IncomingMessage, ServerResponse } from "node:http"
 
 const config = loadConfig()
@@ -108,6 +109,7 @@ const docker = new DockerDriver(config)
 const filesystem = new FilesystemDriver(config)
 const lifecycle = new LifecycleDriver(config, docker, bricks)
 const instanceMutations = new Map<string, Promise<unknown>>()
+const snapshotHub = new RelaySnapshotHub(relaySnapshot)
 
 async function runRelayCli(arguments_: ReadonlyArray<string>): Promise<void> {
   const [resource, command = resource === "pair" ? "create" : "list"] =
@@ -248,10 +250,12 @@ const server = activeTls
 const controlSocket = attachControlSocket({
   execute: executeControlRequest,
   identity: relayIdentity,
-  initialSnapshot: () => relaySnapshot(),
+  initialSnapshot: () => snapshotHub.read(),
   runEffect: (effect) => runRelayEffect("relay.control.state", effect),
   server,
   state: startup.state,
+  subscribeSnapshots: (listener) =>
+    snapshotHub.subscribe(({ snapshot }) => listener(snapshot), false),
 })
 const browserSocket = attachBrowserSocket({
   docker,
@@ -260,6 +264,7 @@ const browserSocket = attachBrowserSocket({
   runEffect: (effect) => runRelayEffect("relay.browser.state", effect),
   server,
   state: startup.state,
+  subscribeSnapshots: (listener) => snapshotHub.subscribe(listener),
 })
 const sftpServer = await attachSftpServer({
   clientActions: async (clientId) =>
@@ -342,9 +347,7 @@ function trustProbe(
         "Access-Control-Allow-Origin": "*",
         "Cache-Control": "public, max-age=3600",
         "Content-Disposition": "attachment; filename=kiln-relay-ca.pem",
-        "Content-Length": String(
-          Buffer.byteLength(activeTls.caCertificatePem)
-        ),
+        "Content-Length": String(Buffer.byteLength(activeTls.caCertificatePem)),
         "Content-Type": "application/x-pem-file",
         "X-Content-Type-Options": "nosniff",
       })
@@ -438,9 +441,7 @@ function scheduleTlsRefresh(): { close: () => void } {
           cert: material.certificatePem,
           key: material.keyPem,
         })
-        console.log(
-          `Relay TLS certificate reloaded (${material.fingerprint})`
-        )
+        console.log(`Relay TLS certificate reloaded (${material.fingerprint})`)
       }
       activeTls = material
       schedule(material.mode === "external" ? 60_000 : 6 * 60 * 60_000)
@@ -468,6 +469,7 @@ function scheduleTlsRefresh(): { close: () => void } {
 async function shutdownRelay(signal: NodeJS.Signals): Promise<void> {
   console.log(`Received ${signal}; shutting down relay`)
   tlsRefresh.close()
+  snapshotHub.close()
   await Promise.all([
     controlSocket.close(),
     browserSocket.close(),
@@ -526,7 +528,7 @@ async function executeControlRequest(
   const payload = payloadRecord(request.payload)
   switch (request.operation) {
     case "relay.snapshot":
-      return relaySnapshot()
+      return snapshotHub.read()
     case "relay.networking.read":
       return (await lifecycle.networking()) ?? null
     case "relay.networking.write":

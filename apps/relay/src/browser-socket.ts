@@ -26,6 +26,7 @@ import type { FilesystemDriver } from "./files.js"
 import type { RelayInstanceConfig } from "./config.js"
 import type { RelayIdentity } from "./effect/identity.js"
 import type { RelayClientGrant, RelayStateStore } from "./effect/state.js"
+import type { RelaySnapshotSample } from "./snapshot-hub.js"
 import type { Effect } from "effect"
 import type { Server } from "node:http"
 import type { IncomingMessage, ServerResponse } from "node:http"
@@ -105,6 +106,9 @@ export interface BrowserSocketOptions {
   readonly runEffect: <T, E>(effect: Effect.Effect<T, E>) => Promise<T>
   readonly server: Server
   readonly state: RelayStateStore["Service"]
+  readonly subscribeSnapshots: (
+    listener: (sample: RelaySnapshotSample) => void
+  ) => () => void
 }
 
 export interface BrowserSocketServer {
@@ -124,7 +128,7 @@ export function attachBrowserSocket(
   const requestProofs = new Map<string, number>()
   const transfers = { active: 0, byClient: new Map<string, number>() }
   const hubs = new ConsoleHubRegistry(options.docker)
-  const resourceHubs = new ResourceHubRegistry(options.docker)
+  const resourceHubs = new ResourceHubRegistry(options.subscribeSnapshots)
   const wss = new WebSocketServer({
     clientTracking: false,
     handleProtocols: (protocols) =>
@@ -162,9 +166,16 @@ export function attachBrowserSocket(
       socket.close(4403, "Browser origin is required")
       return
     }
-    authenticateBrowser(socket, origin, options, hubs, resourceHubs, (clientId) => {
-      socketIssuers.set(socket, clientId)
-    })
+    authenticateBrowser(
+      socket,
+      origin,
+      options,
+      hubs,
+      resourceHubs,
+      (clientId) => {
+        socketIssuers.set(socket, clientId)
+      }
+    )
     socket.once("close", () => {
       sockets.delete(socket)
       socketIssuers.delete(socket)
@@ -239,7 +250,9 @@ function authenticateBrowser(
       return
     }
     try {
-      const subscription = Schema.decodeUnknownSync(BrowserSubscribeSchema)(input)
+      const subscription = Schema.decodeUnknownSync(BrowserSubscribeSchema)(
+        input
+      )
       if (
         subscription.instanceId !== capability.instanceId ||
         !capability.actions.includes("instance.console.read")
@@ -255,7 +268,9 @@ function authenticateBrowser(
       // Try the other supported subscription shape below.
     }
     try {
-      const subscription = Schema.decodeUnknownSync(BrowserResourceSubscribeSchema)(input)
+      const subscription = Schema.decodeUnknownSync(
+        BrowserResourceSubscribeSchema
+      )(input)
       if (
         subscription.instanceId !== capability.instanceId ||
         !capability.actions.includes("instance.read")
@@ -277,13 +292,15 @@ function authenticateBrowser(
         socket.close(4403, "Console capability does not allow writes")
         return
       }
-      void executeConsoleWrite(socket, request, options.docker)
+      void executeConsoleWrite(socket, request, options, capability)
       return
     } catch {
       // Try command completion below.
     }
     try {
-      const request = Schema.decodeUnknownSync(BrowserConsoleCompleteSchema)(input)
+      const request = Schema.decodeUnknownSync(BrowserConsoleCompleteSchema)(
+        input
+      )
       if (
         request.instanceId !== capability.instanceId ||
         !capability.actions.includes("instance.console.write")
@@ -363,13 +380,15 @@ function authenticateBrowser(
 async function executeConsoleWrite(
   socket: WebSocket,
   request: typeof BrowserConsoleWriteSchema.Type,
-  docker: DockerDriver
+  options: BrowserSocketOptions,
+  capability: BrowserCapability
 ): Promise<void> {
   try {
-    const instance = await docker.findInstance(request.instanceId)
+    const instance = await options.docker.findInstance(request.instanceId)
     if (!instance) throw new Error("Instance not found")
     const input = relayConsoleCommandSchema.parse({ command: request.command })
-    await docker.sendCommand(instance, input.command)
+    await options.docker.sendCommand(instance, input.command)
+    void auditBrowserConsoleWrite(options, capability, instance.id)
     send(socket, {
       operation: "console.write",
       payload: { accepted: true, command: input.command },
@@ -382,6 +401,29 @@ async function executeConsoleWrite(
       message: "Command could not be sent",
       requestId: request.requestId,
       type: "operation.error",
+    })
+  }
+}
+
+async function auditBrowserConsoleWrite(
+  options: BrowserSocketOptions,
+  capability: BrowserCapability,
+  instanceId: string
+): Promise<void> {
+  try {
+    await options.runEffect(
+      options.state.appendAudit({
+        clientId: capability.issuer,
+        details: { instanceId, subject: capability.subject },
+        event: "browser.console.write",
+        id: randomUUID(),
+        occurredAt: Date.now(),
+        requestId: capability.capabilityId,
+      })
+    )
+  } catch (cause) {
+    Sentry.captureException(cause, {
+      tags: { "kiln.operation": "browser.console.audit" },
     })
   }
 }
@@ -622,9 +664,7 @@ async function authenticateBrowserRequest(input: {
   if (!authorization.startsWith("Kiln ")) throw new Error("Missing capability")
   const parsed = decodeCapability(authorization.slice(5))
   const requiredAction =
-    input.method === "PUT"
-      ? "instance.files.upload"
-      : "instance.files.download"
+    input.method === "PUT" ? "instance.files.upload" : "instance.files.download"
   const client = await input.options.runEffect(
     input.options.state.findClientById(parsed.payload.issuer)
   )
@@ -871,62 +911,45 @@ class ConsoleHubRegistry {
 }
 
 class ResourceHubRegistry {
-  readonly #docker: DockerDriver
+  readonly #subscribeSnapshots: BrowserSocketOptions["subscribeSnapshots"]
   readonly #subscriptions = new Map<WebSocket, string>()
-  #sequence = 0
-  #timer: ReturnType<typeof setTimeout> | null = null
-  #closed = false
+  #unsubscribe: (() => void) | null = null
 
-  constructor(docker: DockerDriver) {
-    this.#docker = docker
+  constructor(subscribeSnapshots: BrowserSocketOptions["subscribeSnapshots"]) {
+    this.#subscribeSnapshots = subscribeSnapshots
   }
 
   subscribe(socket: WebSocket, instanceId: string): void {
     this.#subscriptions.set(socket, instanceId)
-    if (!this.#timer) void this.#sample()
-  }
-
-  remove(socket: WebSocket): void {
-    this.#subscriptions.delete(socket)
-    if (this.#subscriptions.size === 0 && this.#timer) {
-      clearTimeout(this.#timer)
-      this.#timer = null
-    }
-  }
-
-  close(): void {
-    this.#closed = true
-    if (this.#timer) clearTimeout(this.#timer)
-    this.#timer = null
-    this.#subscriptions.clear()
-  }
-
-  async #sample(): Promise<void> {
-    if (this.#closed || this.#subscriptions.size === 0) return
-    try {
-      const instances = await this.#docker.inspectInstances()
-      const byId = new Map(instances.map((instance) => [instance.id, instance]))
-      for (const [socket, instanceId] of this.#subscriptions) {
-        const instance = byId.get(instanceId)
+    this.#unsubscribe ??= this.#subscribeSnapshots((sample) => {
+      const byId = new Map(
+        sample.snapshot.instances.map((instance) => [instance.id, instance])
+      )
+      for (const [subscriber, subscribedInstanceId] of this.#subscriptions) {
+        const instance = byId.get(subscribedInstanceId)
         if (instance) {
-          send(socket, {
+          send(subscriber, {
             instance,
-            sequence: this.#sequence,
+            sequence: sample.sequence,
             type: "resource",
           })
         }
       }
-      this.#sequence += 1
-    } catch {
-      // A transient Docker sample failure must not tear down browser sessions.
-    } finally {
-      if (!this.#closed && this.#subscriptions.size > 0) {
-        this.#timer = setTimeout(() => void this.#sample(), 2_000)
-        this.#timer.unref()
-      } else {
-        this.#timer = null
-      }
+    })
+  }
+
+  remove(socket: WebSocket): void {
+    this.#subscriptions.delete(socket)
+    if (this.#subscriptions.size === 0) {
+      this.#unsubscribe?.()
+      this.#unsubscribe = null
     }
+  }
+
+  close(): void {
+    this.#unsubscribe?.()
+    this.#unsubscribe = null
+    this.#subscriptions.clear()
   }
 }
 
