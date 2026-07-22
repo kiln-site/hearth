@@ -113,7 +113,9 @@ describe("Traefik web routes", () => {
     expect(staticConfiguration).toContain("admin@example.com")
     expect(staticConfiguration).not.toContain("docker.sock")
     expect(dynamicConfiguration).toContain("PathPrefix(`/map`)")
+    expect(dynamicConfiguration).toContain("http://kiln-relay:4100")
     expect(dynamicConfiguration).toContain("http://kiln-aaaaaaaa:8080")
+    expect(dynamicConfiguration).not.toContain("rootCAs:")
     expect(dynamicConfiguration).toContain("stripPrefix:")
   })
 
@@ -136,6 +138,20 @@ describe("Traefik web routes", () => {
       labels[`traefik.http.services.${name}.loadbalancer.server.port`]
     ).toBe("8080")
     expect(labels["kiln.relay.web-routes.revision"]).toMatch(/^[a-f0-9]{64}$/u)
+  })
+
+  it("hydrates the trusted Coolify edge without advertising private port 4100", () => {
+    const config = loadConfig({
+      KILN_RELAY_PROXY: "coolify",
+      SERVICE_URL_KILN_RELAY_4100: "https://relay.example.com",
+      NODE_ENV: "production",
+    })
+    const lifecycle = new LifecycleDriver(config, null as never, null as never)
+
+    lifecycle.hydrateProxySettings({ ...settings, mode: "coolify" })
+
+    expect(config.publicPort).toBe(443)
+    expect(config.browserOrigin).toBe("https://relay.example.com")
   })
 
   it("does not recreate an untouched Ember with no routes", () => {

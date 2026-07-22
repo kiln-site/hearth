@@ -25,7 +25,7 @@ services:
           "CMD",
           "node",
           "-e",
-          "require('node:https').get({host:'127.0.0.1',port:4100,path:'/health',rejectUnauthorized:false,timeout:2500},r=>process.exit(r.statusCode===204?0:1)).on('error',()=>process.exit(1))",
+          "const check=(m,f)=>m.get({host:'127.0.0.1',port:4100,path:'/health',rejectUnauthorized:false,timeout:2500},r=>process.exit(r.statusCode===204?0:1)).on('error',f);check(require('node:http'),()=>check(require('node:https'),()=>process.exit(1)))",
         ]
       interval: 10s
       timeout: 3s

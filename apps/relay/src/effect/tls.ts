@@ -43,6 +43,12 @@ export const loadRelayTls = Effect.fn("RelayTls.load")(function* (
   config: RelayConfig,
   now = Date.now()
 ) {
+  // The selected Traefik edge owns the public certificate and forwards over a
+  // private Docker network. Loading a second certificate here would make the
+  // upstream protocol disagree with the route generated for port 4100.
+  if (config.proxyMode === "coolify" || config.proxyMode === "traefik") {
+    return null
+  }
   if (config.tlsMode === "development") return null
   if (config.tlsMode === "external") {
     return yield* loadExternalTls(config, now)

@@ -127,7 +127,6 @@ async function* openDirectRelayConsoleStream(
     )
   }
   const relayOrigin = new URL(capability.browserOrigin)
-  await verifyDirectRelayChannel(relayOrigin, signal)
   relayOrigin.protocol = relayOrigin.protocol === "https:" ? "wss:" : "ws:"
   relayOrigin.pathname = "/v1/browser"
   const socket = new WebSocket(relayOrigin, relayBrowserProtocol)
@@ -266,35 +265,6 @@ async function* openHearthConsoleStream(
     }
   } finally {
     await reader.cancel().catch(() => undefined)
-  }
-}
-
-async function verifyDirectRelayChannel(
-  relayOrigin: URL,
-  signal: AbortSignal
-): Promise<void> {
-  const trustUrl = new URL("/v1/trust", relayOrigin)
-  const timeout = new AbortController()
-  const timer = window.setTimeout(() => timeout.abort(), 3_000)
-  const abort = () => timeout.abort()
-  signal.addEventListener("abort", abort, { once: true })
-  try {
-    const response = await fetch(trustUrl, {
-      cache: "no-store",
-      signal: timeout.signal,
-    })
-    if (!response.ok) {
-      throw new Error(`Relay trust probe returned HTTP ${response.status}`)
-    }
-  } catch (cause) {
-    throw new RelayConsoleConnectionError(
-      "direct_secure_channel_failed",
-      "The browser could not establish a trusted secure connection to the Relay.",
-      { cause }
-    )
-  } finally {
-    window.clearTimeout(timer)
-    signal.removeEventListener("abort", abort)
   }
 }
 

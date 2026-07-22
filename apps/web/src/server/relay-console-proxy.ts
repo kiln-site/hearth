@@ -10,6 +10,7 @@ import type { RelayConsoleStreamEvent } from "@workspace/contracts"
 
 import type { AuthenticatedUser } from "@/lib/auth-session"
 import { kilnPublicUrl } from "@/lib/environment"
+import { relayControlEndpoint } from "@/lib/relay-connection"
 import { listPersistedRelays, loadRelayCredentials } from "@/lib/relay-registry"
 import { issueConsoleCapabilityForUser } from "@/server/relay-capability-service"
 
@@ -47,17 +48,20 @@ export async function* openHearthRelayConsoleStream(input: {
     }),
     loadRelayCredentials(input.relayId),
   ])
-  const protocol = relay.useTls ? "wss" : "ws"
+  const control = relayControlEndpoint(relay)
+  const protocol = control.useTls ? "wss" : "ws"
   const socket = new WebSocket(
-    `${protocol}://${formatHost(relay.hostname)}:${relay.port}/v1/browser`,
+    `${protocol}://${formatHost(control.hostname)}:${control.port}/v1/browser`,
     relayBrowserProtocol,
     {
-      ca: credentials.caCertificatePem ?? undefined,
+      ca: control.useTls
+        ? (credentials.caCertificatePem ?? undefined)
+        : undefined,
       handshakeTimeout: 5_000,
       maxPayload: 256 * 1024,
       origin: kilnPublicUrl().origin,
       perMessageDeflate: false,
-      rejectUnauthorized: relay.useTls,
+      rejectUnauthorized: control.useTls,
     }
   )
   const inbox = createSocketInbox(socket, input.signal)

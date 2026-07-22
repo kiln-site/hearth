@@ -48,9 +48,10 @@ Completed and locally verified:
 - Legacy authenticated HTTP control routes were removed. Hearth fallback opens
   capability-authenticated browser WSS operations over the paired control
   channel and streams console output as same-origin NDJSON.
-- Relay edge modes `none`, `hearth`, and `traefik`, including a pinned
-  Relay-managed Traefik, HTTP-01 ACME renewal, port-conflict diagnostics,
-  public browser probes, and automatic direct-to-Hearth runtime fallback.
+- Relay edge modes `none`, `hearth`, `traefik`, and `coolify`, including a
+  pinned Relay-managed Traefik, reuse of Coolify's trusted edge, isolated
+  private HTTP/WS upstream networks, HTTP-01 ACME renewal, port-conflict and
+  identity diagnostics, and automatic direct-to-Hearth runtime fallback.
 - Relay-authoritative Ember web routes with hostname/path uniqueness,
   permission-gated Hearth APIs, a minimal Network tab, dynamic bundled
   Traefik configuration, and direct Ember labels for an existing/Coolify
@@ -95,19 +96,20 @@ the application keys provide stable identities that do not depend on hostnames,
 IP addresses, reverse proxies, or a particular TLS certificate.
 
 ```text
-Hearth A ── authenticated WSS ──┐
-Hearth B ── authenticated WSS ──┼──> Relay :4100
-Hearth C ── authenticated WSS ──┘
+Hearth A ── authenticated WS/WSS ──┐
+Hearth B ── authenticated WS/WSS ──┼──> Relay :4100
+Hearth C ── authenticated WS/WSS ──┘
 
 Browser ── short-lived capability ──> Traefik :443 ──> Relay :4100
-    └──────────────── Hearth fallback ──────────────> Relay control WSS
+    └──────────────── Hearth fallback ──────────────> Relay control WS/WSS
 
 SFTP client ── user authentication over SSH/SFTP ──> Relay :2022
 ```
 
-One TLS listener and certificate can serve HTTPS and WSS on port 4100. The
-certificate must be trusted by the browser for direct browser traffic; it does
-not have to be served on port 443.
+In direct mode, one Relay TLS listener and certificate can serve HTTPS and WSS
+on port 4100. The certificate must be trusted by the browser, but it does not
+have to be served on port 443. In `traefik` and `coolify` modes, the edge owns
+the browser-trusted certificate and forwards private HTTP/WS to Relay port 4100.
 
 ## Edge delivery and Ember web routes
 
@@ -115,20 +117,23 @@ not have to be served on port 443.
 mode in `/data/proxy.json`; changing the environment later does not silently
 replace an operator's saved choice.
 
-| Mode      | Browser hot path                                             | Public Ember sites                             | Operator responsibility                                                          |
-| --------- | ------------------------------------------------------------ | ---------------------------------------------- | -------------------------------------------------------------------------------- |
-| `none`    | Direct Relay edge when trusted, then Hearth fallback         | Existing Traefik discovers direct Ember labels | Run Traefik with its Docker provider; Coolify's `coolify-proxy` is auto-detected |
-| `hearth`  | Console, resources, commands, and supported files use Hearth | Not provided                                   | Keep Hearth reachable; add an external edge before enabling public Ember sites   |
-| `traefik` | Public WSS/HTTPS on 443, then Hearth fallback                | Relay-managed dynamic routes                   | Point public DNS at Relay and expose public TCP 80/443                           |
+| Mode      | Browser hot path                                             | Public Ember sites                            | Operator responsibility                                                  |
+| --------- | ------------------------------------------------------------ | --------------------------------------------- | ------------------------------------------------------------------------ |
+| `none`    | Direct Relay edge when trusted, then Hearth fallback         | Manual Traefik discovers direct Ember labels  | Configure and attach an existing edge manually                           |
+| `hearth`  | Console, resources, commands, and supported files use Hearth | Not provided                                  | Keep Hearth reachable; add an edge before enabling public Ember sites    |
+| `traefik` | Public WSS/HTTPS on 443, then Hearth fallback                | Relay-managed dynamic routes                  | Point public DNS at Relay and expose public TCP 80/443                   |
+| `coolify` | Coolify HTTPS/WSS on 443, then Hearth fallback               | Coolify Traefik discovers direct Ember labels | Assign the Relay a Coolify domain; never publish private Relay port 4100 |
 
 The bundled mode starts `kiln-traefik` from the exact pinned image configured
 by `KILN_RELAY_TRAEFIK_IMAGE` (default `traefik:v3.6.6`). Relay generates its
 static and dynamic file-provider configuration and mounts only those files,
-ACME state, and the Relay CA. The Traefik container does **not** receive the
-Docker socket. Traefik terminates public TLS, renews certificates with ACME
-HTTP-01, and validates Relay's managed upstream certificate with Relay's CA.
-Port 443 is therefore optional for the Relay listener but required by this
-convenience edge. A user-managed edge can publish any external port.
+and ACME state. The Traefik container does **not** receive the Docker socket.
+Traefik terminates public TLS, renews certificates with ACME HTTP-01, and
+forwards private HTTP to the fixed `kiln-relay` alias on the isolated
+`kiln-relay-edge` network. It also joins `kiln-minecraft` only to reach routed
+Ember services. Relay port 4100 remains loopback/private; port 443 is required
+only by this convenience edge. A user-managed edge can publish any external
+port.
 
 Before starting bundled Traefik, Relay reports Docker owners of ports 80/443.
 Docker cannot see a non-container host process, so a bind failure is translated
@@ -137,13 +142,13 @@ from inside Docker; Hearth exposes a browser-side trust probe that distinguishes
 DNS, firewall/NAT, and certificate/ACME failure from Relay control connectivity.
 
 `kiln-minecraft` remains the private game topology used by Ember backends,
-Velocity, CoreDNS, limbo, and bundled Traefik. Existing/Coolify edges use a
-separate Relay-owned `kiln-edge` network. Relay creates that network, detects a
-running `coolify-proxy` (or another Traefik owning ports 80/443), and attaches
-only that proxy plus Embers with configured routes. A 30-second reconciler
-repairs proxy attachment after Coolify recreates its proxy container. Relay
-does not edit Coolify's Traefik static or dynamic configuration and does not
-attach routed Embers to Coolify application networks.
+Velocity, CoreDNS, limbo, and bundled Traefik. Manual and Coolify edges use a
+separate Relay-owned `kiln-edge` network. In `coolify` mode Relay creates that
+network, verifies that `coolify-proxy` is a running Traefik container, and
+attaches only that proxy plus Embers with configured routes. A 30-second
+reconciler repairs proxy attachment after Coolify recreates its proxy container.
+Relay does not edit Coolify's Traefik configuration, join Embers to Coolify
+application networks, read `acme.json`, or copy certificate private keys.
 
 Every Ember created by the Relay lifecycle receives disabled baseline Traefik
 metadata. A web route is an explicit Relay-owned record:
@@ -155,9 +160,11 @@ https://<hostname>[/path] -> http://kiln-<instance-short-id>:<target-port>
 Hostname/path pairs are unique across the Relay, target ports are restricted to
 1–65535, and each Ember may have at most 16 routes. The user creates the DNS
 record. In bundled mode Relay atomically rewrites the watched dynamic
-configuration without restarting the Ember. In `none` mode Relay stages
+configuration without restarting the Ember. In `coolify` mode Relay stages
 Coolify-compatible HTTP/HTTPS router, redirect, middleware, service-port, and
-certificate-resolver labels directly on the Ember. Docker labels are immutable,
+certificate-resolver labels directly on the Ember. Manual mode uses the same
+shape with conventional `web`/`websecure`/`kiln` names but never attaches the
+operator's proxy automatically. Docker labels are immutable,
 so Start or Restart performs a rollback-safe container recreation that preserves
 the image, runtime restrictions, ports, environment, and data mounts. The
 Network tab shows a persistent staged state and an infinite restart toast until
@@ -169,8 +176,33 @@ traffic is published until its labels are applied. Removing the final route
 disconnects the Ember immediately, cutting Traefik's path to its data even
 before the cleanup restart removes stale labels. Removing one of several routes
 keeps the edge attachment and stages the label removal. A normal power stop does
-not remove desired edge membership. Switching away from `none` disconnects all
-managed Embers and the external proxy, then removes `kiln-edge` when it is empty.
+not remove desired edge membership. Switching away from an external edge mode
+disconnects all managed Embers and the external proxy, then removes `kiln-edge`
+when it is empty.
+
+### Coolify TLS termination
+
+`KILN_RELAY_PROXY=coolify` is explicit; `none` never guesses that the host is
+Coolify. Relay discovers its public origin from `KILN_RELAY_PUBLIC_URL`, a
+generated `SERVICE_URL_*_<relay-port>` / `SERVICE_FQDN_*_<relay-port>`,
+`COOLIFY_URL`, or `COOLIFY_FQDN`, in that order. `KILN_RELAY_HOST` remains a
+valid explicit fallback. Only an origin-only HTTPS URL is accepted.
+
+Coolify's Traefik terminates public HTTPS and WSS and forwards private HTTP to
+Relay port 4100 over Coolify's Docker network. Relay never loads Coolify's
+certificate or reads its ACME state. At startup it inspects its own Docker port
+bindings and refuses to run if port 4100 is published on a non-loopback host
+address. The supplied Compose file binds 4100 to loopback by default; a Coolify
+service may omit that mapping entirely. SFTP remains independently publishable
+on its configured port.
+
+The Relay's Coolify application/domain configuration supplies the labels that
+route the Relay itself. Kiln only manages Ember labels on `kiln-edge`. The
+browser trust probe must return the paired Relay fingerprint, so a valid
+certificate routing to the wrong container is reported as an unavailable edge.
+Changing between a TLS-terminating proxy and a direct listener changes the
+private listener protocol and therefore requires a Relay restart; the control
+API returns an actionable error instead of leaving a half-switched listener.
 
 The fallback boundary remains deliberate:
 
@@ -509,9 +541,9 @@ auditing.
 Hearth can trust a Relay-local CA narrowly for its server-side control socket,
 but browser JavaScript cannot add a CA, override certificate validation, or pin
 a self-signed certificate for `fetch` or `WebSocket`. Direct browser traffic
-therefore requires one of these browser trust paths. The port is irrelevant to
-certificate validity: a browser-trusted certificate works on `:4100` exactly as
-it does on `:443`.
+therefore requires a browser-trusted edge or one of these direct-listener trust
+paths. The port is irrelevant to certificate validity: a browser-trusted
+certificate works on `:4100` exactly as it does on `:443`.
 
 ### 1. Relay-managed TLS
 

@@ -405,11 +405,15 @@ function pairingEnvelope(input: {
   readonly tls: RelayTlsMaterial | null
   readonly token: string
 }): PairingEnvelope {
-  const secure = input.config.tlsMode !== "development"
+  const browserOrigin = new URL(input.config.browserOrigin)
+  const controlEndpoint = new URL(browserOrigin)
+  controlEndpoint.protocol =
+    browserOrigin.protocol === "https:" ? "wss:" : "ws:"
+  controlEndpoint.pathname = "/v1/socket"
   return {
-    browserOrigin: input.config.browserOrigin,
+    browserOrigin: browserOrigin.origin,
     caCertificatePem: input.tls?.caCertificatePem ?? null,
-    controlEndpoint: `${secure ? "wss" : "ws"}://${urlHost(input.config.advertisedHost)}:${input.config.publicPort}/v1/socket`,
+    controlEndpoint: controlEndpoint.toString(),
     expiresAt: input.expiresAt,
     invitationId: input.invitationId,
     relayFingerprint: input.identity.fingerprint,
@@ -536,8 +540,4 @@ function initialInvitationId(metadata: string): string | null {
 
 function pairingFailure(code: string) {
   return Effect.fail(RelayPairingError.make({ code }))
-}
-
-function urlHost(value: string): string {
-  return value.includes(":") && !value.startsWith("[") ? `[${value}]` : value
 }

@@ -327,6 +327,7 @@ function testConfig(dataDirectory: string): RelayConfig {
     bootstrapToken: null,
     brickCatalogUrl: "https://example.test/catalog.yml",
     browserOrigin: "https://127.0.0.1:4100",
+    coolifyPublicOrigin: null,
     composeFile: resolve(dataDirectory, "instances", "compose.yaml"),
     connectDomain: "test",
     connectPort: 25_565,

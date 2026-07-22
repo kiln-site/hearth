@@ -19,7 +19,7 @@ import type {
 import type { RelayCredentials } from "@/lib/relay-registry"
 import { resolveSftpAuthorization } from "@/lib/sftp-authorization"
 
-interface RelayEndpoint {
+export interface RelayEndpoint {
   hostname: string
   id: string
   port: number
@@ -52,6 +52,7 @@ export async function relayRpc(
   payload: unknown,
   timeoutMs = 10_000
 ): Promise<unknown> {
+  const effectiveRelay = relayControlEndpoint(relay)
   let connection = connections.get(relay.id)
   // Vite preserves global state across SSR reloads, but class prototypes change.
   if (connection && !(connection instanceof RelayConnection)) {
@@ -59,16 +60,52 @@ export async function relayRpc(
     connections.delete(relay.id)
     connection = undefined
   }
-  if (connection && !connection.matches(relay)) {
+  if (connection && !connection.matches(effectiveRelay)) {
     connection.close()
     connections.delete(relay.id)
     connection = undefined
   }
   if (!connection) {
-    connection = new RelayConnection(relay)
+    connection = new RelayConnection(effectiveRelay)
     connections.set(relay.id, connection)
   }
   return connection.request(operation, payload, timeoutMs)
+}
+
+export function relayControlEndpoint(relay: RelayEndpoint): RelayEndpoint {
+  const configured = process.env.KILN_RELAY_CONTROL_URL?.trim()
+  const initializedHostname = process.env.KILN_RELAY_HOST?.trim()
+  if (
+    !configured ||
+    !initializedHostname ||
+    relay.hostname !== initializedHostname
+  ) {
+    return relay
+  }
+  const url = new URL(configured)
+  if (
+    (url.protocol !== "ws:" && url.protocol !== "wss:") ||
+    (url.pathname !== "/" && url.pathname !== "/v1/socket") ||
+    url.search ||
+    url.hash ||
+    url.username ||
+    url.password
+  ) {
+    throw new Error(
+      "KILN_RELAY_CONTROL_URL must be a WS/WSS origin or /v1/socket URL without credentials, query, or fragment"
+    )
+  }
+  return {
+    ...relay,
+    hostname: url.hostname,
+    port: effectiveWebSocketPort(url),
+    useTls: url.protocol === "wss:",
+  }
+}
+
+function effectiveWebSocketPort(url: URL): number {
+  if (url.port) return Number(url.port)
+  return url.protocol === "wss:" ? 443 : 80
 }
 
 export function relayConnectionState(relayId: string): RelayConnectionState {

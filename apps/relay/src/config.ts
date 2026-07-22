@@ -22,7 +22,7 @@ export interface RelayInstanceConfig {
 }
 
 export type RelayTlsMode = "development" | "external" | "managed"
-export type RelayProxyMode = "hearth" | "none" | "traefik"
+export type RelayProxyMode = "coolify" | "hearth" | "none" | "traefik"
 
 export interface RelayConfig {
   advertisedHost: string
@@ -30,6 +30,7 @@ export interface RelayConfig {
   brickCatalogUrl: string
   bootstrapToken: string | null
   browserOrigin: string
+  coolifyPublicOrigin: string | null
   composeFile: string
   connectDomain: string
   connectPort: number
@@ -61,16 +62,34 @@ export function loadConfig(
   environment: NodeJS.ProcessEnv = process.env
 ): RelayConfig {
   const dataDirectory = environment.KILN_RELAY_DATA_DIR?.trim() || "/data"
-  const advertisedHost =
-    environment.KILN_RELAY_HOST?.trim() || hostname() || "localhost"
-  const port = parsePort(environment, "KILN_RELAY_PORT", 4100)
   const proxyMode = relayProxyMode(environment)
+  const port = parsePort(environment, "KILN_RELAY_PORT", 4100)
+  const coolifyPublicOrigin = relayCoolifyPublicOrigin(environment, port)
+  if (
+    proxyMode === "coolify" &&
+    !coolifyPublicOrigin &&
+    !environment.KILN_RELAY_HOST?.trim()
+  ) {
+    throw new Error(
+      "Coolify proxy mode requires KILN_RELAY_HOST or a Coolify-provided public URL"
+    )
+  }
+  const advertisedHost =
+    environment.KILN_RELAY_HOST?.trim() ||
+    (coolifyPublicOrigin ? new URL(coolifyPublicOrigin).hostname : null) ||
+    hostname() ||
+    "localhost"
   const directPublicPort = parsePort(
     environment,
     "KILN_RELAY_PUBLIC_PORT",
     port
   )
-  const publicPort = proxyMode === "traefik" ? 443 : directPublicPort
+  const publicPort =
+    proxyMode === "traefik" || proxyMode === "coolify"
+      ? coolifyPublicOrigin
+        ? effectiveUrlPort(new URL(coolifyPublicOrigin))
+        : 443
+      : directPublicPort
   const tlsMode = relayTlsMode(environment)
   const directBrowserOrigin = relayBrowserOrigin(
     tlsMode,
@@ -79,7 +98,8 @@ export function loadConfig(
   )
   return {
     advertisedHost,
-    advertisedHostInferred: !environment.KILN_RELAY_HOST?.trim(),
+    advertisedHostInferred:
+      !environment.KILN_RELAY_HOST?.trim() && !coolifyPublicOrigin,
     brickCatalogUrl:
       environment.KILN_BRICKS_CATALOG_URL?.trim() ||
       "https://raw.githubusercontent.com/kiln-site/bricks/main/catalog.yml",
@@ -87,7 +107,10 @@ export function loadConfig(
     browserOrigin:
       proxyMode === "traefik"
         ? `https://${formatUrlHost(advertisedHost)}`
+        : proxyMode === "coolify"
+          ? (coolifyPublicOrigin ?? `https://${formatUrlHost(advertisedHost)}`)
         : directBrowserOrigin,
+    coolifyPublicOrigin,
     composeFile: `${dataDirectory}/instances/compose.yaml`,
     connectDomain: "test",
     connectPort: 25_565,
@@ -118,10 +141,65 @@ export function loadConfig(
 
 function relayProxyMode(environment: NodeJS.ProcessEnv): RelayProxyMode {
   const value = environment.KILN_RELAY_PROXY?.trim() || "none"
-  if (value === "none" || value === "hearth" || value === "traefik") {
+  if (
+    value === "none" ||
+    value === "hearth" ||
+    value === "traefik" ||
+    value === "coolify"
+  ) {
     return value
   }
-  throw new Error("KILN_RELAY_PROXY must be none, hearth, or traefik")
+  throw new Error(
+    "KILN_RELAY_PROXY must be none, hearth, traefik, or coolify"
+  )
+}
+
+function relayCoolifyPublicOrigin(
+  environment: NodeJS.ProcessEnv,
+  relayPort: number
+): string | null {
+  const generatedServiceUrls = Object.entries(environment)
+    .filter(([name]) =>
+      new RegExp(`^SERVICE_(?:URL|FQDN)_.+_${relayPort}$`, "u").test(name)
+    )
+    .map(([, value]) => value)
+  const raw = [
+    environment.KILN_RELAY_PUBLIC_URL,
+    environment[`SERVICE_URL_KILN_RELAY_${relayPort}`],
+    environment[`SERVICE_FQDN_KILN_RELAY_${relayPort}`],
+    ...generatedServiceUrls,
+    environment.COOLIFY_URL,
+    environment.COOLIFY_FQDN,
+  ]
+    .flatMap((value) => value?.split(",") ?? [])
+    .map((value) => value.trim())
+    .find(Boolean)
+  if (!raw) return null
+  const withScheme = raw.includes("://") ? raw : `https://${raw}`
+  let url: URL
+  try {
+    url = new URL(withScheme)
+  } catch (cause) {
+    throw new Error("The Coolify Relay public URL is invalid", { cause })
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error(
+      "The Coolify Relay public URL must be an HTTPS origin without credentials, a path, query, or fragment"
+    )
+  }
+  return url.origin
+}
+
+function effectiveUrlPort(url: URL): number {
+  if (url.port) return Number(url.port)
+  return url.protocol === "https:" ? 443 : 80
 }
 
 function traefikImage(environment: NodeJS.ProcessEnv): string {
@@ -155,6 +233,8 @@ export async function discoverRelayAdvertisedHost(
     config.browserOrigin =
       config.proxyMode === "traefik"
         ? `https://${formatUrlHost(address)}`
+        : config.proxyMode === "coolify"
+          ? (config.coolifyPublicOrigin ?? `https://${formatUrlHost(address)}`)
         : config.directBrowserOrigin
     return "public_ip"
   } catch {

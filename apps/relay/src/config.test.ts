@@ -54,6 +54,35 @@ describe("loadConfig", () => {
     expect(config.traefikImage).toBe("traefik:v3.6.6")
   })
 
+  it("uses Coolify's public HTTPS origin and keeps port 4100 private", () => {
+    const config = loadConfig({
+      KILN_RELAY_PROXY: "coolify",
+      SERVICE_URL_KILN_RELAY_4100: "https://relay.example.com",
+      NODE_ENV: "production",
+    })
+
+    expect(config.proxyMode).toBe("coolify")
+    expect(config.advertisedHost).toBe("relay.example.com")
+    expect(config.advertisedHostInferred).toBe(false)
+    expect(config.port).toBe(4100)
+    expect(config.publicPort).toBe(443)
+    expect(config.browserOrigin).toBe("https://relay.example.com")
+    expect(config.coolifyPublicOrigin).toBe("https://relay.example.com")
+  })
+
+  it("requires a trusted public origin for Coolify mode", () => {
+    expect(() =>
+      loadConfig({ KILN_RELAY_PROXY: "coolify", NODE_ENV: "production" })
+    ).toThrow("requires KILN_RELAY_HOST or a Coolify-provided public URL")
+    expect(() =>
+      loadConfig({
+        KILN_RELAY_PROXY: "coolify",
+        KILN_RELAY_PUBLIC_URL: "http://relay.example.com",
+        NODE_ENV: "production",
+      })
+    ).toThrow("must be an HTTPS origin")
+  })
+
   it("infers a public address only when no host is configured", async () => {
     const inferred = loadConfig({ NODE_ENV: "development" })
     await expect(
@@ -109,7 +138,7 @@ describe("loadConfig", () => {
   it("rejects unknown proxy modes and unpinned images", () => {
     expect(() =>
       loadConfig({ KILN_RELAY_PROXY: "caddy", NODE_ENV: "development" })
-    ).toThrow("KILN_RELAY_PROXY must be none, hearth, or traefik")
+    ).toThrow("KILN_RELAY_PROXY must be none, hearth, traefik, or coolify")
     expect(() =>
       loadConfig({
         KILN_RELAY_TRAEFIK_IMAGE: "example/traefik:latest",

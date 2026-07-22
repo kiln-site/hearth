@@ -1,6 +1,9 @@
 import { createHash, randomUUID, sign } from "node:crypto"
 
-import { relayProxySettingsSchema } from "@workspace/contracts"
+import {
+  relayProxyDiagnosticsSchema,
+  relayProxySettingsSchema,
+} from "@workspace/contracts"
 
 import { requireRelayPermission } from "@/lib/access-control"
 import type { AuthenticatedUser } from "@/lib/auth-session"
@@ -126,13 +129,17 @@ async function createBrowserCapability(input: {
     import("@/lib/relay-connection"),
     loadRelayCredentials(input.relay.id),
   ])
-  const proxyMode = await relayRpc(input.relay, "relay.proxy.read", {}, 5_000)
-    .then((value) =>
-      value && typeof value === "object" && "settings" in value
-        ? relayProxySettingsSchema.parse(value.settings).mode
-        : ("none" as const)
-    )
-    .catch(() => "none" as const)
+  const proxy = await relayRpc(input.relay, "relay.proxy.read", {}, 5_000)
+    .then((value) => {
+      if (!value || typeof value !== "object") return null
+      const response = Object.fromEntries(Object.entries(value))
+      return {
+        diagnostics: relayProxyDiagnosticsSchema.parse(response.diagnostics),
+        settings: relayProxySettingsSchema.parse(response.settings),
+      }
+    })
+    .catch(() => null)
+  const proxyMode = proxy?.settings.mode ?? "none"
   const now = Date.now()
   const payload = {
     actions: input.actions,
@@ -155,10 +162,7 @@ async function createBrowserCapability(input: {
     credentials.clientPrivateKeyPem
   ).toString("base64url")
   return {
-    browserOrigin:
-      proxyMode === "traefik"
-        ? `https://${formatHost(input.relay.hostname)}`
-        : input.relay.browserOrigin,
+    browserOrigin: proxy?.diagnostics.browserOrigin ?? input.relay.browserOrigin,
     capability: `${encoded}.${signature}`,
     expiresAt: payload.expiresAt,
     proxyMode,
@@ -170,10 +174,4 @@ function browserKeyThumbprint(jwk: BrowserPublicKey): string {
   return createHash("sha256")
     .update(JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y }))
     .digest("base64url")
-}
-
-function formatHost(hostname: string): string {
-  return hostname.includes(":") && !hostname.startsWith("[")
-    ? `[${hostname}]`
-    : hostname
 }

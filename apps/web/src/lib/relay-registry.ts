@@ -381,13 +381,32 @@ export async function initializeRelayFromEnvironment(): Promise<PersistedRelay |
     throw new Error("KILN_RELAY_PORT must be a valid TCP port")
   }
   const clientNonce = randomBytes(32).toString("base64url")
+  const publicUrl = process.env.KILN_RELAY_PUBLIC_URL?.trim()
+    ? new URL(process.env.KILN_RELAY_PUBLIC_URL.trim())
+    : new URL(`https://${formatHost(hostname)}:${port}`)
+  if (
+    publicUrl.protocol !== "https:" ||
+    publicUrl.pathname !== "/" ||
+    publicUrl.search ||
+    publicUrl.hash ||
+    publicUrl.username ||
+    publicUrl.password
+  ) {
+    throw new Error(
+      "KILN_RELAY_PUBLIC_URL must be an HTTPS origin without credentials, a path, query, or fragment"
+    )
+  }
   const discovered = await getBootstrapDiscovery(
     new URL(
-      `https://${formatHost(hostname)}:${port}/v1/bootstrap?nonce=${encodeURIComponent(clientNonce)}`
+      `/v1/bootstrap?nonce=${encodeURIComponent(clientNonce)}`,
+      publicUrl
     )
   )
   const bootstrap = bootstrapDiscoverySchema.parse(discovered.payload)
-  if (bootstrap.tlsFingerprint !== discovered.tlsFingerprint) {
+  if (
+    bootstrap.tlsFingerprint !== "edge-terminated" &&
+    bootstrap.tlsFingerprint !== discovered.tlsFingerprint
+  ) {
     throw new Error(
       "Relay bootstrap response did not match its TLS certificate"
     )
@@ -400,7 +419,7 @@ export async function initializeRelayFromEnvironment(): Promise<PersistedRelay |
     relayFingerprint: bootstrap.envelope.relayFingerprint,
     relayPublicKeyPem: bootstrap.envelope.relayPublicKeyPem,
     serverNonce: bootstrap.serverNonce,
-    tlsFingerprint: discovered.tlsFingerprint,
+    tlsFingerprint: bootstrap.tlsFingerprint,
   })
   const expectedProof = createHmac("sha256", token).update(transcript).digest()
   const actualProof = Buffer.from(bootstrap.proof, "base64url")

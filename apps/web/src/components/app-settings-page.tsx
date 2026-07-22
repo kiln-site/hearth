@@ -1219,16 +1219,22 @@ function RelayProxyConfiguration({ relay }: { relay: PersistedRelay }) {
 
   async function verifyPublicEdge() {
     setProbe("checking")
-    const origin =
-      settings?.mode === "traefik"
-        ? `https://${relay.hostname.includes(":") ? `[${relay.hostname}]` : relay.hostname}`
-        : relay.browserOrigin
+    const origin = diagnostics?.browserOrigin ?? relay.browserOrigin
     try {
       const response = await fetch(new URL("/v1/trust", origin), {
         cache: "no-store",
         mode: "cors",
       })
-      setProbe(response.ok ? "reachable" : "unreachable")
+      if (!response.ok) {
+        setProbe("unreachable")
+        return
+      }
+      const identity = (await response.json().catch(() => null)) as {
+        relayFingerprint?: unknown
+      } | null
+      setProbe(
+        identity?.relayFingerprint === relay.id ? "reachable" : "unreachable"
+      )
     } catch {
       setProbe("unreachable")
     }
@@ -1272,6 +1278,7 @@ function RelayProxyConfiguration({ relay }: { relay: PersistedRelay }) {
                 <option value="none">None / existing Traefik</option>
                 <option value="hearth">Hearth proxy</option>
                 <option value="traefik">Bundled Traefik</option>
+                <option value="coolify">Coolify Traefik</option>
               </select>
             </Field>
             <Field
@@ -1299,6 +1306,22 @@ function RelayProxyConfiguration({ relay }: { relay: PersistedRelay }) {
             />
           </Field>
 
+          {settings.mode === "coolify" ? (
+            <div className="border border-primary/20 bg-primary/5 px-3 py-2 text-[10px] leading-4 text-muted-foreground">
+              <p className="font-medium text-foreground">
+                TLS is owned by Coolify
+              </p>
+              <p className="mt-1">
+                Public HTTPS and WSS terminate at{" "}
+                <span className="font-mono text-foreground">
+                  {diagnostics.browserOrigin}
+                </span>
+                . Relay serves private HTTP on port 4100 and never reads
+                Coolify&apos;s certificate or ACME state.
+              </p>
+            </div>
+          ) : null}
+
           <div
             className={`border px-3 py-2 text-[10px] leading-4 ${
               diagnostics.status === "blocked"
@@ -1308,9 +1331,14 @@ function RelayProxyConfiguration({ relay }: { relay: PersistedRelay }) {
           >
             <p className="font-medium text-foreground">
               {diagnostics.status === "blocked"
-                ? "Bundled Traefik is blocked"
+                ? diagnostics.mode === "coolify"
+                  ? "Coolify edge is not ready"
+                  : "Bundled Traefik is blocked"
                 : diagnostics.mode === "traefik" && diagnostics.containerRunning
                   ? "kiln-traefik is running"
+                  : diagnostics.mode === "coolify" &&
+                      diagnostics.containerRunning
+                    ? "Coolify Traefik is connected"
                   : diagnostics.mode === "hearth"
                     ? "Kiln traffic is routed through Hearth"
                     : "External/manual edge selected"}
@@ -1360,7 +1388,9 @@ function RelayProxyConfiguration({ relay }: { relay: PersistedRelay }) {
                     acmeEmail:
                       String(form.get("acmeEmail") ?? "").trim() || null,
                     mode:
-                      form.get("mode") === "traefik"
+                      form.get("mode") === "coolify"
+                        ? "coolify"
+                        : form.get("mode") === "traefik"
                         ? "traefik"
                         : form.get("mode") === "hearth"
                           ? "hearth"
@@ -1412,16 +1442,13 @@ function RelayBrowserTrust({ relay }: { relay: PersistedRelay }) {
     "idle" | "checking" | "trusted" | "untrusted"
   >("idle")
   const trustOrigin = React.useMemo(() => {
-    if (proxyMode === "traefik") {
-      return new URL(
-        `https://${relay.hostname.includes(":") ? `[${relay.hostname}]` : relay.hostname}`
-      )
-    }
-    const url = new URL(relay.browserOrigin)
+    const url = new URL(
+      proxy.data?.diagnostics.browserOrigin ?? relay.browserOrigin
+    )
     if (url.protocol === "wss:") url.protocol = "https:"
     if (url.protocol === "ws:") url.protocol = "http:"
     return url
-  }, [proxyMode, relay.browserOrigin, relay.hostname])
+  }, [proxy.data?.diagnostics.browserOrigin, relay.browserOrigin])
   const verify = React.useCallback(async () => {
     setState("checking")
     try {
@@ -1429,11 +1456,20 @@ function RelayBrowserTrust({ relay }: { relay: PersistedRelay }) {
         cache: "no-store",
         mode: "cors",
       })
-      setState(response.ok ? "trusted" : "untrusted")
+      if (!response.ok) {
+        setState("untrusted")
+        return
+      }
+      const identity = (await response.json().catch(() => null)) as {
+        relayFingerprint?: unknown
+      } | null
+      setState(
+        identity?.relayFingerprint === relay.id ? "trusted" : "untrusted"
+      )
     } catch {
       setState("untrusted")
     }
-  }, [trustOrigin])
+  }, [relay.id, trustOrigin])
 
   if (proxyMode === "hearth") {
     return (
@@ -1463,6 +1499,8 @@ function RelayBrowserTrust({ relay }: { relay: PersistedRelay }) {
           <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
             {proxyMode === "traefik"
               ? "Bundled Traefik must present a public ACME certificate on port 443."
+              : proxyMode === "coolify"
+                ? "Coolify's Traefik must present its public certificate and forward WSS/HTTPS to Relay's private port 4100."
               : `Required for direct console streams and file transfers on port ${relay.port}.`}
           </p>
         </div>
@@ -1484,6 +1522,8 @@ function RelayBrowserTrust({ relay }: { relay: PersistedRelay }) {
       <p className="mt-3 text-[10px] leading-4 text-muted-foreground">
         {proxyMode === "traefik"
           ? "Traefik requests and renews the public certificate automatically after DNS points here and ports 80/443 are publicly reachable. No Relay CA installation is needed."
+          : proxyMode === "coolify"
+            ? "Coolify owns certificate issuance and renewal. Relay never reads or copies Coolify's ACME state or private keys."
           : relay.managedTls
             ? "Install the Relay CA once on each device. Relay keeps that CA stable and renews its short-lived server certificate automatically."
             : "This Relay uses an external certificate. Its public CA or reverse proxy must already be trusted by this browser."}
@@ -1492,6 +1532,8 @@ function RelayBrowserTrust({ relay }: { relay: PersistedRelay }) {
         <p className="mt-2 text-[10px] leading-4 text-destructive">
           {proxyMode === "traefik"
             ? "This browser could not reach a trusted Traefik edge. Check DNS, public ports 80/443, and ACME issuance, then verify again."
+            : proxyMode === "coolify"
+              ? "This browser could not reach the Relay through Coolify's trusted edge. Check the Coolify domain, certificate status, and WebSocket routing."
             : "This browser could not establish trusted HTTPS to the Relay. Install the CA or correct the external certificate, then verify again."}
         </p>
       ) : null}

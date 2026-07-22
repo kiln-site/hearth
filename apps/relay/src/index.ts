@@ -70,20 +70,16 @@ if (advertisedHostSource !== "configured") {
 await mkdir(config.rootDirectory, { recursive: true })
 await mkdir(`${config.dataDirectory}/network`, { recursive: true, mode: 0o700 })
 initializeRelayRuntime(config)
-const startup = await runRelayEffect(
+const startupCore = await runRelayEffect(
   "relay.startup",
   Effect.gen(function* () {
     const state = yield* RelayStateStore
-    const [identity, tls] = yield* Effect.all([
-      loadOrCreateRelayIdentity(config),
-      loadRelayTls(config),
-    ])
-    return { identity, state, tls }
+    const identity = yield* loadOrCreateRelayIdentity(config)
+    return { identity, state }
   })
 )
-let activeTls = startup.tls
 const cliArguments = process.argv.slice(2)
-let relayIdentity = startup.identity
+let relayIdentity = startupCore.identity
 config.nodeName = relayIdentity.name
 const bricks = new BrickCatalog(config.brickCatalogUrl)
 const docker = new DockerDriver(config)
@@ -91,6 +87,8 @@ const filesystem = new FilesystemDriver(config)
 const lifecycle = new LifecycleDriver(config, docker, bricks)
 const startupProxySettings = await lifecycle.proxySettings()
 lifecycle.hydrateProxySettings(startupProxySettings)
+let activeTls = await runRelayEffect("relay.startup.tls", loadRelayTls(config))
+const startup = { ...startupCore, tls: activeTls }
 if (cliArguments[0] === "pair" || cliArguments[0] === "hearth") {
   await runRelayCli(cliArguments)
   await disposeRelayRuntime()
@@ -291,6 +289,7 @@ const sftpServer = await attachSftpServer({
   docker,
 })
 
+await lifecycle.assertPrivateProxyListener()
 server.listen(config.port, config.host, () => {
   console.log(
     `Relay ${relayIdentity.fingerprint} (${relayIdentity.name}) listening on ${activeTls ? "https" : "http"}://${config.host}:${config.port}`
@@ -381,6 +380,7 @@ function trustProbe(
         : JSON.stringify({
             relayFingerprint: relayIdentity.fingerprint,
             relayName: relayIdentity.name,
+            proxyMode: config.proxyMode,
             tlsFingerprint: activeTls?.fingerprint ?? null,
             version: 1,
           })
@@ -416,7 +416,11 @@ function bootstrapDiscovery(
     relayFingerprint: invitation.envelope.relayFingerprint,
     relayPublicKeyPem: invitation.envelope.relayPublicKeyPem,
     serverNonce,
-    tlsFingerprint: activeTls?.fingerprint ?? "development",
+    tlsFingerprint:
+      activeTls?.fingerprint ??
+      (config.proxyMode === "coolify" || config.proxyMode === "traefik"
+        ? "edge-terminated"
+        : "development"),
   }
   const { token: _token, ...envelope } = invitation.envelope
   json(response, 200, {

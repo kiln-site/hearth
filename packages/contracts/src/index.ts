@@ -160,7 +160,12 @@ export const relayNetworkingSchema = z.object({
   proxyPort: z.number().int().min(1).max(65_535).default(25_565),
 })
 
-export const relayProxyModeSchema = z.enum(["none", "hearth", "traefik"])
+export const relayProxyModeSchema = z.enum([
+  "none",
+  "hearth",
+  "traefik",
+  "coolify",
+])
 
 export const relayProxySettingsSchema = z
   .object({
@@ -240,6 +245,7 @@ export const relayInstanceWebRouteStateSchema = z
 
 export const relayProxyDiagnosticsSchema = z
   .object({
+    browserOrigin: z.url(),
     containerRunning: z.boolean(),
     mode: relayProxyModeSchema,
     ports: z.array(
