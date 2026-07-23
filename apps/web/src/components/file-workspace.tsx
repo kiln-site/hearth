@@ -2912,6 +2912,7 @@ const StableFileTreePanel = React.memo(FileTreePanel)
 
 interface FileWorkspaceProps {
   instance: InstanceWorkspaceInstance
+  serverId: string
   active: boolean
   routeFilePath?: string
   canShare: boolean
@@ -2949,7 +2950,7 @@ export function FileWorkspace(props: FileWorkspaceProps) {
 
       const nextLocation = router.buildLocation({
         to: "/server/$serverId/files/$",
-        params: { serverId: props.instance.shortId, _splat: path },
+        params: { serverId: props.serverId, _splat: path },
       })
       const nextUrl = new URL(nextLocation.href, window.location.href).href
       selectionStore.navigate(path, window.location.href, nextUrl)
@@ -2957,12 +2958,12 @@ export function FileWorkspace(props: FileWorkspaceProps) {
 
       void router.navigate({
         to: "/server/$serverId/files/$",
-        params: { serverId: props.instance.shortId, _splat: path },
+        params: { serverId: props.serverId, _splat: path },
         replace: true,
         resetScroll: false,
       })
     },
-    [props.active, props.instance.shortId, router, selectionStore]
+    [props.active, props.serverId, router, selectionStore]
   )
 
   return (

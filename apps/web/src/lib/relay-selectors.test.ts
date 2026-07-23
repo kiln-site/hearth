@@ -9,6 +9,7 @@ import { replaceRelaySnapshotInstance } from "@/lib/query-options"
 import {
   findFirstCanonicalRelayInstance,
   findRelayInstance,
+  relayInstanceRouteIdentifier,
   resolveCanonicalRelayInstance,
   resolveRelayInstance,
   selectInstanceRelayConnected,
@@ -48,7 +49,7 @@ function snapshotWithCpu(percent: number): RelayFleetSnapshot {
         relayId: "relay-one",
         relayName: "Relay one",
         relayStatus: "connected",
-        routeId: "aaaaaaaa",
+        routeId: "relay-one-aaaaaaaa",
         resources: {
           ...instance.resources!,
           sampledAt: `2026-07-20T12:00:0${percent}.000Z`,
@@ -219,11 +220,14 @@ describe("Relay render selectors", () => {
     })
   })
 
-  it("only resolves identifiers whose short URL is unambiguous", () => {
+  it("uses short IDs when unique and Relay-qualified routes on collision", () => {
     const first = snapshotWithCpu(1).instances[0]
     if (!first) throw new Error("Expected Relay fixture")
     const snapshot = snapshotWithCpu(1)
 
+    expect(relayInstanceRouteIdentifier(snapshot.instances, first)).toBe(
+      first.shortId
+    )
     expect(
       resolveCanonicalRelayInstance(snapshot.instances, first.routeId)
     ).toEqual({
@@ -231,19 +235,39 @@ describe("Relay render selectors", () => {
       instance: first,
     })
 
-    snapshot.instances.push({
+    const collision = {
       ...first,
       id: "b".repeat(40),
       relayId: "relay-two",
       relayName: "Relay two",
       routeId: "relay-two-aaaaaaaa",
-    })
+    }
+    snapshot.instances.push(collision)
 
+    expect(relayInstanceRouteIdentifier(snapshot.instances, first)).toBe(
+      first.routeId
+    )
+    expect(relayInstanceRouteIdentifier(snapshot.instances, collision)).toBe(
+      collision.routeId
+    )
     expect(
       resolveCanonicalRelayInstance(snapshot.instances, first.routeId)
     ).toEqual({
-      status: "ambiguous",
+      status: "found",
+      instance: first,
     })
+    expect(
+      resolveCanonicalRelayInstance(snapshot.instances, collision.routeId)
+    ).toEqual({
+      status: "found",
+      instance: collision,
+    })
+    expect(resolveCanonicalRelayInstance(snapshot.instances, first.id)).toEqual(
+      {
+        status: "found",
+        instance: first,
+      }
+    )
     expect(
       resolveCanonicalRelayInstance(snapshot.instances, first.shortId)
     ).toEqual({
@@ -251,7 +275,7 @@ describe("Relay render selectors", () => {
     })
   })
 
-  it("skips colliding short IDs when choosing a sidebar default", () => {
+  it("chooses a colliding server when its Relay-qualified route is unique", () => {
     const first = snapshotWithCpu(1).instances[0]
     if (!first) throw new Error("Expected Relay fixture")
     const collision = {
@@ -261,18 +285,22 @@ describe("Relay render selectors", () => {
       relayName: "Relay two",
       routeId: "relay-two-aaaaaaaa",
     }
-    const unique = {
+    expect(findFirstCanonicalRelayInstance([first, collision])).toEqual(first)
+  })
+
+  it("rejects collisions that also share a Relay-qualified route", () => {
+    const first = snapshotWithCpu(1).instances[0]
+    if (!first) throw new Error("Expected Relay fixture")
+    const collision = {
       ...first,
-      id: "c".repeat(40),
-      relayId: "relay-three",
-      relayName: "Relay three",
-      routeId: "relay-three-cccccccc",
-      shortId: "cccccccc",
+      id: "b".repeat(40),
+      relayId: "relay-two",
+      relayName: "Relay two",
     }
 
-    expect(findFirstCanonicalRelayInstance([first, collision, unique])).toEqual(
-      unique
-    )
+    expect(
+      relayInstanceRouteIdentifier([first, collision], first)
+    ).toBeUndefined()
     expect(findFirstCanonicalRelayInstance([first, collision])).toBeUndefined()
   })
 })

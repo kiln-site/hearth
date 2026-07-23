@@ -60,6 +60,7 @@ import {
 import { disableDevelopmentBypass } from "@/server/auth"
 import {
   findFirstCanonicalRelayInstance,
+  relayInstanceRouteIdentifier,
   resolveCanonicalRelayInstance,
   selectRelayConfigured,
   selectSidebarInstanceCount,
@@ -332,14 +333,18 @@ function SidebarInstanceNavigation({
       : serverId || preferredResolution.status === "ambiguous"
         ? null
         : (findFirstCanonicalRelayInstance(instances) ?? null)
+  const instanceRouteId = instance
+    ? (relayInstanceRouteIdentifier(instances, instance) ?? null)
+    : null
   return (
     <>
-      {instance ? (
-        <RememberSelectedInstance instanceRouteId={instance.shortId} />
+      {instanceRouteId ? (
+        <RememberSelectedInstance instanceRouteId={instanceRouteId} />
       ) : null}
       <SidebarSeparator />
       <InstanceNavigation
         instance={instance}
+        instanceRouteId={instanceRouteId}
         instances={instances}
         unresolvedServerId={
           serverId ??
@@ -366,15 +371,16 @@ function RememberSelectedInstance({
 
 const InstanceNavigation = React.memo(function InstanceNavigation({
   instance,
+  instanceRouteId,
   instances,
   unresolvedServerId,
 }: {
   instance: SidebarInstance | null
+  instanceRouteId: string | null
   instances: Array<SidebarInstance>
   unresolvedServerId: string | undefined
 }) {
   const navigate = useNavigate()
-  const instanceRouteId = instance?.shortId ?? null
 
   const navigateToTab = React.useCallback(
     (tab: InstanceTab, nextServerId: string, replace = false) => {
@@ -454,19 +460,27 @@ const ServerSelector = React.memo(function ServerSelector({
         relaySnapshotQueryOptions().queryKey
       )
       if (!snapshot) return
-      const resolution = resolveCanonicalRelayInstance(
-        selectSidebarInstances(snapshot),
-        routeId
-      )
+      const instances = selectSidebarInstances(snapshot)
+      const resolution = resolveCanonicalRelayInstance(instances, routeId)
       if (resolution.status === "ambiguous") {
         void navigate({ href: ambiguousServerHref(routeId) })
         return
       }
       if (resolution.status === "not-found") return
+      const routeIdentifier = relayInstanceRouteIdentifier(
+        instances,
+        resolution.instance
+      )
+      if (!routeIdentifier) {
+        void navigate({
+          href: ambiguousServerHref(resolution.instance.shortId),
+        })
+        return
+      }
 
       navigateToTab(
         instanceTabFromPathname(window.location.pathname) ?? "console",
-        resolution.instance.shortId
+        routeIdentifier
       )
     },
     [navigate, navigateToTab, queryClient]
@@ -563,7 +577,7 @@ const ServerSelectorItem = React.memo(function ServerSelectorItem({
       aria-label={`${item.name}, ${item.implementation} ${item.version}, ${item.observedState}`}
       aria-pressed={active}
       className={`flex w-full items-center gap-2.5 rounded-md border-l-2 px-1.5 py-2 text-left transition-colors duration-100 outline-none hover:bg-popover-accent hover:text-popover-accent-foreground focus-visible:bg-popover-accent focus-visible:text-popover-accent-foreground ${statusBorderTone(item.observedState)}`}
-      onClick={() => onSelect(item.shortId)}
+      onClick={() => onSelect(item.routeId)}
     >
       <ServerTypeIcon
         implementation={item.implementation}

@@ -9,7 +9,10 @@ import {
   relayConnectionQueryOptions,
   relaySnapshotQueryOptions,
 } from "@/lib/query-options"
-import { resolveRelayInstance } from "@/lib/relay-selectors"
+import {
+  relayInstanceRouteIdentifier,
+  resolveRelayInstance,
+} from "@/lib/relay-selectors"
 
 export const Route = createFileRoute("/_app/server/$serverId")({
   staleTime: Infinity,
@@ -32,18 +35,17 @@ export const Route = createFileRoute("/_app/server/$serverId")({
       throw notFound({ routeId: "/_app" })
     }
     const instance = resolution.instance
+    const routeIdentifier = relayInstanceRouteIdentifier(
+      snapshot.instances,
+      instance
+    )
+    if (!routeIdentifier) {
+      throw redirectToServerList(instance.shortId)
+    }
 
-    if (params.serverId !== instance.shortId) {
-      const shortIdResolution = resolveRelayInstance(
-        snapshot.instances,
-        instance.shortId
-      )
-      if (shortIdResolution.status === "ambiguous") {
-        throw redirectToServerList(instance.shortId)
-      }
-
+    if (params.serverId !== routeIdentifier) {
       const segments = location.pathname.split("/")
-      segments[2] = encodeURIComponent(instance.shortId)
+      segments[2] = encodeURIComponent(routeIdentifier)
       throw redirect({
         href: `${segments.join("/")}${location.searchStr}${location.hash ? `#${location.hash}` : ""}`,
         replace: true,

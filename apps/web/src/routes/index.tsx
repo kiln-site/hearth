@@ -5,6 +5,7 @@ import { AuthPage } from "@/components/auth-page"
 import { pageTitle } from "@/lib/page-title"
 import { relayConnectionQueryOptions } from "@/lib/query-options"
 import {
+  relayInstanceRouteIdentifier,
   resolveCanonicalRelayInstance,
   resolveRelayInstance,
 } from "@/lib/relay-selectors"
@@ -73,7 +74,10 @@ export const Route = createFileRoute("/")({
       rememberedResolution.status === "found"
         ? rememberedResolution.instance
         : null
-    if (!rememberedInstance) {
+    const rememberedRouteIdentifier = rememberedInstance
+      ? relayInstanceRouteIdentifier(instances, rememberedInstance)
+      : null
+    if (!rememberedInstance || !rememberedRouteIdentifier) {
       const collisionSearch =
         rememberedResolution.status === "ambiguous"
           ? rememberedAliasResolution.status === "found"
@@ -89,7 +93,7 @@ export const Route = createFileRoute("/")({
     throw redirect({
       to: "/server/$serverId/console",
       params: {
-        serverId: rememberedInstance.shortId,
+        serverId: rememberedRouteIdentifier,
       },
     })
   },

@@ -312,26 +312,28 @@ export function resolveCanonicalRelayInstance<
   const resolution = resolveRelayInstance(instances, identifier)
   if (resolution.status !== "found") return resolution
 
-  const canonicalResolution = resolveRelayInstance(
-    instances,
-    resolution.instance.shortId
-  )
-  return canonicalResolution.status === "found"
+  return relayInstanceRouteIdentifier(instances, resolution.instance)
     ? resolution
-    : canonicalResolution
+    : { status: "ambiguous" }
 }
 
-export function findFirstCanonicalRelayInstance<T extends { shortId: string }>(
-  instances: Array<T>
-): T | undefined {
-  const shortIdCounts = new Map<string, number>()
-  for (const instance of instances) {
-    shortIdCounts.set(
-      instance.shortId,
-      (shortIdCounts.get(instance.shortId) ?? 0) + 1
-    )
-  }
-  return instances.find((instance) => shortIdCounts.get(instance.shortId) === 1)
+export function relayInstanceRouteIdentifier<
+  T extends { id: string; name: string; routeId?: string; shortId: string },
+>(instances: Array<T>, instance: T): string | undefined {
+  const shortIdResolution = resolveRelayInstance(instances, instance.shortId)
+  if (shortIdResolution.status === "found") return instance.shortId
+  if (!instance.routeId) return undefined
+
+  const routeIdResolution = resolveRelayInstance(instances, instance.routeId)
+  return routeIdResolution.status === "found" ? instance.routeId : undefined
+}
+
+export function findFirstCanonicalRelayInstance<
+  T extends { id: string; name: string; routeId?: string; shortId: string },
+>(instances: Array<T>): T | undefined {
+  return instances.find((instance) =>
+    relayInstanceRouteIdentifier(instances, instance)
+  )
 }
 
 function resolveRelayInstanceMatches<T>(

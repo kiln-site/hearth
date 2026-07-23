@@ -357,6 +357,11 @@ const ServerTableSearchBoundary = React.memo(
       (server: ServerListInstance) => (
         <ServerTableRow
           canonical={shortIdCounts.get(server.shortId) === 1}
+          routeIdentifier={
+            shortIdCounts.get(server.shortId) === 1
+              ? server.shortId
+              : server.routeId
+          }
           server={server}
         />
       ),
@@ -442,9 +447,11 @@ const ServerTableHead = React.memo(function ServerTableHead() {
 
 const ServerTableRow = React.memo(function ServerTableRow({
   canonical,
+  routeIdentifier,
   server,
 }: {
   canonical: boolean
+  routeIdentifier: string
   server: ServerListInstance
 }) {
   return (
@@ -462,20 +469,14 @@ const ServerTableRow = React.memo(function ServerTableRow({
             />
           </span>
           <div className="min-w-0">
-            {canonical ? (
-              <Link
-                to="/server/$serverId/console"
-                params={{ serverId: server.shortId }}
-                preload="intent"
-                className="block truncate text-xs font-semibold text-foreground hover:text-primary"
-              >
-                {server.name}
-              </Link>
-            ) : (
-              <p className="truncate text-xs font-semibold text-foreground">
-                {server.name}
-              </p>
-            )}
+            <Link
+              to="/server/$serverId/console"
+              params={{ serverId: routeIdentifier }}
+              preload="intent"
+              className="block truncate text-xs font-semibold text-foreground hover:text-primary"
+            >
+              {server.name}
+            </Link>
             <p className="truncate font-mono text-[8px] text-muted-foreground">
               {server.game} · {server.implementation}
             </p>
@@ -488,7 +489,7 @@ const ServerTableRow = React.memo(function ServerTableRow({
           title={
             canonical
               ? server.id
-              : `${server.shortId} is shared by more than one accessible server`
+              : `${server.shortId} is shared by more than one accessible server; this row uses its Relay-qualified route`
           }
         >
           {server.shortId}
@@ -523,39 +524,19 @@ const ServerTableRow = React.memo(function ServerTableRow({
         </div>
       </WorkspaceTableCell>
       <WorkspaceTableCell className="px-2 sm:px-3">
-        <OpenServerButton canonical={canonical} server={server} />
+        <OpenServerButton routeIdentifier={routeIdentifier} server={server} />
       </WorkspaceTableCell>
     </tr>
   )
 })
 
 function OpenServerButton({
-  canonical,
+  routeIdentifier,
   server,
 }: {
-  canonical: boolean
+  routeIdentifier: string
   server: ServerListInstance
 }) {
-  if (!canonical) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            type="button"
-            size="icon-sm"
-            variant="ghost"
-            disabled
-            aria-label={`Cannot open ${server.name} because its short ID is ambiguous`}
-          >
-            <ArrowUpRight />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="left" sideOffset={6}>
-          Resolve the short-ID collision before opening this server
-        </TooltipContent>
-      </Tooltip>
-    )
-  }
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -567,7 +548,7 @@ function OpenServerButton({
         >
           <Link
             to="/server/$serverId/console"
-            params={{ serverId: server.shortId }}
+            params={{ serverId: routeIdentifier }}
             preload="intent"
             aria-label={`Open ${server.name} console`}
           >

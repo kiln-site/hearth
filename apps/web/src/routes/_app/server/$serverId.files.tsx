@@ -59,6 +59,7 @@ export const Route = createFileRoute("/_app/server/$serverId/files")({
 })
 
 function FilesRoute() {
+  const { serverId } = Route.useParams()
   const filePath = useMatch({
     from: "/_app/server/$serverId/files/$",
     shouldThrow: false,
@@ -116,6 +117,7 @@ function FilesRoute() {
       <FileWorkspace
         key={`${instance.relayId}:${instance.id}`}
         instance={instance}
+        serverId={serverId}
         active
         routeFilePath={filePath}
         canShare={permissions.shareLogs}
