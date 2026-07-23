@@ -167,6 +167,24 @@ export const relayProxyModeSchema = z.enum([
   "coolify",
 ])
 
+export const relayNameSchema = z.string().trim().min(1).max(120)
+
+export const relayConnectionSettingsSchema = z
+  .object({
+    hostname: z
+      .string()
+      .trim()
+      .min(1)
+      .max(253)
+      .regex(
+        /^(?:\[[a-f\d:]+\]|[a-z\d.-]+)$/iu,
+        "Enter a hostname or IP address"
+      ),
+    port: z.number().int().min(1).max(65_535),
+    useTls: z.boolean(),
+  })
+  .strict()
+
 export const relayProxySettingsSchema = z
   .object({
     mode: relayProxyModeSchema,

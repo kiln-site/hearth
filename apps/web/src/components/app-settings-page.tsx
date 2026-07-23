@@ -39,6 +39,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
+import {
+  relayConnectionSettingsSchema,
+  relayNameSchema,
+  relayProxySettingsSchema,
+} from "@workspace/contracts"
 
 import { RelayToastTitle } from "@/components/relay-toast-title"
 import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
@@ -538,7 +543,7 @@ const RelayTableRow = React.memo(function RelayTableRow({
       </TableCell>
       <TableCell className="hidden font-mono text-[9px] whitespace-nowrap text-foreground sm:table-cell">
         <RelayUptime
-          connectedAt={relay.createdAt}
+          createdAt={relay.createdAt}
           enabled={relay.enabled}
           relayId={relay.id}
         />
@@ -732,14 +737,24 @@ interface RelayUptimeView {
 }
 
 const RelayUptime = React.memo(function RelayUptime({
-  connectedAt,
+  createdAt,
   enabled,
   relayId,
 }: {
-  connectedAt: string
+  createdAt: string
   enabled: boolean
   relayId: string
 }) {
+  const selectConnectedAt = React.useCallback(
+    (relays: Array<PersistedRelay>) =>
+      relays.find((relay) => relay.id === relayId)?.lastConnectedAt ??
+      createdAt,
+    [createdAt, relayId]
+  )
+  const { data: connectedAt = createdAt } = useQuery({
+    ...relaysQueryOptions(),
+    select: selectConnectedAt,
+  })
   const selectUptime = React.useCallback(
     (snapshot: RelayFleetSnapshot): RelayUptimeView => {
       const node = snapshot.nodes.find((item) => item.relayId === relayId)
@@ -1094,36 +1109,66 @@ function EditRelayDialog({
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = new FormData(event.currentTarget)
-    const requestedName = String(form.get("name") ?? "").trim()
-    setPending(true)
     setFeedback(null)
+
+    // These values live in separate Hearth and Relay stores, so validate the
+    // complete form before starting the intentionally sequential updates.
+    const parsedName = relayNameSchema.safeParse(form.get("name"))
+    if (!parsedName.success) {
+      setFeedback(parsedName.error.issues[0]?.message ?? "Enter a Relay name")
+      return
+    }
+    const parsedConnection = relayConnectionSettingsSchema.safeParse({
+      hostname: form.get("hostname"),
+      port: Number(form.get("port")),
+      useTls: relay.useTls,
+    })
+    if (!parsedConnection.success) {
+      setFeedback(
+        parsedConnection.error.issues[0]?.message ??
+          "Enter valid connection settings"
+      )
+      return
+    }
+    const parsedProxy =
+      relay.enabled && proxy.data
+        ? relayProxySettingsSchema.safeParse({
+            acmeEmail: proxy.data.settings.acmeEmail,
+            mode: relayProxyMode(form.get("mode")),
+            traefikImage: form.get("traefikImage"),
+          })
+        : null
+    if (parsedProxy && !parsedProxy.success) {
+      setFeedback(
+        parsedProxy.error.issues[0]?.message ?? "Enter valid proxy settings"
+      )
+      return
+    }
+
+    setPending(true)
     try {
-      if (requestedName !== relay.name) {
+      if (parsedName.data !== relay.name) {
         await updateName.mutateAsync({
-          data: { name: requestedName, relayId: relay.id },
+          data: { name: parsedName.data, relayId: relay.id },
         })
       }
       await updateConnection.mutateAsync({
         data: {
-          hostname: String(form.get("hostname") ?? "").trim(),
           id: relay.id,
-          port: Number(form.get("port")),
-          useTls: relay.useTls,
+          ...parsedConnection.data,
         },
       })
-      if (relay.enabled && proxy.data) {
+      if (parsedProxy?.success) {
         await updateProxy.mutateAsync({
           data: {
-            acmeEmail: proxy.data.settings.acmeEmail,
-            mode: relayProxyMode(form.get("mode")),
             relayId: relay.id,
-            traefikImage: String(form.get("traefikImage") ?? "").trim(),
+            ...parsedProxy.data,
           },
         })
       }
       showToast({
         type: "success",
-        message: `${requestedName} updated`,
+        message: `${parsedName.data} updated`,
         description: "Relay connection settings were saved.",
         duration: 4_000,
       })
