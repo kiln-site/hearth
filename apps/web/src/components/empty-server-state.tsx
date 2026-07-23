@@ -9,7 +9,7 @@ export function EmptyServerState({
         <p className="font-heading text-xl font-semibold">No managed servers</p>
         <p className="mt-2 text-sm text-muted-foreground">
           {canProvision
-            ? "Open Bricks to provision an instance, or configure a Relay connection from Settings."
+            ? "Open Servers and use Add Server to provision an instance, or configure a Relay connection from Settings."
             : "No server instances have been assigned to your account yet."}
         </p>
       </div>

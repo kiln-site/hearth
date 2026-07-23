@@ -7,7 +7,7 @@ import {
   getAccessOverview,
   getInvitationPreview,
 } from "@/server/access"
-import { getBrickStudio } from "@/server/bricks"
+import { getBrickCatalog, getInstanceStartup } from "@/server/bricks"
 import { getUiPreferences } from "@/server/preferences"
 import {
   getRelayConnectionState,
@@ -37,7 +37,7 @@ export const queryKeys = {
     invitation: (token: string) => ["access", "invitation", token] as const,
     overview: ["access", "overview"] as const,
   },
-  bricks: ["bricks", "studio"] as const,
+  bricks: ["bricks", "catalog"] as const,
   relay: {
     all: ["relay"] as const,
     connection: ["relay", "connection"] as const,
@@ -161,10 +161,27 @@ export function relaysQueryOptions() {
   })
 }
 
-export function brickStudioQueryOptions() {
+export function brickCatalogQueryOptions() {
   return queryOptions({
     queryKey: queryKeys.bricks,
-    queryFn: () => getBrickStudio(),
+    queryFn: () => getBrickCatalog(),
+  })
+}
+
+export function instanceStartupQueryOptions(
+  relayId: string,
+  instanceId: string
+) {
+  return queryOptions({
+    queryKey: [
+      "relay",
+      relayId,
+      "instances",
+      instanceId,
+      "startup",
+    ] as const,
+    queryFn: () => getInstanceStartup({ data: { instanceId, relayId } }),
+    staleTime: 15_000,
   })
 }
 

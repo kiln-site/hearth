@@ -25,7 +25,6 @@ import { Route as TwoFactorRouteImport } from './routes/two-factor'
 import { Route as XRouteImport } from './routes/x'
 import { Route as AppSplatRouteImport } from './routes/_app.$'
 import { Route as AppAccessRouteImport } from './routes/_app.access'
-import { Route as AppBricksRouteImport } from './routes/_app.bricks'
 import { Route as AppSecurityRouteImport } from './routes/_app.security'
 import { Route as AppServersRouteImport } from './routes/_app.servers'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
@@ -45,6 +44,7 @@ import { Route as AppServerServerIdConsoleRouteImport } from './routes/_app/serv
 import { Route as AppServerServerIdFilesRouteImport } from './routes/_app/server/$serverId.files'
 import { Route as AppServerServerIdInfoRouteImport } from './routes/_app/server/$serverId.info'
 import { Route as AppServerServerIdNetworkRouteImport } from './routes/_app/server/$serverId.network'
+import { Route as AppServerServerIdStartupRouteImport } from './routes/_app/server/$serverId.startup'
 import { Route as AppServerServerIdFilesSplatRouteImport } from './routes/_app/server/$serverId.files.$'
 
 const IndexRoute = IndexRouteImport.update({
@@ -124,11 +124,6 @@ const AppSplatRoute = AppSplatRouteImport.update({
 const AppAccessRoute = AppAccessRouteImport.update({
   id: '/access',
   path: '/access',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppBricksRoute = AppBricksRouteImport.update({
-  id: '/bricks',
-  path: '/bricks',
   getParentRoute: () => AppRoute,
 } as any)
 const AppSecurityRoute = AppSecurityRouteImport.update({
@@ -228,6 +223,12 @@ const AppServerServerIdNetworkRoute =
     path: '/network',
     getParentRoute: () => AppServerServerIdRoute,
   } as any)
+const AppServerServerIdStartupRoute =
+  AppServerServerIdStartupRouteImport.update({
+    id: '/startup',
+    path: '/startup',
+    getParentRoute: () => AppServerServerIdRoute,
+  } as any)
 const AppServerServerIdFilesSplatRoute =
   AppServerServerIdFilesSplatRouteImport.update({
     id: '/$',
@@ -251,7 +252,6 @@ export interface FileRoutesByFullPath {
   '/x': typeof XRoute
   '/$': typeof AppSplatRoute
   '/access': typeof AppAccessRoute
-  '/bricks': typeof AppBricksRoute
   '/security': typeof AppSecurityRoute
   '/servers': typeof AppServersRoute
   '/settings': typeof AppSettingsRouteWithChildren
@@ -270,6 +270,7 @@ export interface FileRoutesByFullPath {
   '/server/$serverId/files': typeof AppServerServerIdFilesRouteWithChildren
   '/server/$serverId/info': typeof AppServerServerIdInfoRoute
   '/server/$serverId/network': typeof AppServerServerIdNetworkRoute
+  '/server/$serverId/startup': typeof AppServerServerIdStartupRoute
   '/server/$serverId/': typeof AppServerServerIdIndexRoute
   '/server/$serverId/files/$': typeof AppServerServerIdFilesSplatRoute
 }
@@ -289,7 +290,6 @@ export interface FileRoutesByTo {
   '/x': typeof XRoute
   '/$': typeof AppSplatRoute
   '/access': typeof AppAccessRoute
-  '/bricks': typeof AppBricksRoute
   '/security': typeof AppSecurityRoute
   '/servers': typeof AppServersRoute
   '/api/health': typeof ApiHealthRoute
@@ -306,6 +306,7 @@ export interface FileRoutesByTo {
   '/server/$serverId/files': typeof AppServerServerIdFilesRouteWithChildren
   '/server/$serverId/info': typeof AppServerServerIdInfoRoute
   '/server/$serverId/network': typeof AppServerServerIdNetworkRoute
+  '/server/$serverId/startup': typeof AppServerServerIdStartupRoute
   '/server/$serverId': typeof AppServerServerIdIndexRoute
   '/server/$serverId/files/$': typeof AppServerServerIdFilesSplatRoute
 }
@@ -327,7 +328,6 @@ export interface FileRoutesById {
   '/x': typeof XRoute
   '/_app/$': typeof AppSplatRoute
   '/_app/access': typeof AppAccessRoute
-  '/_app/bricks': typeof AppBricksRoute
   '/_app/security': typeof AppSecurityRoute
   '/_app/servers': typeof AppServersRoute
   '/_app/settings': typeof AppSettingsRouteWithChildren
@@ -346,6 +346,7 @@ export interface FileRoutesById {
   '/_app/server/$serverId/files': typeof AppServerServerIdFilesRouteWithChildren
   '/_app/server/$serverId/info': typeof AppServerServerIdInfoRoute
   '/_app/server/$serverId/network': typeof AppServerServerIdNetworkRoute
+  '/_app/server/$serverId/startup': typeof AppServerServerIdStartupRoute
   '/_app/server/$serverId/': typeof AppServerServerIdIndexRoute
   '/_app/server/$serverId/files/$': typeof AppServerServerIdFilesSplatRoute
 }
@@ -367,7 +368,6 @@ export interface FileRouteTypes {
     | '/x'
     | '/$'
     | '/access'
-    | '/bricks'
     | '/security'
     | '/servers'
     | '/settings'
@@ -386,6 +386,7 @@ export interface FileRouteTypes {
     | '/server/$serverId/files'
     | '/server/$serverId/info'
     | '/server/$serverId/network'
+    | '/server/$serverId/startup'
     | '/server/$serverId/'
     | '/server/$serverId/files/$'
   fileRoutesByTo: FileRoutesByTo
@@ -405,7 +406,6 @@ export interface FileRouteTypes {
     | '/x'
     | '/$'
     | '/access'
-    | '/bricks'
     | '/security'
     | '/servers'
     | '/api/health'
@@ -422,6 +422,7 @@ export interface FileRouteTypes {
     | '/server/$serverId/files'
     | '/server/$serverId/info'
     | '/server/$serverId/network'
+    | '/server/$serverId/startup'
     | '/server/$serverId'
     | '/server/$serverId/files/$'
   id:
@@ -442,7 +443,6 @@ export interface FileRouteTypes {
     | '/x'
     | '/_app/$'
     | '/_app/access'
-    | '/_app/bricks'
     | '/_app/security'
     | '/_app/servers'
     | '/_app/settings'
@@ -461,6 +461,7 @@ export interface FileRouteTypes {
     | '/_app/server/$serverId/files'
     | '/_app/server/$serverId/info'
     | '/_app/server/$serverId/network'
+    | '/_app/server/$serverId/startup'
     | '/_app/server/$serverId/'
     | '/_app/server/$serverId/files/$'
   fileRoutesById: FileRoutesById
@@ -600,13 +601,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppAccessRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/bricks': {
-      id: '/_app/bricks'
-      path: '/bricks'
-      fullPath: '/bricks'
-      preLoaderRoute: typeof AppBricksRouteImport
-      parentRoute: typeof AppRoute
-    }
     '/_app/security': {
       id: '/_app/security'
       path: '/security'
@@ -740,6 +734,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppServerServerIdNetworkRouteImport
       parentRoute: typeof AppServerServerIdRoute
     }
+    '/_app/server/$serverId/startup': {
+      id: '/_app/server/$serverId/startup'
+      path: '/startup'
+      fullPath: '/server/$serverId/startup'
+      preLoaderRoute: typeof AppServerServerIdStartupRouteImport
+      parentRoute: typeof AppServerServerIdRoute
+    }
     '/_app/server/$serverId/files/$': {
       id: '/_app/server/$serverId/files/$'
       path: '/$'
@@ -790,6 +791,7 @@ interface AppServerServerIdRouteChildren {
   AppServerServerIdFilesRoute: typeof AppServerServerIdFilesRouteWithChildren
   AppServerServerIdInfoRoute: typeof AppServerServerIdInfoRoute
   AppServerServerIdNetworkRoute: typeof AppServerServerIdNetworkRoute
+  AppServerServerIdStartupRoute: typeof AppServerServerIdStartupRoute
   AppServerServerIdIndexRoute: typeof AppServerServerIdIndexRoute
 }
 
@@ -799,6 +801,7 @@ const AppServerServerIdRouteChildren: AppServerServerIdRouteChildren = {
   AppServerServerIdFilesRoute: AppServerServerIdFilesRouteWithChildren,
   AppServerServerIdInfoRoute: AppServerServerIdInfoRoute,
   AppServerServerIdNetworkRoute: AppServerServerIdNetworkRoute,
+  AppServerServerIdStartupRoute: AppServerServerIdStartupRoute,
   AppServerServerIdIndexRoute: AppServerServerIdIndexRoute,
 }
 
@@ -808,7 +811,6 @@ const AppServerServerIdRouteWithChildren =
 interface AppRouteChildren {
   AppSplatRoute: typeof AppSplatRoute
   AppAccessRoute: typeof AppAccessRoute
-  AppBricksRoute: typeof AppBricksRoute
   AppSecurityRoute: typeof AppSecurityRoute
   AppServersRoute: typeof AppServersRoute
   AppSettingsRoute: typeof AppSettingsRouteWithChildren
@@ -818,7 +820,6 @@ interface AppRouteChildren {
 const AppRouteChildren: AppRouteChildren = {
   AppSplatRoute: AppSplatRoute,
   AppAccessRoute: AppAccessRoute,
-  AppBricksRoute: AppBricksRoute,
   AppSecurityRoute: AppSecurityRoute,
   AppServersRoute: AppServersRoute,
   AppSettingsRoute: AppSettingsRouteWithChildren,

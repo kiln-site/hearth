@@ -23,6 +23,11 @@ import {
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
 
+import {
+  AddServerDialogHost,
+  createAddServerDialogStore,
+} from "@/components/add-server-dialog"
+import type { AddServerDialogStore } from "@/components/add-server-dialog"
 import { ServerTypeIcon } from "@/components/server-type-icon"
 import {
   WorkspaceDataTable,
@@ -34,6 +39,7 @@ import {
 } from "@/components/workspace-data-table"
 import type { WorkspaceTableSearchStore } from "@/components/workspace-data-table"
 import {
+  brickCatalogQueryOptions,
   relayConnectionQueryOptions,
   relaySnapshotQueryOptions,
 } from "@/lib/query-options"
@@ -62,10 +68,17 @@ export const ServersPage = React.memo(function ServersPage({
   searchStore: ServerSearchStore
 }) {
   const queryClient = useQueryClient()
+  const [dialogStore] = React.useState(createAddServerDialogStore)
   const { data: relayConfigured } = useSuspenseQuery({
     ...relayConnectionQueryOptions(queryClient),
     select: selectRelayConfigured,
   })
+
+  React.useEffect(() => {
+    if (canProvision) {
+      void queryClient.prefetchQuery(brickCatalogQueryOptions())
+    }
+  }, [canProvision, queryClient])
 
   return (
     <div className="mx-auto w-full max-w-[90rem] px-3 py-3 pb-10 sm:px-5 sm:py-5">
@@ -75,25 +88,30 @@ export const ServersPage = React.memo(function ServersPage({
       >
         <ServerToolbar
           canProvision={canProvision}
+          dialogStore={dialogStore}
           relayConfigured={relayConfigured}
           searchStore={searchStore}
         />
         <FilteredServerTableBoundary
           canProvision={canProvision}
+          dialogStore={dialogStore}
           relayConfigured={relayConfigured}
           searchStore={searchStore}
         />
       </section>
+      {canProvision ? <AddServerDialogHost store={dialogStore} /> : null}
     </div>
   )
 })
 
 const ServerToolbar = React.memo(function ServerToolbar({
   canProvision,
+  dialogStore,
   relayConfigured,
   searchStore,
 }: {
   canProvision: boolean
+  dialogStore: AddServerDialogStore
   relayConfigured: boolean
   searchStore: ServerSearchStore
 }) {
@@ -156,7 +174,7 @@ const ServerToolbar = React.memo(function ServerToolbar({
         className={`${mobileSearchOpen ? "hidden sm:flex" : "flex"} ml-auto shrink-0 items-center gap-2`}
       >
         <ActivityButton />
-        <AddServerButton canProvision={canProvision} />
+        <AddServerButton canProvision={canProvision} dialogStore={dialogStore} />
       </div>
     </div>
   )
@@ -310,15 +328,15 @@ const ActivityButton = React.memo(function ActivityButton() {
 
 const AddServerButton = React.memo(function AddServerButton({
   canProvision,
+  dialogStore,
 }: {
   canProvision: boolean
+  dialogStore: AddServerDialogStore
 }) {
   if (canProvision) {
     return (
-      <Button asChild>
-        <Link to="/bricks" preload="intent">
-          <Plus /> Add Server
-        </Link>
+      <Button type="button" onClick={dialogStore.open}>
+        <Plus /> Add Server
       </Button>
     )
   }
@@ -339,10 +357,12 @@ const AddServerButton = React.memo(function AddServerButton({
 const ServerTableSearchBoundary = React.memo(
   function ServerTableSearchBoundary({
     canProvision,
+    dialogStore,
     searchStore,
     servers,
   }: {
     canProvision: boolean
+    dialogStore: AddServerDialogStore
     searchStore: ServerSearchStore
     servers: Array<ServerListInstance>
   }) {
@@ -371,10 +391,11 @@ const ServerTableSearchBoundary = React.memo(
       (searchActive: boolean) => (
         <EmptyServerTable
           canProvision={canProvision}
+          dialogStore={dialogStore}
           searchActive={searchActive}
         />
       ),
-      [canProvision]
+      [canProvision, dialogStore]
     )
 
     return (
@@ -394,10 +415,12 @@ const ServerTableSearchBoundary = React.memo(
 const FilteredServerTableBoundary = React.memo(
   function FilteredServerTableBoundary({
     canProvision,
+    dialogStore,
     relayConfigured,
     searchStore,
   }: {
     canProvision: boolean
+    dialogStore: AddServerDialogStore
     relayConfigured: boolean
     searchStore: ServerSearchStore
   }) {
@@ -410,6 +433,7 @@ const FilteredServerTableBoundary = React.memo(
     return (
       <ServerTableSearchBoundary
         canProvision={canProvision}
+        dialogStore={dialogStore}
         searchStore={searchStore}
         servers={servers}
       />
@@ -585,9 +609,11 @@ function ServerStatus({ server }: { server: ServerListInstance }) {
 
 function EmptyServerTable({
   canProvision,
+  dialogStore,
   searchActive,
 }: {
   canProvision: boolean
+  dialogStore: AddServerDialogStore
   searchActive: boolean
 }) {
   return (
@@ -600,14 +626,17 @@ function EmptyServerTable({
         {searchActive
           ? "Try a server name, short ID, Relay, address, game, implementation, or version."
           : canProvision
-            ? "Open Bricks to provision the first game server managed by Hearth."
+            ? "Provision the first game server managed by Hearth."
             : "No server instances have been assigned to your account yet."}
       </p>
       {!searchActive && canProvision ? (
-        <Button asChild size="sm" className="mt-4">
-          <Link to="/bricks" preload="intent">
-            <Plus /> Add Server
-          </Link>
+        <Button
+          type="button"
+          size="sm"
+          className="mt-4"
+          onClick={dialogStore.open}
+        >
+          <Plus /> Add Server
         </Button>
       ) : null}
     </div>

@@ -170,7 +170,6 @@ function RouteEmptyState() {
 }
 
 function routeLabel(section: Exclude<GlobalSection, null>) {
-  if (section === "bricks") return "Infrastructure / Bricks"
   if (section === "servers") return "Infrastructure / Servers"
   if (section === "access") return "Administration / Access"
   if (section === "security") return "Account / Security"

@@ -5,7 +5,6 @@ import {
   useSuspenseQuery,
 } from "@tanstack/react-query"
 import {
-  Boxes,
   ChevronsUpDown,
   CircleHelp,
   Folder,
@@ -13,6 +12,7 @@ import {
   LoaderCircle,
   LogOut,
   Network,
+  Rocket,
   Server as ServerIcon,
   Settings,
   SlidersHorizontal,
@@ -75,7 +75,7 @@ import {
 } from "@/lib/ui-preference-cookies"
 import { warmFileWorkspaceModule } from "@/lib/workspace-module-preloads"
 
-export type InstanceTab = "console" | "files" | "info" | "network"
+export type InstanceTab = "console" | "files" | "info" | "network" | "startup"
 
 const instanceItems: Array<{
   title: string
@@ -84,6 +84,7 @@ const instanceItems: Array<{
 }> = [
   { title: "Console", value: "console", icon: TerminalSquare },
   { title: "Files", value: "files", icon: Folder },
+  { title: "Startup", value: "startup", icon: Rocket },
   { title: "Network", value: "network", icon: Network },
   { title: "Info", value: "info", icon: SlidersHorizontal },
 ]
@@ -169,10 +170,7 @@ const AppSidebarView = React.memo(function AppSidebarView({
       </SidebarHeader>
 
       <SidebarContent>
-        <InfrastructureNavigation
-          isPlatformAdmin={isPlatformAdmin}
-          relayConfigured={relayConfigured}
-        />
+        <InfrastructureNavigation relayConfigured={relayConfigured} />
 
         <SidebarInstanceNavigation
           initialSelectedInstanceRouteId={initialSelectedInstanceRouteId}
@@ -190,10 +188,8 @@ const AppSidebarView = React.memo(function AppSidebarView({
 })
 
 function InfrastructureNavigation({
-  isPlatformAdmin,
   relayConfigured,
 }: {
-  isPlatformAdmin: boolean
   relayConfigured: boolean
 }) {
   return (
@@ -204,10 +200,6 @@ function InfrastructureNavigation({
       <SidebarGroupContent>
         <SidebarMenu>
           <ServersNavigationItem relayConfigured={relayConfigured} />
-          <BricksNavigationItem
-            isPlatformAdmin={isPlatformAdmin}
-            relayConfigured={relayConfigured}
-          />
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
@@ -235,49 +227,6 @@ function ServersNavigationItem({
           <ServerIcon />
           <span>Servers</span>
         </Link>
-      </SidebarMenuButton>
-      <SidebarMenuBadge className="text-sidebar-foreground/25">
-        <InfrastructureInstanceCount relayConfigured={relayConfigured} />
-      </SidebarMenuBadge>
-    </SidebarMenuItem>
-  )
-}
-
-function BricksNavigationItem({
-  isPlatformAdmin,
-  relayConfigured,
-}: {
-  isPlatformAdmin: boolean
-  relayConfigured: boolean
-}) {
-  const navigate = useNavigate()
-  const isActive = useRouterState({
-    select: (state) =>
-      globalSectionFromRouteId(state.matches.at(-1)?.routeId) === "bricks",
-  })
-  return (
-    <SidebarMenuItem>
-      <SidebarMenuButton
-        tooltip={
-          isPlatformAdmin
-            ? "Bricks"
-            : "Brick provisioning is administrator-only"
-        }
-        type="button"
-        isActive={isActive}
-        aria-disabled={!isPlatformAdmin}
-        tabIndex={isPlatformAdmin ? 0 : -1}
-        className={
-          isPlatformAdmin
-            ? "data-active:bg-primary/10 data-active:text-primary"
-            : "text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
-        }
-        onClick={() => {
-          if (isPlatformAdmin) void navigate({ to: "/bricks" })
-        }}
-      >
-        <Boxes />
-        <span>Bricks</span>
       </SidebarMenuButton>
       <SidebarMenuBadge className="text-sidebar-foreground/25">
         <InfrastructureInstanceCount relayConfigured={relayConfigured} />
@@ -388,6 +337,13 @@ const InstanceNavigation = React.memo(function InstanceNavigation({
         return navigate({
           to: "/server/$serverId/files/$",
           params: { serverId: nextServerId, _splat: "" },
+          replace,
+        })
+      }
+      if (tab === "startup") {
+        return navigate({
+          to: "/server/$serverId/startup",
+          params: { serverId: nextServerId },
           replace,
         })
       }
@@ -678,6 +634,16 @@ const InstanceTabNavigationItem = React.memo(
             >
               {content}
             </Link>
+          ) : item.value === "startup" ? (
+            <Link
+              to="/server/$serverId/startup"
+              params={{ serverId: instanceRouteId }}
+              activeOptions={{ exact: true }}
+              activeProps={{ "data-active": true }}
+              preload="intent"
+            >
+              {content}
+            </Link>
           ) : (
             <Link
               to="/server/$serverId/info"
@@ -871,7 +837,6 @@ function statusBorderTone(state: SidebarInstance["observedState"]): string {
 }
 
 function globalSectionFromPathname(pathname: string): GlobalSection {
-  if (pathname === "/bricks") return "bricks"
   if (pathname === "/servers") return "servers"
   if (pathname === "/access") return "access"
   if (pathname === "/security") return "security"
@@ -884,6 +849,7 @@ function globalSectionFromPathname(pathname: string): GlobalSection {
 function instanceTabFromPathname(pathname: string): InstanceTab | null {
   if (globalSectionFromPathname(pathname)) return null
   if (/^\/server\/[^/]+\/files(?:\/|$)/.test(pathname)) return "files"
+  if (/^\/server\/[^/]+\/startup\/?$/.test(pathname)) return "startup"
   if (/^\/server\/[^/]+\/network\/?$/.test(pathname)) return "network"
   if (/^\/server\/[^/]+\/info\/?$/.test(pathname)) return "info"
   if (/^\/server\/[^/]+\/console\/?$/.test(pathname)) return "console"
