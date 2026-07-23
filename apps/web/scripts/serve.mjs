@@ -33,6 +33,7 @@ const server = serve({
   hostname: process.env.HOST || "0.0.0.0",
   middleware: [
     logUnlessSuccessfulQuietRequest,
+    cacheImmutableAssets,
     serveStatic({
       dir: fileURLToPath(new URL("../dist/client", import.meta.url)),
     }),
@@ -74,6 +75,19 @@ function shutdown(signal) {
     })
   )
   void Effect.runPromise(exitCode).then((code) => process.exit(code))
+}
+
+async function cacheImmutableAssets(request, next) {
+  const pathname = new URL(request.url).pathname
+  const response = await next()
+  if (
+    response.ok &&
+    (request.method === "GET" || request.method === "HEAD") &&
+    pathname.startsWith("/assets/")
+  ) {
+    response.headers.set("Cache-Control", "public, max-age=31536000, immutable")
+  }
+  return response
 }
 
 async function logUnlessSuccessfulQuietRequest(request, next) {

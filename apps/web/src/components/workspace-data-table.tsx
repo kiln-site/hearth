@@ -1,0 +1,210 @@
+import * as React from "react"
+
+export interface WorkspaceTableSearchStore {
+  getNormalizedServerSnapshot: () => string
+  getNormalizedSnapshot: () => string
+  getServerSnapshot: () => string
+  getSnapshot: () => string
+  set: (value: string) => void
+  subscribe: (listener: () => void) => () => void
+}
+
+interface WorkspaceDataTableProps<T> {
+  getRowKey: (item: T) => React.Key
+  getSearchText: (item: T) => string
+  head: React.ReactNode
+  items: Array<T>
+  renderEmpty: (searchActive: boolean) => React.ReactNode
+  renderRow: (item: T) => React.ReactNode
+  searchStore: WorkspaceTableSearchStore
+}
+
+interface SearchableItem<T> {
+  item: T
+  searchText: string
+}
+
+export function createWorkspaceTableSearchStore(
+  initialValue = ""
+): WorkspaceTableSearchStore {
+  let value = initialValue
+  let normalizedValue = normalizeSearch(initialValue)
+  const serverValue = initialValue
+  const normalizedServerValue = normalizedValue
+  const listeners = new Set<() => void>()
+
+  return {
+    getNormalizedServerSnapshot: () => normalizedServerValue,
+    getNormalizedSnapshot: () => normalizedValue,
+    getServerSnapshot: () => serverValue,
+    getSnapshot: () => value,
+    set: (nextValue) => {
+      if (nextValue === value) return
+      value = nextValue
+      normalizedValue = normalizeSearch(nextValue)
+      for (const listener of listeners) listener()
+    },
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+  }
+}
+
+export function useWorkspaceTableSearchInput(
+  inputRef: React.RefObject<HTMLInputElement | null>,
+  store: WorkspaceTableSearchStore
+) {
+  React.useLayoutEffect(
+    () =>
+      store.subscribe(() => {
+        const input = inputRef.current
+        const search = store.getSnapshot()
+        if (input && input.value !== search) input.value = search
+      }),
+    [inputRef, store]
+  )
+}
+
+export function WorkspaceDataTable<T>({
+  getRowKey,
+  getSearchText,
+  head,
+  items,
+  renderEmpty,
+  renderRow,
+  searchStore,
+}: WorkspaceDataTableProps<T>) {
+  const searchableItems = React.useMemo(
+    () =>
+      items.map((item) => ({
+        item,
+        searchText: getSearchText(item).toLowerCase(),
+      })),
+    [getSearchText, items]
+  )
+  const getHasMatchesSnapshot = React.useCallback(
+    () => hasMatchingItem(searchableItems, searchStore.getNormalizedSnapshot()),
+    [searchStore, searchableItems]
+  )
+  const getHasMatchesServerSnapshot = React.useCallback(
+    () =>
+      hasMatchingItem(
+        searchableItems,
+        searchStore.getNormalizedServerSnapshot()
+      ),
+    [searchStore, searchableItems]
+  )
+  const hasMatches = React.useSyncExternalStore(
+    searchStore.subscribe,
+    getHasMatchesSnapshot,
+    getHasMatchesServerSnapshot
+  )
+
+  if (!hasMatches) {
+    return renderEmpty(searchStore.getNormalizedSnapshot().length > 0)
+  }
+
+  return (
+    <div className="min-w-0 overflow-hidden">
+      <table className="w-full table-fixed border-collapse text-left">
+        {head}
+        <tbody className="divide-y divide-border/70">
+          {searchableItems.map(({ item, searchText }) => (
+            <SearchableWorkspaceTableRow
+              key={getRowKey(item)}
+              item={item}
+              renderRow={renderRow}
+              searchStore={searchStore}
+              searchText={searchText}
+            />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function SearchableWorkspaceTableRow<T>({
+  item,
+  renderRow,
+  searchStore,
+  searchText,
+}: {
+  item: T
+  renderRow: (item: T) => React.ReactNode
+  searchStore: WorkspaceTableSearchStore
+  searchText: string
+}) {
+  const getMatchesSnapshot = React.useCallback(
+    () => matchesSearch(searchText, searchStore.getNormalizedSnapshot()),
+    [searchStore, searchText]
+  )
+  const getMatchesServerSnapshot = React.useCallback(
+    () => matchesSearch(searchText, searchStore.getNormalizedServerSnapshot()),
+    [searchStore, searchText]
+  )
+  const matches = React.useSyncExternalStore(
+    searchStore.subscribe,
+    getMatchesSnapshot,
+    getMatchesServerSnapshot
+  )
+
+  if (!matches) return null
+  return renderRow(item)
+}
+
+export const WorkspaceTableHead = React.memo(function WorkspaceTableHead({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <thead>
+      <tr className="border-b bg-muted/20 font-mono text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
+        {children}
+      </tr>
+    </thead>
+  )
+})
+
+export function WorkspaceTableHeading({
+  className = "",
+  children,
+}: {
+  className?: string
+  children: React.ReactNode
+}) {
+  return (
+    <th
+      className={`h-10 px-3 text-left font-medium whitespace-nowrap ${className}`}
+    >
+      {children}
+    </th>
+  )
+}
+
+export function WorkspaceTableCell({
+  className = "",
+  children,
+}: {
+  className?: string
+  children: React.ReactNode
+}) {
+  return <td className={`h-14 px-3 align-middle ${className}`}>{children}</td>
+}
+
+function normalizeSearch(search: string): string {
+  return search.trim().toLowerCase()
+}
+
+function matchesSearch(searchText: string, normalizedSearch: string): boolean {
+  return normalizedSearch.length === 0 || searchText.includes(normalizedSearch)
+}
+
+function hasMatchingItem<T>(
+  items: Array<SearchableItem<T>>,
+  normalizedSearch: string
+): boolean {
+  return items.some((item) => matchesSearch(item.searchText, normalizedSearch))
+}

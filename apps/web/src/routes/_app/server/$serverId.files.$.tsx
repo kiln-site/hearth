@@ -1,3 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router"
 
-export const Route = createFileRoute("/_app/server/$serverId/files/$")({})
+export const Route = createFileRoute("/_app/server/$serverId/files/$")({
+  pendingMinMs: 0,
+})

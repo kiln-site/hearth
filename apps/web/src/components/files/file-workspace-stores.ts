@@ -18,15 +18,20 @@ export interface FileEditorPreferencesStore {
 }
 
 export interface EditorSessionStore {
+  getDiskConflictSnapshot: () => boolean
   getDirtySnapshot: () => boolean
+  getExpectedModifiedAt: () => string
   getReviewChangesSnapshot: () => boolean
   getSavedValueSnapshot: () => string
   getSaveErrorSnapshot: () => string | null
   getSavingSnapshot: () => boolean
   getSearchOpenSnapshot: () => boolean
   getValue: () => string
+  getValueSnapshot: () => string
   getWrapLinesSnapshot: () => boolean
-  markSaved: (value: string) => void
+  markSaved: (value: string, modifiedAt: string) => void
+  reconcileDiskRevision: (value: string, modifiedAt: string) => void
+  reloadFromDisk: (value: string, modifiedAt: string) => void
   setSaveError: (error: string | null) => void
   setSaving: (saving: boolean) => void
   setSearchOpen: (open: boolean) => void
@@ -172,10 +177,13 @@ export function createFileEditorPreferencesStore(): FileEditorPreferencesStore {
 }
 
 export function createEditorSessionStore(
-  initialValue: string
+  initialValue: string,
+  initialModifiedAt: string
 ): EditorSessionStore {
   let value = initialValue
   let savedValue = initialValue
+  let expectedModifiedAt = initialModifiedAt
+  let diskConflict = false
   let dirty = false
   let saving = false
   let saveError: string | null = null
@@ -186,20 +194,47 @@ export function createEditorSessionStore(
   const notify = () => {
     for (const listener of listeners) listener()
   }
+  const reloadFromDisk = (nextValue: string, nextModifiedAt: string) => {
+    value = nextValue
+    savedValue = nextValue
+    expectedModifiedAt = nextModifiedAt
+    diskConflict = false
+    dirty = false
+    saveError = null
+    notify()
+  }
   return {
+    getDiskConflictSnapshot: () => diskConflict,
     getDirtySnapshot: () => dirty,
+    getExpectedModifiedAt: () => expectedModifiedAt,
     getReviewChangesSnapshot: () => reviewChanges,
     getSavedValueSnapshot: () => savedValue,
     getSaveErrorSnapshot: () => saveError,
     getSavingSnapshot: () => saving,
     getSearchOpenSnapshot: () => searchOpen,
     getValue: () => value,
+    getValueSnapshot: () => value,
     getWrapLinesSnapshot: () => wrapLines,
-    markSaved: (nextSavedValue) => {
+    markSaved: (nextSavedValue, nextModifiedAt) => {
       savedValue = nextSavedValue
+      expectedModifiedAt = nextModifiedAt
+      diskConflict = false
       dirty = value !== savedValue
       notify()
     },
+    reconcileDiskRevision: (nextValue, nextModifiedAt) => {
+      if (Date.parse(nextModifiedAt) <= Date.parse(expectedModifiedAt)) {
+        return
+      }
+      if (dirty) {
+        if (diskConflict) return
+        diskConflict = true
+        notify()
+        return
+      }
+      reloadFromDisk(nextValue, nextModifiedAt)
+    },
+    reloadFromDisk,
     setSaveError: (nextError) => {
       if (saveError === nextError) return
       saveError = nextError
@@ -216,9 +251,9 @@ export function createEditorSessionStore(
       notify()
     },
     setValue: (nextValue) => {
+      if (value === nextValue) return
       value = nextValue
       const nextDirty = value !== savedValue
-      if (dirty === nextDirty) return
       dirty = nextDirty
       notify()
     },

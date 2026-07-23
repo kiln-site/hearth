@@ -1,17 +1,19 @@
 import { Outlet, createFileRoute, redirect } from "@tanstack/react-router"
 
 import { AppNotFoundPage } from "@/components/app-error-page"
-import { getAuthState } from "@/server/auth"
 import {
   accessCapabilitiesQueryOptions,
+  authStateQueryOptions,
   relayConnectionQueryOptions,
   uiPreferencesQueryOptions,
 } from "@/lib/query-options"
 
 export const Route = createFileRoute("/_app")({
   staleTime: Infinity,
-  beforeLoad: async ({ location }) => {
-    const { user } = await getAuthState()
+  beforeLoad: async ({ context, location }) => {
+    const { user } = await context.queryClient.ensureQueryData(
+      authStateQueryOptions()
+    )
     if (!user) {
       throw redirect({
         to: "/",

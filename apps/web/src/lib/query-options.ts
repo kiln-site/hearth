@@ -17,6 +17,7 @@ import {
   getRelayTree,
 } from "@/server/relay"
 import { getRelays } from "@/server/relays"
+import { getAuthState } from "@/server/auth"
 import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 
 export type RelayConnection = Awaited<
@@ -28,6 +29,9 @@ const disconnectedRelayPollDelayMs = 15_000
 const relayPollHeaders = { "x-kiln-request-purpose": "relay-poll" }
 
 export const queryKeys = {
+  auth: {
+    state: ["auth", "state"] as const,
+  },
   access: {
     capabilities: ["access", "capabilities"] as const,
     invitation: (token: string) => ["access", "invitation", token] as const,
@@ -73,6 +77,14 @@ export function replaceRelaySnapshotInstance(
         ),
       }
     : snapshot
+}
+
+export function authStateQueryOptions() {
+  return queryOptions({
+    queryKey: queryKeys.auth.state,
+    queryFn: () => getAuthState(),
+    staleTime: 30_000,
+  })
 }
 
 export function relayConnectionQueryOptions(queryClient: QueryClient) {

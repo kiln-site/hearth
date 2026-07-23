@@ -19,13 +19,25 @@ export type SidebarInstance = Pick<
   routeId: string
 }
 
-export type SidebarInstanceRoute = Pick<
-  SidebarInstance,
-  "id" | "name" | "routeId" | "shortId"
->
-
 export type RouteInstance = SidebarInstance & {
   relayStatus: "connected" | "unreachable"
+}
+
+export type ServerListInstance = Pick<
+  RelayInstance,
+  | "connectAddress"
+  | "game"
+  | "id"
+  | "implementation"
+  | "name"
+  | "observedState"
+  | "shortId"
+  | "version"
+> & {
+  relayId: string
+  relayName: string
+  relayStatus: "connected" | "unreachable"
+  routeId: string
 }
 
 export type InstanceWorkspaceInstance = Pick<
@@ -96,23 +108,31 @@ export function selectSidebarInstanceCount(
   return snapshot.instances.length
 }
 
-export function selectSidebarInstanceRoutes(
-  snapshot: RelayFleetSnapshot
-): Array<SidebarInstanceRoute> {
-  return snapshot.instances.map(({ id, name, routeId, shortId }) => ({
-    id,
-    name,
-    routeId,
-    shortId,
-  }))
-}
-
 export function selectRouteInstances(
   snapshot: RelayFleetSnapshot
 ): Array<RouteInstance> {
   return snapshot.instances.map((instance) => ({
     ...sidebarInstance(instance),
     relayStatus: instance.relayStatus,
+  }))
+}
+
+export function selectServerListInstances(
+  snapshot: RelayFleetSnapshot
+): Array<ServerListInstance> {
+  return snapshot.instances.map((instance) => ({
+    connectAddress: instance.connectAddress,
+    game: instance.game,
+    id: instance.id,
+    implementation: instance.implementation,
+    name: instance.name,
+    observedState: instance.observedState,
+    relayId: instance.relayId,
+    relayName: instance.relayName,
+    relayStatus: instance.relayStatus,
+    routeId: instance.routeId,
+    shortId: instance.shortId,
+    version: instance.version,
   }))
 }
 
@@ -246,12 +266,80 @@ export function selectInstanceObservedState(
 export function findRelayInstance<
   T extends { id: string; name: string; routeId?: string; shortId: string },
 >(instances: Array<T>, identifier: string | null | undefined): T | undefined {
-  if (!identifier) return undefined
-  return instances.find(
-    (instance) =>
-      instance.routeId === identifier ||
-      instance.shortId === identifier ||
-      instance.id === identifier ||
-      instance.name === identifier
+  const resolution = resolveRelayInstance(instances, identifier)
+  return resolution.status === "found" ? resolution.instance : undefined
+}
+
+export type RelayInstanceResolution<T> =
+  | { status: "ambiguous" }
+  | { status: "found"; instance: T }
+  | { status: "not-found" }
+
+export function resolveRelayInstance<
+  T extends { id: string; name: string; routeId?: string; shortId: string },
+>(
+  instances: Array<T>,
+  identifier: string | null | undefined
+): RelayInstanceResolution<T> {
+  if (!identifier) return { status: "not-found" }
+  if (/^[a-f0-9]{8}$/u.test(identifier)) {
+    return resolveRelayInstanceMatches(
+      instances.filter((instance) => instance.shortId === identifier)
+    )
+  }
+
+  const routeIdMatches = instances.filter(
+    (instance) => instance.routeId === identifier
   )
+  if (routeIdMatches.length > 0) {
+    return resolveRelayInstanceMatches(routeIdMatches)
+  }
+
+  const idMatches = instances.filter((instance) => instance.id === identifier)
+  if (idMatches.length > 0) return resolveRelayInstanceMatches(idMatches)
+
+  return resolveRelayInstanceMatches(
+    instances.filter((instance) => instance.name === identifier)
+  )
+}
+
+export function resolveCanonicalRelayInstance<
+  T extends { id: string; name: string; routeId?: string; shortId: string },
+>(
+  instances: Array<T>,
+  identifier: string | null | undefined
+): RelayInstanceResolution<T> {
+  const resolution = resolveRelayInstance(instances, identifier)
+  if (resolution.status !== "found") return resolution
+
+  const canonicalResolution = resolveRelayInstance(
+    instances,
+    resolution.instance.shortId
+  )
+  return canonicalResolution.status === "found"
+    ? resolution
+    : canonicalResolution
+}
+
+export function findFirstCanonicalRelayInstance<T extends { shortId: string }>(
+  instances: Array<T>
+): T | undefined {
+  const shortIdCounts = new Map<string, number>()
+  for (const instance of instances) {
+    shortIdCounts.set(
+      instance.shortId,
+      (shortIdCounts.get(instance.shortId) ?? 0) + 1
+    )
+  }
+  return instances.find((instance) => shortIdCounts.get(instance.shortId) === 1)
+}
+
+function resolveRelayInstanceMatches<T>(
+  matches: Array<T>
+): RelayInstanceResolution<T> {
+  if (matches.length === 0) return { status: "not-found" }
+  const instance = matches[0]
+  return matches.length === 1 && instance
+    ? { status: "found", instance }
+    : { status: "ambiguous" }
 }

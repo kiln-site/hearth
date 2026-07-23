@@ -4,8 +4,13 @@ import { z } from "zod"
 import { AuthPage } from "@/components/auth-page"
 import { pageTitle } from "@/lib/page-title"
 import { relayConnectionQueryOptions } from "@/lib/query-options"
+import {
+  resolveCanonicalRelayInstance,
+  resolveRelayInstance,
+} from "@/lib/relay-selectors"
 import { getInvitationPreview } from "@/server/access"
 import { getAuthState } from "@/server/auth"
+import { getUiPreferences } from "@/server/preferences"
 
 export const Route = createFileRoute("/")({
   validateSearch: z.object({
@@ -40,9 +45,12 @@ export const Route = createFileRoute("/")({
     if (search.redirect?.startsWith("/")) {
       throw redirect({ href: search.redirect })
     }
-    const connection = await context.queryClient.ensureQueryData(
-      relayConnectionQueryOptions(context.queryClient)
-    )
+    const [connection, uiPreferences] = await Promise.all([
+      context.queryClient.ensureQueryData(
+        relayConnectionQueryOptions(context.queryClient)
+      ),
+      getUiPreferences(),
+    ])
     if (connection.status !== "connected") {
       if (state.user.isDevelopmentBypass || state.user.role === "admin") {
         throw redirect({ to: "/settings" })
@@ -52,10 +60,36 @@ export const Route = createFileRoute("/")({
         params: { serverId: "unavailable" },
       })
     }
+    const instances = connection.snapshot.instances
+    const rememberedResolution = resolveCanonicalRelayInstance(
+      instances,
+      uiPreferences.selectedInstanceRouteId
+    )
+    const rememberedAliasResolution = resolveRelayInstance(
+      instances,
+      uiPreferences.selectedInstanceRouteId
+    )
+    const rememberedInstance =
+      rememberedResolution.status === "found"
+        ? rememberedResolution.instance
+        : null
+    if (!rememberedInstance) {
+      const collisionSearch =
+        rememberedResolution.status === "ambiguous"
+          ? rememberedAliasResolution.status === "found"
+            ? rememberedAliasResolution.instance.shortId
+            : uiPreferences.selectedInstanceRouteId
+          : null
+      throw redirect({
+        href: collisionSearch
+          ? `/servers?search=${encodeURIComponent(collisionSearch)}`
+          : "/servers",
+      })
+    }
     throw redirect({
       to: "/server/$serverId/console",
       params: {
-        serverId: connection.snapshot.instances.at(0)?.routeId ?? "unavailable",
+        serverId: rememberedInstance.shortId,
       },
     })
   },

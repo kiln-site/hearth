@@ -13,6 +13,14 @@ import {
   useInstanceRelayConnected,
 } from "@/components/instance-workspace-context"
 import { pageTitle } from "@/lib/page-title"
+import {
+  relayConnectionQueryOptions,
+  relayFileActivityQueryOptions,
+  relaySnapshotQueryOptions,
+  relayTreeQueryOptions,
+} from "@/lib/query-options"
+import { findRelayInstance } from "@/lib/relay-selectors"
+import { warmSyntaxCodeEditorModule } from "@/lib/syntax-editor-module-preload"
 import { loadFileWorkspaceModule } from "@/lib/workspace-module-preloads"
 
 const FileWorkspace = React.lazy(async () => {
@@ -21,8 +29,32 @@ const FileWorkspace = React.lazy(async () => {
 })
 
 export const Route = createFileRoute("/_app/server/$serverId/files")({
-  component: FilesRoute,
+  loader: async ({ context, params }) => {
+    if (params.serverId === "unavailable") return
+
+    const connection = await context.queryClient.ensureQueryData(
+      relayConnectionQueryOptions(context.queryClient)
+    )
+    const snapshot =
+      connection.status === "connected"
+        ? connection.snapshot
+        : await context.queryClient.ensureQueryData(relaySnapshotQueryOptions())
+    const instance = findRelayInstance(snapshot.instances, params.serverId)
+    if (!instance) return
+
+    // Start data work with the route chunk without holding the transition open.
+    // FileWorkspace observes these same query keys and reuses the in-flight work.
+    void Promise.all([
+      context.queryClient.prefetchQuery(
+        relayTreeQueryOptions(instance.relayId, instance.id)
+      ),
+      context.queryClient.prefetchQuery(
+        relayFileActivityQueryOptions(instance.relayId, instance.id)
+      ),
+    ])
+  },
   head: () => ({ meta: [{ title: pageTitle("Files") }] }),
+  component: FilesRoute,
   pendingMinMs: 0,
 })
 
@@ -32,6 +64,11 @@ function FilesRoute() {
     shouldThrow: false,
     select: (match) => match.params._splat,
   })
+
+  React.useLayoutEffect(() => {
+    if (filePath) warmSyntaxCodeEditorModule()
+  }, [filePath])
+
   const fileTreePreferences = useFileTreePreferences()
   const instance = useInstanceIdentity()
   const permissions = useInstancePermissions()

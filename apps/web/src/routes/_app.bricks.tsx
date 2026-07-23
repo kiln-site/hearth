@@ -2,13 +2,11 @@ import { createFileRoute, redirect } from "@tanstack/react-router"
 
 import { BricksPage } from "@/components/bricks-page"
 import { pageTitle } from "@/lib/page-title"
-import { getAuthState } from "@/server/auth"
 import { brickStudioQueryOptions } from "@/lib/query-options"
 
 export const Route = createFileRoute("/_app/bricks")({
-  beforeLoad: async () => {
-    const { user } = await getAuthState()
-    if (!user?.isDevelopmentBypass && user?.role !== "admin") {
+  beforeLoad: ({ context }) => {
+    if (!context.user.isDevelopmentBypass && context.user.role !== "admin") {
       throw redirect({ to: "/" })
     }
   },

@@ -1,7 +1,8 @@
 import { cn } from "@workspace/ui/lib/utils"
 
+import { footerSocialLinkIds, socialLinks } from "@/lib/social-links"
+
 const repositoryUrl = "https://github.com/kiln-site/hearth"
-const siteUrl = "https://kiln.site"
 
 export function PanelFooter({ className }: { className?: string }) {
   const commit = import.meta.env.VITE_KILN_BUILD_SHA.trim()
@@ -52,18 +53,18 @@ export function PanelFooter({ className }: { className?: string }) {
           title="QuartzDev"
           src="/branding/quartzdev-black.svg"
         />
-        <FooterBrandLink
-          href={`${siteUrl}/discord`}
-          label="Kiln on Discord"
-          title="Discord"
-          src="/icons/discord.svg"
-        />
-        <FooterBrandLink
-          href={`${siteUrl}/github`}
-          label="Kiln on GitHub"
-          title="GitHub"
-          src="/icons/github.svg"
-        />
+        {footerSocialLinkIds.map((id) => {
+          const link = socialLinks[id]
+          return (
+            <FooterBrandLink
+              key={id}
+              href={link.href}
+              label={link.label}
+              title={link.title}
+              src={link.icon}
+            />
+          )
+        })}
       </div>
     </footer>
   )

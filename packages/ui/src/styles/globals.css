@@ -170,7 +170,11 @@
   border-left-color: var(--kiln-toast-accent);
   border-left-width: 3px;
   border-radius: 0;
-  background: color-mix(in oklab, var(--popover) 90%, transparent);
+  background-color: color-mix(in oklab, var(--popover) 90%, transparent);
+  background-image: linear-gradient(var(--border), var(--border));
+  background-position: calc(100% - 2.875rem) 0.5rem;
+  background-repeat: no-repeat;
+  background-size: 1px calc(100% - 1rem);
   backdrop-filter: blur(6px);
   color: var(--popover-foreground);
   box-shadow:
@@ -201,15 +205,6 @@
 .kiln-toaster[data-sonner-toaster]
   [data-sonner-toast][data-styled="true"][data-type="loading"] {
   --kiln-toast-accent: var(--primary);
-}
-
-.kiln-toaster[data-sonner-toaster]
-  [data-sonner-toast][data-styled="true"]::before {
-  position: absolute;
-  inset: 0.5rem 2.875rem 0.5rem auto;
-  width: 1px;
-  background: var(--border);
-  content: "";
 }
 
 .kiln-toaster[data-sonner-toaster]

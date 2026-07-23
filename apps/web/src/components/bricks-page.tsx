@@ -30,7 +30,6 @@ import { Input } from "@workspace/ui/components/input"
 
 import { ServerTypeIcon } from "@/components/server-type-icon"
 import { updateBrickVariable } from "@/lib/brick-variables"
-import { relayInstanceRouteId } from "@/lib/relay-fleet"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import {
   brickStudioQueryOptions,
@@ -94,7 +93,7 @@ function BrickStudio({ studio }: { studio: Studio }) {
   const queryClient = useQueryClient()
   const createInstanceMutation = useMutation({
     mutationFn: createBrickInstance,
-    onSuccess: async (instance, variables) => {
+    onSuccess: async (instance) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.bricks }),
         queryClient.invalidateQueries({
@@ -104,12 +103,7 @@ function BrickStudio({ studio }: { studio: Studio }) {
       ])
       await navigate({
         to: "/server/$serverId/console",
-        params: {
-          serverId: relayInstanceRouteId(
-            variables.data.relayId,
-            instance.shortId
-          ),
-        },
+        params: { serverId: instance.shortId },
       })
     },
   })
@@ -282,10 +276,7 @@ function BrickStudio({ studio }: { studio: Studio }) {
               onSelect={chooseBrick}
             />
 
-            <RelayInstanceList
-              instances={studio.instances}
-              relayId={studio.relayId}
-            />
+            <RelayInstanceList instances={studio.instances} />
           </div>
 
           <aside className="space-y-4 xl:sticky xl:top-24 xl:self-start">
@@ -486,13 +477,7 @@ function BrickPicker({
   )
 }
 
-function RelayInstanceList({
-  instances,
-  relayId,
-}: {
-  instances: Array<RelayInstance>
-  relayId: string | null
-}) {
+function RelayInstanceList({ instances }: { instances: Array<RelayInstance> }) {
   return (
     <section className="mt-8 overflow-hidden rounded-2xl border border-border/75 bg-card/35">
       <div className="flex items-center justify-between border-b border-border/70 px-5 py-4">
@@ -515,11 +500,7 @@ function RelayInstanceList({
             <Link
               key={instance.id}
               to="/server/$serverId/console"
-              params={{
-                serverId: relayId
-                  ? relayInstanceRouteId(relayId, instance.shortId)
-                  : instance.shortId,
-              }}
+              params={{ serverId: instance.shortId }}
               className="flex items-center gap-3 px-5 py-3 transition-colors outline-none hover:bg-accent/35 focus-visible:bg-accent/45 focus-visible:ring-1 focus-visible:ring-ring/35 focus-visible:ring-inset"
             >
               <ServerTypeIcon

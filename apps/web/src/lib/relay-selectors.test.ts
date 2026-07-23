@@ -7,11 +7,16 @@ import {
 } from "@/lib/relay-fleet"
 import { replaceRelaySnapshotInstance } from "@/lib/query-options"
 import {
+  findFirstCanonicalRelayInstance,
+  findRelayInstance,
+  resolveCanonicalRelayInstance,
+  resolveRelayInstance,
   selectInstanceRelayConnected,
   selectInstanceRuntime,
   selectInstanceSettings,
   selectInstanceWorkspaceInstance,
   selectRouteInstances,
+  selectServerListInstances,
   selectSidebarInstances,
 } from "@/lib/relay-selectors"
 
@@ -75,6 +80,9 @@ describe("Relay render selectors", () => {
 
     expect(selectSidebarInstances(after)).toEqual(
       selectSidebarInstances(before)
+    )
+    expect(selectServerListInstances(after)).toEqual(
+      selectServerListInstances(before)
     )
     expect(selectInstanceWorkspaceInstance(instance.id)(after)).toEqual(
       selectInstanceWorkspaceInstance(instance.id)(before)
@@ -146,11 +154,125 @@ describe("Relay render selectors", () => {
       routeId: "relay-two-aaaaaaaa",
     })
 
+    expect(selectInstanceRelayConnected(first.id, "relay-one")(snapshot)).toBe(
+      true
+    )
+    expect(selectInstanceRelayConnected(first.id, "relay-two")(snapshot)).toBe(
+      false
+    )
+  })
+
+  it("does not select the first server when accessible short IDs collide", () => {
+    const first = snapshotWithCpu(1).instances[0]
+    if (!first) throw new Error("Expected Relay fixture")
+    const snapshot = snapshotWithCpu(1)
+    snapshot.instances.push({
+      ...first,
+      id: "b".repeat(40),
+      relayId: "relay-two",
+      relayName: "Relay two",
+      routeId: "relay-two-aaaaaaaa",
+    })
+
+    expect(findRelayInstance(snapshot.instances, first.shortId)).toBeUndefined()
+    expect(resolveRelayInstance(snapshot.instances, first.shortId)).toEqual({
+      status: "ambiguous",
+    })
+  })
+
+  it("resolves exactly one accessible short-ID match without exposing misses", () => {
+    const snapshot = snapshotWithCpu(1)
+    const first = snapshot.instances[0]
+    if (!first) throw new Error("Expected Relay fixture")
+
+    expect(resolveRelayInstance(snapshot.instances, first.shortId)).toEqual({
+      status: "found",
+      instance: first,
+    })
+    expect(resolveRelayInstance(snapshot.instances, "deadbeef")).toEqual({
+      status: "not-found",
+    })
+  })
+
+  it("keeps a unique legacy Relay-qualified alias resolvable", () => {
+    const first = snapshotWithCpu(1).instances[0]
+    if (!first) throw new Error("Expected Relay fixture")
+    const second = {
+      ...first,
+      id: "b".repeat(40),
+      relayId: "relay-two",
+      relayName: "Relay two",
+      routeId: "relay-two-aaaaaaaa",
+    }
+    const snapshot = snapshotWithCpu(1)
+    snapshot.instances[0] = {
+      ...first,
+      routeId: "relay-one-aaaaaaaa",
+    }
+    snapshot.instances.push(second)
+
     expect(
-      selectInstanceRelayConnected(first.id, "relay-one")(snapshot)
-    ).toBe(true)
+      resolveRelayInstance(snapshot.instances, "relay-two-aaaaaaaa")
+    ).toEqual({
+      status: "found",
+      instance: second,
+    })
+  })
+
+  it("only resolves identifiers whose short URL is unambiguous", () => {
+    const first = snapshotWithCpu(1).instances[0]
+    if (!first) throw new Error("Expected Relay fixture")
+    const snapshot = snapshotWithCpu(1)
+
     expect(
-      selectInstanceRelayConnected(first.id, "relay-two")(snapshot)
-    ).toBe(false)
+      resolveCanonicalRelayInstance(snapshot.instances, first.routeId)
+    ).toEqual({
+      status: "found",
+      instance: first,
+    })
+
+    snapshot.instances.push({
+      ...first,
+      id: "b".repeat(40),
+      relayId: "relay-two",
+      relayName: "Relay two",
+      routeId: "relay-two-aaaaaaaa",
+    })
+
+    expect(
+      resolveCanonicalRelayInstance(snapshot.instances, first.routeId)
+    ).toEqual({
+      status: "ambiguous",
+    })
+    expect(
+      resolveCanonicalRelayInstance(snapshot.instances, first.shortId)
+    ).toEqual({
+      status: "ambiguous",
+    })
+  })
+
+  it("skips colliding short IDs when choosing a sidebar default", () => {
+    const first = snapshotWithCpu(1).instances[0]
+    if (!first) throw new Error("Expected Relay fixture")
+    const collision = {
+      ...first,
+      id: "b".repeat(40),
+      relayId: "relay-two",
+      relayName: "Relay two",
+      routeId: "relay-two-aaaaaaaa",
+    }
+    const unique = {
+      ...first,
+      id: "c".repeat(40),
+      relayId: "relay-three",
+      relayName: "Relay three",
+      routeId: "relay-three-cccccccc",
+      shortId: "cccccccc",
+    }
+
+    expect(findFirstCanonicalRelayInstance([first, collision, unique])).toEqual(
+      unique
+    )
+    expect(findFirstCanonicalRelayInstance([first, collision])).toBeUndefined()
   })
 })

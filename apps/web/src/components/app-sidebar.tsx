@@ -13,17 +13,13 @@ import {
   LoaderCircle,
   LogOut,
   Network,
+  Server as ServerIcon,
   Settings,
   SlidersHorizontal,
   TerminalSquare,
   UserRoundCog,
 } from "lucide-react"
-import {
-  Link,
-  useMatch,
-  useNavigate,
-  useRouterState,
-} from "@tanstack/react-router"
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
 
 import { Avatar, AvatarFallback } from "@workspace/ui/components/avatar"
 import {
@@ -62,17 +58,14 @@ import {
   relaySnapshotQueryOptions,
 } from "@/lib/query-options"
 import { disableDevelopmentBypass } from "@/server/auth"
-import { findRelayInstance } from "@/lib/relay-selectors"
 import {
+  findFirstCanonicalRelayInstance,
+  resolveCanonicalRelayInstance,
   selectRelayConfigured,
   selectSidebarInstanceCount,
-  selectSidebarInstanceRoutes,
   selectSidebarInstances,
 } from "@/lib/relay-selectors"
-import type {
-  SidebarInstance,
-  SidebarInstanceRoute,
-} from "@/lib/relay-selectors"
+import type { SidebarInstance } from "@/lib/relay-selectors"
 import { globalSectionFromRouteId } from "@/lib/route-sections"
 import type { GlobalSection } from "@/lib/route-sections"
 import {
@@ -94,7 +87,22 @@ const instanceItems: Array<{
   { title: "Info", value: "info", icon: SlidersHorizontal },
 ]
 
+function readSelectedInstance(): string | null {
+  if (typeof document === "undefined") return null
+
+  return (
+    document.cookie
+      .split(";")
+      .map((cookie) => cookie.trim())
+      .find((cookie) => cookie.startsWith(`${selectedInstanceCookieName}=`))
+      ?.slice(selectedInstanceCookieName.length + 1) ?? null
+  )
+}
+
 function persistSelectedInstance(routeId: string) {
+  const currentRouteId = readSelectedInstance()
+  if (currentRouteId === routeId) return
+
   document.cookie = `${selectedInstanceCookieName}=${routeId}; path=/; max-age=${uiPreferenceCookieMaxAge}; SameSite=Lax`
 }
 
@@ -102,17 +110,16 @@ interface AppSidebarViewProps {
   user: AuthenticatedUser
   canManageAccess: boolean
   isPlatformAdmin: boolean
+  initialSelectedInstanceRouteId: string | null
   relayConfigured: boolean
-  selectedInstanceRouteId: string | null
 }
 
 const emptyInstances: Array<SidebarInstance> = []
-const emptyInstanceRoutes: Array<SidebarInstanceRoute> = []
 
-export function AppSidebar({
-  selectedInstanceRouteId,
+export const AppSidebar = React.memo(function AppSidebar({
+  initialSelectedInstanceRouteId,
 }: {
-  selectedInstanceRouteId: string | null
+  initialSelectedInstanceRouteId: string | null
 }) {
   const queryClient = useQueryClient()
   const { data: relayConfigured } = useSuspenseQuery({
@@ -127,19 +134,19 @@ export function AppSidebar({
     <AppSidebarView
       canManageAccess={capabilities.canManageAccess}
       isPlatformAdmin={capabilities.isPlatformAdmin}
+      initialSelectedInstanceRouteId={initialSelectedInstanceRouteId}
       relayConfigured={relayConfigured}
-      selectedInstanceRouteId={selectedInstanceRouteId}
       user={capabilities.user}
     />
   )
-}
+})
 
 const AppSidebarView = React.memo(function AppSidebarView({
   user,
   canManageAccess,
   isPlatformAdmin,
+  initialSelectedInstanceRouteId,
   relayConfigured,
-  selectedInstanceRouteId,
 }: AppSidebarViewProps) {
   return (
     <Sidebar collapsible="icon" className="border-sidebar-border/80">
@@ -167,7 +174,7 @@ const AppSidebarView = React.memo(function AppSidebarView({
         />
 
         <SidebarInstanceNavigation
-          initialInstanceRouteId={selectedInstanceRouteId}
+          initialSelectedInstanceRouteId={initialSelectedInstanceRouteId}
           relayConfigured={relayConfigured}
         />
       </SidebarContent>
@@ -195,6 +202,7 @@ function InfrastructureNavigation({
       </SidebarGroupLabel>
       <SidebarGroupContent>
         <SidebarMenu>
+          <ServersNavigationItem relayConfigured={relayConfigured} />
           <BricksNavigationItem
             isPlatformAdmin={isPlatformAdmin}
             relayConfigured={relayConfigured}
@@ -205,6 +213,35 @@ function InfrastructureNavigation({
   )
 }
 
+function ServersNavigationItem({
+  relayConfigured,
+}: {
+  relayConfigured: boolean
+}) {
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton
+        asChild
+        tooltip="Servers"
+        className="data-active:bg-primary/10 data-active:text-primary"
+      >
+        <Link
+          to="/servers"
+          activeOptions={{ exact: true, includeSearch: false }}
+          activeProps={{ "data-active": true }}
+          preload="intent"
+        >
+          <ServerIcon />
+          <span>Servers</span>
+        </Link>
+      </SidebarMenuButton>
+      <SidebarMenuBadge className="text-sidebar-foreground/25">
+        <InfrastructureInstanceCount relayConfigured={relayConfigured} />
+      </SidebarMenuBadge>
+    </SidebarMenuItem>
+  )
+}
+
 function BricksNavigationItem({
   isPlatformAdmin,
   relayConfigured,
@@ -212,11 +249,6 @@ function BricksNavigationItem({
   isPlatformAdmin: boolean
   relayConfigured: boolean
 }) {
-  const { data: instanceCount = 0 } = useQuery({
-    ...relaySnapshotQueryOptions(),
-    enabled: relayConfigured,
-    select: selectSidebarInstanceCount,
-  })
   const navigate = useNavigate()
   const isActive = useRouterState({
     select: (state) =>
@@ -247,91 +279,102 @@ function BricksNavigationItem({
         <span>Bricks</span>
       </SidebarMenuButton>
       <SidebarMenuBadge className="text-sidebar-foreground/25">
-        {instanceCount}
+        <InfrastructureInstanceCount relayConfigured={relayConfigured} />
       </SidebarMenuBadge>
     </SidebarMenuItem>
   )
 }
 
+const InfrastructureInstanceCount = React.memo(
+  function InfrastructureInstanceCount({
+    relayConfigured,
+  }: {
+    relayConfigured: boolean
+  }) {
+    const { data: instanceCount = 0 } = useQuery({
+      ...relaySnapshotQueryOptions(),
+      enabled: relayConfigured,
+      select: selectSidebarInstanceCount,
+    })
+
+    return instanceCount
+  }
+)
+
 function SidebarInstanceNavigation({
-  initialInstanceRouteId,
+  initialSelectedInstanceRouteId,
   relayConfigured,
 }: {
-  initialInstanceRouteId: string | null
+  initialSelectedInstanceRouteId: string | null
   relayConfigured: boolean
 }) {
-  const { data: instanceCount = 0 } = useQuery({
+  const { data: instances = emptyInstances } = useQuery({
     ...relaySnapshotQueryOptions(),
     enabled: relayConfigured,
-    select: selectSidebarInstanceCount,
+    select: selectSidebarInstances,
   })
-
-  if (instanceCount === 0) return null
-
+  const serverId = useRouterState({
+    select: (state) =>
+      (state.matches.at(-1)?.params as { serverId?: string } | undefined)
+        ?.serverId,
+  })
+  const selectedInstanceRouteId = React.useMemo(
+    () => serverId ?? readSelectedInstance() ?? initialSelectedInstanceRouteId,
+    [initialSelectedInstanceRouteId, serverId]
+  )
+  const preferredResolution = resolveCanonicalRelayInstance(
+    instances,
+    selectedInstanceRouteId
+  )
+  const instance =
+    preferredResolution.status === "found"
+      ? preferredResolution.instance
+      : serverId || preferredResolution.status === "ambiguous"
+        ? null
+        : (findFirstCanonicalRelayInstance(instances) ?? null)
   return (
     <>
+      {instance ? (
+        <RememberSelectedInstance instanceRouteId={instance.shortId} />
+      ) : null}
       <SidebarSeparator />
-      <SelectedInstanceNavigation
-        initialInstanceRouteId={initialInstanceRouteId}
+      <InstanceNavigation
+        instance={instance}
+        instances={instances}
+        unresolvedServerId={
+          serverId ??
+          (preferredResolution.status === "ambiguous"
+            ? (selectedInstanceRouteId ?? undefined)
+            : undefined)
+        }
       />
     </>
   )
 }
 
-const SelectedInstanceNavigation = React.memo(
-  function SelectedInstanceNavigation({
-    initialInstanceRouteId,
-  }: {
-    initialInstanceRouteId: string | null
-  }) {
-    const { data: instanceRoutes = emptyInstanceRoutes } = useQuery({
-      ...relaySnapshotQueryOptions(),
-      select: selectSidebarInstanceRoutes,
-    })
-    const serverId = useRouterState({
-      select: (state) =>
-        (state.matches.at(-1)?.params as { serverId?: string } | undefined)
-          ?.serverId,
-    })
-    const [selectedInstanceRouteId, setSelectedInstanceRouteId] =
-      React.useState(initialInstanceRouteId)
-    const routeInstance = findRelayInstance(instanceRoutes, serverId)
-    const rememberedInstance = findRelayInstance(
-      instanceRoutes,
-      selectedInstanceRouteId
-    )
-    const instance = routeInstance ?? rememberedInstance ?? instanceRoutes.at(0)
-    const instanceRouteId =
-      routeInstance && routeInstance.shortId === serverId
-        ? routeInstance.shortId
-        : instance?.routeId
-
-    const rememberInstance = React.useCallback((instanceId: string) => {
-      setSelectedInstanceRouteId(instanceId)
-      persistSelectedInstance(instanceId)
-    }, [])
-
-    React.useEffect(() => {
-      if (routeInstance?.routeId) rememberInstance(routeInstance.routeId)
-    }, [rememberInstance, routeInstance?.routeId])
-
-    return instance && instanceRouteId ? (
-      <InstanceNavigation
-        instanceRouteId={instanceRouteId}
-        onRememberInstance={rememberInstance}
-      />
-    ) : null
-  }
-)
-
-const InstanceNavigation = React.memo(function InstanceNavigation({
+function RememberSelectedInstance({
   instanceRouteId,
-  onRememberInstance,
 }: {
   instanceRouteId: string
-  onRememberInstance: (id: string) => void
+}) {
+  React.useEffect(() => {
+    persistSelectedInstance(instanceRouteId)
+  }, [instanceRouteId])
+
+  return null
+}
+
+const InstanceNavigation = React.memo(function InstanceNavigation({
+  instance,
+  instances,
+  unresolvedServerId,
+}: {
+  instance: SidebarInstance | null
+  instances: Array<SidebarInstance>
+  unresolvedServerId: string | undefined
 }) {
   const navigate = useNavigate()
+  const instanceRouteId = instance?.shortId ?? null
 
   const navigateToTab = React.useCallback(
     (tab: InstanceTab, nextServerId: string, replace = false) => {
@@ -372,67 +415,61 @@ const InstanceNavigation = React.memo(function InstanceNavigation({
       </SidebarGroupLabel>
       <SidebarGroupContent>
         <SidebarMenu>
-          <ServerSelectorBoundary
-            instanceRouteId={instanceRouteId}
+          <ServerSelector
+            instance={instance}
+            instances={instances}
             navigateToTab={navigateToTab}
-            onRememberInstance={onRememberInstance}
           />
-          <CanonicalInstanceRoute instanceRouteId={instanceRouteId} />
-          <InstanceTabNavigation instanceRouteId={instanceRouteId} />
+          <InstanceTabNavigation
+            instanceRouteId={instanceRouteId}
+            unresolvedServerId={unresolvedServerId}
+          />
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
   )
 })
 
-function ServerSelectorBoundary({
-  instanceRouteId,
-  navigateToTab,
-  onRememberInstance,
-}: {
-  instanceRouteId: string
-  navigateToTab: (tab: InstanceTab, serverId: string) => void
-  onRememberInstance: (id: string) => void
-}) {
-  const { data: instances = emptyInstances } = useQuery({
-    ...relaySnapshotQueryOptions(),
-    select: selectSidebarInstances,
-  })
-  const instance = findRelayInstance(instances, instanceRouteId)
-
-  return instance ? (
-    <ServerSelector
-      instance={instance}
-      instances={instances}
-      navigateToTab={navigateToTab}
-      onRememberInstance={onRememberInstance}
-    />
-  ) : null
+function ambiguousServerHref(shortId: string) {
+  return `/servers?search=${encodeURIComponent(shortId)}`
 }
 
 const ServerSelector = React.memo(function ServerSelector({
   instance,
   instances,
   navigateToTab,
-  onRememberInstance,
 }: {
-  instance: SidebarInstance
+  instance: SidebarInstance | null
   instances: Array<SidebarInstance>
   navigateToTab: (tab: InstanceTab, serverId: string) => void
-  onRememberInstance: (id: string) => void
 }) {
   const { isMobile } = useSidebar()
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [open, setOpen] = React.useState(false)
   const selectInstance = React.useCallback(
     (routeId: string) => {
       setOpen(false)
-      onRememberInstance(routeId)
-      navigateToTab(
-        instanceTabFromPathname(window.location.pathname) ?? "console",
+      const snapshot = queryClient.getQueryData(
+        relaySnapshotQueryOptions().queryKey
+      )
+      if (!snapshot) return
+      const resolution = resolveCanonicalRelayInstance(
+        selectSidebarInstances(snapshot),
         routeId
       )
+      if (resolution.status === "ambiguous") {
+        void navigate({ href: ambiguousServerHref(routeId) })
+        return
+      }
+      if (resolution.status === "not-found") return
+
+      navigateToTab(
+        instanceTabFromPathname(window.location.pathname) ?? "console",
+        resolution.instance.shortId
+      )
     },
-    [navigateToTab, onRememberInstance]
+    [navigate, navigateToTab, queryClient]
   )
 
   return (
@@ -442,20 +479,23 @@ const ServerSelector = React.memo(function ServerSelector({
           <SidebarMenuButton
             size="lg"
             tooltip="Switch server"
-            className={`mb-2 h-auto min-h-13 border border-l-2 border-sidebar-border/80 bg-background/45 py-2 ${statusBorderTone(instance.observedState)} group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:min-h-8 group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:p-2!`}
+            className={`mb-2 h-auto min-h-13 border border-l-2 border-sidebar-border/80 bg-background/45 py-2 ${instance ? statusBorderTone(instance.observedState) : "border-l-muted-foreground/25"} group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:min-h-8 group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:p-2!`}
           >
             <ServerTypeIcon
-              implementation={instance.implementation}
+              implementation={instance?.implementation ?? ""}
               className="size-4 shrink-0 text-sidebar-foreground/80"
               aria-hidden="true"
             />
             <span className="flex min-w-0 flex-1 flex-col items-start leading-none">
               <span className="w-full truncate text-xs font-semibold">
-                {instance.name}
+                {instance?.name ?? "Choose a server"}
               </span>
               <span className="mt-1 truncate font-mono text-[9px] text-sidebar-foreground/60">
-                {instance.implementation} {instance.version} ·{" "}
-                {instance.shortId}
+                {instance
+                  ? `${instance.implementation} ${instance.version} · ${instance.shortId}`
+                  : instances.length === 0
+                    ? "No managed servers"
+                    : "Selection required"}
               </span>
             </span>
             <ChevronsUpDown className="ml-auto size-3.5! text-sidebar-foreground/60" />
@@ -474,18 +514,34 @@ const ServerSelector = React.memo(function ServerSelector({
             </span>
           </div>
           <div className="-mx-1 my-1 h-px bg-border" />
-          <div className="space-y-0.5">
-            {instances.map((item) => (
-              <ServerSelectorItem
-                key={`${item.relayId}:${item.id}`}
-                active={
-                  item.id === instance.id && item.relayId === instance.relayId
-                }
-                item={item}
-                onSelect={selectInstance}
-              />
-            ))}
-          </div>
+          {instances.length > 0 ? (
+            <div className="space-y-0.5">
+              {instances.map((item) => (
+                <ServerSelectorItem
+                  key={`${item.relayId}:${item.id}`}
+                  active={
+                    item.id === instance?.id &&
+                    item.relayId === instance.relayId
+                  }
+                  item={item}
+                  onSelect={selectInstance}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="px-2 py-3">
+              <p className="text-xs font-medium">No managed servers</p>
+              <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
+                Open the server workspace to provision or discover a server.
+              </p>
+              <Link
+                to="/servers"
+                className="mt-2 inline-flex text-[10px] font-medium text-primary hover:underline"
+              >
+                View servers
+              </Link>
+            </div>
+          )}
         </PopoverContent>
       </Popover>
     </SidebarMenuItem>
@@ -507,7 +563,7 @@ const ServerSelectorItem = React.memo(function ServerSelectorItem({
       aria-label={`${item.name}, ${item.implementation} ${item.version}, ${item.observedState}`}
       aria-pressed={active}
       className={`flex w-full items-center gap-2.5 rounded-md border-l-2 px-1.5 py-2 text-left transition-colors duration-100 outline-none hover:bg-popover-accent hover:text-popover-accent-foreground focus-visible:bg-popover-accent focus-visible:text-popover-accent-foreground ${statusBorderTone(item.observedState)}`}
-      onClick={() => onSelect(item.routeId)}
+      onClick={() => onSelect(item.shortId)}
     >
       <ServerTypeIcon
         implementation={item.implementation}
@@ -527,69 +583,19 @@ const ServerSelectorItem = React.memo(function ServerSelectorItem({
   )
 })
 
-function CanonicalInstanceRoute({
-  instanceRouteId,
-}: {
-  instanceRouteId: string
-}) {
-  const navigate = useNavigate()
-  const activeTab = useRouterState({
-    select: (state) =>
-      state.matches.some(
-        (match) => match.status === "notFound" || match.globalNotFound
-      )
-        ? null
-        : instanceTabFromPathname(state.location.pathname),
-  })
-  const serverId = useRouterState({
-    select: (state) =>
-      (state.matches.at(-1)?.params as { serverId?: string } | undefined)
-        ?.serverId,
-  })
-  const filePath = useMatch({
-    from: "/_app/server/$serverId/files/$",
-    shouldThrow: false,
-    select: (match) => match.params._splat,
-  })
-
-  // Router state can change through direct navigation and history, so this is
-  // URL normalization rather than a deferred user-event handler.
-  // oxlint-disable-next-line react-doctor/no-effect-event-handler
-  React.useEffect(() => {
-    if (!activeTab || instanceRouteId === serverId) return
-    if (activeTab === "files") {
-      void navigate({
-        to: "/server/$serverId/files/$",
-        params: { serverId: instanceRouteId, _splat: filePath ?? "" },
-        replace: true,
-      })
-      return
-    }
-    void navigate({
-      to:
-        activeTab === "info"
-          ? "/server/$serverId/info"
-          : activeTab === "network"
-            ? "/server/$serverId/network"
-            : "/server/$serverId/console",
-      params: { serverId: instanceRouteId },
-      replace: true,
-    })
-  }, [activeTab, filePath, instanceRouteId, navigate, serverId])
-
-  return null
-}
-
 const InstanceTabNavigation = React.memo(function InstanceTabNavigation({
   instanceRouteId,
+  unresolvedServerId,
 }: {
-  instanceRouteId: string
+  instanceRouteId: string | null
+  unresolvedServerId: string | undefined
 }) {
   return instanceItems.map((item) => (
     <InstanceTabNavigationItem
       key={item.value}
       item={item}
       instanceRouteId={instanceRouteId}
+      unresolvedServerId={unresolvedServerId}
     />
   ))
 })
@@ -598,9 +604,11 @@ const InstanceTabNavigationItem = React.memo(
   function InstanceTabNavigationItem({
     item,
     instanceRouteId,
+    unresolvedServerId,
   }: {
     item: (typeof instanceItems)[number]
-    instanceRouteId: string
+    instanceRouteId: string | null
+    unresolvedServerId: string | undefined
   }) {
     const content = (
       <>
@@ -616,7 +624,15 @@ const InstanceTabNavigationItem = React.memo(
           tooltip={item.title}
           className="data-active:bg-primary/10 data-active:text-primary"
         >
-          {item.value === "console" ? (
+          {!instanceRouteId ? (
+            <Link
+              to="/servers"
+              search={unresolvedServerId ? { search: unresolvedServerId } : {}}
+              activeOptions={{ exact: true, includeSearch: false }}
+            >
+              {content}
+            </Link>
+          ) : item.value === "console" ? (
             <Link
               to="/server/$serverId/console"
               params={{ serverId: instanceRouteId }}
@@ -842,6 +858,7 @@ function statusBorderTone(state: SidebarInstance["observedState"]): string {
 
 function globalSectionFromPathname(pathname: string): GlobalSection {
   if (pathname === "/bricks") return "bricks"
+  if (pathname === "/servers") return "servers"
   if (pathname === "/access") return "access"
   if (pathname === "/security") return "security"
   if (pathname === "/settings" || pathname.startsWith("/settings/")) {

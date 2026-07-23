@@ -58,7 +58,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
-import { SyntaxCodeEditor } from "@/components/syntax-code-editor"
 import type { SyntaxCodeEditorHandle } from "@/components/syntax-code-editor"
 import {
   FileTreeLoadingPanel,
@@ -80,6 +79,11 @@ import type {
 import { redactSensitiveText } from "@/lib/redaction"
 import { fileLanguageForPath } from "@/lib/file-language"
 import { downloadRelayFile, uploadRelayFile } from "@/lib/relay-file-transfer"
+import {
+  loadSyntaxCodeEditorModule,
+  warmSyntaxCodeEditorModule,
+  warmSyntaxCodeEditorModuleWhenIdle,
+} from "@/lib/syntax-editor-module-preload"
 import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
 import {
   queryKeys,
@@ -93,6 +97,13 @@ import {
   updateRelayFilePin,
   uploadToMclogs,
 } from "@/server/relay"
+
+const SyntaxCodeEditor = React.lazy(async () => {
+  const module = await loadSyntaxCodeEditorModule()
+  return { default: module.SyntaxCodeEditor }
+})
+
+const activeFileRevisionPollDelayMs = 30_000
 
 function formatName(path: string) {
   return path.split("/").filter(Boolean).at(-1) ?? path
@@ -305,6 +316,11 @@ function FileToolbarIdentity({
 
 const StableFileToolbarIdentity = React.memo(FileToolbarIdentity)
 
+type SaveFileRevision = (
+  content: string,
+  expectedModifiedAt: string | undefined
+) => Promise<RelayFileContent>
+
 function Editor({
   file,
   displayPath,
@@ -329,13 +345,13 @@ function Editor({
   onTreeExpand: () => void
 }) {
   const [sessionStore] = React.useState(() =>
-    createEditorSessionStore(file.content)
+    createEditorSessionStore(file.content, file.modifiedAt)
   )
   const searchStore = React.useMemo(createEditorSearchStore, [])
   const editorRef = React.useRef<SyntaxCodeEditorHandle>(null)
   const searchInputRef = React.useRef<HTMLInputElement>(null)
   const sectionRef = React.useRef<HTMLElement>(null)
-  const initialValue = React.useRef(file.content).current
+  const saveFile = useFileSaveAction(file, instance, sessionStore)
   const loading = queryLoading
 
   React.useLayoutEffect(() => {
@@ -367,6 +383,11 @@ function Editor({
       ref={sectionRef}
       className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-card"
     >
+      <EditorDiskRevisionSync
+        content={file.content}
+        modifiedAt={file.modifiedAt}
+        sessionStore={sessionStore}
+      />
       <EditorSearchBoundary
         editorRef={editorRef}
         inputRef={searchInputRef}
@@ -391,6 +412,7 @@ function Editor({
                 instance={instance}
                 loading={loading}
                 preferencesStore={preferencesStore}
+                saveFile={saveFile}
                 sessionStore={sessionStore}
               />
             </div>
@@ -398,19 +420,29 @@ function Editor({
         </PopoverAnchor>
       </EditorSearchBoundary>
 
+      <EditorDiskConflictNotice
+        canOverwrite={canWrite && !file.readOnly}
+        content={file.content}
+        loading={loading}
+        modifiedAt={file.modifiedAt}
+        saveFile={saveFile}
+        sessionStore={sessionStore}
+      />
+
       <div className="editor-grid relative min-h-[360px] min-w-0 flex-1 overflow-hidden">
-        <StableEditorDocument
-          editorRef={editorRef}
-          ariaLabel={`Edit ${formatName(file.path)}`}
-          initialValue={initialValue}
-          path={file.path}
-          disabled={loading}
-          redactSensitive
-          readOnly={file.readOnly || !canWrite}
-          preferencesStore={preferencesStore}
-          searchStore={searchStore}
-          sessionStore={sessionStore}
-        />
+        <React.Suspense fallback={<SyntaxEditorLoadingState />}>
+          <StableEditorDocument
+            editorRef={editorRef}
+            ariaLabel={`Edit ${formatName(file.path)}`}
+            path={file.path}
+            disabled={loading}
+            redactSensitive
+            readOnly={file.readOnly || !canWrite}
+            preferencesStore={preferencesStore}
+            searchStore={searchStore}
+            sessionStore={sessionStore}
+          />
+        </React.Suspense>
         {loading ? (
           <div className="absolute inset-y-0 right-0 left-[var(--file-editor-gutter-width,3rem)] z-20 grid place-items-center bg-card/75 backdrop-blur-[2px]">
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -426,6 +458,140 @@ function Editor({
   )
 }
 
+function EditorDiskRevisionSync({
+  content,
+  modifiedAt,
+  sessionStore,
+}: {
+  content: string
+  modifiedAt: string
+  sessionStore: EditorSessionStore
+}) {
+  const dirty = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getDirtySnapshot,
+    sessionStore.getDirtySnapshot
+  )
+
+  React.useLayoutEffect(() => {
+    sessionStore.reconcileDiskRevision(content, modifiedAt)
+  }, [content, dirty, modifiedAt, sessionStore])
+
+  return null
+}
+
+function EditorDiskConflictNotice({
+  canOverwrite,
+  content,
+  loading,
+  modifiedAt,
+  saveFile,
+  sessionStore,
+}: {
+  canOverwrite: boolean
+  content: string
+  loading: boolean
+  modifiedAt: string
+  saveFile: SaveFileRevision
+  sessionStore: EditorSessionStore
+}) {
+  const conflicted = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getDiskConflictSnapshot,
+    sessionStore.getDiskConflictSnapshot
+  )
+  const saving = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getSavingSnapshot,
+    sessionStore.getSavingSnapshot
+  )
+
+  if (!conflicted) return null
+
+  function handleReload() {
+    if (sessionStore.getSavingSnapshot()) return
+    sessionStore.reloadFromDisk(content, modifiedAt)
+  }
+
+  async function handleOverwrite() {
+    if (sessionStore.getSavingSnapshot()) return
+    sessionStore.setSaving(true)
+    sessionStore.setSaveError(null)
+    try {
+      await saveFile(sessionStore.getValue(), undefined)
+    } catch (cause) {
+      sessionStore.setSaveError(
+        cause instanceof Error ? cause.message : "Overwrite failed"
+      )
+    } finally {
+      sessionStore.setSaving(false)
+    }
+  }
+
+  return (
+    <div
+      role="alert"
+      className="flex shrink-0 flex-col gap-2 border-b border-destructive/30 bg-destructive/[0.07] px-3 py-2.5 xl:flex-row xl:items-center"
+    >
+      <div className="flex min-w-0 items-start gap-2 xl:items-center">
+        <TriangleAlert className="mt-0.5 size-4 shrink-0 text-destructive xl:mt-0" />
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-destructive">
+            File changed on disk
+          </p>
+          <p className="text-[10px] leading-4 text-muted-foreground">
+            Reload the latest version or explicitly overwrite it with your
+            changes.
+          </p>
+        </div>
+      </div>
+      <div className="ml-6 flex shrink-0 gap-1.5 xl:ml-auto">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={saving || loading}
+          onClick={handleReload}
+        >
+          <RefreshCw />
+          Reload
+        </Button>
+        <Button
+          type="button"
+          variant="destructive"
+          size="sm"
+          disabled={!canOverwrite || saving || loading}
+          onClick={() => void handleOverwrite()}
+        >
+          {saving ? <LoaderCircle className="animate-spin" /> : <Save />}
+          {saving ? "Overwriting" : "Overwrite"}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function SyntaxEditorLoadingState() {
+  return (
+    <div
+      className="flex min-h-0 min-w-0 flex-1 bg-card"
+      aria-label="Opening editor"
+      aria-busy="true"
+    >
+      <div
+        className="w-[var(--file-editor-gutter-width,3rem)] shrink-0 border-r border-border/80 bg-muted/10"
+        aria-hidden="true"
+      />
+      <div className="grid min-w-0 flex-1 place-items-center px-6 text-center">
+        <FileWorkspaceLoadingState
+          title="Opening editor"
+          description="Preparing the syntax-aware editor."
+        />
+      </div>
+    </div>
+  )
+}
+
 function EditorResponsiveActions({
   canShare,
   canWrite,
@@ -433,6 +599,7 @@ function EditorResponsiveActions({
   instance,
   loading,
   preferencesStore,
+  saveFile,
   sessionStore,
 }: {
   canShare: boolean
@@ -441,6 +608,7 @@ function EditorResponsiveActions({
   instance: InstanceWorkspaceInstance
   loading: boolean
   preferencesStore: FileEditorPreferencesStore
+  saveFile: SaveFileRevision
   sessionStore: EditorSessionStore
 }) {
   const isMobile = useIsMobile()
@@ -454,8 +622,8 @@ function EditorResponsiveActions({
         />
         <EditorSaveButton
           file={file}
-          instance={instance}
           loading={loading}
+          saveFile={saveFile}
           sessionStore={sessionStore}
         />
         <StableEditorMobileOverflowMenu
@@ -504,8 +672,8 @@ function EditorResponsiveActions({
       </EditorTooltip>
       <EditorSaveButton
         file={file}
-        instance={instance}
         loading={loading}
+        saveFile={saveFile}
         sessionStore={sessionStore}
       />
       <StableEditorOverflowMenu
@@ -1243,7 +1411,6 @@ function FilePinActionMenuItem({
 
 function EditorDocument({
   editorRef,
-  initialValue,
   preferencesStore,
   searchStore,
   sessionStore,
@@ -1262,12 +1429,15 @@ function EditorDocument({
   | "wrapLines"
 > & {
   editorRef: React.RefObject<SyntaxCodeEditorHandle | null>
-  initialValue: string
   preferencesStore: FileEditorPreferencesStore
   searchStore: EditorSearchStore
   sessionStore: EditorSessionStore
 }) {
-  const [value, setValue] = React.useState(initialValue)
+  const value = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getValueSnapshot,
+    sessionStore.getValueSnapshot
+  )
   const fontSize = React.useSyncExternalStore(
     preferencesStore.subscribe,
     preferencesStore.getFontSizeSnapshot,
@@ -1301,7 +1471,6 @@ function EditorDocument({
 
   const handleChange = React.useCallback(
     (nextValue: string) => {
-      setValue(nextValue)
       sessionStore.setValue(nextValue)
     },
     [sessionStore]
@@ -1400,17 +1569,14 @@ function EditorSearchContent({
 
 function useFileSaveAction(
   file: RelayFileContent,
-  instance: InstanceWorkspaceInstance
+  instance: InstanceWorkspaceInstance,
+  sessionStore: EditorSessionStore
 ) {
   const queryClient = useQueryClient()
-  const expectedModifiedAt = React.useRef(file.modifiedAt)
-  React.useLayoutEffect(() => {
-    expectedModifiedAt.current = file.modifiedAt
-  }, [file.modifiedAt])
   const saveMutation = useMutation({
     mutationFn: saveRelayFile,
     onSuccess: async (nextFile, variables) => {
-      expectedModifiedAt.current = nextFile.modifiedAt
+      sessionStore.markSaved(variables.data.content, nextFile.modifiedAt)
       queryClient.setQueryData(
         queryKeys.relay.file(
           variables.data.relayId,
@@ -1430,33 +1596,31 @@ function useFileSaveAction(
   const saveFile = saveMutation.mutateAsync
 
   return React.useCallback(
-    async (content: string) => {
-      await saveFile({
+    (content: string, expectedModifiedAt: string | undefined) =>
+      saveFile({
         data: {
           instanceId: instance.id,
           relayId: instance.relayId,
           path: file.path,
           content,
-          expectedModifiedAt: expectedModifiedAt.current,
+          expectedModifiedAt,
         },
-      })
-    },
+      }),
     [file.path, instance.id, instance.relayId, saveFile]
   )
 }
 
 function EditorSaveButton({
   file,
-  instance,
   loading,
+  saveFile,
   sessionStore,
 }: {
   file: RelayFileContent
-  instance: InstanceWorkspaceInstance
   loading: boolean
+  saveFile: SaveFileRevision
   sessionStore: EditorSessionStore
 }) {
-  const saveFile = useFileSaveAction(file, instance)
   const dirty = React.useSyncExternalStore(
     sessionStore.subscribe,
     sessionStore.getDirtySnapshot,
@@ -1467,14 +1631,24 @@ function EditorSaveButton({
     sessionStore.getSavingSnapshot,
     sessionStore.getSavingSnapshot
   )
+  const conflicted = React.useSyncExternalStore(
+    sessionStore.subscribe,
+    sessionStore.getDiskConflictSnapshot,
+    sessionStore.getDiskConflictSnapshot
+  )
 
   async function handleSave() {
+    if (
+      sessionStore.getSavingSnapshot() ||
+      sessionStore.getDiskConflictSnapshot()
+    ) {
+      return
+    }
     sessionStore.setSaving(true)
     sessionStore.setSaveError(null)
     try {
       const value = sessionStore.getValue()
-      await saveFile(value)
-      sessionStore.markSaved(value)
+      await saveFile(value, sessionStore.getExpectedModifiedAt())
     } catch (cause) {
       sessionStore.setSaveError(
         cause instanceof Error ? cause.message : "Save failed"
@@ -1491,9 +1665,11 @@ function EditorSaveButton({
           ? "Read Only"
           : saving
             ? "Saving"
-            : dirty
-              ? "Save"
-              : "Saved"
+            : conflicted
+              ? "Resolve disk conflict"
+              : dirty
+                ? "Save"
+                : "Saved"
       }
     >
       <Button
@@ -1510,7 +1686,7 @@ function EditorSaveButton({
               ? "Save changes"
               : "Changes saved"
         }
-        disabled={!dirty || saving || loading || file.readOnly}
+        disabled={!dirty || conflicted || saving || loading || file.readOnly}
         onClick={handleSave}
       >
         {file.readOnly ? (
@@ -2769,10 +2945,11 @@ export function FileWorkspace(props: FileWorkspaceProps) {
     (path: string) => {
       const currentPath = selectionStore.getSnapshot()
       if (currentPath === path) return
+      if (path) warmSyntaxCodeEditorModule()
 
       const nextLocation = router.buildLocation({
         to: "/server/$serverId/files/$",
-        params: { serverId: props.instance.routeId, _splat: path },
+        params: { serverId: props.instance.shortId, _splat: path },
       })
       const nextUrl = new URL(nextLocation.href, window.location.href).href
       selectionStore.navigate(path, window.location.href, nextUrl)
@@ -2780,12 +2957,12 @@ export function FileWorkspace(props: FileWorkspaceProps) {
 
       void router.navigate({
         to: "/server/$serverId/files/$",
-        params: { serverId: props.instance.routeId, _splat: path },
+        params: { serverId: props.instance.shortId, _splat: path },
         replace: true,
         resetScroll: false,
       })
     },
-    [props.active, props.instance.routeId, router, selectionStore]
+    [props.active, props.instance.shortId, router, selectionStore]
   )
 
   return (
@@ -2841,6 +3018,7 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
     relayTreeQueryOptions(instance.relayId, instance.id)
   )
   const tree = treeQuery.data ?? null
+  const treeReady = tree !== null
   const refreshTreeMutation = useMutation({
     mutationFn: () =>
       getRelayTree({
@@ -2859,6 +3037,11 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
   })
 
   React.useEffect(() => preferencesStore.hydrate(), [preferencesStore])
+
+  React.useEffect(() => {
+    if (!treeReady || selectionStore.getSnapshot()) return
+    return warmSyntaxCodeEditorModuleWhenIdle()
+  }, [selectionStore, treeReady])
 
   const handleTreeCollapsedChange = React.useCallback(
     (nextCollapsed: boolean) => {
@@ -3008,16 +3191,20 @@ function FileViewer({
   const selectedPathIsReadable = Boolean(
     tree?.paths.includes(selectedPath) && !selectedPath.endsWith("/")
   )
+  React.useEffect(() => {
+    if (selectedPath) warmSyntaxCodeEditorModule()
+  }, [selectedPath])
   const fileQuery = useQuery({
     ...relayFileQueryOptions(instance.relayId, instance.id, selectedPath),
     enabled: selectedPathIsReadable && relayConnected,
-    refetchOnMount: "always",
-    refetchOnReconnect: false,
-    refetchOnWindowFocus: false,
+    refetchInterval: activeFileRevisionPollDelayMs,
+    refetchIntervalInBackground: false,
+    refetchOnReconnect: "always",
+    refetchOnWindowFocus: "always",
   })
   const file = fileQuery.data?.path === selectedPath ? fileQuery.data : null
   const loadingFile =
-    fileTreeLoading || (selectedPathIsReadable && fileQuery.isFetching)
+    fileTreeLoading || (selectedPathIsReadable && fileQuery.isPending)
   const routeError =
     tree &&
     selectedPath &&
@@ -3093,7 +3280,7 @@ function FileViewer({
         file={file}
         displayPath={selectedPath}
         instance={instance}
-        loading={false}
+        loading={fileQuery.isPending}
         error={error}
         preferencesStore={preferencesStore}
         treeCollapsed={treeCollapsed}

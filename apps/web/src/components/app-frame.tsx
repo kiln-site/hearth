@@ -26,7 +26,7 @@ export const AppFrame = React.memo(function AppFrame({
       <RelayConnectionToastMonitor />
       <MobileSidebarNavigationDismiss />
       <AppSidebar
-        selectedInstanceRouteId={uiPreferences.selectedInstanceRouteId}
+        initialSelectedInstanceRouteId={uiPreferences.selectedInstanceRouteId}
       />
       <SidebarInset className="h-dvh min-w-0 overflow-hidden">
         <div

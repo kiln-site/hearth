@@ -1,5 +1,6 @@
 import * as React from "react"
 import {
+  queryOptions,
   useMutation,
   useQuery,
   useQueryClient,
@@ -46,6 +47,15 @@ import {
 } from "@workspace/contracts"
 
 import { RelayToastTitle } from "@/components/relay-toast-title"
+import {
+  WorkspaceDataTable,
+  WorkspaceTableCell,
+  WorkspaceTableHead,
+  WorkspaceTableHeading,
+  createWorkspaceTableSearchStore,
+  useWorkspaceTableSearchInput,
+} from "@/components/workspace-data-table"
+import type { WorkspaceTableSearchStore } from "@/components/workspace-data-table"
 import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 import {
   queryKeys,
@@ -76,10 +86,63 @@ const invitationTimeFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: "UTC",
   timeZoneName: "short",
 })
+const minimumRelaySyncFeedbackMs = 500
 const pendingRelayResumes = new Map<string, Promise<void>>()
 
+function relayProxyQueryOptions(relayId: string) {
+  return queryOptions({
+    queryFn: () => getRelayProxy({ data: { id: relayId } }),
+    queryKey: ["relays", "proxy", relayId] as const,
+    retry: false,
+    staleTime: 10_000,
+  })
+}
+
+interface RelayTableItem {
+  hostname: string
+  id: string
+  name: string
+  nodeArch: string | null
+  nodePlatform: string | null
+  nodeVersion: string | null
+}
+
+interface RelayStaticView {
+  hostname: string
+  name: string
+  nodeArch: string | null
+  nodeVersion: string | null
+  port: number
+  useTls: boolean
+}
+
+interface RelayStatusView {
+  connected: boolean
+  enabled: boolean
+  lastError: string | null
+}
+
+interface RelayPauseView {
+  enabled: boolean
+  name: string
+}
+
+interface RelayEditView {
+  enabled: boolean
+  hostname: string
+  id: string
+  name: string
+  port: number
+  useTls: boolean
+}
+
+interface RelayUptimeView {
+  label: string
+  startedAt: string | null
+}
+
 export const AppSettingsPage = React.memo(function AppSettingsPage() {
-  const [searchStore] = React.useState(createRelaySearchStore)
+  const [searchStore] = React.useState(createWorkspaceTableSearchStore)
   const [dialogStore] = React.useState(createRelayDialogStore)
 
   return (
@@ -138,37 +201,11 @@ function createRelayDialogStore(): RelayDialogStore {
   }
 }
 
-interface RelaySearchStore {
-  getServerSnapshot: () => string
-  getSnapshot: () => string
-  set: (value: string) => void
-  subscribe: (listener: () => void) => () => void
-}
-
-function createRelaySearchStore(): RelaySearchStore {
-  let value = ""
-  const listeners = new Set<() => void>()
-
-  return {
-    getServerSnapshot: () => "",
-    getSnapshot: () => value,
-    set: (nextValue) => {
-      if (nextValue === value) return
-      value = nextValue
-      for (const listener of listeners) listener()
-    },
-    subscribe: (listener) => {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
-  }
-}
-
 const RelayToolbar = React.memo(function RelayToolbar({
   searchStore,
   onAdd,
 }: {
-  searchStore: RelaySearchStore
+  searchStore: WorkspaceTableSearchStore
   onAdd: () => void
 }) {
   const [mobileSearchOpen, setMobileSearchOpen] = React.useState(false)
@@ -273,10 +310,20 @@ const RelayDialogHost = React.memo(function RelayDialogHost({
     store.getServerSnapshot
   )
   const selectEditingRelay = React.useCallback(
-    (relays: Array<PersistedRelay>) =>
-      state.kind === "edit"
-        ? (relays.find((relay) => relay.id === state.relayId) ?? null)
-        : null,
+    (relays: Array<PersistedRelay>): RelayEditView | null => {
+      if (state.kind !== "edit") return null
+      const relay = relays.find((item) => item.id === state.relayId)
+      return relay
+        ? {
+            enabled: relay.enabled,
+            hostname: relay.hostname,
+            id: relay.id,
+            name: relay.name,
+            port: relay.port,
+            useTls: relay.useTls,
+          }
+        : null
+    },
     [state]
   )
   const { data: editingRelay } = useSuspenseQuery({
@@ -311,13 +358,9 @@ const RelaySearchInput = React.memo(function RelaySearchInput({
   store,
 }: {
   inputRef: React.RefObject<HTMLInputElement | null>
-  store: RelaySearchStore
+  store: WorkspaceTableSearchStore
 }) {
-  const search = React.useSyncExternalStore(
-    store.subscribe,
-    store.getSnapshot,
-    store.getServerSnapshot
-  )
+  useWorkspaceTableSearchInput(inputRef, store)
 
   return (
     <div className="relative min-w-0 flex-1">
@@ -326,7 +369,7 @@ const RelaySearchInput = React.memo(function RelaySearchInput({
         ref={inputRef}
         id="relay-search"
         type="search"
-        value={search}
+        defaultValue={store.getServerSnapshot()}
         onChange={(event) => store.set(event.currentTarget.value)}
         placeholder="Search relays"
         aria-label="Search relays"
@@ -341,39 +384,19 @@ const FilteredRelayTable = React.memo(function FilteredRelayTable({
   onAdd,
   onEdit,
 }: {
-  searchStore: RelaySearchStore
+  searchStore: WorkspaceTableSearchStore
   onAdd: () => void
   onEdit: (relayId: string) => void
 }) {
   const { data: relays } = useSuspenseQuery({
     ...relaysQueryOptions(),
-    select: selectSettingsRelays,
+    select: selectRelayTableItems,
   })
-  const search = React.useSyncExternalStore(
-    searchStore.subscribe,
-    searchStore.getSnapshot,
-    searchStore.getServerSnapshot
-  )
-  const deferredSearch = React.useDeferredValue(search.trim().toLowerCase())
-  const searchPattern = React.useMemo(
-    () =>
-      deferredSearch.length === 0
-        ? null
-        : new RegExp(escapeSearch(deferredSearch), "iu"),
-    [deferredSearch]
-  )
-  const filteredRelays = React.useMemo(
-    () =>
-      searchPattern === null
-        ? relays
-        : relays.filter((relay) => searchPattern.test(relaySearchText(relay))),
-    [relays, searchPattern]
-  )
 
   return (
     <RelayTable
-      relays={filteredRelays}
-      searchActive={deferredSearch.length > 0}
+      relays={relays}
+      searchStore={searchStore}
       onAdd={onAdd}
       onEdit={onEdit}
     />
@@ -382,6 +405,10 @@ const FilteredRelayTable = React.memo(function FilteredRelayTable({
 
 const RelaySyncButton = React.memo(function RelaySyncButton() {
   const queryClient = useQueryClient()
+  const [manualSyncing, setManualSyncing] = React.useState(false)
+  const manualSyncingRef = React.useRef(false)
+  const feedbackTimeoutRef = React.useRef<number>(undefined)
+  const mountedRef = React.useRef(true)
   const { data: hasEnabledRelay } = useSuspenseQuery({
     ...relaysQueryOptions(),
     select: selectHasEnabledRelay,
@@ -399,6 +426,37 @@ const RelaySyncButton = React.memo(function RelaySyncButton() {
     },
     onError: (cause) => showRelayError(cause, "Could not sync Relays"),
   })
+  const syncing = manualSyncing || syncRelays.isPending
+
+  React.useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (feedbackTimeoutRef.current !== undefined) {
+        window.clearTimeout(feedbackTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  const sync = React.useCallback(() => {
+    if (!hasEnabledRelay || manualSyncingRef.current) return
+    manualSyncingRef.current = true
+    setManualSyncing(true)
+    const startedAt = performance.now()
+
+    syncRelays.mutate(undefined, {
+      onSettled: () => {
+        if (!mountedRef.current) return
+        const elapsed = performance.now() - startedAt
+        const remaining = Math.max(0, minimumRelaySyncFeedbackMs - elapsed)
+        feedbackTimeoutRef.current = window.setTimeout(() => {
+          manualSyncingRef.current = false
+          setManualSyncing(false)
+          feedbackTimeoutRef.current = undefined
+        }, remaining)
+      },
+    })
+  }, [hasEnabledRelay, syncRelays])
 
   return (
     <Tooltip>
@@ -408,10 +466,11 @@ const RelaySyncButton = React.memo(function RelaySyncButton() {
           size="icon"
           variant="outline"
           aria-label="Sync relays"
-          disabled={syncRelays.isPending || !hasEnabledRelay}
-          onClick={() => syncRelays.mutate()}
+          aria-busy={syncing}
+          disabled={syncing || !hasEnabledRelay}
+          onClick={sync}
         >
-          <RefreshCw className={syncRelays.isPending ? "animate-spin" : ""} />
+          <RefreshCw className={syncing ? "animate-spin" : ""} />
         </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom" sideOffset={6}>
@@ -423,75 +482,130 @@ const RelaySyncButton = React.memo(function RelaySyncButton() {
 
 function RelayTable({
   relays,
-  searchActive,
+  searchStore,
   onAdd,
   onEdit,
 }: {
-  relays: Array<PersistedRelay>
-  searchActive: boolean
+  relays: Array<RelayTableItem>
+  searchStore: WorkspaceTableSearchStore
   onAdd: () => void
   onEdit: (relayId: string) => void
 }) {
-  if (relays.length === 0) {
-    return <EmptyRelayTable searchActive={searchActive} onAdd={onAdd} />
-  }
+  const renderRow = React.useCallback(
+    (relay: RelayTableItem) => (
+      <RelayTableRow relayId={relay.id} onEdit={onEdit} />
+    ),
+    [onEdit]
+  )
+  const renderEmpty = React.useCallback(
+    (searchActive: boolean) => (
+      <EmptyRelayTable searchActive={searchActive} onAdd={onAdd} />
+    ),
+    [onAdd]
+  )
 
   return (
-    <div className="min-w-0 overflow-hidden">
-      <table className="w-full table-fixed border-collapse text-left">
-        <RelayTableHead />
-        <tbody className="divide-y divide-border/70">
-          {relays.map((relay) => (
-            <RelayTableRow key={relay.id} relay={relay} onEdit={onEdit} />
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <WorkspaceDataTable
+      getRowKey={relayRowKey}
+      getSearchText={relaySearchText}
+      head={<RelayTableHead />}
+      items={relays}
+      renderEmpty={renderEmpty}
+      renderRow={renderRow}
+      searchStore={searchStore}
+    />
   )
 }
 
 const RelayTableHead = React.memo(function RelayTableHead() {
   return (
-    <thead>
-      <tr className="border-b bg-muted/20 font-mono text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
-        <TableHeading className="w-10 px-2 sm:w-24 sm:px-3">
-          <span className="sr-only sm:not-sr-only">Status</span>
-        </TableHeading>
-        <TableHeading className="sm:w-[16%]">Relay</TableHeading>
-        <TableHeading className="hidden w-[10%] xl:table-cell">ID</TableHeading>
-        <TableHeading className="hidden w-[18%] lg:table-cell">
-          Host
-        </TableHeading>
-        <TableHeading className="hidden w-[12%] lg:table-cell">
-          Version
-        </TableHeading>
-        <TableHeading className="hidden w-[8%] xl:table-cell">
-          Arch
-        </TableHeading>
-        <TableHeading className="hidden w-24 sm:table-cell">
-          Uptime
-        </TableHeading>
-        <TableHeading className="w-[6.5rem] px-1 sm:w-28 sm:px-3">
-          Actions
-        </TableHeading>
-      </tr>
-    </thead>
+    <WorkspaceTableHead>
+      <WorkspaceTableHeading className="w-10 px-2 sm:w-24 sm:px-3">
+        <span className="sr-only sm:not-sr-only">Status</span>
+      </WorkspaceTableHeading>
+      <WorkspaceTableHeading className="sm:w-[16%]">
+        Relay
+      </WorkspaceTableHeading>
+      <WorkspaceTableHeading className="hidden w-[10%] xl:table-cell">
+        ID
+      </WorkspaceTableHeading>
+      <WorkspaceTableHeading className="hidden w-[18%] lg:table-cell">
+        Host
+      </WorkspaceTableHeading>
+      <WorkspaceTableHeading className="hidden w-[12%] lg:table-cell">
+        Version
+      </WorkspaceTableHeading>
+      <WorkspaceTableHeading className="hidden w-[8%] xl:table-cell">
+        Arch
+      </WorkspaceTableHeading>
+      <WorkspaceTableHeading className="hidden w-24 sm:table-cell">
+        Uptime
+      </WorkspaceTableHeading>
+      <WorkspaceTableHeading className="w-[6.5rem] px-1 sm:w-28 sm:px-3">
+        Actions
+      </WorkspaceTableHeading>
+    </WorkspaceTableHead>
   )
 })
 
 const RelayTableRow = React.memo(function RelayTableRow({
-  relay,
+  relayId,
   onEdit,
 }: {
-  relay: PersistedRelay
+  relayId: string
   onEdit: (relayId: string) => void
 }) {
   return (
     <tr className="group transition-colors hover:bg-accent/25">
-      <TableCell className="px-2 sm:px-3">
-        <RelayStatus relay={relay} />
-      </TableCell>
-      <TableCell>
+      <WorkspaceTableCell className="px-2 sm:px-3">
+        <RelayStatus relayId={relayId} />
+      </WorkspaceTableCell>
+      <RelayStaticCells relayId={relayId} />
+      <WorkspaceTableCell className="hidden font-mono text-[9px] whitespace-nowrap text-foreground sm:table-cell">
+        <RelayUptime relayId={relayId} />
+      </WorkspaceTableCell>
+      <WorkspaceTableCell className="px-1 sm:px-3 sm:pr-3">
+        <div className="flex items-center justify-end gap-1">
+          <RelayEditButton relayId={relayId} onEdit={onEdit} />
+          <RelayPauseButton relayId={relayId} />
+          <RelayDeleteButton relayId={relayId} />
+        </div>
+      </WorkspaceTableCell>
+    </tr>
+  )
+})
+
+const RelayStaticCells = React.memo(function RelayStaticCells({
+  relayId,
+}: {
+  relayId: string
+}) {
+  const selectRelay = React.useCallback(
+    (relays: Array<PersistedRelay>): RelayStaticView | null => {
+      const relay = relays.find((item) => item.id === relayId)
+      return relay
+        ? {
+            hostname: relay.hostname,
+            name: relay.name,
+            nodeArch: relay.nodeArch,
+            nodeVersion: relay.nodeVersion,
+            port: relay.port,
+            useTls: relay.useTls,
+          }
+        : null
+    },
+    [relayId]
+  )
+  const { data: relay } = useQuery({
+    ...relaysQueryOptions(),
+    notifyOnChangeProps: ["data"],
+    select: selectRelay,
+  })
+
+  if (!relay) return null
+  return (
+    <>
+      <WorkspaceTableCell>
         <div className="min-w-0">
           <p className="truncate text-xs font-semibold text-foreground">
             {relay.name}
@@ -500,23 +614,23 @@ const RelayTableRow = React.memo(function RelayTableRow({
             {relay.hostname}
           </p>
         </div>
-      </TableCell>
-      <TableCell className="hidden xl:table-cell">
+      </WorkspaceTableCell>
+      <WorkspaceTableCell className="hidden xl:table-cell">
         <Tooltip>
           <TooltipTrigger asChild>
             <span
               tabIndex={0}
               className="inline-block cursor-default font-mono text-[9px] text-foreground outline-none"
             >
-              {shortRelayId(relay.id)}
+              {shortRelayId(relayId)}
             </span>
           </TooltipTrigger>
           <TooltipContent side="bottom" sideOffset={6} className="font-mono">
-            {relay.id}
+            {relayId}
           </TooltipContent>
         </Tooltip>
-      </TableCell>
-      <TableCell className="hidden lg:table-cell">
+      </WorkspaceTableCell>
+      <WorkspaceTableCell className="hidden lg:table-cell">
         <Tooltip>
           <TooltipTrigger asChild>
             <span
@@ -530,166 +644,233 @@ const RelayTableRow = React.memo(function RelayTableRow({
             {relay.useTls ? "https" : "http"}://{relay.hostname}:{relay.port}
           </TooltipContent>
         </Tooltip>
-      </TableCell>
-      <TableCell className="hidden lg:table-cell">
+      </WorkspaceTableCell>
+      <WorkspaceTableCell className="hidden lg:table-cell">
         <span className="block truncate font-mono text-[9px] text-foreground">
           {relay.nodeVersion ?? "—"}
         </span>
-      </TableCell>
-      <TableCell className="hidden xl:table-cell">
+      </WorkspaceTableCell>
+      <WorkspaceTableCell className="hidden xl:table-cell">
         <span className="font-mono text-[9px] text-foreground">
           {relay.nodeArch ?? "—"}
         </span>
-      </TableCell>
-      <TableCell className="hidden font-mono text-[9px] whitespace-nowrap text-foreground sm:table-cell">
-        <RelayUptime
-          createdAt={relay.createdAt}
-          enabled={relay.enabled}
-          relayId={relay.id}
-        />
-      </TableCell>
-      <TableCell className="px-1 sm:px-3 sm:pr-3">
-        <RelayRowActions
-          enabled={relay.enabled}
-          id={relay.id}
-          name={relay.name}
-          onEdit={onEdit}
-        />
-      </TableCell>
-    </tr>
+      </WorkspaceTableCell>
+    </>
   )
 })
 
-const RelayRowActions = React.memo(function RelayRowActions({
-  enabled,
-  id,
-  name,
+const RelayEditButton = React.memo(function RelayEditButton({
+  relayId,
   onEdit,
 }: {
-  enabled: boolean
-  id: string
-  name: string
+  relayId: string
   onEdit: (relayId: string) => void
 }) {
   const queryClient = useQueryClient()
-  const [pending, setPending] = React.useState<
-    "pause" | "remove" | "resume" | null
-  >(null)
-  const relay = React.useMemo(() => ({ id, name }), [id, name])
+  const selectName = React.useCallback(
+    (relays: Array<PersistedRelay>) =>
+      relays.find((relay) => relay.id === relayId)?.name ?? "Relay",
+    [relayId]
+  )
+  const { data: name = "Relay" } = useQuery({
+    ...relaysQueryOptions(),
+    notifyOnChangeProps: ["data"],
+    select: selectName,
+  })
+  const warmProxy = React.useCallback(() => {
+    const relay = queryClient
+      .getQueryData<Array<PersistedRelay>>(queryKeys.relays)
+      ?.find((item) => item.id === relayId)
+    if (!relay?.enabled) return
+    void queryClient.prefetchQuery(relayProxyQueryOptions(relayId))
+  }, [queryClient, relayId])
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          size="icon-sm"
+          variant="ghost"
+          aria-label={`Edit ${name}`}
+          className="text-muted-foreground hover:text-foreground"
+          onFocus={warmProxy}
+          onPointerEnter={warmProxy}
+          onClick={() => onEdit(relayId)}
+        >
+          <Pencil />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>
+        Edit
+      </TooltipContent>
+    </Tooltip>
+  )
+})
+
+const RelayPauseButton = React.memo(function RelayPauseButton({
+  relayId,
+}: {
+  relayId: string
+}) {
+  const queryClient = useQueryClient()
+  const pendingRef = React.useRef(false)
+  const [pending, setPending] = React.useState(false)
+  const selectRelay = React.useCallback(
+    (relays: Array<PersistedRelay>): RelayPauseView | null => {
+      const relay = relays.find((item) => item.id === relayId)
+      return relay ? { enabled: relay.enabled, name: relay.name } : null
+    },
+    [relayId]
+  )
+  const { data: relay } = useQuery({
+    ...relaysQueryOptions(),
+    notifyOnChangeProps: ["data"],
+    select: selectRelay,
+  })
+
+  async function togglePaused() {
+    if (!relay || pendingRef.current) return
+    pendingRef.current = true
+    setPending(true)
+    const relayIdentity = { id: relayId, name: relay.name }
+    try {
+      if (relay.enabled) await pauseRelay(queryClient, relayIdentity)
+      else await resumeRelay(queryClient, relayIdentity)
+    } catch (cause) {
+      showRelayError(
+        cause,
+        relay.enabled ? "Could not pause Relay" : "Could not resume Relay"
+      )
+    } finally {
+      pendingRef.current = false
+      setPending(false)
+    }
+  }
+
+  if (!relay) return null
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          size="icon-sm"
+          variant="ghost"
+          aria-label={`${relay.enabled ? "Pause" : "Resume"} ${relay.name}`}
+          disabled={pending}
+          className="text-muted-foreground hover:text-foreground"
+          onClick={() => void togglePaused()}
+        >
+          {pending ? (
+            <LoaderCircle className="animate-spin" />
+          ) : relay.enabled ? (
+            <Pause />
+          ) : (
+            <Play />
+          )}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>
+        {relay.enabled ? "Pause" : "Resume"}
+      </TooltipContent>
+    </Tooltip>
+  )
+})
+
+const RelayDeleteButton = React.memo(function RelayDeleteButton({
+  relayId,
+}: {
+  relayId: string
+}) {
+  const queryClient = useQueryClient()
+  const pendingRef = React.useRef(false)
+  const [pending, setPending] = React.useState(false)
+  const selectName = React.useCallback(
+    (relays: Array<PersistedRelay>) =>
+      relays.find((relay) => relay.id === relayId)?.name ?? "Relay",
+    [relayId]
+  )
+  const { data: name = "Relay" } = useQuery({
+    ...relaysQueryOptions(),
+    notifyOnChangeProps: ["data"],
+    select: selectName,
+  })
   const removeMutation = useMutation({
     mutationFn: removeRelay,
     onSuccess: async () => {
       queryClient.setQueryData<Array<PersistedRelay>>(
         queryKeys.relays,
-        (current) => current?.filter((item) => item.id !== id)
+        (current) => current?.filter((item) => item.id !== relayId)
       )
       await invalidateRelayRuntimeQueries(queryClient)
     },
   })
 
-  async function togglePaused() {
-    setPending(enabled ? "pause" : "resume")
-    try {
-      if (enabled) await pauseRelay(queryClient, relay)
-      else await resumeRelay(queryClient, relay)
-    } catch (cause) {
-      showRelayError(
-        cause,
-        enabled ? "Could not pause Relay" : "Could not resume Relay"
-      )
-    } finally {
-      setPending(null)
-    }
-  }
-
   async function remove() {
+    if (pendingRef.current) return
     if (!window.confirm(`Remove ${name} from Hearth?`)) return
-    setPending("remove")
+    pendingRef.current = true
+    setPending(true)
     try {
-      await removeMutation.mutateAsync({ data: { id } })
-      dismissToast(relayPausedToastId(id))
-      dismissToast(relayResumedToastId(id))
-      dismissToast(relayResumeErrorToastId(id))
+      await removeMutation.mutateAsync({ data: { id: relayId } })
+      dismissToast(relayPausedToastId(relayId))
+      dismissToast(relayResumedToastId(relayId))
+      dismissToast(relayResumeErrorToastId(relayId))
     } catch (cause) {
       showRelayError(cause, "Could not remove Relay")
     } finally {
-      setPending(null)
+      pendingRef.current = false
+      setPending(false)
     }
   }
 
   return (
-    <div className="flex items-center justify-end gap-1">
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            type="button"
-            size="icon-sm"
-            variant="ghost"
-            aria-label={`Edit ${name}`}
-            disabled={pending !== null}
-            className="text-muted-foreground hover:text-foreground"
-            onClick={() => onEdit(id)}
-          >
-            <Pencil />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom" sideOffset={6}>
-          Edit
-        </TooltipContent>
-      </Tooltip>
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            type="button"
-            size="icon-sm"
-            variant="ghost"
-            aria-label={`${enabled ? "Pause" : "Resume"} ${name}`}
-            disabled={pending !== null}
-            className="text-muted-foreground hover:text-foreground"
-            onClick={() => void togglePaused()}
-          >
-            {pending === "pause" || pending === "resume" ? (
-              <LoaderCircle className="animate-spin" />
-            ) : enabled ? (
-              <Pause />
-            ) : (
-              <Play />
-            )}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom" sideOffset={6}>
-          {enabled ? "Pause" : "Resume"}
-        </TooltipContent>
-      </Tooltip>
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            type="button"
-            size="icon-sm"
-            variant="ghost"
-            aria-label={`Delete ${name}`}
-            disabled={pending !== null}
-            className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-            onClick={() => void remove()}
-          >
-            {pending === "remove" ? (
-              <LoaderCircle className="animate-spin" />
-            ) : (
-              <Trash2 />
-            )}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom" sideOffset={6}>
-          Delete
-        </TooltipContent>
-      </Tooltip>
-    </div>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          size="icon-sm"
+          variant="ghost"
+          aria-label={`Delete ${name}`}
+          disabled={pending}
+          className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          onClick={() => void remove()}
+        >
+          {pending ? <LoaderCircle className="animate-spin" /> : <Trash2 />}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>
+        Delete
+      </TooltipContent>
+    </Tooltip>
   )
 })
 
-function RelayStatus({ relay }: { relay: PersistedRelay }) {
+const RelayStatus = React.memo(function RelayStatus({
+  relayId,
+}: {
+  relayId: string
+}) {
+  const selectStatus = React.useCallback(
+    (relays: Array<PersistedRelay>): RelayStatusView | null => {
+      const relay = relays.find((item) => item.id === relayId)
+      return relay
+        ? {
+            connected: relay.lastConnectedAt !== null,
+            enabled: relay.enabled,
+            lastError: relay.lastError,
+          }
+        : null
+    },
+    [relayId]
+  )
+  const { data: relay } = useQuery({
+    ...relaysQueryOptions(),
+    notifyOnChangeProps: ["data"],
+    select: selectStatus,
+  })
+  if (!relay) return null
+
   const status = !relay.enabled
     ? { label: "Paused", dot: "bg-sky-400", text: "text-sky-300" }
     : relay.lastError
@@ -698,7 +879,7 @@ function RelayStatus({ relay }: { relay: PersistedRelay }) {
           dot: "bg-destructive",
           text: "text-destructive",
         }
-      : relay.lastConnectedAt
+      : relay.connected
         ? { label: "Online", dot: "bg-emerald-400", text: "text-emerald-300" }
         : {
             label: "Offline",
@@ -729,42 +910,25 @@ function RelayStatus({ relay }: { relay: PersistedRelay }) {
       </TooltipContent>
     </Tooltip>
   )
-}
-
-interface RelayUptimeView {
-  label: string
-  startedAt: string | null
-}
+})
 
 const RelayUptime = React.memo(function RelayUptime({
-  createdAt,
-  enabled,
   relayId,
 }: {
-  createdAt: string
-  enabled: boolean
   relayId: string
 }) {
-  const selectConnectedAt = React.useCallback(
-    (relays: Array<PersistedRelay>) =>
-      relays.find((relay) => relay.id === relayId)?.lastConnectedAt ??
-      createdAt,
-    [createdAt, relayId]
-  )
-  const { data: connectedAt = createdAt } = useQuery({
-    ...relaysQueryOptions(),
-    select: selectConnectedAt,
-  })
+  const lastStartedAtRef = React.useRef<string | null>(null)
   const selectUptime = React.useCallback(
     (snapshot: RelayFleetSnapshot): RelayUptimeView => {
       const node = snapshot.nodes.find((item) => item.relayId === relayId)
       const startedAt = node?.startedAt ?? node?.connectedAt ?? null
+      if (startedAt) lastStartedAtRef.current = startedAt
       return {
-        label: enabled ? formatUptimeSince(startedAt) : "—",
-        startedAt,
+        label: formatUptimeSince(lastStartedAtRef.current),
+        startedAt: lastStartedAtRef.current,
       }
     },
-    [enabled, relayId]
+    [relayId]
   )
   const { data } = useQuery({
     ...relaySnapshotQueryOptions(),
@@ -789,20 +953,50 @@ const RelayUptime = React.memo(function RelayUptime({
         sideOffset={6}
         className="grid min-w-64 gap-2.5"
       >
-        <TooltipDetail
-          label="Connected at"
-          value={relayTimestampFormatter.format(new Date(connectedAt))}
-        />
-        <TooltipDetail
-          label="Relay started at"
-          value={
-            startedAt
-              ? relayTimestampFormatter.format(new Date(startedAt))
-              : "Unavailable"
-          }
-        />
+        <RelayUptimeDetails relayId={relayId} startedAt={startedAt} />
       </TooltipContent>
     </Tooltip>
+  )
+})
+
+const RelayUptimeDetails = React.memo(function RelayUptimeDetails({
+  relayId,
+  startedAt,
+}: {
+  relayId: string
+  startedAt: string | null
+}) {
+  const selectConnectedAt = React.useCallback(
+    (relays: Array<PersistedRelay>) => {
+      const relay = relays.find((item) => item.id === relayId)
+      return relay?.lastConnectedAt ?? relay?.createdAt ?? null
+    },
+    [relayId]
+  )
+  const { data: connectedAt = null } = useQuery({
+    ...relaysQueryOptions(),
+    notifyOnChangeProps: ["data"],
+    select: selectConnectedAt,
+  })
+  return (
+    <>
+      <TooltipDetail
+        label="Connected at"
+        value={
+          connectedAt
+            ? relayTimestampFormatter.format(new Date(connectedAt))
+            : "Unavailable"
+        }
+      />
+      <TooltipDetail
+        label="Relay started at"
+        value={
+          startedAt
+            ? relayTimestampFormatter.format(new Date(startedAt))
+            : "Unavailable"
+        }
+      />
+    </>
   )
 })
 
@@ -1071,24 +1265,13 @@ function EditRelayDialog({
   open,
   onOpenChange,
 }: {
-  relay: PersistedRelay
+  relay: RelayEditView
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
   const queryClient = useQueryClient()
   const [pending, setPending] = React.useState(false)
   const [feedback, setFeedback] = React.useState<string | null>(null)
-  const proxyQueryKey = React.useMemo(
-    () => ["relays", "proxy", relay.id] as const,
-    [relay.id]
-  )
-  const proxy = useQuery({
-    enabled: open && relay.enabled,
-    queryFn: () => getRelayProxy({ data: { id: relay.id } }),
-    queryKey: proxyQueryKey,
-    retry: false,
-    staleTime: 10_000,
-  })
   const updateConnection = useMutation({
     mutationFn: updateRelay,
     onSuccess: async (updatedRelay) => {
@@ -1102,9 +1285,12 @@ function EditRelayDialog({
   })
   const updateProxy = useMutation({
     mutationFn: updateRelayProxy,
-    onSuccess: (result) => queryClient.setQueryData(proxyQueryKey, result),
+    onSuccess: (result) =>
+      queryClient.setQueryData(
+        relayProxyQueryOptions(relay.id).queryKey,
+        result
+      ),
   })
-  const proxyReady = !relay.enabled || Boolean(proxy.data)
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -1130,10 +1316,17 @@ function EditRelayDialog({
       )
       return
     }
+    const proxy = relay.enabled
+      ? queryClient.getQueryData(relayProxyQueryOptions(relay.id).queryKey)
+      : undefined
+    if (relay.enabled && !proxy) {
+      setFeedback("Proxy configuration is still loading. Try again shortly.")
+      return
+    }
     const parsedProxy =
-      relay.enabled && proxy.data
+      relay.enabled && proxy
         ? relayProxySettingsSchema.safeParse({
-            acmeEmail: proxy.data.settings.acmeEmail,
+            acmeEmail: proxy.settings.acmeEmail,
             mode: relayProxyMode(form.get("mode")),
             traefikImage: form.get("traefikImage"),
           })
@@ -1241,57 +1434,7 @@ function EditRelayDialog({
             <p className="mb-3 font-mono text-[9px] tracking-[0.14em] text-primary uppercase">
               Proxy
             </p>
-            {relay.enabled && proxy.isPending ? (
-              <div className="flex h-20 items-center justify-center gap-2 rounded-md border border-border/70 bg-background/25 text-[10px] text-muted-foreground">
-                <LoaderCircle className="size-3.5 animate-spin" /> Reading proxy
-                configuration…
-              </div>
-            ) : relay.enabled && proxy.error ? (
-              <DialogFeedback
-                message={messageFrom(
-                  proxy.error,
-                  "Could not read proxy configuration"
-                )}
-              />
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field
-                  label="Proxy mode"
-                  htmlFor={`relay-proxy-mode-${relay.id}`}
-                >
-                  <select
-                    id={`relay-proxy-mode-${relay.id}`}
-                    name="mode"
-                    defaultValue={proxy.data?.settings.mode ?? "none"}
-                    disabled={!relay.enabled}
-                    className="h-8 w-full rounded-md border border-input bg-background/35 px-2 text-[10px] outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-50"
-                  >
-                    <option value="none">None / existing Traefik</option>
-                    <option value="hearth">Hearth proxy</option>
-                    <option value="traefik">Bundled Traefik</option>
-                    <option value="coolify">Coolify Traefik</option>
-                  </select>
-                </Field>
-                <Field
-                  label="Traefik image"
-                  htmlFor={`traefik-image-${relay.id}`}
-                >
-                  <Input
-                    id={`traefik-image-${relay.id}`}
-                    name="traefikImage"
-                    defaultValue={proxy.data?.settings.traefikImage ?? ""}
-                    placeholder="traefik:v3.6"
-                    disabled={!relay.enabled}
-                    required={relay.enabled}
-                  />
-                </Field>
-              </div>
-            )}
-            {!relay.enabled ? (
-              <p className="mt-2 text-[10px] text-sky-300/80">
-                Resume this Relay to edit its proxy configuration.
-              </p>
-            ) : null}
+            <RelayProxyFields relayEnabled={relay.enabled} relayId={relay.id} />
           </div>
 
           {feedback ? <DialogFeedback message={feedback} /> : null}
@@ -1305,19 +1448,110 @@ function EditRelayDialog({
             >
               Cancel
             </Button>
-            <Button
-              type="submit"
-              disabled={pending || !proxyReady || Boolean(proxy.error)}
-            >
-              {pending ? <LoaderCircle className="animate-spin" /> : <Check />}
-              Save changes
-            </Button>
+            <RelayEditSubmitButton
+              pending={pending}
+              relayEnabled={relay.enabled}
+              relayId={relay.id}
+            />
           </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
   )
 }
+
+const RelayProxyFields = React.memo(function RelayProxyFields({
+  relayEnabled,
+  relayId,
+}: {
+  relayEnabled: boolean
+  relayId: string
+}) {
+  const proxy = useQuery({
+    ...relayProxyQueryOptions(relayId),
+    enabled: relayEnabled,
+  })
+
+  if (relayEnabled && proxy.isPending) {
+    return (
+      <div className="flex h-20 items-center justify-center gap-2 rounded-md border border-border/70 bg-background/25 text-[10px] text-muted-foreground">
+        <LoaderCircle className="size-3.5 animate-spin" /> Reading proxy
+        configuration…
+      </div>
+    )
+  }
+  if (relayEnabled && proxy.error) {
+    return (
+      <DialogFeedback
+        message={messageFrom(proxy.error, "Could not read proxy configuration")}
+      />
+    )
+  }
+
+  return (
+    <>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Proxy mode" htmlFor={`relay-proxy-mode-${relayId}`}>
+          <select
+            id={`relay-proxy-mode-${relayId}`}
+            name="mode"
+            defaultValue={proxy.data?.settings.mode ?? "none"}
+            disabled={!relayEnabled}
+            className="h-8 w-full rounded-md border border-input bg-background/35 px-2 text-[10px] outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-50"
+          >
+            <option value="none">None / existing Traefik</option>
+            <option value="hearth">Hearth proxy</option>
+            <option value="traefik">Bundled Traefik</option>
+            <option value="coolify">Coolify Traefik</option>
+          </select>
+        </Field>
+        <Field label="Traefik image" htmlFor={`traefik-image-${relayId}`}>
+          <Input
+            id={`traefik-image-${relayId}`}
+            name="traefikImage"
+            defaultValue={proxy.data?.settings.traefikImage ?? ""}
+            placeholder="traefik:v3.6"
+            disabled={!relayEnabled}
+            required={relayEnabled}
+          />
+        </Field>
+      </div>
+      {!relayEnabled ? (
+        <p className="mt-2 text-[10px] text-sky-300/80">
+          Resume this Relay to edit its proxy configuration.
+        </p>
+      ) : null}
+    </>
+  )
+})
+
+const RelayEditSubmitButton = React.memo(function RelayEditSubmitButton({
+  pending,
+  relayEnabled,
+  relayId,
+}: {
+  pending: boolean
+  relayEnabled: boolean
+  relayId: string
+}) {
+  const proxy = useQuery({
+    ...relayProxyQueryOptions(relayId),
+    enabled: relayEnabled,
+    notifyOnChangeProps: ["data", "error", "isPending"],
+  })
+
+  return (
+    <Button
+      type="submit"
+      disabled={
+        pending || (relayEnabled && (proxy.isPending || Boolean(proxy.error)))
+      }
+    >
+      {pending ? <LoaderCircle className="animate-spin" /> : <Check />}
+      Save changes
+    </Button>
+  )
+})
 
 function DialogFeedback({ message }: { message: string }) {
   return (
@@ -1353,45 +1587,24 @@ function Field({
   )
 }
 
-function TableHeading({
-  className = "",
-  children,
-}: {
-  className?: string
-  children: React.ReactNode
-}) {
-  return (
-    <th
-      className={`h-10 px-3 text-left font-medium whitespace-nowrap ${className}`}
-    >
-      {children}
-    </th>
-  )
-}
-
-function TableCell({
-  className = "",
-  children,
-}: {
-  className?: string
-  children: React.ReactNode
-}) {
-  return <td className={`h-14 px-3 align-middle ${className}`}>{children}</td>
-}
-
-function selectSettingsRelays(
+function selectRelayTableItems(
   relays: Array<PersistedRelay>
-): Array<PersistedRelay> {
-  return relays.map((relay) =>
-    relay.lastConnectedAt ? { ...relay, lastConnectedAt: "connected" } : relay
-  )
+): Array<RelayTableItem> {
+  return relays.map((relay) => ({
+    hostname: relay.hostname,
+    id: relay.id,
+    name: relay.name,
+    nodeArch: relay.nodeArch,
+    nodePlatform: relay.nodePlatform,
+    nodeVersion: relay.nodeVersion,
+  }))
 }
 
 function selectHasEnabledRelay(relays: Array<PersistedRelay>): boolean {
   return relays.some((relay) => relay.enabled)
 }
 
-function relaySearchText(relay: PersistedRelay): string {
+function relaySearchText(relay: RelayTableItem): string {
   return [
     relay.name,
     relay.id,
@@ -1404,8 +1617,8 @@ function relaySearchText(relay: PersistedRelay): string {
     .toLowerCase()
 }
 
-function escapeSearch(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")
+function relayRowKey(relay: RelayTableItem): string {
+  return relay.id
 }
 
 function shortRelayId(id: string): string {

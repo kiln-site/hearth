@@ -12,17 +12,22 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as ConsoleRouteImport } from './routes/console'
+import { Route as DiscordRouteImport } from './routes/discord'
 import { Route as FilesRouteImport } from './routes/files'
+import { Route as GithubRouteImport } from './routes/github'
 import { Route as InfoRouteImport } from './routes/info'
 import { Route as InviteRouteImport } from './routes/invite'
 import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as ResetPasswordRouteImport } from './routes/reset-password'
 import { Route as TermsRouteImport } from './routes/terms'
+import { Route as TwitterRouteImport } from './routes/twitter'
 import { Route as TwoFactorRouteImport } from './routes/two-factor'
+import { Route as XRouteImport } from './routes/x'
 import { Route as AppSplatRouteImport } from './routes/_app.$'
 import { Route as AppAccessRouteImport } from './routes/_app.access'
 import { Route as AppBricksRouteImport } from './routes/_app.bricks'
 import { Route as AppSecurityRouteImport } from './routes/_app.security'
+import { Route as AppServersRouteImport } from './routes/_app.servers'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as ApiHealthRouteImport } from './routes/api.health'
 import { Route as ApiSentryCheckRouteImport } from './routes/api.sentry-check'
@@ -56,9 +61,19 @@ const ConsoleRoute = ConsoleRouteImport.update({
   path: '/console',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DiscordRoute = DiscordRouteImport.update({
+  id: '/discord',
+  path: '/discord',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const FilesRoute = FilesRouteImport.update({
   id: '/files',
   path: '/files',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const GithubRoute = GithubRouteImport.update({
+  id: '/github',
+  path: '/github',
   getParentRoute: () => rootRouteImport,
 } as any)
 const InfoRoute = InfoRouteImport.update({
@@ -86,9 +101,19 @@ const TermsRoute = TermsRouteImport.update({
   path: '/terms',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TwitterRoute = TwitterRouteImport.update({
+  id: '/twitter',
+  path: '/twitter',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TwoFactorRoute = TwoFactorRouteImport.update({
   id: '/two-factor',
   path: '/two-factor',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const XRoute = XRouteImport.update({
+  id: '/x',
+  path: '/x',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppSplatRoute = AppSplatRouteImport.update({
@@ -109,6 +134,11 @@ const AppBricksRoute = AppBricksRouteImport.update({
 const AppSecurityRoute = AppSecurityRouteImport.update({
   id: '/security',
   path: '/security',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppServersRoute = AppServersRouteImport.update({
+  id: '/servers',
+  path: '/servers',
   getParentRoute: () => AppRoute,
 } as any)
 const AppSettingsRoute = AppSettingsRouteImport.update({
@@ -208,17 +238,22 @@ const AppServerServerIdFilesSplatRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/console': typeof ConsoleRoute
+  '/discord': typeof DiscordRoute
   '/files': typeof FilesRoute
+  '/github': typeof GithubRoute
   '/info': typeof InfoRoute
   '/invite': typeof InviteRoute
   '/privacy': typeof PrivacyRoute
   '/reset-password': typeof ResetPasswordRoute
   '/terms': typeof TermsRoute
+  '/twitter': typeof TwitterRoute
   '/two-factor': typeof TwoFactorRoute
+  '/x': typeof XRoute
   '/$': typeof AppSplatRoute
   '/access': typeof AppAccessRoute
   '/bricks': typeof AppBricksRoute
   '/security': typeof AppSecurityRoute
+  '/servers': typeof AppServersRoute
   '/settings': typeof AppSettingsRouteWithChildren
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
@@ -241,17 +276,22 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/console': typeof ConsoleRoute
+  '/discord': typeof DiscordRoute
   '/files': typeof FilesRoute
+  '/github': typeof GithubRoute
   '/info': typeof InfoRoute
   '/invite': typeof InviteRoute
   '/privacy': typeof PrivacyRoute
   '/reset-password': typeof ResetPasswordRoute
   '/terms': typeof TermsRoute
+  '/twitter': typeof TwitterRoute
   '/two-factor': typeof TwoFactorRoute
+  '/x': typeof XRoute
   '/$': typeof AppSplatRoute
   '/access': typeof AppAccessRoute
   '/bricks': typeof AppBricksRoute
   '/security': typeof AppSecurityRoute
+  '/servers': typeof AppServersRoute
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
   '/settings/account': typeof AppSettingsAccountRoute
@@ -274,17 +314,22 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_app': typeof AppRouteWithChildren
   '/console': typeof ConsoleRoute
+  '/discord': typeof DiscordRoute
   '/files': typeof FilesRoute
+  '/github': typeof GithubRoute
   '/info': typeof InfoRoute
   '/invite': typeof InviteRoute
   '/privacy': typeof PrivacyRoute
   '/reset-password': typeof ResetPasswordRoute
   '/terms': typeof TermsRoute
+  '/twitter': typeof TwitterRoute
   '/two-factor': typeof TwoFactorRoute
+  '/x': typeof XRoute
   '/_app/$': typeof AppSplatRoute
   '/_app/access': typeof AppAccessRoute
   '/_app/bricks': typeof AppBricksRoute
   '/_app/security': typeof AppSecurityRoute
+  '/_app/servers': typeof AppServersRoute
   '/_app/settings': typeof AppSettingsRouteWithChildren
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
@@ -309,17 +354,22 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/console'
+    | '/discord'
     | '/files'
+    | '/github'
     | '/info'
     | '/invite'
     | '/privacy'
     | '/reset-password'
     | '/terms'
+    | '/twitter'
     | '/two-factor'
+    | '/x'
     | '/$'
     | '/access'
     | '/bricks'
     | '/security'
+    | '/servers'
     | '/settings'
     | '/api/health'
     | '/api/sentry-check'
@@ -342,17 +392,22 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/console'
+    | '/discord'
     | '/files'
+    | '/github'
     | '/info'
     | '/invite'
     | '/privacy'
     | '/reset-password'
     | '/terms'
+    | '/twitter'
     | '/two-factor'
+    | '/x'
     | '/$'
     | '/access'
     | '/bricks'
     | '/security'
+    | '/servers'
     | '/api/health'
     | '/api/sentry-check'
     | '/settings/account'
@@ -374,17 +429,22 @@ export interface FileRouteTypes {
     | '/'
     | '/_app'
     | '/console'
+    | '/discord'
     | '/files'
+    | '/github'
     | '/info'
     | '/invite'
     | '/privacy'
     | '/reset-password'
     | '/terms'
+    | '/twitter'
     | '/two-factor'
+    | '/x'
     | '/_app/$'
     | '/_app/access'
     | '/_app/bricks'
     | '/_app/security'
+    | '/_app/servers'
     | '/_app/settings'
     | '/api/health'
     | '/api/sentry-check'
@@ -409,13 +469,17 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AppRoute: typeof AppRouteWithChildren
   ConsoleRoute: typeof ConsoleRoute
+  DiscordRoute: typeof DiscordRoute
   FilesRoute: typeof FilesRoute
+  GithubRoute: typeof GithubRoute
   InfoRoute: typeof InfoRoute
   InviteRoute: typeof InviteRoute
   PrivacyRoute: typeof PrivacyRoute
   ResetPasswordRoute: typeof ResetPasswordRoute
   TermsRoute: typeof TermsRoute
+  TwitterRoute: typeof TwitterRoute
   TwoFactorRoute: typeof TwoFactorRoute
+  XRoute: typeof XRoute
   ApiHealthRoute: typeof ApiHealthRoute
   ApiSentryCheckRoute: typeof ApiSentryCheckRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
@@ -445,11 +509,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/discord': {
+      id: '/discord'
+      path: '/discord'
+      fullPath: '/discord'
+      preLoaderRoute: typeof DiscordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/files': {
       id: '/files'
       path: '/files'
       fullPath: '/files'
       preLoaderRoute: typeof FilesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/github': {
+      id: '/github'
+      path: '/github'
+      fullPath: '/github'
+      preLoaderRoute: typeof GithubRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/info': {
@@ -487,11 +565,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TermsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/twitter': {
+      id: '/twitter'
+      path: '/twitter'
+      fullPath: '/twitter'
+      preLoaderRoute: typeof TwitterRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/two-factor': {
       id: '/two-factor'
       path: '/two-factor'
       fullPath: '/two-factor'
       preLoaderRoute: typeof TwoFactorRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/x': {
+      id: '/x'
+      path: '/x'
+      fullPath: '/x'
+      preLoaderRoute: typeof XRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/$': {
@@ -520,6 +612,13 @@ declare module '@tanstack/react-router' {
       path: '/security'
       fullPath: '/security'
       preLoaderRoute: typeof AppSecurityRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/servers': {
+      id: '/_app/servers'
+      path: '/servers'
+      fullPath: '/servers'
+      preLoaderRoute: typeof AppServersRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/settings': {
@@ -711,6 +810,7 @@ interface AppRouteChildren {
   AppAccessRoute: typeof AppAccessRoute
   AppBricksRoute: typeof AppBricksRoute
   AppSecurityRoute: typeof AppSecurityRoute
+  AppServersRoute: typeof AppServersRoute
   AppSettingsRoute: typeof AppSettingsRouteWithChildren
   AppServerServerIdRoute: typeof AppServerServerIdRouteWithChildren
 }
@@ -720,6 +820,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppAccessRoute: AppAccessRoute,
   AppBricksRoute: AppBricksRoute,
   AppSecurityRoute: AppSecurityRoute,
+  AppServersRoute: AppServersRoute,
   AppSettingsRoute: AppSettingsRouteWithChildren,
   AppServerServerIdRoute: AppServerServerIdRouteWithChildren,
 }
@@ -730,13 +831,17 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AppRoute: AppRouteWithChildren,
   ConsoleRoute: ConsoleRoute,
+  DiscordRoute: DiscordRoute,
   FilesRoute: FilesRoute,
+  GithubRoute: GithubRoute,
   InfoRoute: InfoRoute,
   InviteRoute: InviteRoute,
   PrivacyRoute: PrivacyRoute,
   ResetPasswordRoute: ResetPasswordRoute,
   TermsRoute: TermsRoute,
+  TwitterRoute: TwitterRoute,
   TwoFactorRoute: TwoFactorRoute,
+  XRoute: XRoute,
   ApiHealthRoute: ApiHealthRoute,
   ApiSentryCheckRoute: ApiSentryCheckRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
