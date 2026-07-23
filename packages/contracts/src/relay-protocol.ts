@@ -21,6 +21,7 @@ export const relayControlOperations = [
   "brick.catalog",
   "brick.recipe",
   "instance.create",
+  "instance.startup.write",
   "instance.delete",
   "instance.action",
   "instance.files.list",
@@ -40,6 +41,12 @@ export type RelayControlOperation = (typeof relayControlOperations)[number]
 export function relayControlDeadlineMs(
   operation: RelayControlOperation
 ): number {
+  if (
+    operation === "instance.create" ||
+    operation === "instance.startup.write"
+  ) {
+    return 360_000
+  }
   return operation === "instance.network.routes.write" ? 240_000 : 30_000
 }
 

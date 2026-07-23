@@ -17,6 +17,7 @@ export interface RelayInstanceConfig {
   javaVersion: string
   name: string
   service: string
+  variables?: Record<string, boolean | number | string>
   version: string
   managedByRelay: boolean
 }

@@ -14,6 +14,7 @@ import {
   relayNetworkingSchema,
   relayProxySettingsSchema,
   relaySaveFileInputSchema,
+  relayUpdateInstanceStartupSchema,
   relayBootstrapDiscoveryTranscript,
 } from "@workspace/contracts"
 import type { RelayControlRequest } from "@workspace/contracts"
@@ -685,6 +686,13 @@ async function executeControlRequest(
       return lifecycle.createInstance(
         relayCreateInstanceSchema.parse(request.payload)
       )
+    case "instance.startup.write": {
+      const instanceId = requiredString(payload, "instanceId")
+      const input = relayUpdateInstanceStartupSchema.parse(payload)
+      return serializeInstanceMutation(instanceId, () =>
+        lifecycle.reconfigureInstance(instanceId, input)
+      )
+    }
     case "instance.delete": {
       const instanceId = requiredString(payload, "instanceId")
       await serializeInstanceMutation(instanceId, () =>

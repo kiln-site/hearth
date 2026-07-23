@@ -8,6 +8,7 @@ import { basename, relative, resolve } from "node:path"
 
 import { command } from "./command.js"
 import type {
+  BrickVariableValue,
   RelayConsole,
   RelayConsoleCompletion,
   RelayConsoleLevel,
@@ -17,6 +18,7 @@ import type {
   RelayInstanceResources,
   RelayObservedState,
 } from "@workspace/contracts"
+import { brickVariableValuesSchema } from "@workspace/contracts"
 
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
 
@@ -1172,6 +1174,7 @@ export class DockerDriver {
       name,
       shortId: id.slice(0, 8),
       service,
+      variables: parseBrickVariablesLabel(labels["kiln.brick.variables"]),
       version,
       managedByRelay: owned,
     }
@@ -1203,6 +1206,17 @@ export class DockerDriver {
 
 function matchesInstanceId(instance: RelayInstanceConfig, id: string): boolean {
   return instance.id === id || instance.shortId === id || instance.name === id
+}
+
+function parseBrickVariablesLabel(
+  value: string | undefined
+): Record<string, BrickVariableValue> | undefined {
+  if (!value) return undefined
+  try {
+    return brickVariableValuesSchema.parse(JSON.parse(value))
+  } catch {
+    return undefined
+  }
 }
 
 function percentOf(used: number, total: number): number {

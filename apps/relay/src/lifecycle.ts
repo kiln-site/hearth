@@ -12,6 +12,7 @@ import type {
   RelayNetworking,
   RelayProxyDiagnostics,
   RelayProxySettings,
+  RelayUpdateInstanceStartup,
 } from "@workspace/contracts"
 import { relayProxySettingsSchema } from "@workspace/contracts"
 import type { BrickCatalog } from "./bricks.js"
@@ -473,10 +474,65 @@ export class LifecycleDriver {
   }
 
   async createInstance(input: RelayCreateInstance): Promise<RelayInstance> {
+    const id = randomBytes(32).toString("hex").slice(0, 40)
+    return this.#provisionManagedInstance({
+      id,
+      prepareDirectory: true,
+      recipe: input.recipe,
+      start: input.start,
+      variables: input.variables,
+    })
+  }
+
+  async reconfigureInstance(
+    instanceId: string,
+    input: RelayUpdateInstanceStartup
+  ): Promise<RelayInstance> {
+    const existing = await this.#docker.findInstance(instanceId)
+    if (!existing) throw new Error("Instance not found")
+    if (!existing.managedByRelay) {
+      throw new Error("Relay can only reconfigure containers it created")
+    }
+    const recipe = input.recipe ?? existing.brickSource
+    if (!recipe) {
+      throw new Error("Instance is missing its Brick recipe source")
+    }
+
+    await command("docker", ["stop", "--time", "30", existing.service], {
+      timeout: 45_000,
+    }).catch(() => undefined)
+    await command("docker", ["rm", "--force", existing.service], {
+      timeout: 90_000,
+    })
+
+    try {
+      return await this.#provisionManagedInstance({
+        id: existing.id,
+        prepareDirectory: false,
+        recipe,
+        start: input.start,
+        variables: input.variables,
+      })
+    } catch (error) {
+      throw new Error(
+        `Failed to reconfigure ${existing.name}: ${error instanceof Error ? error.message : "unknown error"}`,
+        { cause: error }
+      )
+    }
+  }
+
+  async #provisionManagedInstance(input: {
+    id: string
+    prepareDirectory: boolean
+    recipe: string
+    start: boolean
+    variables: RelayCreateInstance["variables"]
+  }): Promise<RelayInstance> {
     const definition = await this.#bricks.recipe(input.recipe)
     const resolved = resolveBrick(definition, input.variables, input.recipe)
     const existing = await this.#docker.inspectInstances()
     if (
+      input.prepareDirectory &&
       definition.constraints.singleton &&
       existing.some(
         (instance) =>
@@ -505,7 +561,7 @@ export class LifecycleDriver {
       )
     }
 
-    const id = randomBytes(32).toString("hex").slice(0, 40)
+    const id = input.id
     const shortId = id.slice(0, 8)
     const containerName = `kiln-${shortId}`
     const version = Object.hasOwn(resolved.values, "version")
@@ -539,12 +595,14 @@ export class LifecycleDriver {
     const connectAddress =
       connectPort === 25_565 ? hostname : `${hostname}:${connectPort}`
 
-    await mkdir(directory, { recursive: true })
-    if (definition.runtime.user) {
-      const identity = definition.runtime.user.split(":")
-      const user = Number(identity[0])
-      const group = identity.length === 2 ? Number(identity[1]) : user
-      await chown(directory, user, group)
+    if (input.prepareDirectory) {
+      await mkdir(directory, { recursive: true })
+      if (definition.runtime.user) {
+        const identity = definition.runtime.user.split(":")
+        const user = Number(identity[0])
+        const group = identity.length === 2 ? Number(identity[1]) : user
+        await chown(directory, user, group)
+      }
     }
     await this.#ensureNetwork()
     if (networking?.enabled) await this.#ensureInfrastructure(networking, false)
@@ -562,6 +620,7 @@ export class LifecycleDriver {
       )
     }
 
+    const variablesLabel = JSON.stringify(resolved.values)
     const arguments_ = [
       "container",
       "create",
@@ -604,6 +663,8 @@ export class LifecycleDriver {
       `kiln.brick.format=${definition.format}`,
       "--label",
       `kiln.brick.source=${input.recipe}`,
+      "--label",
+      `kiln.brick.variables=${variablesLabel}`,
       "--label",
       `kiln.brick.network-mode=${definition.network.mode}`,
       "--label",
@@ -680,7 +741,9 @@ export class LifecycleDriver {
       await command("docker", ["rm", "--force", containerName]).catch(
         () => undefined
       )
-      await rm(directory, { recursive: true, force: true })
+      if (input.prepareDirectory) {
+        await rm(directory, { recursive: true, force: true })
+      }
       throw error
     }
 

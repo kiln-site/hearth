@@ -136,12 +136,20 @@ export const brickSchema = brickRecipeSchema.extend({
   source: brickSourceSchema,
 })
 
+export const brickVariableValuesSchema = z.record(
+  z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u),
+  brickVariableValueSchema
+)
+
 export const relayCreateInstanceSchema = z.object({
   recipe: brickSourceSchema,
-  variables: z.record(
-    z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u),
-    brickVariableValueSchema
-  ),
+  variables: brickVariableValuesSchema,
+  start: z.boolean().default(true),
+})
+
+export const relayUpdateInstanceStartupSchema = z.object({
+  recipe: brickSourceSchema.optional(),
+  variables: brickVariableValuesSchema,
   start: z.boolean().default(true),
 })
 
@@ -327,6 +335,7 @@ export const relayInstanceSchema = z.object({
     .optional(),
   brickPrimaryPort: z.number().int().min(1).max(65_535).optional(),
   brickSource: brickSourceSchema.optional(),
+  variables: brickVariableValuesSchema.optional(),
   managedByRelay: z.boolean().default(false),
   resources: relayInstanceResourcesSchema.nullable().default(null),
 })
@@ -534,6 +543,9 @@ export type BrickCatalogDocument = z.infer<typeof brickCatalogDocumentSchema>
 export type Brick = z.infer<typeof brickSchema>
 export type RelayCatalog = z.infer<typeof relayCatalogSchema>
 export type RelayCreateInstance = z.infer<typeof relayCreateInstanceSchema>
+export type RelayUpdateInstanceStartup = z.infer<
+  typeof relayUpdateInstanceStartupSchema
+>
 export type RelayNetworking = z.infer<typeof relayNetworkingSchema>
 export type RelayProxyMode = z.infer<typeof relayProxyModeSchema>
 export type RelayProxySettings = z.infer<typeof relayProxySettingsSchema>

@@ -533,6 +533,7 @@ function isAuditedMutation(operation: RelayControlOperation): boolean {
     operation === "relay.networking.write" ||
     operation === "relay.proxy.write" ||
     operation === "instance.create" ||
+    operation === "instance.startup.write" ||
     operation === "instance.delete" ||
     operation === "instance.action" ||
     operation === "instance.files.write" ||
@@ -602,6 +603,7 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
     case "brick.recipe":
       return "brick.read"
     case "instance.create":
+    case "instance.startup.write":
       return "instance.create"
     case "instance.delete":
       return "instance.delete"
