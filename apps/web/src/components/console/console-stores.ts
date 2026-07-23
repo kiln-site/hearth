@@ -41,7 +41,7 @@ export interface ConsoleUiStore {
 }
 
 export interface ConsoleStreamSnapshot {
-  connection: "connecting" | "live" | "unavailable"
+  connection: "live" | "opening" | "reconnecting" | "unavailable"
   consoleData: RelayConsole | null
   error: string | null
   loading: boolean
@@ -50,7 +50,6 @@ export interface ConsoleStreamSnapshot {
 }
 
 export interface ConsoleStreamStore {
-  getConnectionSnapshot: () => ConsoleStreamSnapshot["connection"]
   getHasLinesSnapshot: () => boolean
   getSnapshot: () => ConsoleStreamSnapshot
   setSnapshot: (snapshot: ConsoleStreamSnapshot) => void
@@ -59,7 +58,7 @@ export interface ConsoleStreamStore {
 
 export function createConsoleStreamStore(): ConsoleStreamStore {
   let snapshot: ConsoleStreamSnapshot = {
-    connection: "connecting",
+    connection: "opening",
     consoleData: null,
     error: null,
     loading: true,
@@ -68,7 +67,6 @@ export function createConsoleStreamStore(): ConsoleStreamStore {
   }
   const listeners = new Set<() => void>()
   return {
-    getConnectionSnapshot: () => snapshot.connection,
     getHasLinesSnapshot: () => Boolean(snapshot.consoleData?.lines.length),
     getSnapshot: () => snapshot,
     setSnapshot: (nextSnapshot) => {

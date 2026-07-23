@@ -140,7 +140,6 @@ function ConsoleWorkspaceSession({
         active={active}
         canWrite={canWrite}
         instance={instance}
-        streamStore={streamStore}
       />
     </section>
   )
@@ -791,18 +790,11 @@ function ConsoleLogViewport({
         </div>
       ) : null}
 
-      {(connection !== "live" || transport === "hearth") && consoleData ? (
-        <div className="pointer-events-none absolute top-3 left-1/2 z-20 -translate-x-1/2">
-          <div className="flex items-center gap-1.5 border border-amber-400/20 bg-stone-950/90 px-2.5 py-1.5 font-mono text-[9px] text-amber-200 shadow-lg shadow-black/35 backdrop-blur-sm">
-            <WifiOff className="size-3" />
-            {connection === "connecting"
-              ? "RECONNECTING · OUTPUT MAY BE DELAYED"
-              : connection === "live" && transport === "hearth"
-                ? "CONNECTED THROUGH HEARTH · DIRECT RELAY UNAVAILABLE"
-                : "LIVE OUTPUT PAUSED"}
-          </div>
-        </div>
-      ) : null}
+      <ConsoleConnectionNotice
+        connection={connection}
+        hasConsoleData={Boolean(consoleData)}
+        transport={transport}
+      />
 
       {loading && !consoleData ? (
         <div className="absolute inset-0 grid place-items-center bg-card/70 backdrop-blur-[2px]">
@@ -833,6 +825,64 @@ function ConsoleLogViewport({
           </div>
         </div>
       ) : null}
+    </div>
+  )
+}
+
+const ConsoleConnectionNotice = React.memo(function ConsoleConnectionNotice({
+  connection,
+  hasConsoleData,
+  transport,
+}: {
+  connection: ConsoleStreamSnapshot["connection"]
+  hasConsoleData: boolean
+  transport: ConsoleStreamSnapshot["transport"]
+}) {
+  if (!hasConsoleData) return null
+  if (connection === "opening") return <DelayedConsoleOpeningNotice />
+  if (connection === "live" && transport !== "hearth") return null
+
+  const message =
+    connection === "reconnecting"
+      ? "RECONNECTING · OUTPUT MAY BE DELAYED"
+      : connection === "live"
+        ? "CONNECTED THROUGH HEARTH · DIRECT RELAY UNAVAILABLE"
+        : "LIVE OUTPUT PAUSED"
+
+  return <ConsoleConnectionNoticeContent message={message} />
+})
+
+function DelayedConsoleOpeningNotice() {
+  const [visible, setVisible] = React.useState(false)
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => setVisible(true), 500)
+    return () => window.clearTimeout(timer)
+  }, [])
+  return visible ? (
+    <ConsoleConnectionNoticeContent
+      loading
+      message="CONNECTING TO LIVE OUTPUT…"
+    />
+  ) : null
+}
+
+function ConsoleConnectionNoticeContent({
+  loading = false,
+  message,
+}: {
+  loading?: boolean
+  message: string
+}) {
+  return (
+    <div className="pointer-events-none absolute top-3 left-1/2 z-20 -translate-x-1/2">
+      <div className="flex items-center gap-1.5 border border-amber-400/20 bg-stone-950/90 px-2.5 py-1.5 font-mono text-[9px] text-amber-200 shadow-lg shadow-black/35 backdrop-blur-sm">
+        {loading ? (
+          <LoaderCircle className="size-3 animate-spin" />
+        ) : (
+          <WifiOff className="size-3" />
+        )}
+        {message}
+      </div>
     </div>
   )
 }
@@ -903,19 +953,12 @@ const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
   active,
   canWrite,
   instance,
-  streamStore,
 }: {
   active: boolean
   canWrite: boolean
   instance: InstanceWorkspaceInstance
-  streamStore: ConsoleStreamStore
 }) {
-  const connection = React.useSyncExternalStore(
-    streamStore.subscribe,
-    streamStore.getConnectionSnapshot,
-    streamStore.getConnectionSnapshot
-  )
-  const consoleAvailable = connection === "live"
+  const relayConnected = useInstanceRelayConnected()
   const selectObservedState = React.useMemo(
     () => selectInstanceObservedState(instance.id, instance.relayId),
     [instance.id, instance.relayId]
@@ -928,7 +971,8 @@ const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
     instance.id,
     instance.relayId,
     active,
-    consoleAvailable && observedState === "running"
+    observedState === "running",
+    relayConnected
   )
 
   return (
@@ -952,11 +996,11 @@ const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
                   onBlur={command.stopCompletions}
                   onKeyDown={command.keyDown}
                   placeholder={
-                    !consoleAvailable
-                      ? "Relay disconnected — commands paused"
-                      : command.running
-                        ? "Send a server command…"
-                        : "Server is offline"
+                    !command.running
+                      ? "Server is offline"
+                      : !command.available
+                        ? "Relay disconnected — command saved as a draft"
+                        : "Send a server command…"
                   }
                   role="combobox"
                   aria-label="Server command"
@@ -1047,6 +1091,7 @@ const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
             className="h-10 gap-1.5 px-4 text-xs"
             disabled={
               !command.running ||
+              !command.available ||
               !command.inputRef.current?.value.trim() ||
               command.sending
             }
@@ -1072,7 +1117,8 @@ function useConsoleCommand(
   instanceId: string,
   relayId: string,
   active: boolean,
-  running: boolean
+  running: boolean,
+  available: boolean
 ) {
   const [error, setError] = React.useState<string | null>(null)
   const inputRef = React.useRef<HTMLInputElement>(null)
@@ -1082,7 +1128,7 @@ function useConsoleCommand(
     instanceId,
     inputRef,
     sendButtonRef,
-    running,
+    running && available,
     sending
   )
   const { navigateHistory, recordCommand } = useCommandHistory(instanceId)
@@ -1292,7 +1338,8 @@ function useConsoleCommand(
       !event.altKey &&
       !event.ctrlKey &&
       !event.metaKey &&
-      running
+      running &&
+      available
     ) {
       event.preventDefault()
       void requestCompletion(
@@ -1320,7 +1367,7 @@ function useConsoleCommand(
   async function submit(event: React.FormEvent) {
     event.preventDefault()
     const command = inputRef.current?.value.trim() ?? ""
-    if (!command || sending) return
+    if (!command || !running || !available || sending) return
     stopCompletions()
     recordCommand(command)
     setValue("")
@@ -1346,6 +1393,7 @@ function useConsoleCommand(
 
   return {
     applyCompletion,
+    available,
     change,
     completionListRef,
     completions,
@@ -1582,12 +1630,13 @@ function useRelayConsoleStream(
   relayConnected: boolean
 ) {
   const queryClient = useQueryClient()
+  const hasEverBeenLiveRef = React.useRef(false)
   const consoleDataRef = React.useRef<RelayConsole | null>(
     queryClient.getQueryData(queryKeys.relay.console(relayId, instanceId)) ??
       null
   )
   const [snapshot, setSnapshot] = React.useState<ConsoleStreamSnapshot>(() => ({
-    connection: relayConnected ? "connecting" : "unavailable",
+    connection: relayConnected ? "opening" : "unavailable",
     consoleData: consoleDataRef.current,
     error: relayConnected ? null : "Hearth cannot reach this Relay right now.",
     loading: !consoleDataRef.current,
@@ -1621,7 +1670,7 @@ function useRelayConsoleStream(
     )
     setSnapshot((current) =>
       updateConsoleStreamSnapshot(current, {
-        connection: "connecting",
+        connection: hasEverBeenLiveRef.current ? "reconnecting" : "opening",
         error: null,
         loading: !consoleDataRef.current,
       })
@@ -1688,6 +1737,7 @@ function useRelayConsoleStream(
                 transportMessage: result.value.message,
               })
             } else if (result.value.type === "ready") {
+              hasEverBeenLiveRef.current = true
               const nextConsole = consoleDataRef.current ?? {
                 instanceId,
                 lines: [],
@@ -1713,7 +1763,9 @@ function useRelayConsoleStream(
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           if (cancelled) break
           commitSnapshot({
-            connection: "unavailable",
+            connection: hasEverBeenLiveRef.current
+              ? "reconnecting"
+              : "unavailable",
             error: consoleConnectionMessage(cause),
             loading: false,
           })
