@@ -6,7 +6,6 @@ import {
   loadavg,
   platform,
   totalmem,
-  uptime,
 } from "node:os"
 import { statfs } from "node:fs/promises"
 
@@ -25,8 +24,12 @@ export async function nodeSnapshot(
   const filesystem = await statfs(config.rootDirectory)
   const storageTotal = filesystem.blocks * filesystem.bsize
   const storageAvailable = filesystem.bavail * filesystem.bsize
-  const dockerVersion = await docker.dockerVersion()
+  const [dockerVersion, startedAt] = await Promise.all([
+    docker.dockerVersion(),
+    docker.relayStartedAt(),
+  ])
   const totalMemory = totalmem()
+  const startedAtTimestamp = startedAt ? Date.parse(startedAt) : Number.NaN
 
   return {
     id: config.nodeId,
@@ -34,7 +37,10 @@ export async function nodeSnapshot(
     version: relayVersion,
     platform: platform(),
     arch: arch(),
-    uptimeSeconds: uptime(),
+    uptimeSeconds: Number.isFinite(startedAtTimestamp)
+      ? Math.max(0, Math.floor((Date.now() - startedAtTimestamp) / 1_000))
+      : null,
+    startedAt,
     cpu: {
       cores: cpus().length,
       loadPercent: Math.round((loadavg()[0] / cpus().length) * 10_000) / 100,

@@ -319,7 +319,8 @@ export const relayNodeSchema = z.object({
   version: z.string().min(1),
   platform: z.string().min(1),
   arch: z.string().min(1),
-  uptimeSeconds: z.number().nonnegative(),
+  uptimeSeconds: z.number().nonnegative().nullable().default(null),
+  startedAt: z.string().datetime().nullable().default(null),
   cpu: z.object({
     cores: z.number().int().positive(),
     loadPercent: z.number().min(0),

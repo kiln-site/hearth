@@ -145,6 +145,7 @@ export function relaysQueryOptions() {
   return queryOptions({
     queryKey: queryKeys.relays,
     queryFn: () => getRelays(),
+    staleTime: Infinity,
   })
 }
 

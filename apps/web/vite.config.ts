@@ -9,6 +9,9 @@ import viteReact from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
 
 const repositoryRoot = resolve(import.meta.dirname, "../..")
+const webPackage = JSON.parse(
+  readFileSync(resolve(import.meta.dirname, "package.json"), "utf8")
+) as { version: string }
 const contractsSource = resolve(
   repositoryRoot,
   "packages/contracts/src/index.ts"
@@ -19,7 +22,8 @@ const reactScanProductionShim = resolve(
 )
 
 const config = defineConfig(({ command }) => {
-  const buildCommit = command === "serve" ? "" : resolveBuildCommit()
+  const sourceCommit = resolveBuildCommit()
+  const buildCommit = command === "serve" ? "" : sourceCommit
   const sentryAuthToken = process.env.SENTRY_AUTH_TOKEN
 
   return {
@@ -69,6 +73,8 @@ const config = defineConfig(({ command }) => {
     },
     define: {
       "import.meta.env.VITE_KILN_BUILD_SHA": JSON.stringify(buildCommit),
+      "import.meta.env.VITE_KILN_SOURCE_SHA": JSON.stringify(sourceCommit),
+      "import.meta.env.VITE_KILN_VERSION": JSON.stringify(webPackage.version),
     },
     envDir: "../..",
     resolve: {
