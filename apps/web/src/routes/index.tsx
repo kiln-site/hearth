@@ -48,12 +48,12 @@ export const Route = createFileRoute("/")({
         throw redirect({ to: "/settings" })
       }
       throw redirect({
-        to: "/$serverId/console",
+        to: "/server/$serverId/console",
         params: { serverId: "unavailable" },
       })
     }
     throw redirect({
-      to: "/$serverId/console",
+      to: "/server/$serverId/console",
       params: {
         serverId: connection.snapshot.instances.at(0)?.routeId ?? "unavailable",
       },

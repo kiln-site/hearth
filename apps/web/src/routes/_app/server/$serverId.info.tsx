@@ -12,9 +12,9 @@ import { pageTitle } from "@/lib/page-title"
 import { relaySnapshotQueryOptions } from "@/lib/query-options"
 import { selectInstanceSettings } from "@/lib/relay-selectors"
 
-export const Route = createFileRoute("/_app/$serverId/info")({
-  head: () => ({ meta: [{ title: pageTitle("Info") }] }),
+export const Route = createFileRoute("/_app/server/$serverId/info")({
   component: InfoRoute,
+  head: () => ({ meta: [{ title: pageTitle("Info") }] }),
 })
 
 function InfoRoute() {

@@ -18,7 +18,12 @@ import {
   TerminalSquare,
   UserRoundCog,
 } from "lucide-react"
-import { useMatch, useNavigate, useRouterState } from "@tanstack/react-router"
+import {
+  Link,
+  useMatch,
+  useNavigate,
+  useRouterState,
+} from "@tanstack/react-router"
 
 import { Avatar, AvatarFallback } from "@workspace/ui/components/avatar"
 import {
@@ -74,6 +79,7 @@ import {
   selectedInstanceCookieName,
   uiPreferenceCookieMaxAge,
 } from "@/lib/ui-preference-cookies"
+import { warmFileWorkspaceModule } from "@/lib/workspace-module-preloads"
 
 export type InstanceTab = "console" | "files" | "info" | "network"
 
@@ -295,6 +301,10 @@ const SelectedInstanceNavigation = React.memo(
       selectedInstanceRouteId
     )
     const instance = routeInstance ?? rememberedInstance ?? instanceRoutes.at(0)
+    const instanceRouteId =
+      routeInstance && routeInstance.shortId === serverId
+        ? routeInstance.shortId
+        : instance?.routeId
 
     const rememberInstance = React.useCallback((instanceId: string) => {
       setSelectedInstanceRouteId(instanceId)
@@ -305,9 +315,9 @@ const SelectedInstanceNavigation = React.memo(
       if (routeInstance?.routeId) rememberInstance(routeInstance.routeId)
     }, [rememberInstance, routeInstance?.routeId])
 
-    return instance ? (
+    return instance && instanceRouteId ? (
       <InstanceNavigation
-        instanceRouteId={instance.routeId}
+        instanceRouteId={instanceRouteId}
         onRememberInstance={rememberInstance}
       />
     ) : null
@@ -322,49 +332,38 @@ const InstanceNavigation = React.memo(function InstanceNavigation({
   onRememberInstance: (id: string) => void
 }) {
   const navigate = useNavigate()
-  const selectedInstanceRouteId = React.useRef(instanceRouteId)
 
   const navigateToTab = React.useCallback(
     (tab: InstanceTab, nextServerId: string, replace = false) => {
       if (tab === "files") {
         return navigate({
-          to: "/$serverId/files/$",
+          to: "/server/$serverId/files/$",
           params: { serverId: nextServerId, _splat: "" },
           replace,
         })
       }
       if (tab === "info") {
         return navigate({
-          to: "/$serverId/info",
+          to: "/server/$serverId/info",
           params: { serverId: nextServerId },
           replace,
         })
       }
       if (tab === "network") {
         return navigate({
-          to: "/$serverId/network",
+          to: "/server/$serverId/network",
           params: { serverId: nextServerId },
           replace,
         })
       }
       return navigate({
-        to: "/$serverId/console",
+        to: "/server/$serverId/console",
         params: { serverId: nextServerId },
         replace,
       })
     },
     [navigate]
   )
-  const navigateToSelectedTab = React.useCallback(
-    (tab: InstanceTab) => {
-      void navigateToTab(tab, selectedInstanceRouteId.current)
-    },
-    [navigateToTab]
-  )
-
-  React.useEffect(() => {
-    selectedInstanceRouteId.current = instanceRouteId
-  }, [instanceRouteId])
 
   return (
     <SidebarGroup>
@@ -379,7 +378,7 @@ const InstanceNavigation = React.memo(function InstanceNavigation({
             onRememberInstance={onRememberInstance}
           />
           <CanonicalInstanceRoute instanceRouteId={instanceRouteId} />
-          <InstanceTabNavigation navigateToTab={navigateToSelectedTab} />
+          <InstanceTabNavigation instanceRouteId={instanceRouteId} />
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
@@ -535,7 +534,12 @@ function CanonicalInstanceRoute({
 }) {
   const navigate = useNavigate()
   const activeTab = useRouterState({
-    select: (state) => instanceTabFromPathname(state.location.pathname),
+    select: (state) =>
+      state.matches.some(
+        (match) => match.status === "notFound" || match.globalNotFound
+      )
+        ? null
+        : instanceTabFromPathname(state.location.pathname),
   })
   const serverId = useRouterState({
     select: (state) =>
@@ -543,7 +547,7 @@ function CanonicalInstanceRoute({
         ?.serverId,
   })
   const filePath = useMatch({
-    from: "/_app/$serverId/files/$",
+    from: "/_app/server/$serverId/files/$",
     shouldThrow: false,
     select: (match) => match.params._splat,
   })
@@ -555,7 +559,7 @@ function CanonicalInstanceRoute({
     if (!activeTab || instanceRouteId === serverId) return
     if (activeTab === "files") {
       void navigate({
-        to: "/$serverId/files/$",
+        to: "/server/$serverId/files/$",
         params: { serverId: instanceRouteId, _splat: filePath ?? "" },
         replace: true,
       })
@@ -564,10 +568,10 @@ function CanonicalInstanceRoute({
     void navigate({
       to:
         activeTab === "info"
-          ? "/$serverId/info"
+          ? "/server/$serverId/info"
           : activeTab === "network"
-            ? "/$serverId/network"
-            : "/$serverId/console",
+            ? "/server/$serverId/network"
+            : "/server/$serverId/console",
       params: { serverId: instanceRouteId },
       replace: true,
     })
@@ -577,15 +581,15 @@ function CanonicalInstanceRoute({
 }
 
 const InstanceTabNavigation = React.memo(function InstanceTabNavigation({
-  navigateToTab,
+  instanceRouteId,
 }: {
-  navigateToTab: (tab: InstanceTab) => void
+  instanceRouteId: string
 }) {
   return instanceItems.map((item) => (
     <InstanceTabNavigationItem
       key={item.value}
       item={item}
-      navigateToTab={navigateToTab}
+      instanceRouteId={instanceRouteId}
     />
   ))
 })
@@ -593,27 +597,68 @@ const InstanceTabNavigation = React.memo(function InstanceTabNavigation({
 const InstanceTabNavigationItem = React.memo(
   function InstanceTabNavigationItem({
     item,
-    navigateToTab,
+    instanceRouteId,
   }: {
     item: (typeof instanceItems)[number]
-    navigateToTab: (tab: InstanceTab) => void
+    instanceRouteId: string
   }) {
-    const isActive = useRouterState({
-      select: (state) =>
-        instanceTabFromPathname(state.location.pathname) === item.value,
-    })
+    const content = (
+      <>
+        <item.icon />
+        <span>{item.title}</span>
+      </>
+    )
 
     return (
       <SidebarMenuItem>
         <SidebarMenuButton
+          asChild
           tooltip={item.title}
-          isActive={isActive}
-          type="button"
           className="data-active:bg-primary/10 data-active:text-primary"
-          onClick={() => navigateToTab(item.value)}
         >
-          <item.icon />
-          <span>{item.title}</span>
+          {item.value === "console" ? (
+            <Link
+              to="/server/$serverId/console"
+              params={{ serverId: instanceRouteId }}
+              activeOptions={{ exact: true }}
+              activeProps={{ "data-active": true }}
+              preload="render"
+            >
+              {content}
+            </Link>
+          ) : item.value === "files" ? (
+            <Link
+              to="/server/$serverId/files/$"
+              params={{ serverId: instanceRouteId, _splat: "" }}
+              activeProps={{ "data-active": true }}
+              preload="intent"
+              onFocus={warmFileWorkspaceModule}
+              onMouseEnter={warmFileWorkspaceModule}
+              onTouchStart={warmFileWorkspaceModule}
+            >
+              {content}
+            </Link>
+          ) : item.value === "network" ? (
+            <Link
+              to="/server/$serverId/network"
+              params={{ serverId: instanceRouteId }}
+              activeOptions={{ exact: true }}
+              activeProps={{ "data-active": true }}
+              preload="intent"
+            >
+              {content}
+            </Link>
+          ) : (
+            <Link
+              to="/server/$serverId/info"
+              params={{ serverId: instanceRouteId }}
+              activeOptions={{ exact: true }}
+              activeProps={{ "data-active": true }}
+              preload="intent"
+            >
+              {content}
+            </Link>
+          )}
         </SidebarMenuButton>
       </SidebarMenuItem>
     )
@@ -807,8 +852,9 @@ function globalSectionFromPathname(pathname: string): GlobalSection {
 
 function instanceTabFromPathname(pathname: string): InstanceTab | null {
   if (globalSectionFromPathname(pathname)) return null
-  if (/\/files(?:\/|$)/.test(pathname)) return "files"
-  if (pathname.endsWith("/network")) return "network"
-  if (pathname.endsWith("/info")) return "info"
-  return "console"
+  if (/^\/server\/[^/]+\/files(?:\/|$)/.test(pathname)) return "files"
+  if (/^\/server\/[^/]+\/network\/?$/.test(pathname)) return "network"
+  if (/^\/server\/[^/]+\/info\/?$/.test(pathname)) return "info"
+  if (/^\/server\/[^/]+\/console\/?$/.test(pathname)) return "console"
+  return null
 }

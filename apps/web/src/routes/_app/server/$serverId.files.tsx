@@ -13,20 +13,22 @@ import {
   useInstanceRelayConnected,
 } from "@/components/instance-workspace-context"
 import { pageTitle } from "@/lib/page-title"
+import { loadFileWorkspaceModule } from "@/lib/workspace-module-preloads"
 
 const FileWorkspace = React.lazy(async () => {
-  const module = await import("@/components/file-workspace")
+  const module = await loadFileWorkspaceModule()
   return { default: module.FileWorkspace }
 })
 
-export const Route = createFileRoute("/_app/$serverId/files")({
-  head: () => ({ meta: [{ title: pageTitle("Files") }] }),
+export const Route = createFileRoute("/_app/server/$serverId/files")({
   component: FilesRoute,
+  head: () => ({ meta: [{ title: pageTitle("Files") }] }),
+  pendingMinMs: 0,
 })
 
 function FilesRoute() {
   const filePath = useMatch({
-    from: "/_app/$serverId/files/$",
+    from: "/_app/server/$serverId/files/$",
     shouldThrow: false,
     select: (match) => match.params._splat,
   })

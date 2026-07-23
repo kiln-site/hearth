@@ -35,17 +35,37 @@ export function AppRouteContent({ children }: { children: React.ReactNode }) {
 }
 
 function AppRouteViewport({ children }: { children: React.ReactNode }) {
-  const activeSection = useRouterState({
-    select: (state) => globalSectionFromRouteId(state.matches.at(-1)?.routeId),
+  const routeFrame = useRouterState({
+    select: (state) =>
+      state.matches.some(
+        (match) => match.status === "notFound" || match.globalNotFound
+      )
+        ? "not-found"
+        : globalSectionFromRouteId(state.matches.at(-1)?.routeId),
   })
 
-  if (activeSection) {
-    return (
-      <GlobalRouteFrame section={activeSection}>{children}</GlobalRouteFrame>
-    )
+  if (routeFrame === "not-found") {
+    return <NotFoundRouteFrame>{children}</NotFoundRouteFrame>
+  }
+  if (routeFrame) {
+    return <GlobalRouteFrame section={routeFrame}>{children}</GlobalRouteFrame>
   }
   return <InstanceRouteViewport>{children}</InstanceRouteViewport>
 }
+
+const NotFoundRouteFrame = React.memo(function NotFoundRouteFrame({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <WorkspaceFrame
+      header={<GlobalPageToolbar label="Navigation / Not found" />}
+    >
+      {children}
+    </WorkspaceFrame>
+  )
+})
 
 const GlobalRouteFrame = React.memo(function GlobalRouteFrame({
   children,

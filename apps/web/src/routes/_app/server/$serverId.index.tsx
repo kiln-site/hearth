@@ -1,11 +1,11 @@
 import { createFileRoute, redirect } from "@tanstack/react-router"
 
-export const Route = createFileRoute("/_app/$serverId/")({
+export const Route = createFileRoute("/_app/server/$serverId/")({
   beforeLoad: ({ params }) => {
     throw redirect({
-      to: "/$serverId/console",
-      params: { serverId: params.serverId },
+      to: "/server/$serverId/console",
       replace: true,
+      params: { serverId: params.serverId },
     })
   },
 })

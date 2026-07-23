@@ -7,9 +7,10 @@ import {
 } from "@/components/instance-workspace-context"
 import { pageTitle } from "@/lib/page-title"
 
-export const Route = createFileRoute("/_app/$serverId/console")({
-  head: () => ({ meta: [{ title: pageTitle("Console") }] }),
+export const Route = createFileRoute("/_app/server/$serverId/console")({
   component: ConsoleRoute,
+  head: () => ({ meta: [{ title: pageTitle("Console") }] }),
+  pendingMinMs: 0,
 })
 
 function ConsoleRoute() {

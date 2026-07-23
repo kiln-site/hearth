@@ -1,5 +1,6 @@
 import { Outlet, createFileRoute, redirect } from "@tanstack/react-router"
 
+import { AppNotFoundPage } from "@/components/app-error-page"
 import { getAuthState } from "@/server/auth"
 import {
   accessCapabilitiesQueryOptions,
@@ -29,4 +30,5 @@ export const Route = createFileRoute("/_app")({
     ])
   },
   component: Outlet,
+  notFoundComponent: AppNotFoundPage,
 })

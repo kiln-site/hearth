@@ -103,7 +103,7 @@ function BrickStudio({ studio }: { studio: Studio }) {
         queryClient.invalidateQueries({ queryKey: queryKeys.relay.snapshot }),
       ])
       await navigate({
-        to: "/$serverId/console",
+        to: "/server/$serverId/console",
         params: {
           serverId: relayInstanceRouteId(
             variables.data.relayId,
@@ -514,7 +514,7 @@ function RelayInstanceList({
           instances.slice(0, 6).map((instance) => (
             <Link
               key={instance.id}
-              to="/$serverId/console"
+              to="/server/$serverId/console"
               params={{
                 serverId: relayId
                   ? relayInstanceRouteId(relayId, instance.shortId)

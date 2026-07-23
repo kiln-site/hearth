@@ -20,13 +20,13 @@ export async function redirectLegacyPage(
       throw redirect({ to: "/settings", replace: true })
     }
     throw redirect({
-      to: `/$serverId/${page}`,
+      to: `/server/$serverId/${page}`,
       params: { serverId: "unavailable" },
       replace: true,
     })
   }
   throw redirect({
-    to: `/$serverId/${page}`,
+    to: `/server/$serverId/${page}`,
     params: {
       serverId: connection.snapshot.instances.at(0)?.routeId ?? "unavailable",
     },

@@ -443,6 +443,14 @@ function InstanceIdentity({
 function InstanceRouteTitle() {
   const title = useRouterState({
     select: (state) => {
+      if (
+        state.matches.at(-1)?.routeId === "/_app/server/$serverId/$" ||
+        state.matches.some(
+          (match) => match.status === "notFound" || match.globalNotFound
+        )
+      ) {
+        return "Not found"
+      }
       const pathname = state.location.pathname
       if (/\/files(?:\/|$)/.test(pathname)) return "Files"
       if (pathname.endsWith("/network")) return "Network"
