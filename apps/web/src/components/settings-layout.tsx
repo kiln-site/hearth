@@ -16,16 +16,7 @@ export const SettingsShell = React.memo(function SettingsShell({
 }) {
   return (
     <div className="min-h-full bg-background">
-      <header className="mx-auto w-full max-w-6xl px-5 pt-9">
-        <p className="font-mono text-[10px] tracking-[0.18em] text-primary uppercase">
-          Application settings
-        </p>
-        <h2 className="mt-2 font-heading text-3xl font-semibold tracking-[-0.04em]">
-          Settings
-        </h2>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Configure Hearth, its Relay fleet, and your account preferences.
-        </p>
+      <header className="mx-auto w-full max-w-6xl px-5 pt-3">
         <SettingsNavigation />
       </header>
       <div data-slot="settings-content" className="[contain:paint]">
@@ -43,7 +34,7 @@ const SettingsNavigation = React.memo(function SettingsNavigation() {
   return (
     <nav
       aria-label="Settings sections"
-      className="mt-7 mb-6 flex gap-1 overflow-x-auto border-b"
+      className="mb-6 flex gap-1 overflow-x-auto border-b"
     >
       {settingsTabs.map((tab) => (
         <Link

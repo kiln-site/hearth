@@ -54,6 +54,7 @@ services:
     environment:
       NODE_ENV: development
       KILN_ENVIRONMENT: dev
+      KILN_RELAY_CONTROL_URL: ws://relay:4100
       KILN_SENTRY_VERIFICATION_TOKEN: ${KILN_SENTRY_VERIFICATION_TOKEN:-}
     command:
       - /bin/sh
