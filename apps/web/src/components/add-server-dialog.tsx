@@ -1,12 +1,7 @@
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import {
-  CircleAlert,
-  LoaderCircle,
-  PackagePlus,
-  Rocket,
-} from "lucide-react"
+import { CircleAlert, LoaderCircle, Rocket } from "lucide-react"
 import type { Brick } from "@workspace/contracts"
 
 import { Button } from "@workspace/ui/components/button"
@@ -20,7 +15,10 @@ import {
 } from "@workspace/ui/components/dialog"
 import { Input } from "@workspace/ui/components/input"
 
-import { ServerTypeIcon } from "@/components/server-type-icon"
+import {
+  BrickSelectionFields,
+  type BrickSelection,
+} from "@/components/brick-selector"
 import {
   defaultBrickInstanceName,
   defaultBrickVariables,
@@ -34,10 +32,6 @@ import {
 } from "@/lib/query-options"
 import type { RelayConnection } from "@/lib/query-options"
 import { createBrickInstance } from "@/server/bricks"
-
-type BrickSelection =
-  | { kind: "catalog"; brick: Brick }
-  | { kind: "custom" }
 
 type AddServerDialogState = { kind: "closed" } | { kind: "open" }
 
@@ -107,7 +101,7 @@ const AddServerDialog = React.memo(function AddServerDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Add Server</DialogTitle>
           <DialogDescription>
@@ -156,9 +150,8 @@ const AddServerForm = React.memo(function AddServerForm({
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [selection, setSelection] = React.useState<BrickSelection | null>(() =>
-    bricks[0] ? { kind: "catalog", brick: bricks[0] } : { kind: "custom" }
+    bricks[0] ? { kind: "catalog", brick: bricks[0] } : null
   )
-  const [customSource, setCustomSource] = React.useState("")
   const [name, setName] = React.useState(() =>
     bricks[0] ? defaultBrickInstanceName(bricks[0]) : ""
   )
@@ -200,31 +193,44 @@ const AddServerForm = React.memo(function AddServerForm({
       })
     },
   })
+  const pending = provisionMutation.isPending
+  const submittingRef = React.useRef(false)
 
-  function chooseCatalogBrick(brick: Brick) {
-    setSelection({ kind: "catalog", brick })
-    setName(defaultBrickInstanceName(brick))
+  function changeSelection(next: BrickSelection | null) {
+    setSelection(next)
     setError(null)
-  }
-
-  function chooseCustom() {
-    setSelection({ kind: "custom" })
-    setName((current) => (current.trim().length > 0 ? current : "Custom server"))
-    setError(null)
+    if (next?.kind === "catalog") {
+      setName(defaultBrickInstanceName(next.brick))
+    } else if (next?.kind === "custom") {
+      setName((current) =>
+        current.trim().length > 0 ? current : "Custom server"
+      )
+    }
   }
 
   async function provision(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!relayConnected || !relayId || !selection) return
+    if (
+      !relayConnected ||
+      !relayId ||
+      !selection ||
+      pending ||
+      submittingRef.current
+    ) {
+      return
+    }
     setError(null)
 
     const recipe =
-      selection.kind === "catalog" ? selection.brick.source : customSource.trim()
+      selection.kind === "catalog"
+        ? selection.brick.source
+        : selection.source.trim()
     if (!recipe) {
       setError("Enter a Brick recipe URL")
       return
     }
 
+    submittingRef.current = true
     try {
       await provisionMutation.mutateAsync({
         data: {
@@ -240,107 +246,27 @@ const AddServerForm = React.memo(function AddServerForm({
       })
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not provision")
+    } finally {
+      submittingRef.current = false
     }
   }
 
-  const pending = provisionMutation.isPending
   const canProvision =
     relayConnected &&
     Boolean(relayId) &&
     Boolean(selection) &&
-    (selection?.kind === "catalog" || customSource.trim().length > 0) &&
+    (selection?.kind === "catalog" ||
+      (selection?.kind === "custom" && selection.source.trim().length > 0)) &&
     !pending
 
   return (
     <form className="space-y-5" onSubmit={provision}>
-      <div>
-        <p className="text-[10px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
-          Brick
-        </p>
-        <div className="mt-2 grid gap-2 sm:grid-cols-2">
-          {bricks.map((brick) => {
-            const active =
-              selection?.kind === "catalog" &&
-              selection.brick.source === brick.source
-            return (
-              <button
-                key={brick.source}
-                type="button"
-                onClick={() => chooseCatalogBrick(brick)}
-                className={`rounded-xl border p-3 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/35 ${
-                  active
-                    ? "border-primary/55 bg-primary/[0.07]"
-                    : "border-border/75 bg-background/35 hover:border-primary/25 hover:bg-accent/25"
-                }`}
-              >
-                <div className="flex items-center gap-2.5">
-                  <span
-                    className={`grid size-8 place-items-center rounded-lg border ${
-                      active
-                        ? "border-primary/30 bg-primary/12 text-primary"
-                        : "border-border bg-background/70 text-muted-foreground"
-                    }`}
-                  >
-                    <ServerTypeIcon
-                      implementation={brick.metadata.id}
-                      className="size-4"
-                    />
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm font-semibold">
-                      {brick.metadata.name}
-                    </span>
-                    <span className="block truncate text-[10px] text-muted-foreground">
-                      {brick.metadata.game}
-                    </span>
-                  </span>
-                </div>
-              </button>
-            )
-          })}
-          <button
-            type="button"
-            onClick={chooseCustom}
-            className={`rounded-xl border border-dashed p-3 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/35 ${
-              selection?.kind === "custom"
-                ? "border-primary/55 bg-primary/[0.07]"
-                : "border-border/75 bg-background/20 hover:border-primary/25 hover:bg-accent/25"
-            }`}
-          >
-            <div className="flex items-center gap-2.5">
-              <span
-                className={`grid size-8 place-items-center rounded-lg border ${
-                  selection?.kind === "custom"
-                    ? "border-primary/30 bg-primary/12 text-primary"
-                    : "border-border bg-background/70 text-muted-foreground"
-                }`}
-              >
-                <PackagePlus className="size-4" />
-              </span>
-              <span className="min-w-0">
-                <span className="block truncate text-sm font-semibold">
-                  Custom Brick
-                </span>
-                <span className="block truncate text-[10px] text-muted-foreground">
-                  HTTPS recipe URL
-                </span>
-              </span>
-            </div>
-          </button>
-        </div>
-        {selection?.kind === "custom" ? (
-          <label className="mt-3 block space-y-1.5 text-[10px] font-medium text-muted-foreground">
-            <span>Recipe URL</span>
-            <Input
-              type="url"
-              value={customSource}
-              onChange={(event) => setCustomSource(event.target.value)}
-              placeholder="https://example.com/my-brick.yml"
-              required
-            />
-          </label>
-        ) : null}
-      </div>
+      <BrickSelectionFields
+        bricks={bricks}
+        selection={selection}
+        onSelectionChange={changeSelection}
+        disabled={pending}
+      />
 
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="block space-y-1.5 text-[10px] font-medium text-muted-foreground">
