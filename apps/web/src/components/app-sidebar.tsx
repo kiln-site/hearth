@@ -93,10 +93,10 @@ function persistSelectedInstance(routeId: string) {
 }
 
 interface AppSidebarViewProps {
-  instanceCount: number
   user: AuthenticatedUser
   canManageAccess: boolean
   isPlatformAdmin: boolean
+  relayConfigured: boolean
   selectedInstanceRouteId: string | null
 }
 
@@ -116,17 +116,12 @@ export function AppSidebar({
   const { data: capabilities } = useSuspenseQuery(
     accessCapabilitiesQueryOptions()
   )
-  const { data: instanceCount = 0 } = useQuery({
-    ...relaySnapshotQueryOptions(),
-    enabled: relayConfigured,
-    select: selectSidebarInstanceCount,
-  })
 
   return (
     <AppSidebarView
       canManageAccess={capabilities.canManageAccess}
-      instanceCount={instanceCount}
       isPlatformAdmin={capabilities.isPlatformAdmin}
+      relayConfigured={relayConfigured}
       selectedInstanceRouteId={selectedInstanceRouteId}
       user={capabilities.user}
     />
@@ -134,10 +129,10 @@ export function AppSidebar({
 }
 
 const AppSidebarView = React.memo(function AppSidebarView({
-  instanceCount,
   user,
   canManageAccess,
   isPlatformAdmin,
+  relayConfigured,
   selectedInstanceRouteId,
 }: AppSidebarViewProps) {
   return (
@@ -161,17 +156,14 @@ const AppSidebarView = React.memo(function AppSidebarView({
 
       <SidebarContent>
         <InfrastructureNavigation
-          instanceCount={instanceCount}
           isPlatformAdmin={isPlatformAdmin}
+          relayConfigured={relayConfigured}
         />
 
-        {instanceCount > 0 ? <SidebarSeparator /> : null}
-
-        {instanceCount > 0 ? (
-          <SelectedInstanceNavigation
-            initialInstanceRouteId={selectedInstanceRouteId}
-          />
-        ) : null}
+        <SidebarInstanceNavigation
+          initialInstanceRouteId={selectedInstanceRouteId}
+          relayConfigured={relayConfigured}
+        />
       </SidebarContent>
 
       <AccountNavigation
@@ -184,11 +176,11 @@ const AppSidebarView = React.memo(function AppSidebarView({
 })
 
 function InfrastructureNavigation({
-  instanceCount,
   isPlatformAdmin,
+  relayConfigured,
 }: {
-  instanceCount: number
   isPlatformAdmin: boolean
+  relayConfigured: boolean
 }) {
   return (
     <SidebarGroup className="pt-2">
@@ -198,8 +190,8 @@ function InfrastructureNavigation({
       <SidebarGroupContent>
         <SidebarMenu>
           <BricksNavigationItem
-            instanceCount={instanceCount}
             isPlatformAdmin={isPlatformAdmin}
+            relayConfigured={relayConfigured}
           />
         </SidebarMenu>
       </SidebarGroupContent>
@@ -208,12 +200,17 @@ function InfrastructureNavigation({
 }
 
 function BricksNavigationItem({
-  instanceCount,
   isPlatformAdmin,
+  relayConfigured,
 }: {
-  instanceCount: number
   isPlatformAdmin: boolean
+  relayConfigured: boolean
 }) {
+  const { data: instanceCount = 0 } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    enabled: relayConfigured,
+    select: selectSidebarInstanceCount,
+  })
   const navigate = useNavigate()
   const isActive = useRouterState({
     select: (state) =>
@@ -250,46 +247,72 @@ function BricksNavigationItem({
   )
 }
 
-function SelectedInstanceNavigation({
+function SidebarInstanceNavigation({
   initialInstanceRouteId,
+  relayConfigured,
 }: {
   initialInstanceRouteId: string | null
+  relayConfigured: boolean
 }) {
-  const { data: instanceRoutes = emptyInstanceRoutes } = useQuery({
+  const { data: instanceCount = 0 } = useQuery({
     ...relaySnapshotQueryOptions(),
-    select: selectSidebarInstanceRoutes,
+    enabled: relayConfigured,
+    select: selectSidebarInstanceCount,
   })
-  const serverId = useRouterState({
-    select: (state) =>
-      (state.matches.at(-1)?.params as { serverId?: string } | undefined)
-        ?.serverId,
-  })
-  const [selectedInstanceRouteId, setSelectedInstanceRouteId] = React.useState(
-    initialInstanceRouteId
+
+  if (instanceCount === 0) return null
+
+  return (
+    <>
+      <SidebarSeparator />
+      <SelectedInstanceNavigation
+        initialInstanceRouteId={initialInstanceRouteId}
+      />
+    </>
   )
-  const routeInstance = findRelayInstance(instanceRoutes, serverId)
-  const rememberedInstance = findRelayInstance(
-    instanceRoutes,
-    selectedInstanceRouteId
-  )
-  const instance = routeInstance ?? rememberedInstance ?? instanceRoutes.at(0)
-
-  const rememberInstance = React.useCallback((instanceId: string) => {
-    setSelectedInstanceRouteId(instanceId)
-    persistSelectedInstance(instanceId)
-  }, [])
-
-  React.useEffect(() => {
-    if (routeInstance?.routeId) rememberInstance(routeInstance.routeId)
-  }, [rememberInstance, routeInstance?.routeId])
-
-  return instance ? (
-    <InstanceNavigation
-      instanceRouteId={instance.routeId}
-      onRememberInstance={rememberInstance}
-    />
-  ) : null
 }
+
+const SelectedInstanceNavigation = React.memo(
+  function SelectedInstanceNavigation({
+    initialInstanceRouteId,
+  }: {
+    initialInstanceRouteId: string | null
+  }) {
+    const { data: instanceRoutes = emptyInstanceRoutes } = useQuery({
+      ...relaySnapshotQueryOptions(),
+      select: selectSidebarInstanceRoutes,
+    })
+    const serverId = useRouterState({
+      select: (state) =>
+        (state.matches.at(-1)?.params as { serverId?: string } | undefined)
+          ?.serverId,
+    })
+    const [selectedInstanceRouteId, setSelectedInstanceRouteId] =
+      React.useState(initialInstanceRouteId)
+    const routeInstance = findRelayInstance(instanceRoutes, serverId)
+    const rememberedInstance = findRelayInstance(
+      instanceRoutes,
+      selectedInstanceRouteId
+    )
+    const instance = routeInstance ?? rememberedInstance ?? instanceRoutes.at(0)
+
+    const rememberInstance = React.useCallback((instanceId: string) => {
+      setSelectedInstanceRouteId(instanceId)
+      persistSelectedInstance(instanceId)
+    }, [])
+
+    React.useEffect(() => {
+      if (routeInstance?.routeId) rememberInstance(routeInstance.routeId)
+    }, [rememberInstance, routeInstance?.routeId])
+
+    return instance ? (
+      <InstanceNavigation
+        instanceRouteId={instance.routeId}
+        onRememberInstance={rememberInstance}
+      />
+    ) : null
+  }
+)
 
 const InstanceNavigation = React.memo(function InstanceNavigation({
   instanceRouteId,

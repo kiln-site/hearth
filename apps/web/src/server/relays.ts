@@ -1,6 +1,8 @@
 import { createServerFn } from "@tanstack/react-start"
 import {
+  relayConnectionSettingsSchema,
   relayIdSchema as relayFingerprintSchema,
+  relayNameSchema,
   relayProxyDiagnosticsSchema,
   relayProxySettingsSchema,
 } from "@workspace/contracts"
@@ -24,21 +26,11 @@ const relayRoleSchema = z.enum(["custom", "full_access", "read_only"])
 const createRelaySchema = z.object({
   pairingUri: z.string().trim().min(64).max(32_768),
 })
-const updateRelaySchema = relayIdSchema.extend({
-  hostname: z
-    .string()
-    .trim()
-    .min(1)
-    .max(253)
-    .regex(
-      /^(?:\[[a-f\d:]+\]|[a-z\d.-]+)$/iu,
-      "Enter a hostname or IP address"
-    ),
-  port: z.number().int().min(1).max(65_535),
-  useTls: z.boolean(),
-})
+const updateRelaySchema = relayIdSchema.extend(
+  relayConnectionSettingsSchema.shape
+)
 const renameRelaySchema = z.object({
-  name: z.string().trim().min(1).max(120),
+  name: relayNameSchema,
   relayId: relayFingerprintSchema,
 })
 const pairingRoleSchema = z.object({

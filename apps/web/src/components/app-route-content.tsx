@@ -55,7 +55,14 @@ const GlobalRouteFrame = React.memo(function GlobalRouteFrame({
   section: Exclude<GlobalSection, null>
 }) {
   return (
-    <WorkspaceFrame header={<GlobalPageToolbar label={routeLabel(section)} />}>
+    <WorkspaceFrame
+      header={
+        <GlobalPageToolbar
+          label={routeLabel(section)}
+          settings={section === "settings"}
+        />
+      }
+    >
       <div
         data-slot="global-route-content"
         className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-background/55"
@@ -146,5 +153,5 @@ function routeLabel(section: Exclude<GlobalSection, null>) {
   if (section === "bricks") return "Infrastructure / Bricks"
   if (section === "access") return "Administration / Access"
   if (section === "security") return "Account / Security"
-  return "Application / Settings"
+  return "Settings"
 }

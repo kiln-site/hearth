@@ -3,6 +3,7 @@ import { spawn } from "node:child_process"
 import { existsSync, readdirSync } from "node:fs"
 import { statfs } from "node:fs/promises"
 import { request } from "node:http"
+import { hostname } from "node:os"
 import { basename, relative, resolve } from "node:path"
 
 import { command } from "./command.js"
@@ -129,6 +130,7 @@ export class DockerDriver {
   readonly #consoleLocks = new Map<string, Promise<void>>()
   readonly #consoleSizeStarts = new Map<string, string>()
   readonly #consoleSizePending = new Map<string, Promise<void>>()
+  #relayStartedAt: Promise<string | null> | undefined
   readonly #resourceCache = new Map<string, ResourceCacheEntry>()
 
   constructor(config: RelayConfig) {
@@ -544,6 +546,28 @@ export class DockerDriver {
       this.#cachedDockerVersion = null
     }
     return this.#cachedDockerVersion
+  }
+
+  relayStartedAt(): Promise<string | null> {
+    this.#relayStartedAt ??= this.#inspectRelayStartedAt()
+    return this.#relayStartedAt
+  }
+
+  async #inspectRelayStartedAt(): Promise<string | null> {
+    try {
+      const result = await command(
+        "docker",
+        ["inspect", "--format", "{{.State.StartedAt}}", hostname()],
+        { timeout: 2_500 }
+      )
+      const value = result.stdout.trim()
+      const timestamp = Date.parse(value)
+      return Number.isFinite(timestamp)
+        ? new Date(timestamp).toISOString()
+        : null
+    } catch {
+      return null
+    }
   }
 
   async #withConsoleLock<T>(

@@ -43,6 +43,7 @@ export interface PersistedRelay {
   actions: ReadonlyArray<string>
   browserOrigin: string
   clientId: string
+  createdAt: string
   enabled: boolean
   hostname: string
   id: string
@@ -106,6 +107,7 @@ interface RelayRow extends RowDataPacket {
   client_private_key_ciphertext: string
   client_public_key: string
   client_role: "custom" | "full_access" | "read_only"
+  created_at: Date
   enabled: number
   hostname: string
   id: string
@@ -200,7 +202,7 @@ export const listPersistedRelaysEffect = Effect.fn("relays.list")(function* () {
             last_connected_at, last_error, managed_ember_count,
             node_arch, node_platform, node_version,
             relay_public_key, relay_ca_certificate,
-            client_public_key, client_private_key_ciphertext
+            client_public_key, client_private_key_ciphertext, created_at
        FROM ${databaseTable("relay")}
       ORDER BY name ASC, created_at ASC`
   )
@@ -397,10 +399,7 @@ export async function initializeRelayFromEnvironment(): Promise<PersistedRelay |
     )
   }
   const discovered = await getBootstrapDiscovery(
-    new URL(
-      `/v1/bootstrap?nonce=${encodeURIComponent(clientNonce)}`,
-      publicUrl
-    )
+    new URL(`/v1/bootstrap?nonce=${encodeURIComponent(clientNonce)}`, publicUrl)
   )
   const bootstrap = bootstrapDiscoverySchema.parse(discovered.payload)
   if (
@@ -905,6 +904,7 @@ function toPersistedRelay(row: RelayRow): PersistedRelay {
       ),
     browserOrigin: row.browser_origin,
     clientId: row.client_id,
+    createdAt: row.created_at.toISOString(),
     enabled: Boolean(row.enabled),
     hostname: row.hostname,
     id: row.id,
