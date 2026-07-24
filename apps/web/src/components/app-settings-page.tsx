@@ -1057,8 +1057,10 @@ function AddRelayDialog({
     pairingUri: string
     preview: {
       controlEndpoint: string
+      existingRelayName: string | null
       expiresAt: number
       managedTls: boolean
+      mode: "add" | "repair"
       relayFingerprint: string
       relayName: string
     }
@@ -1102,10 +1104,13 @@ function AddRelayDialog({
       const relay = await addMutation.mutateAsync({
         data: { pairingUri: reviewedPairing.pairingUri },
       })
+      const repaired = reviewedPairing.preview.mode === "repair"
       showToast({
         type: "success",
-        message: `${relay.name} paired`,
-        description: "The Relay is now available to Hearth.",
+        message: repaired ? `${relay.name} repaired` : `${relay.name} paired`,
+        description: repaired
+          ? "The Relay connection was repaired without replacing its Hearth data."
+          : "The Relay is now available to Hearth.",
         duration: 4_000,
       })
       onOpenChange(false)
@@ -1124,12 +1129,19 @@ function AddRelayDialog({
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <p className="font-mono text-[9px] tracking-[0.16em] text-primary uppercase">
-            New connection
+            {reviewedPairing?.preview.mode === "repair"
+              ? "Existing connection"
+              : "New connection"}
           </p>
-          <DialogTitle>Add a Relay</DialogTitle>
+          <DialogTitle>
+            {reviewedPairing?.preview.mode === "repair"
+              ? "Repair Relay connection"
+              : "Add a Relay"}
+          </DialogTitle>
           <DialogDescription>
-            Paste the one-time pairing URI printed by Relay, then verify its
-            identity before connecting.
+            {reviewedPairing?.preview.mode === "repair"
+              ? "Verify the Relay identity before authorizing it again."
+              : "Paste the one-time pairing URI printed by Relay, then verify its identity before connecting."}
           </DialogDescription>
         </DialogHeader>
 
@@ -1197,7 +1209,11 @@ function AddRelayDialog({
             </Button>
             <Button type="submit" disabled={pending}>
               {pending ? <LoaderCircle className="animate-spin" /> : <Check />}
-              {reviewedPairing ? "Confirm and pair" : "Review pairing"}
+              {reviewedPairing?.preview.mode === "repair"
+                ? "Repair connection"
+                : reviewedPairing
+                  ? "Confirm and pair"
+                  : "Review pairing"}
             </Button>
           </DialogFooter>
         </form>
@@ -1212,8 +1228,10 @@ function PairingReview({
 }: {
   pairing: {
     controlEndpoint: string
+    existingRelayName: string | null
     expiresAt: number
     managedTls: boolean
+    mode: "add" | "repair"
     relayFingerprint: string
     relayName: string
   }
@@ -1239,6 +1257,24 @@ function PairingReview({
           <X /> Back
         </Button>
       </div>
+      {pairing.mode === "repair" ? (
+        <div className="mt-4 flex gap-2.5 rounded-md border border-primary/20 bg-background/55 p-3">
+          <RefreshCw className="mt-0.5 size-3.5 shrink-0 text-primary" />
+          <div>
+            <p className="text-[10px] font-medium text-foreground">
+              Existing Relay identity found
+            </p>
+            <p className="mt-1 text-[9px] leading-4 text-muted-foreground">
+              Hearth will repair{" "}
+              <span className="font-medium text-foreground">
+                {pairing.existingRelayName ?? pairing.relayName}
+              </span>{" "}
+              in place. Server records, file activity, pins, and access stay
+              attached.
+            </p>
+          </div>
+        </div>
+      ) : null}
       <dl className="mt-4 grid gap-3 text-[10px] sm:grid-cols-2">
         <div className="sm:col-span-2">
           <dt className="text-muted-foreground">Relay fingerprint</dt>

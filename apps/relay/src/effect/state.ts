@@ -195,7 +195,7 @@ export class RelayStateStore extends Context.Service<
 >()("kiln/RelayStateStore") {}
 
 const migrations = SqliteMigrator.fromRecord({
-  "1_relay_networking": Effect.gen(function* () {
+  "1_initial_schema": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`
       CREATE TABLE relay_metadata (
@@ -211,8 +211,10 @@ const migrations = SqliteMigrator.fromRecord({
         role TEXT NOT NULL CHECK (role IN ('full_access', 'read_only', 'custom')),
         actions_json TEXT NOT NULL,
         origins_json TEXT NOT NULL,
+        source_cidrs_json TEXT NOT NULL DEFAULT '[]',
         created_at INTEGER NOT NULL,
         last_seen_at INTEGER,
+        last_address TEXT,
         invitation_id TEXT NOT NULL,
         revoked_reason TEXT,
         revoked_at INTEGER
@@ -226,7 +228,8 @@ const migrations = SqliteMigrator.fromRecord({
         actions_json TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
-        consumed_at INTEGER
+        consumed_at INTEGER,
+        revoked_at INTEGER
       ) STRICT
     `
     yield* sql`
@@ -248,27 +251,6 @@ const migrations = SqliteMigrator.fromRecord({
       CREATE INDEX relay_audit_occurred_at
       ON relay_audit (occurred_at DESC)
     `
-  }),
-  "2_client_policy_and_invitation_revocation": Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient
-    yield* sql`
-      ALTER TABLE relay_clients
-      ADD COLUMN source_cidrs_json TEXT NOT NULL DEFAULT '[]'
-    `
-    yield* sql`
-      ALTER TABLE relay_invitations
-      ADD COLUMN revoked_at INTEGER
-    `
-  }),
-  "3_client_observed_source": Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient
-    yield* sql`
-      ALTER TABLE relay_clients
-      ADD COLUMN last_address TEXT
-    `
-  }),
-  "4_instance_web_routes": Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient
     yield* sql`
       CREATE TABLE relay_web_routes (
         id TEXT PRIMARY KEY NOT NULL,
@@ -286,13 +268,12 @@ const migrations = SqliteMigrator.fromRecord({
       CREATE INDEX relay_web_routes_instance
       ON relay_web_routes (instance_id)
     `
-  }),
-  "5_instance_names": Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient
+    // Display names are labels, not identifiers. Multiple servers may
+    // intentionally use the same name.
     yield* sql`
       CREATE TABLE relay_instance_names (
         instance_id TEXT PRIMARY KEY NOT NULL,
-        name TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       ) STRICT
     `
@@ -666,31 +647,58 @@ const makeRelayStateStore = Effect.gen(function* () {
                 new Error("Pairing invitation is expired or already used")
               )
             }
-            yield* sql`
-              INSERT INTO relay_clients (
-                id,
-                name,
-                public_key,
-                role,
-                actions_json,
-                origins_json,
-                source_cidrs_json,
-                created_at,
-                last_seen_at,
-                invitation_id
-              ) VALUES (
-                ${input.id},
-                ${input.name},
-                ${input.publicKey},
-                ${input.role},
-                ${JSON.stringify(input.actions)},
-                ${JSON.stringify(input.origins)},
-                ${JSON.stringify(input.sourceCidrs)},
-                ${input.pairedAt},
-                ${input.pairedAt},
-                ${input.invitationId}
-              )
+            const existing = yield* sql<{ publicKey: string }>`
+              SELECT public_key AS publicKey
+              FROM relay_clients
+              WHERE id = ${input.id}
+              LIMIT 1
             `
+            if (existing[0] && existing[0].publicKey !== input.publicKey) {
+              return yield* Effect.fail(
+                new Error("Relay client identity does not match")
+              )
+            }
+            if (existing[0]) {
+              yield* sql`
+                UPDATE relay_clients
+                SET name = ${input.name},
+                    role = ${input.role},
+                    actions_json = ${JSON.stringify(input.actions)},
+                    origins_json = ${JSON.stringify(input.origins)},
+                    source_cidrs_json = ${JSON.stringify(input.sourceCidrs)},
+                    last_seen_at = ${input.pairedAt},
+                    invitation_id = ${input.invitationId},
+                    revoked_reason = NULL,
+                    revoked_at = NULL
+                WHERE id = ${input.id}
+              `
+            } else {
+              yield* sql`
+                INSERT INTO relay_clients (
+                  id,
+                  name,
+                  public_key,
+                  role,
+                  actions_json,
+                  origins_json,
+                  source_cidrs_json,
+                  created_at,
+                  last_seen_at,
+                  invitation_id
+                ) VALUES (
+                  ${input.id},
+                  ${input.name},
+                  ${input.publicKey},
+                  ${input.role},
+                  ${JSON.stringify(input.actions)},
+                  ${JSON.stringify(input.origins)},
+                  ${JSON.stringify(input.sourceCidrs)},
+                  ${input.pairedAt},
+                  ${input.pairedAt},
+                  ${input.invitationId}
+                )
+              `
+            }
             yield* sql`
               UPDATE relay_invitations
               SET consumed_at = ${input.pairedAt}

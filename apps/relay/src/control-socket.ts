@@ -27,7 +27,7 @@ import type {
   RelayControlOperation,
 } from "@workspace/contracts"
 
-import { isActionAllowed } from "./permissions.js"
+import { actionsForRole, isActionAllowed } from "./permissions.js"
 import { isSourceAllowed } from "./source-policy.js"
 import type { RelayAction } from "./permissions.js"
 import type { RelayIdentity } from "./effect/identity.js"
@@ -374,7 +374,11 @@ function authenticateSocket(
         return
       }
       const action = actionForRequest(request)
-      if (!action || !isActionAllowed(currentClient.actions, action)) {
+      const actions = actionsForRole(
+        currentClient.role,
+        currentClient.actions
+      )
+      if (!action || !isActionAllowed(actions, action)) {
         sendError(socket, request.id, "forbidden", "Relay permission denied")
         return
       }
@@ -456,7 +460,7 @@ function authenticateSocket(
       options.state.touchClient(client.id, Date.now(), peerAddress ?? null)
     )
     const ready: RelayAuthReady = {
-      actions: client.actions,
+      actions: actionsForRole(client.role, client.actions),
       clientId: client.id,
       protocol: relayControlProtocol,
       relayBuild: process.env.SOURCE_COMMIT?.trim() || "development",

@@ -11,14 +11,14 @@ import {
   relayCreateInstanceSchema,
   relayInstanceActionSchema,
   relayInstanceNameSchema,
-  relayInstanceWebRoutesSchema,
+  relayInstanceWebRouteInputsSchema,
   relayNetworkingSchema,
   relayProxySettingsSchema,
   relaySaveFileInputSchema,
   relayUpdateInstanceStartupSchema,
   relayBootstrapDiscoveryTranscript,
 } from "@workspace/contracts"
-import type { RelayControlRequest } from "@workspace/contracts"
+import type { RelayControlRequest, RelayInstance } from "@workspace/contracts"
 
 import { BrickCatalog } from "./bricks.js"
 import { attachBrowserSocket } from "./browser-socket.js"
@@ -48,6 +48,7 @@ import {
 import { RelayStateStore } from "./effect/state.js"
 import type { RelayClientGrant, RelayClientRole } from "./effect/state.js"
 import { loadRelayTls } from "./effect/tls.js"
+import { applyStoredInstanceNames } from "./instance-names.js"
 import { normalizedRoute } from "./route-label.js"
 import { closeRelayServer } from "./shutdown.js"
 import { attachSftpServer } from "./sftp-server.js"
@@ -55,7 +56,11 @@ import { actionsForRole, relayActions } from "./permissions.js"
 import type { RelayAction } from "./permissions.js"
 import { normalizeSourceCidrs } from "./source-policy.js"
 import { RelaySnapshotHub } from "./snapshot-hub.js"
+import { assignRelayWebRouteIds } from "./web-route-ids.js"
+import { planWebRouteRecovery } from "./web-route-labels.js"
 import type { IncomingMessage, ServerResponse } from "node:http"
+
+const WEB_ROUTE_RECOVERY_METADATA_KEY = "web_routes_recovery_v1"
 
 const config = loadConfig()
 const advertisedHostSource = await discoverRelayAdvertisedHost(config)
@@ -113,15 +118,63 @@ if (initialPairing.kind === "automatic") {
   console.log(renderPairingInvitation(initialPairing.invitation))
 }
 await lifecycle.initializeProxy(
-  await runRelayEffect(
-    "relay.startup.webRoutes",
-    startup.state.listWebRoutes()
-  ),
+  await loadStartupWebRoutes(),
   startupProxySettings
 )
 const instanceMutations = new Map<string, Promise<unknown>>()
 let webRouteMutation: Promise<unknown> = Promise.resolve()
 const snapshotHub = new RelaySnapshotHub(relaySnapshot)
+
+async function loadStartupWebRoutes() {
+  const { initialized, persisted } = await runRelayEffect(
+    "relay.startup.webRoutes",
+    Effect.gen(function* () {
+      const initialized = yield* startup.state.getMetadata(
+        WEB_ROUTE_RECOVERY_METADATA_KEY
+      )
+      const persisted = yield* startup.state.listWebRoutes()
+      return { initialized, persisted }
+    })
+  )
+  if (initialized) return persisted
+
+  // Labels are a last-applied recovery snapshot, not a second live source of
+  // truth. Only import them for a fresh database so stale labels cannot undo a
+  // normal route edit that is still waiting for container recreation.
+  const snapshots = await docker.webRouteLabelSnapshots()
+  const plan = planWebRouteRecovery(persisted, snapshots)
+  for (const warning of plan.warnings) {
+    console.warn(`Skipped web route recovery label: ${warning}`)
+  }
+  await runRelayEffect(
+    "relay.startup.webRouteRecovery",
+    Effect.gen(function* () {
+      for (const recovery of plan.recoveries) {
+        yield* startup.state.replaceInstanceRoutes(
+          recovery.instanceId,
+          recovery.routes
+        )
+      }
+      yield* startup.state.setMetadata(
+        WEB_ROUTE_RECOVERY_METADATA_KEY,
+        String(Date.now())
+      )
+    })
+  )
+  const recoveredCount = plan.recoveries.reduce(
+    (count, recovery) => count + recovery.routes.length,
+    0
+  )
+  if (recoveredCount > 0) {
+    console.log(
+      `Recovered ${recoveredCount} web route${recoveredCount === 1 ? "" : "s"} from Ember container labels.`
+    )
+  }
+  return runRelayEffect(
+    "relay.startup.webRoutes.recovered",
+    startup.state.listWebRoutes()
+  )
+}
 
 async function runRelayCli(arguments_: ReadonlyArray<string>): Promise<void> {
   const [resource, command = resource === "pair" ? "create" : "list"] =
@@ -519,15 +572,9 @@ async function relaySnapshot() {
       startup.state.listInstanceNames()
     ),
   ])
-  const names = new Map(
-    storedNames.map((stored) => [stored.instanceId, stored.name])
-  )
   return {
     node,
-    instances: instances.map((instance) => ({
-      ...instance,
-      name: names.get(instance.id) ?? instance.name,
-    })),
+    instances: applyStoredInstanceNames(instances, storedNames),
     relay: {
       id: relayIdentity.fingerprint,
       name: relayIdentity.name,
@@ -693,16 +740,41 @@ async function executeControlRequest(
         ...(await bricks.recipe(requiredString(payload, "source"))),
         source: requiredString(payload, "source"),
       }
-    case "instance.create":
-      return lifecycle.createInstance(
-        relayCreateInstanceSchema.parse(request.payload)
-      )
+    case "instance.create": {
+      const input = relayCreateInstanceSchema.parse(request.payload)
+      const instance = await lifecycle.createInstance(input)
+      const name = input.name ?? instance.name
+      try {
+        await runRelayEffect(
+          "relay.instance.createName",
+          startup.state.setInstanceName(instance.id, name)
+        )
+      } catch (cause) {
+        const rollback = await Promise.allSettled([
+          lifecycle.deleteInstance(instance.id, true),
+          runRelayEffect(
+            "relay.instance.createName.rollback",
+            startup.state.deleteInstanceName(instance.id)
+          ),
+        ])
+        for (const result of rollback) {
+          if (result.status === "rejected") {
+            Sentry.captureException(result.reason, {
+              tags: { "kiln.operation": "relay.instance.create.rollback" },
+            })
+          }
+        }
+        throw cause
+      }
+      return relayInstanceWithStoredName(instance)
+    }
     case "instance.startup.write": {
       const instanceId = requiredString(payload, "instanceId")
       const input = relayUpdateInstanceStartupSchema.parse(payload)
-      return serializeInstanceMutation(instanceId, () =>
+      const instance = await serializeInstanceMutation(instanceId, () =>
         lifecycle.reconfigureInstance(instanceId, input)
       )
+      return relayInstanceWithStoredName(instance)
     }
     case "instance.rename": {
       const instance = await requiredInstance(payload)
@@ -754,9 +826,11 @@ async function executeControlRequest(
           )
           return lifecycle.runInstanceAction(instance, input.action, routes)
         })
-      return input.action === "start" || input.action === "restart"
-        ? serializeWebRouteMutation(runAction)
-        : runAction()
+      const updated =
+        input.action === "start" || input.action === "restart"
+          ? await serializeWebRouteMutation(runAction)
+          : await runAction()
+      return relayInstanceWithStoredName(updated)
     }
     case "instance.files.list":
       return filesystem.tree(await requiredInstance(payload))
@@ -801,10 +875,17 @@ async function executeControlRequest(
     case "instance.network.routes.write": {
       return serializeWebRouteMutation(async () => {
         const instance = await requiredInstance(payload)
-        const routes = relayInstanceWebRoutesSchema.parse(payload.routes)
+        const requestedRoutes = relayInstanceWebRouteInputsSchema.parse(
+          payload.routes
+        )
         const configuredRoutes = await runRelayEffect(
           "relay.network.routes.collisionCheck",
           startup.state.listWebRoutes()
+        )
+        const routes = assignRelayWebRouteIds(
+          instance.id,
+          requestedRoutes,
+          configuredRoutes
         )
         const collision = routes.find((route) =>
           configuredRoutes.some(
@@ -940,6 +1021,14 @@ async function requiredInstance(payload: Readonly<Record<string, unknown>>) {
   const instance = await docker.findInstance(instanceId)
   if (!instance) throw new Error("Instance not found")
   return instance
+}
+
+async function relayInstanceWithStoredName(instance: RelayInstance) {
+  const names = await runRelayEffect(
+    "relay.instance.name",
+    startup.state.listInstanceNames()
+  )
+  return applyStoredInstanceNames([instance], names)[0] ?? instance
 }
 
 async function serializeInstanceMutation<T>(

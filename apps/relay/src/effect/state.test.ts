@@ -95,6 +95,65 @@ describe("Relay state", () => {
       })
     )
 
+    it.effect("re-enrolls the same client with a new invitation", () =>
+      Effect.gen(function* () {
+        const store = yield* RelayStateStore
+        const now = Date.UTC(2026, 0, 2)
+        yield* store.createInvitation({
+          actions: ["relay.read"],
+          createdAt: now,
+          expiresAt: now + 15 * 60_000,
+          id: "repair-invitation-1",
+          role: "read_only",
+          tokenHash: "repair-hash-1",
+        })
+        yield* store.pairClient({
+          actions: ["relay.read"],
+          id: "repair-hearth-1",
+          invitationId: "repair-invitation-1",
+          name: "Hearth Before Repair",
+          origins: ["https://old.hearth.test"],
+          pairedAt: now + 1,
+          publicKey: "repair-public-key-1",
+          role: "read_only",
+          sourceCidrs: ["192.0.2.1/32"],
+        })
+        yield* store.createInvitation({
+          actions: ["*"],
+          createdAt: now + 2,
+          expiresAt: now + 15 * 60_000,
+          id: "repair-invitation-2",
+          role: "full_access",
+          tokenHash: "repair-hash-2",
+        })
+        yield* store.pairClient({
+          actions: ["*"],
+          id: "repair-hearth-1",
+          invitationId: "repair-invitation-2",
+          name: "Hearth After Repair",
+          origins: ["https://new.hearth.test"],
+          pairedAt: now + 3,
+          publicKey: "repair-public-key-1",
+          role: "full_access",
+          sourceCidrs: [],
+        })
+
+        const repaired = yield* store.findClientById("repair-hearth-1")
+        assert.deepInclude(repaired, {
+          actions: ["*"],
+          createdAt: now + 1,
+          invitationId: "repair-invitation-2",
+          name: "Hearth After Repair",
+          origins: ["https://new.hearth.test"],
+          role: "full_access",
+          sourceCidrs: [],
+        })
+        assert.isNull(
+          yield* store.findActiveInvitation("repair-invitation-2", now + 4)
+        )
+      })
+    )
+
     it.effect(
       "lists and revokes pending invitations without exposing reuse",
       () =>
@@ -166,19 +225,15 @@ describe("Relay state", () => {
         ])
 
         yield* store.setInstanceName("instance-a", "Survival SMP")
-        assert.deepInclude((yield* store.listInstanceNames())[0], {
-          instanceId: "instance-a",
-          name: "Survival SMP",
-        })
-
-        const duplicate = yield* Effect.result(
-          store.setInstanceName("instance-b", "Survival SMP")
-        )
-        assert.strictEqual(duplicate._tag, "Failure")
+        yield* store.setInstanceName("instance-b", "Survival SMP")
+        assert.deepStrictEqual(yield* store.listInstanceNames(), [
+          { instanceId: "instance-a", name: "Survival SMP" },
+          { instanceId: "instance-b", name: "Survival SMP" },
+        ])
 
         yield* store.deleteInstanceName("instance-a")
         assert.deepStrictEqual(yield* store.listInstanceNames(), [
-          { instanceId: "instance-b", name: "Creative" },
+          { instanceId: "instance-b", name: "Survival SMP" },
         ])
       })
     )
@@ -190,7 +245,7 @@ describe("Relay state", () => {
           const store = yield* RelayStateStore
           const first = {
             hostname: "map.example.com",
-            id: "15c524a6-c257-4eca-8fe8-460fab8123d4",
+            id: "15c524a6",
             path: null,
             stripPrefix: true,
             targetPort: 8080,
@@ -209,7 +264,7 @@ describe("Relay state", () => {
             store.replaceInstanceRoutes("instance-b", [
               {
                 ...first,
-                id: "d76cfc41-28d3-490a-b955-550b972dace7",
+                id: "d76cfc41",
               },
             ])
           )

@@ -10,7 +10,7 @@ import {
   relayConsoleCompletionSchema,
   relayInstanceActionSchema,
   relayInstanceNameSchema,
-  relayInstanceWebRoutesSchema,
+  relayInstanceWebRouteInputsSchema,
   relayInstanceWebRouteStateSchema,
   relayIdSchema,
   relayInstanceSchema,
@@ -24,10 +24,6 @@ import {
   allowedInstanceIds,
   requireRelayPermission,
 } from "@/lib/access-control"
-import {
-  applyInstanceDisplayNames,
-  clearInstanceDisplayName,
-} from "@/lib/instance-registry"
 import {
   listFileActivity,
   recordFileEdited,
@@ -99,7 +95,7 @@ const actionInputSchema = instanceInputSchema.extend(
 )
 
 const webRoutesInputSchema = instanceInputSchema.extend({
-  routes: relayInstanceWebRoutesSchema,
+  routes: relayInstanceWebRouteInputsSchema,
 })
 
 const consoleCommandInputSchema = instanceInputSchema.extend(
@@ -237,7 +233,6 @@ export const updateInstanceName = createServerFn({ method: "POST" })
         }
       )
     )
-    await clearInstanceDisplayName(relay.id, instance.id)
     await runAppEffect(
       "relay.snapshot.invalidate",
       invalidateRelayCache(relayCachePolicy.snapshot(relay.id))
@@ -448,10 +443,7 @@ export const performRelayAction = createServerFn({ method: "POST" })
       "relay.snapshot.invalidate",
       invalidateRelayCache(relayCachePolicy.snapshot(relay.id))
     )
-    const [displayInstance] = await applyInstanceDisplayNames(relay.id, [
-      instance,
-    ])
-    return { ...displayInstance, relayId: relay.id }
+    return { ...instance, relayId: relay.id }
   })
 
 export const uploadToMclogs = createServerFn({ method: "POST" })
@@ -648,7 +640,7 @@ async function authorizeRelaySnapshot(
   const instances = snapshot.instances.filter((item) => allowed.has(item.id))
   return {
     ...snapshot,
-    instances: await applyInstanceDisplayNames(relay.id, instances),
+    instances,
   }
 }
 

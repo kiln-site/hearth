@@ -19,12 +19,16 @@ import type { BrickCatalog } from "./bricks.js"
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
 import type { DockerDriver } from "./docker.js"
 import type { RelayStoredWebRoute } from "./effect/state.js"
+import {
+  WEB_ROUTE_LABEL_PREFIX,
+  WEB_ROUTE_REVISION_LABEL,
+  webRouteRecoveryLabels,
+} from "./web-route-labels.js"
 
 const GAME_NETWORK_NAME = "kiln-minecraft"
 const EDGE_NETWORK_NAME = "kiln-edge"
 const RELAY_EDGE_NETWORK_NAME = "kiln-relay-edge"
 const RELAY_EDGE_ALIAS = "kiln-relay"
-const WEB_ROUTE_REVISION_LABEL = "kiln.relay.web-routes.revision"
 const OWNED_LABEL = "kiln.relay.owned=true"
 const TRAEFIK_CONTAINER = "kiln-traefik"
 export interface BackendRoute {
@@ -186,8 +190,7 @@ export class LifecycleDriver {
     > | null
     const published = bindings?.[`${this.#config.port}/tcp`] ?? []
     const unsafe = published.filter(
-      (binding) =>
-        binding.HostIp !== "127.0.0.1" && binding.HostIp !== "::1"
+      (binding) => binding.HostIp !== "127.0.0.1" && binding.HostIp !== "::1"
     )
     if (unsafe.length > 0) {
       throw new Error(
@@ -292,7 +295,9 @@ export class LifecycleDriver {
         warnings.push(
           "Coolify mode could not find a running coolify-proxy container. Confirm this Relay is on a Coolify host using its Traefik proxy."
         )
-      } else if (!(await containerUsesNetwork(coolifyProxy, EDGE_NETWORK_NAME))) {
+      } else if (
+        !(await containerUsesNetwork(coolifyProxy, EDGE_NETWORK_NAME))
+      ) {
         warnings.push(
           `Coolify Traefik is not attached to ${EDGE_NETWORK_NAME}. Relay will keep retrying the private edge attachment.`
         )
@@ -315,11 +320,11 @@ export class LifecycleDriver {
               ? coolifyReady
                 ? "ready"
                 : "blocked"
-            : conflicts.length > 0
-              ? "blocked"
-              : containerRunning
-                ? "ready"
-                : "starting",
+              : conflicts.length > 0
+                ? "blocked"
+                : containerRunning
+                  ? "ready"
+                  : "starting",
       warnings,
     }
   }
@@ -360,7 +365,10 @@ export class LifecycleDriver {
     if (settings.mode === "traefik") {
       return {
         edgeConnected: false,
-        message: "Bundled Traefik applies this route dynamically.",
+        message:
+          routes.length > 0
+            ? "Bundled Traefik applies this route dynamically. Container recovery labels sync on the next Ember restart."
+            : "Bundled Traefik applies route changes dynamically.",
         proxyConnected: true,
         requiresRestart: false,
         routes: [...routes],
@@ -445,19 +453,21 @@ export class LifecycleDriver {
   ): Promise<RelayInstance> {
     const settings = await this.proxySettings()
     if (
-      (settings.mode === "none" || settings.mode === "coolify") &&
       instance.managedByRelay &&
       (action === "start" || action === "restart")
     ) {
-      const profile = this.#externalTraefikProfile(settings)
-      const desiredLabels = traefikRouteLabels(routes, profile)
+      const desiredLabels = this.#containerWebRouteLabels(routes, settings)
       const labels = await containerLabels(instance.service)
       if (routeLabelsRequireRestart(labels, routes, desiredLabels)) {
-        await this.#ensureEdgeNetwork()
+        const usesExternalEdge =
+          settings.mode === "none" || settings.mode === "coolify"
+        if (usesExternalEdge && routes.length > 0) {
+          await this.#ensureEdgeNetwork()
+        }
         return this.#docker.recreateOwnedInstance(
           instance,
           desiredLabels,
-          routes.length > 0 ? EDGE_NETWORK_NAME : null
+          usesExternalEdge && routes.length > 0 ? EDGE_NETWORK_NAME : null
         )
       }
     }
@@ -594,6 +604,13 @@ export class LifecycleDriver {
           : this.#config.connectPort
     const connectAddress =
       connectPort === 25_565 ? hostname : `${hostname}:${connectPort}`
+    const webRoutes = this.#webRoutes.filter(
+      (route) => route.instanceId === input.id
+    )
+    const proxySettings = await this.proxySettings()
+    const routeLabels = this.#containerWebRouteLabels(webRoutes, proxySettings)
+    const usesExternalEdge =
+      proxySettings.mode === "none" || proxySettings.mode === "coolify"
 
     if (input.prepareDirectory) {
       await mkdir(directory, { recursive: true })
@@ -605,6 +622,9 @@ export class LifecycleDriver {
       }
     }
     await this.#ensureNetwork()
+    if (usesExternalEdge && webRoutes.length > 0) {
+      await this.#ensureEdgeNetwork()
+    }
     if (networking?.enabled) await this.#ensureInfrastructure(networking, false)
     try {
       await command("docker", ["image", "inspect", image])
@@ -674,10 +694,6 @@ export class LifecycleDriver {
       "--label",
       `kiln.traefik.service.port=${primaryPort.container}`,
       "--label",
-      `traefik.docker.network=${EDGE_NETWORK_NAME}`,
-      "--label",
-      "traefik.enable=false",
-      "--label",
       `kiln.instance.name=${containerName}`,
       "--label",
       `kiln.instance.version=${version}`,
@@ -694,6 +710,9 @@ export class LifecycleDriver {
       "--volume",
       `${hostDirectory}:${definition.runtime.storage.mount}`,
     ]
+    for (const [label, value] of Object.entries(routeLabels)) {
+      arguments_.push("--label", `${label}=${value}`)
+    }
 
     if (definition.runtime.workingDirectory) {
       arguments_.push("--workdir", definition.runtime.workingDirectory)
@@ -730,6 +749,16 @@ export class LifecycleDriver {
 
     try {
       await command("docker", arguments_, { timeout: 60_000 })
+      if (usesExternalEdge && webRoutes.length > 0) {
+        await command("docker", [
+          "network",
+          "connect",
+          "--alias",
+          containerName,
+          EDGE_NETWORK_NAME,
+          containerName,
+        ])
+      }
       if (input.start) {
         await command("docker", ["start", containerName], { timeout: 120_000 })
       }
@@ -1056,9 +1085,7 @@ export class LifecycleDriver {
     return firstTraefikContainer(Array.from(new Set(candidates)))
   }
 
-  #externalTraefikProfile(
-    settings: RelayProxySettings
-  ): TraefikLabelProfile {
+  #externalTraefikProfile(settings: RelayProxySettings): TraefikLabelProfile {
     return settings.mode === "coolify"
       ? {
           certificateResolver: "letsencrypt",
@@ -1070,6 +1097,16 @@ export class LifecycleDriver {
           httpEntryPoint: "web",
           httpsEntryPoint: "websecure",
         }
+  }
+
+  #containerWebRouteLabels(
+    routes: ReadonlyArray<RelayInstanceWebRoute>,
+    settings: RelayProxySettings
+  ): Record<string, string> {
+    if (settings.mode === "none" || settings.mode === "coolify") {
+      return traefikRouteLabels(routes, this.#externalTraefikProfile(settings))
+    }
+    return recoveryRouteLabels(routes)
   }
 
   #scheduleEdgeReconciliation(settings: RelayProxySettings): void {
@@ -1443,6 +1480,7 @@ export function traefikRouteLabels(
   profile: TraefikLabelProfile
 ): Record<string, string> {
   const labels: Record<string, string> = {
+    ...webRouteRecoveryLabels(routes),
     "traefik.enable": routes.length > 0 ? "true" : "false",
   }
   if (routes.length > 0) labels["traefik.docker.network"] = EDGE_NETWORK_NAME
@@ -1489,15 +1527,16 @@ export function traefikRouteLabels(
     }
   }
 
-  const revision = createHash("sha256")
-    .update(
-      JSON.stringify(
-        Object.entries(labels).sort(([a], [b]) => a.localeCompare(b))
-      )
-    )
-    .digest("hex")
-  labels[WEB_ROUTE_REVISION_LABEL] = revision
-  return labels
+  return withWebRouteRevision(labels)
+}
+
+export function recoveryRouteLabels(
+  routes: ReadonlyArray<RelayInstanceWebRoute>
+): Record<string, string> {
+  return withWebRouteRevision({
+    ...webRouteRecoveryLabels(routes),
+    "traefik.enable": "false",
+  })
 }
 
 export function routeLabelsRequireRestart(
@@ -1513,11 +1552,31 @@ export function routeLabelsRequireRestart(
   const hasManagedRouteLabels =
     current[WEB_ROUTE_REVISION_LABEL] !== undefined ||
     current["traefik.enable"] === "true" ||
-    Object.keys(current).some((label) => label.startsWith("traefik.http."))
+    Object.keys(current).some(
+      (label) =>
+        label.startsWith("traefik.http.") ||
+        (label.startsWith(WEB_ROUTE_LABEL_PREFIX) &&
+          label !== WEB_ROUTE_REVISION_LABEL)
+    )
   return (
     hasManagedRouteLabels &&
     current[WEB_ROUTE_REVISION_LABEL] !== desired[WEB_ROUTE_REVISION_LABEL]
   )
+}
+
+function withWebRouteRevision(
+  labels: Readonly<Record<string, string>>
+): Record<string, string> {
+  return {
+    ...labels,
+    [WEB_ROUTE_REVISION_LABEL]: createHash("sha256")
+      .update(
+        JSON.stringify(
+          Object.entries(labels).sort(([a], [b]) => a.localeCompare(b))
+        )
+      )
+      .digest("hex"),
+  }
 }
 
 export function traefikStaticConfiguration(

@@ -97,6 +97,45 @@ describe("Relay pairing", () => {
             Buffer.from(secondAttempt.signature, "base64url")
           )
         )
+
+        const repairInvitation = yield* createPairingInvitation({
+          config,
+          identity,
+          role: "full_access",
+          state,
+          tls: null,
+        })
+        const repairUnsigned: Omit<PairingRequest, "signature"> = {
+          ...unsigned,
+          invitationId: repairInvitation.envelope.invitationId,
+          nonce: randomBytes(24).toString("base64url"),
+          token: repairInvitation.token,
+        }
+        const repairRequest: PairingRequest = {
+          ...repairUnsigned,
+          signature: sign(
+            null,
+            Buffer.from(
+              pairingRequestTranscript({
+                ...repairUnsigned,
+                signature: "",
+              })
+            ),
+            hearthKeys.privateKey
+          ).toString("base64url"),
+        }
+        const repaired = yield* pairHearth({
+          identity,
+          request: repairRequest,
+          state,
+        })
+        assert.strictEqual(repaired.clientId, response.clientId)
+        assert.strictEqual(repaired.role, "full_access")
+        assert.isTrue(
+          (yield* state.findClientById(repaired.clientId))?.actions.includes(
+            "instance.power.start"
+          )
+        )
       })
     )
   })
@@ -122,10 +161,7 @@ describe("Relay pairing", () => {
       })
       const decodedUri = decodePairingUri(invitation.uri)
 
-      assert.strictEqual(
-        decodedUri.browserOrigin,
-        "https://relay.example.com"
-      )
+      assert.strictEqual(decodedUri.browserOrigin, "https://relay.example.com")
       assert.strictEqual(
         decodedUri.controlEndpoint,
         "wss://relay.example.com/v1/socket"
@@ -137,53 +173,55 @@ describe("Relay pairing", () => {
     )
   )
 
-  it.live("replaces an automatic invitation when its bootstrap token rotates", () =>
-    Effect.gen(function* () {
-      const firstConfig = loadConfig({
-        KILN_RELAY_BOOTSTRAP_TOKEN: "a".repeat(32),
-        KILN_RELAY_DATA_DIR: testDirectory,
-        KILN_RELAY_HOST: "relay.test",
-        KILN_RELAY_NAME: "Pairing Relay",
-        NODE_ENV: "development",
-      })
-      const state = yield* RelayStateStore
-      const identity = yield* loadOrCreateRelayIdentity(firstConfig)
-      const first = yield* initializePairing({
-        config: firstConfig,
-        identity,
-        state,
-        tls: null,
-      })
-      assert.strictEqual(first.invitation?.token, "a".repeat(32))
+  it.live(
+    "replaces an automatic invitation when its bootstrap token rotates",
+    () =>
+      Effect.gen(function* () {
+        const firstConfig = loadConfig({
+          KILN_RELAY_BOOTSTRAP_TOKEN: "a".repeat(32),
+          KILN_RELAY_DATA_DIR: testDirectory,
+          KILN_RELAY_HOST: "relay.test",
+          KILN_RELAY_NAME: "Pairing Relay",
+          NODE_ENV: "development",
+        })
+        const state = yield* RelayStateStore
+        const identity = yield* loadOrCreateRelayIdentity(firstConfig)
+        const first = yield* initializePairing({
+          config: firstConfig,
+          identity,
+          state,
+          tls: null,
+        })
+        assert.strictEqual(first.invitation?.token, "a".repeat(32))
 
-      const secondConfig = loadConfig({
-        KILN_RELAY_BOOTSTRAP_TOKEN: "b".repeat(32),
-        KILN_RELAY_DATA_DIR: testDirectory,
-        KILN_RELAY_HOST: "relay.test",
-        KILN_RELAY_NAME: "Pairing Relay",
-        NODE_ENV: "development",
-      })
-      const second = yield* initializePairing({
-        config: secondConfig,
-        identity,
-        state,
-        tls: null,
-      })
-      assert.strictEqual(second.invitation?.token, "b".repeat(32))
-      assert.lengthOf(yield* state.listInvitations(Date.now()), 1)
+        const secondConfig = loadConfig({
+          KILN_RELAY_BOOTSTRAP_TOKEN: "b".repeat(32),
+          KILN_RELAY_DATA_DIR: testDirectory,
+          KILN_RELAY_HOST: "relay.test",
+          KILN_RELAY_NAME: "Pairing Relay",
+          NODE_ENV: "development",
+        })
+        const second = yield* initializePairing({
+          config: secondConfig,
+          identity,
+          state,
+          tls: null,
+        })
+        assert.strictEqual(second.invitation?.token, "b".repeat(32))
+        assert.lengthOf(yield* state.listInvitations(Date.now()), 1)
 
-      const rotatedBack = yield* initializePairing({
-        config: firstConfig,
-        identity,
-        state,
-        tls: null,
-      })
-      assert.strictEqual(rotatedBack.invitation?.token, "a".repeat(32))
-      assert.lengthOf(yield* state.listInvitations(Date.now()), 1)
-    }).pipe(
-      Effect.provide(
-        makeRelayStateLayer(join(testDirectory, "rotation-relay.sqlite"))
+        const rotatedBack = yield* initializePairing({
+          config: firstConfig,
+          identity,
+          state,
+          tls: null,
+        })
+        assert.strictEqual(rotatedBack.invitation?.token, "a".repeat(32))
+        assert.lengthOf(yield* state.listInvitations(Date.now()), 1)
+      }).pipe(
+        Effect.provide(
+          makeRelayStateLayer(join(testDirectory, "rotation-relay.sqlite"))
+        )
       )
-    )
   )
 })

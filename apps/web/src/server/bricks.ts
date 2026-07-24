@@ -5,6 +5,7 @@ import {
   brickVariableValuesSchema,
   relayCatalogSchema,
   relayCreateInstanceSchema,
+  relayInstanceNameSchema,
   relayInstanceSchema,
   relayIdSchema,
   relayNetworkingSchema,
@@ -29,7 +30,7 @@ import { requireAuthenticatedUser } from "@/server/auth"
 const relayInputSchema = z.object({ relayId: relayIdSchema })
 const createInputSchema = relayCreateInstanceSchema.extend({
   ...relayInputSchema.shape,
-  name: z.string().trim().min(1).max(120),
+  name: relayInstanceNameSchema,
 })
 const networkingInputSchema = relayNetworkingSchema.extend(
   relayInputSchema.shape
@@ -90,21 +91,11 @@ export const createBrickInstance = createServerFn({ method: "POST" })
         360_000
       )
     )
-    const renamed = relayInstanceSchema.parse(
-      await requestRelay(
-        relay,
-        `/v1/instances/${encodeURIComponent(instance.id)}`,
-        {
-          method: "PUT",
-          body: JSON.stringify({ name: data.name }),
-        }
-      )
-    )
     await runAppEffect(
       "relay.snapshot.invalidate",
       invalidateRelayCache(relayCachePolicy.snapshot(relay.id))
     )
-    return renamed
+    return instance
   })
 
 export const getInstanceStartup = createServerFn({ method: "GET" })

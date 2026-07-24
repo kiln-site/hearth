@@ -5,6 +5,7 @@ import { loadConfig } from "./config.js"
 import {
   coreDnsHostnamePattern,
   LifecycleDriver,
+  recoveryRouteLabels,
   routeLabelsRequireRestart,
   traefikDynamicConfiguration,
   traefikRouteLabels,
@@ -90,7 +91,7 @@ describe("Traefik web routes", () => {
   }
   const route = {
     hostname: "donutsmp.example.com",
-    id: "b00d4423-2620-4079-845a-dac8c063987a",
+    id: "b00d4423",
     instanceId: "a".repeat(40),
     path: "/map",
     stripPrefix: true,
@@ -125,7 +126,7 @@ describe("Traefik web routes", () => {
       httpEntryPoint: "http",
       httpsEntryPoint: "https",
     })
-    const name = "kiln-route-b00d442326204079845adac8c063987a"
+    const name = "kiln-route-b00d4423"
     expect(labels["traefik.enable"]).toBe("true")
     expect(labels["traefik.docker.network"]).toBe("kiln-edge")
     expect(labels[`traefik.http.routers.${name}-https.entrypoints`]).toBe(
@@ -137,6 +138,20 @@ describe("Traefik web routes", () => {
     expect(
       labels[`traefik.http.services.${name}.loadbalancer.server.port`]
     ).toBe("8080")
+    expect(labels["kiln.relay.web-routes.b00d4423"]).toBe(
+      "donutsmp.example.com:8080/map"
+    )
+    expect(labels["kiln.relay.web-routes.revision"]).toMatch(/^[a-f0-9]{64}$/u)
+  })
+
+  it("stores recovery labels without exposing the Ember to Traefik", () => {
+    const labels = recoveryRouteLabels([route])
+
+    expect(labels["traefik.enable"]).toBe("false")
+    expect(labels["traefik.docker.network"]).toBeUndefined()
+    expect(labels["kiln.relay.web-routes.b00d4423"]).toBe(
+      "donutsmp.example.com:8080/map"
+    )
     expect(labels["kiln.relay.web-routes.revision"]).toMatch(/^[a-f0-9]{64}$/u)
   })
 

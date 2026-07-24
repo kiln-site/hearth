@@ -9,9 +9,10 @@ import {
   RotateCw,
   Trash2,
 } from "lucide-react"
-import { relayInstanceWebRouteSchema } from "@workspace/contracts"
+import { relayInstanceWebRouteInputSchema } from "@workspace/contracts"
 import type {
   RelayInstanceWebRoute,
+  RelayInstanceWebRouteInput,
   RelayInstanceWebRouteState,
 } from "@workspace/contracts"
 
@@ -53,7 +54,7 @@ export function InstanceNetworkPage() {
     queryKey,
   })
   const update = useMutation({
-    mutationFn: (next: Array<RelayInstanceWebRoute>) =>
+    mutationFn: (next: Array<RelayInstanceWebRouteInput>) =>
       updateInstanceWebRoutes({
         data: {
           instanceId: instance.id,
@@ -199,16 +200,15 @@ function RouteForm({
   onAdd,
 }: {
   disabled: boolean
-  onAdd: (route: RelayInstanceWebRoute) => Promise<void>
+  onAdd: (route: RelayInstanceWebRouteInput) => Promise<void>
 }) {
   const [error, setError] = React.useState<string | null>(null)
   return (
     <form
       action={async (form) => {
         const path = String(form.get("path") ?? "").trim()
-        const parsed = relayInstanceWebRouteSchema.safeParse({
+        const parsed = relayInstanceWebRouteInputSchema.safeParse({
           hostname: String(form.get("hostname") ?? ""),
-          id: crypto.randomUUID(),
           path: path || null,
           stripPrefix: form.get("stripPrefix") === "on",
           targetPort: Number(form.get("targetPort")),

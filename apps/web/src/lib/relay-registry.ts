@@ -37,11 +37,7 @@ import { runAppEffect } from "@/effect/runtime"
 import { databasePool } from "@/lib/database"
 import { databaseTable } from "@/lib/database-config"
 import { betterAuthSecrets, kilnPublicUrl } from "@/lib/environment"
-import {
-  clearInstanceDisplayName,
-  listInstanceDisplayNames,
-  syncInstanceRegistry,
-} from "@/lib/instance-registry"
+import { syncInstanceRegistry } from "@/lib/instance-registry"
 
 import { decryptWithKeyring, encryptWithKeyring } from "../../keyring.mjs"
 
@@ -201,6 +197,22 @@ export async function listPersistedRelays(): Promise<Array<PersistedRelay>> {
   return runAppEffect("relays.list", listPersistedRelaysEffect())
 }
 
+async function findPersistedRelayRow(id: string): Promise<RelayRow | null> {
+  const [rows] = await databasePool.query<Array<RelayRow>>(
+    `SELECT id, name, hostname, port, use_tls, browser_origin,
+            client_id, client_role, client_actions, enabled,
+            last_connected_at, last_error, managed_ember_count,
+            node_arch, node_platform, node_version,
+            relay_public_key, relay_ca_certificate,
+            client_public_key, client_private_key_ciphertext, created_at
+       FROM ${databaseTable("relay")}
+      WHERE id = ?
+      LIMIT 1`,
+    [id]
+  )
+  return rows[0] ?? null
+}
+
 export const listPersistedRelaysEffect = Effect.fn("relays.list")(function* () {
   const database = yield* Database
   const rows = yield* database.queryRows<RelayRow>(
@@ -225,13 +237,16 @@ export async function pairPersistedRelay(pairingUri: string) {
   })
 }
 
-export function previewPairingUri(pairingUri: string) {
+export async function previewPairingUri(pairingUri: string) {
   const envelope = decodePairingUri(pairingUri)
+  const existing = await findPersistedRelayRow(envelope.relayFingerprint)
   return {
     browserOrigin: envelope.browserOrigin,
     controlEndpoint: envelope.controlEndpoint,
+    existingRelayName: existing?.name ?? null,
     expiresAt: envelope.expiresAt,
     managedTls: envelope.caCertificatePem !== null,
+    mode: existing ? ("repair" as const) : ("add" as const),
     relayFingerprint: envelope.relayFingerprint,
     relayName: envelope.relayName,
   }
@@ -451,25 +466,6 @@ export async function maintainPersistedRelayConnections(): Promise<void> {
       const snapshot = relaySnapshotSchema.parse(
         await relayRpc(relay, "relay.snapshot", {}, 5_000)
       )
-      const instanceIds = new Set(
-        snapshot.instances.map((instance) => instance.id)
-      )
-      const persistedNames = await listInstanceDisplayNames(relay.id)
-      await Promise.all(
-        persistedNames.map(async (persisted) => {
-          if (!instanceIds.has(persisted.instanceId)) return
-          await relayRpc(
-            relay,
-            "instance.rename",
-            {
-              instanceId: persisted.instanceId,
-              name: persisted.displayName,
-            },
-            10_000
-          )
-          await clearInstanceDisplayName(relay.id, persisted.instanceId)
-        })
-      )
       await syncInstanceRegistry(relay.id, snapshot.instances)
     })
   )
@@ -510,10 +506,28 @@ async function pairWithEnvelope(
     throw new Error("Development Relay endpoints must use matching protocols")
   }
 
-  const keys = generateKeyPairSync("ed25519", {
-    privateKeyEncoding: { format: "pem", type: "pkcs8" },
-    publicKeyEncoding: { format: "pem", type: "spki" },
-  })
+  const existing = await findPersistedRelayRow(envelope.relayFingerprint)
+  if (existing && existing.relay_public_key !== envelope.relayPublicKeyPem) {
+    throw new Error(
+      "The saved Relay identity does not match this pairing invitation"
+    )
+  }
+  // A Relay keeps this fingerprint when its SQLite state is rebuilt. Reuse
+  // Hearth's client identity so Relay can enroll it again without replacing
+  // Hearth's Relay row and cascading away instance activity or pins.
+  const keys = existing
+    ? {
+        privateKey: decryptPrivateKey(existing.client_private_key_ciphertext)
+          .plaintext,
+        publicKey: existing.client_public_key,
+      }
+    : generateKeyPairSync("ed25519", {
+        privateKeyEncoding: { format: "pem", type: "pkcs8" },
+        publicKeyEncoding: { format: "pem", type: "spki" },
+      })
+  if (existing && publicKeyFingerprint(keys.publicKey) !== existing.client_id) {
+    throw new Error("The saved Hearth client identity is invalid")
+  }
   const nonce = randomBytes(32).toString("base64url")
   const requestBase = {
     hearthName: `Hearth on ${kilnPublicUrl().hostname}`,
@@ -551,37 +565,76 @@ async function pairWithEnvelope(
     )
   )
   verifyPairingResponse(envelope, nonce, response)
+  if (response.clientId !== publicKeyFingerprint(keys.publicKey)) {
+    throw new Error("Relay paired an unexpected Hearth client identity")
+  }
+  if (existing && response.clientId !== existing.client_id) {
+    throw new Error("Relay repair returned a different Hearth client identity")
+  }
 
-  await databasePool.execute(
-    `INSERT INTO ${databaseTable("relay")} (
-      id, name, hostname, port, use_tls, browser_origin,
-      relay_public_key, relay_ca_certificate,
-      client_id, client_public_key, client_private_key_ciphertext,
-      client_role, client_actions, enabled
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)`,
-    [
-      envelope.relayFingerprint,
-      response.relayName,
-      controlEndpoint.hostname,
-      effectivePort(controlEndpoint),
-      controlEndpoint.protocol === "wss:",
-      browserOrigin.origin,
-      envelope.relayPublicKeyPem,
-      envelope.caCertificatePem,
-      response.clientId,
-      keys.publicKey,
-      encryptPrivateKey(keys.privateKey),
-      response.role,
-      JSON.stringify(response.actions),
-    ]
-  )
+  const encryptedPrivateKey = encryptPrivateKey(keys.privateKey)
+  if (existing) {
+    await databasePool.execute(
+      `UPDATE ${databaseTable("relay")}
+          SET name = ?, hostname = ?, port = ?, use_tls = ?,
+              browser_origin = ?, relay_public_key = ?,
+              relay_ca_certificate = ?, client_id = ?,
+              client_public_key = ?, client_private_key_ciphertext = ?,
+              client_role = ?, client_actions = ?, enabled = TRUE,
+              last_error = NULL
+        WHERE id = ?`,
+      [
+        response.relayName,
+        controlEndpoint.hostname,
+        effectivePort(controlEndpoint),
+        controlEndpoint.protocol === "wss:",
+        browserOrigin.origin,
+        envelope.relayPublicKeyPem,
+        envelope.caCertificatePem,
+        response.clientId,
+        keys.publicKey,
+        encryptedPrivateKey,
+        response.role,
+        JSON.stringify(response.actions),
+        envelope.relayFingerprint,
+      ]
+    )
+    const { closeRelayConnection } = await import("@/lib/relay-connection")
+    closeRelayConnection(envelope.relayFingerprint)
+  } else {
+    await databasePool.execute(
+      `INSERT INTO ${databaseTable("relay")} (
+        id, name, hostname, port, use_tls, browser_origin,
+        relay_public_key, relay_ca_certificate,
+        client_id, client_public_key, client_private_key_ciphertext,
+        client_role, client_actions, enabled
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)`,
+      [
+        envelope.relayFingerprint,
+        response.relayName,
+        controlEndpoint.hostname,
+        effectivePort(controlEndpoint),
+        controlEndpoint.protocol === "wss:",
+        browserOrigin.origin,
+        envelope.relayPublicKeyPem,
+        envelope.caCertificatePem,
+        response.clientId,
+        keys.publicKey,
+        encryptedPrivateKey,
+        response.role,
+        JSON.stringify(response.actions),
+      ]
+    )
+  }
   try {
     return await checkPersistedRelay(envelope.relayFingerprint)
   } catch (cause) {
-    await databasePool.execute(
-      `DELETE FROM ${databaseTable("relay")} WHERE id = ?`,
-      [envelope.relayFingerprint]
-    )
+    if (!existing) {
+      await databasePool.execute(
+        `DELETE FROM ${databaseTable("relay")} WHERE id = ?`,
+        [envelope.relayFingerprint]
+      )
+    }
     throw cause
   }
 }

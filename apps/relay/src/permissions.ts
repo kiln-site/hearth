@@ -61,7 +61,7 @@ const readOnlyActions = new Set<RelayAction>([
 
 export function actionsForRole(
   role: RelayClientRole,
-  customActions: ReadonlyArray<RelayAction> = []
+  customActions: ReadonlyArray<string> = []
 ): ReadonlyArray<RelayAction> {
   if (role === "full_access") return relayActions
   if (role === "read_only") {

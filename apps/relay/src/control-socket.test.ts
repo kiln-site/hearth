@@ -40,7 +40,7 @@ describe("Relay control socket", () => {
       name: "Test Hearth",
       origins: ["https://hearth.test"],
       publicKey: hearthKeys.publicKey,
-      role: "read_only",
+      role: "custom",
       sourceCidrs: [],
     }
     let blockClientLookup = false
@@ -230,7 +230,7 @@ describe("Relay control socket", () => {
           name,
           origins: ["https://hearth.test"],
           publicKey: keys.publicKey,
-          role: "read_only",
+          role: "full_access",
           sourceCidrs: [],
         } satisfies RelayClientRecord,
       }
@@ -315,6 +315,22 @@ describe("Relay control socket", () => {
       if (response.type === "response") {
         expect(response.payload).toEqual({ clientId: clients[1].record.id })
       }
+
+      second.socket.send(
+        JSON.stringify({
+          deadline: Date.now() + 5_000,
+          id: randomBytes(12).toString("hex"),
+          operation: "instance.rename",
+          payload: {
+            instanceId: "a".repeat(40),
+            name: "Survival",
+          },
+          type: "request",
+          v: 1,
+        })
+      )
+      const renamed = await second.inbox.next()
+      expect(renamed.type).toBe("response")
     } finally {
       second.socket.close()
       await once(second.socket, "close")

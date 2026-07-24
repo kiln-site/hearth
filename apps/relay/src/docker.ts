@@ -21,6 +21,8 @@ import type {
 import { brickVariableValuesSchema } from "@workspace/contracts"
 
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
+import { WEB_ROUTE_LABEL_PREFIX } from "./web-route-labels.js"
+import type { RelayWebRouteLabelSnapshot } from "./web-route-labels.js"
 
 interface DockerInspect {
   Config: {
@@ -196,6 +198,14 @@ export class DockerDriver {
     return found?.config ?? null
   }
 
+  async webRouteLabelSnapshots(): Promise<Array<RelayWebRouteLabelSnapshot>> {
+    return (await this.#discover()).map(({ config, container }) => ({
+      instanceId: config.id,
+      labels: container.Config.Labels ?? {},
+      service: config.service,
+    }))
+  }
+
   async runAction(
     instance: RelayInstanceConfig,
     action: "start" | "stop" | "restart" | "kill"
@@ -245,7 +255,7 @@ export class DockerDriver {
         label.startsWith("traefik.http.") ||
         label === "traefik.enable" ||
         label === "traefik.docker.network" ||
-        label.startsWith("kiln.relay.web-routes.")
+        label.startsWith(WEB_ROUTE_LABEL_PREFIX)
       ) {
         delete labels[label]
       }

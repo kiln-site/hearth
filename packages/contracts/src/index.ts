@@ -131,6 +131,7 @@ export const brickRecipeSchema = z
   .strict()
 
 export const brickSourceSchema = z.string().trim().url().max(2_048)
+export const relayInstanceNameSchema = z.string().trim().min(1).max(120)
 
 export const brickSchema = brickRecipeSchema.extend({
   source: brickSourceSchema,
@@ -142,6 +143,7 @@ export const brickVariableValuesSchema = z.record(
 )
 
 export const relayCreateInstanceSchema = z.object({
+  name: relayInstanceNameSchema.optional(),
   recipe: brickSourceSchema,
   variables: brickVariableValuesSchema,
   start: z.boolean().default(true),
@@ -176,7 +178,6 @@ export const relayProxyModeSchema = z.enum([
 ])
 
 export const relayNameSchema = z.string().trim().min(1).max(120)
-export const relayInstanceNameSchema = z.string().trim().min(1).max(120)
 
 export const relayConnectionSettingsSchema = z
   .object({
@@ -221,9 +222,17 @@ const webRouteHostnameSchema = z
     "Enter a fully qualified hostname without a scheme or path"
   )
 
-export const relayInstanceWebRouteSchema = z
+export const relayInstanceWebRouteShortIdSchema = z
+  .string()
+  .regex(/^[a-f0-9]{8}$/u, "Route ID must be 8 lowercase hexadecimal characters")
+
+export const relayInstanceWebRouteIdSchema = z.union([
+  relayInstanceWebRouteShortIdSchema,
+  z.uuid(),
+])
+
+const relayInstanceWebRouteConfigurationSchema = z
   .object({
-    id: z.uuid(),
     hostname: webRouteHostnameSchema,
     path: z
       .string()
@@ -241,23 +250,44 @@ export const relayInstanceWebRouteSchema = z
   })
   .strict()
 
-export const relayInstanceWebRoutesSchema = z
-  .array(relayInstanceWebRouteSchema)
-  .max(16)
-  .superRefine((routes, context) => {
-    const seen = new Set<string>()
-    routes.forEach((route, index) => {
-      const key = `${route.hostname}\n${route.path ?? ""}`
-      if (seen.has(key)) {
-        context.addIssue({
-          code: "custom",
-          message: "Each hostname and path combination must be unique",
-          path: [index, "hostname"],
-        })
-      }
-      seen.add(key)
-    })
+export const relayInstanceWebRouteInputSchema =
+  relayInstanceWebRouteConfigurationSchema.extend({
+    id: relayInstanceWebRouteIdSchema.optional(),
   })
+
+export const relayInstanceWebRouteSchema =
+  relayInstanceWebRouteConfigurationSchema.extend({
+    id: relayInstanceWebRouteIdSchema,
+  })
+
+function relayInstanceWebRouteArraySchema<
+  Route extends z.ZodType<{ hostname: string; path: string | null }>,
+>(route: Route) {
+  return z
+    .array(route)
+    .max(16)
+    .superRefine((routes, context) => {
+      const seen = new Set<string>()
+      routes.forEach((item, index) => {
+        const key = `${item.hostname}\n${item.path ?? ""}`
+        if (seen.has(key)) {
+          context.addIssue({
+            code: "custom",
+            message: "Each hostname and path combination must be unique",
+            path: [index, "hostname"],
+          })
+        }
+        seen.add(key)
+      })
+    })
+}
+
+export const relayInstanceWebRouteInputsSchema =
+  relayInstanceWebRouteArraySchema(relayInstanceWebRouteInputSchema)
+
+export const relayInstanceWebRoutesSchema = relayInstanceWebRouteArraySchema(
+  relayInstanceWebRouteSchema
+)
 
 export const relayInstanceWebRouteStateSchema = z
   .object({
@@ -552,6 +582,9 @@ export type RelayProxyMode = z.infer<typeof relayProxyModeSchema>
 export type RelayProxySettings = z.infer<typeof relayProxySettingsSchema>
 export type RelayProxyDiagnostics = z.infer<typeof relayProxyDiagnosticsSchema>
 export type RelayInstanceWebRoute = z.infer<typeof relayInstanceWebRouteSchema>
+export type RelayInstanceWebRouteInput = z.infer<
+  typeof relayInstanceWebRouteInputSchema
+>
 export type RelayInstanceWebRoutes = z.infer<
   typeof relayInstanceWebRoutesSchema
 >
