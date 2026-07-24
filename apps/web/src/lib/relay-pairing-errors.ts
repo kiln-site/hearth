@@ -3,12 +3,13 @@ export const RELAY_PAIRING_DOCS_HREF = "https://docs.kiln.site/"
 export const PAIRING_EDGE_MESSAGES = {
   untrustedTls:
     "Hostname TLS is untrusted. Check that DNS points at your Relay.",
-  cloudflareNestedSsl:
-    "Cloudflare SSL failed for this nested subdomain.",
+  tlsHandshake: "TLS handshake failed for this hostname.",
   cloudflareOriginCert:
     "Cloudflare rejected the origin certificate (526).",
-  cloudflareRedirect:
-    "Relay URL redirected instead of pairing. Check Cloudflare SSL mode.",
+  cloudflareHandshake:
+    "Cloudflare could not complete the TLS handshake with the origin (525).",
+  redirect:
+    "Relay URL redirected instead of pairing. Check reverse-proxy SSL settings.",
 } as const
 
 const pairingEdgeMessageSet = new Set<string>(
@@ -47,7 +48,7 @@ export function mapPairingTransportError(cause: unknown): Error | null {
     code === "ERR_SSL_VERSION_OR_CIPHER_MISMATCH" ||
     /ssl.?version.?or.?cipher.?mismatch/i.test(message)
   ) {
-    return new Error(PAIRING_EDGE_MESSAGES.cloudflareNestedSsl)
+    return new Error(PAIRING_EDGE_MESSAGES.tlsHandshake)
   }
 
   if (
@@ -77,20 +78,12 @@ export function mapPairingHttpResponse(
     return new Error(PAIRING_EDGE_MESSAGES.cloudflareOriginCert)
   }
 
-  if (
-    cloudflareCode === "525" ||
-    statusCode === 525 ||
-    /ERR_SSL_VERSION_OR_CIPHER_MISMATCH/i.test(trimmed)
-  ) {
-    return new Error(PAIRING_EDGE_MESSAGES.cloudflareNestedSsl)
+  if (cloudflareCode === "525" || statusCode === 525) {
+    return new Error(PAIRING_EDGE_MESSAGES.cloudflareHandshake)
   }
 
   if (statusCode >= 300 && statusCode < 400) {
-    return new Error(PAIRING_EDGE_MESSAGES.cloudflareRedirect)
-  }
-
-  if (/temporary redirect|permanent redirect|moved permanently/i.test(trimmed)) {
-    return new Error(PAIRING_EDGE_MESSAGES.cloudflareRedirect)
+    return new Error(PAIRING_EDGE_MESSAGES.redirect)
   }
 
   return null
