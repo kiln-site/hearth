@@ -13,6 +13,9 @@ Releases is the release index and GHCR is the only image source.
   `0.1.0-nightly.1`.
 - Nightlies are GitHub prereleases. A stable release promotes a selected
   nightly without rebuilding its images.
+- Stable promotion closes that release line. The workflow advances
+  `release.json` to the operator-selected next `0.x.x` line before more
+  nightlies are published.
 
 Published image tags:
 
@@ -90,8 +93,16 @@ requests.
 
 Nightly releases are automatic through `nightly-release.yml`. To publish a
 stable release, run `stable-release.yml` and supply the nightly version without
-the leading `v`, for example `0.1.0-nightly.18`.
+the leading `v`, for example `0.1.0-nightly.18`, plus the next release line,
+for example `0.2.0`.
 
 Stable promotion reuses the nightly's exact image digests, publishes `0.1.0`
 and `latest`, creates tag `v0.1.0` at the nightly commit, and publishes a normal
-GitHub release. The workflow is safe to rerun for the same nightly.
+GitHub release. It then commits the next release line to `main`, which starts
+the next nightly series. The workflow is safe to rerun for the same nightly and
+next release line.
+
+When a release changes the Relay control protocol, update Hearth first. The
+transitional Hearth release must continue speaking the previous Relay protocol
+long enough to update the fleet; Relay updates remain blocked until the running
+Hearth recognizes the manifest protocol.

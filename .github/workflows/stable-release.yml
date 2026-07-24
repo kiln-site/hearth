@@ -7,6 +7,14 @@ on:
         description: Nightly version to promote, without the leading v
         required: true
         type: string
+      next_release:
+        description: Next 0.x.x release line for future nightlies
+        required: true
+        type: string
+
+concurrency:
+  group: kiln-release-line
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -21,23 +29,45 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          ref: main
 
       - name: Validate promotion
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
           NIGHTLY: ${{ inputs.nightly }}
+          NEXT_RELEASE: ${{ inputs.next_release }}
         run: |
           release_line="$(jq -er '.releaseLine' release.json)"
+          stable_version="${NIGHTLY%%-nightly.*}"
+          printf '%s\n' "$stable_version" | grep -Eq '^0\.[0-9]+\.[0-9]+$'
+          printf '%s\n' "$NEXT_RELEASE" | grep -Eq '^0\.[0-9]+\.[0-9]+$'
           case "$NIGHTLY" in
-            "$release_line"-nightly.*) ;;
-            *) echo "Nightly must belong to release line $release_line" >&2; exit 1 ;;
+            "$stable_version"-nightly.*) ;;
+            *) echo "Nightly version is invalid" >&2; exit 1 ;;
           esac
+          increment="${NIGHTLY#"$stable_version-nightly."}"
+          case "$increment" in
+            ''|*[!0-9]*) echo "Nightly increment is invalid" >&2; exit 1 ;;
+          esac
+          case "$release_line" in
+            "$stable_version"|"$NEXT_RELEASE") ;;
+            *) echo "release.json must contain $stable_version or $NEXT_RELEASE" >&2; exit 1 ;;
+          esac
+          test "$NEXT_RELEASE" != "$stable_version"
+          test "$(printf '%s\n%s\n' "$stable_version" "$NEXT_RELEASE" | sort -V | tail -n 1)" = "$NEXT_RELEASE"
           test "$(gh release view "v$NIGHTLY" --json isPrerelease --jq '.isPrerelease')" = true
           gh release download "v$NIGHTLY" --pattern release-manifest.json
           test "$(jq -r '.version' release-manifest.json)" = "$NIGHTLY"
           test "$(jq -r '.channel' release-manifest.json)" = nightly
-          echo "version=$release_line" >> "$GITHUB_OUTPUT"
+          newest="$(gh release list --limit 100 --json isPrerelease,tagName \
+            --jq '.[] | select(.isPrerelease) | .tagName' \
+            | grep -E "^v${stable_version//./\\.}-nightly\\.[0-9]+$" \
+            | sort -V \
+            | tail -n 1)"
+          test "$newest" = "v$NIGHTLY"
+          echo "version=$stable_version" >> "$GITHUB_OUTPUT"
+          echo "next_release=$NEXT_RELEASE" >> "$GITHUB_OUTPUT"
           echo "nightly_tag=v$NIGHTLY" >> "$GITHUB_OUTPUT"
 
       - name: Reserve stable tag
@@ -94,3 +124,30 @@ jobs:
               --generate-notes \
               --title "v$VERSION"
           fi
+
+      - name: Advance the nightly release line
+        env:
+          NEXT_RELEASE: ${{ steps.version.outputs.next_release }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git checkout -B kiln-release-line origin/main
+            current="$(jq -er '.releaseLine' release.json)"
+            if test "$current" = "$NEXT_RELEASE"; then
+              exit 0
+            fi
+            test "$current" = "$VERSION"
+            jq --arg next "$NEXT_RELEASE" '.releaseLine = $next' \
+              release.json > release.next.json
+            mv release.next.json release.json
+            git add release.json
+            git commit -m "chore: start $NEXT_RELEASE nightlies"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+          done
+          echo "Could not advance release.json after five attempts" >&2
+          exit 1

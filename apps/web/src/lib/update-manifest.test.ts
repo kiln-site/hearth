@@ -27,7 +27,7 @@ const manifest: KilnReleaseManifest = {
 describe("update manifest validation", () => {
   it("accepts the current Relay protocol", () => {
     expect(() =>
-      validateUpdateManifest(manifest, "0.1.0-nightly.2")
+      validateUpdateManifest(manifest, "0.1.0-nightly.2", "relay")
     ).not.toThrow()
   })
 
@@ -40,8 +40,24 @@ describe("update manifest validation", () => {
             relayProtocol: 2,
           },
         },
-        "0.1.0-nightly.2"
+        "0.1.0-nightly.2",
+        "relay"
       )
     ).toThrow("requires Relay protocol 2")
+  })
+
+  it("allows Hearth to cross a Relay protocol transition", () => {
+    expect(() =>
+      validateUpdateManifest(
+        {
+          ...manifest,
+          compatibility: {
+            relayProtocol: 2,
+          },
+        },
+        "0.1.0-nightly.2",
+        "hearth"
+      )
+    ).not.toThrow()
   })
 })

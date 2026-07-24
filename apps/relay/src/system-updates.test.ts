@@ -4,6 +4,7 @@ import {
   readFile,
   readdir,
   rm,
+  utimes,
   writeFile,
 } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -209,6 +210,30 @@ describe("update operation lifecycle", () => {
             arguments_.includes(`kiln-updater-${operation.id}`)
         )
       ).toBe(true)
+    } finally {
+      await removeTemporaryDirectory(dataDirectory)
+    }
+  })
+
+  it("recovers an orphaned target lock", async () => {
+    const dataDirectory = await temporaryDataDirectory()
+    try {
+      const docker = new FakeCommand()
+      const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
+      const updatesDirectory = join(dataDirectory, "updates")
+      const lockPath = join(updatesDirectory, "kiln-relay.lock")
+      await mkdir(updatesDirectory, { recursive: true })
+      await writeFile(lockPath, "22222222-2222-4222-8222-222222222222\n")
+      await utimes(lockPath, new Date(0), new Date(0))
+
+      const operation = await manager.start({
+        helperImage: targetImage,
+        targetContainer: "kiln-relay",
+        targetImage,
+        version: "0.1.0",
+      })
+
+      expect(operation.status).toBe("running")
     } finally {
       await removeTemporaryDirectory(dataDirectory)
     }

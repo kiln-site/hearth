@@ -1,5 +1,13 @@
 import { randomUUID } from "node:crypto"
-import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
+import {
+  link,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises"
 import { hostname } from "node:os"
 import { join } from "node:path"
 
@@ -16,6 +24,7 @@ import {
 const RELEASE_IMAGE =
   /^ghcr\.io\/kiln-site\/(hearth|relay)@sha256:[a-f0-9]{64}$/u
 const STALE_UPDATE_MS = 10 * 60_000
+const ORPHAN_LOCK_MS = 30_000
 
 type RunCommand = (
   executable: string,
@@ -419,13 +428,35 @@ async function acquireTargetLock(
       const existing = existingId
         ? await readOperation(directory, existingId)
         : null
-      if (!existing || existing.status === "running") {
+      if (!existing) {
+        if (await lockIsOrphaned(path)) {
+          await releaseTargetLock(
+            directory,
+            operation.targetContainer,
+            existingId
+          )
+          continue
+        }
+        throw new Error(
+          `An update is starting for ${operation.targetContainer}`
+        )
+      }
+      if (existing.status === "running") {
         throw new Error(
           `An update is already running for ${operation.targetContainer}`
         )
       }
       await releaseTargetLock(directory, operation.targetContainer, existingId)
     }
+  }
+}
+
+async function lockIsOrphaned(path: string): Promise<boolean> {
+  try {
+    return Date.now() - (await stat(path)).mtimeMs > ORPHAN_LOCK_MS
+  } catch (cause) {
+    if (errorCode(cause) === "ENOENT") return true
+    throw cause
   }
 }
 

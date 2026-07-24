@@ -141,7 +141,7 @@ export const startSystemUpdate = createServerFn({ method: "POST" })
       "updates.manifest",
       kilnReleaseManifestEffect(`v${data.version}`)
     )
-    validateUpdateManifest(manifest, data.version)
+    validateUpdateManifest(manifest, data.version, data.component)
 
     const relays = (await listPersistedRelays()).filter(
       (relay) => relay.enabled

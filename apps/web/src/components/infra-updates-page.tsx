@@ -30,6 +30,7 @@ import {
 } from "@workspace/ui/components/dialog"
 
 import { queryKeys, updateOverviewQueryOptions } from "@/lib/query-options"
+import { compareReleaseVersions } from "@/lib/release-version"
 import { getSystemUpdateStatus, startSystemUpdate } from "@/server/updates"
 
 type UpdateTarget = {
@@ -40,7 +41,10 @@ type UpdateTarget = {
   reason: string | null
   relayId: string | null
 }
-type PendingUpdate = UpdateTarget & { version: string }
+type PendingUpdate = UpdateTarget & {
+  comparison: -1 | 0 | 1
+  version: string
+}
 type ActiveUpdate = {
   component: "hearth" | "relay"
   operationId: string
@@ -156,6 +160,15 @@ export function InfraUpdatesPage() {
   const selectedRelease = overview.releases.find(
     (release) => release.version === selectedVersion
   )
+  const publishedAtByVersion = React.useMemo(
+    () =>
+      new Map(
+        overview.releases.map(
+          (release) => [release.version, release.publishedAt] as const
+        )
+      ),
+    [overview.releases]
+  )
   const hearth: UpdateTarget = {
     component: "hearth",
     currentVersion:
@@ -239,6 +252,7 @@ export function InfraUpdatesPage() {
           <div className="bg-card/95 p-4 sm:p-5">
             <TargetCard
               active={active}
+              publishedAtByVersion={publishedAtByVersion}
               selectedVersion={selectedVersion}
               target={hearth}
               onUpdate={setPending}
@@ -264,6 +278,7 @@ export function InfraUpdatesPage() {
                   active={active}
                   compact
                   key={relay.relayId}
+                  publishedAtByVersion={publishedAtByVersion}
                   selectedVersion={selectedVersion}
                   target={{
                     component: "relay",
@@ -315,7 +330,6 @@ export function InfraUpdatesPage() {
       ) : null}
 
       <UpdateConfirmation
-        currentVersion={pending?.currentVersion ?? null}
         error={
           updateMutation.error instanceof Error
             ? updateMutation.error.message
@@ -341,12 +355,14 @@ export function InfraUpdatesPage() {
 function TargetCard({
   active,
   compact = false,
+  publishedAtByVersion,
   selectedVersion,
   target,
   onUpdate,
 }: {
   active: ActiveUpdate | null
   compact?: boolean
+  publishedAtByVersion: ReadonlyMap<string, string | null>
   selectedVersion: string
   target: UpdateTarget
   onUpdate: (target: PendingUpdate) => void
@@ -354,7 +370,11 @@ function TargetCard({
   const isUpdating =
     active?.component === target.component &&
     (target.component === "hearth" || active.relayId === target.relayId)
-  const comparison = compareVersions(selectedVersion, target.currentVersion)
+  const comparison = compareReleaseVersions(
+    selectedVersion,
+    target.currentVersion,
+    publishedAtByVersion
+  )
   return (
     <div
       className={
@@ -399,7 +419,9 @@ function TargetCard({
         }
         size="sm"
         variant={comparison < 0 ? "outline" : "default"}
-        onClick={() => onUpdate({ ...target, version: selectedVersion })}
+        onClick={() =>
+          onUpdate({ ...target, comparison, version: selectedVersion })
+        }
       >
         {isUpdating ? (
           <LoaderCircle className="animate-spin" />
@@ -449,7 +471,6 @@ function UpdateProgress({
 }
 
 function UpdateConfirmation({
-  currentVersion,
   error,
   open,
   pending,
@@ -457,7 +478,6 @@ function UpdateConfirmation({
   onConfirm,
   onOpenChange,
 }: {
-  currentVersion: string | null
   error: string | null
   open: boolean
   pending: boolean
@@ -465,8 +485,7 @@ function UpdateConfirmation({
   onConfirm: () => void
   onOpenChange: (open: boolean) => void
 }) {
-  const downgrade =
-    target !== null && compareVersions(target.version, currentVersion) < 0
+  const downgrade = target?.comparison === -1
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -522,28 +541,6 @@ function UpdateConfirmation({
       </DialogContent>
     </Dialog>
   )
-}
-
-function compareVersions(left: string, right: string | null): -1 | 0 | 1 {
-  if (!right) return 1
-  const leftParts = versionParts(left)
-  const rightParts = versionParts(right)
-  for (let index = 0; index < leftParts.length; index += 1) {
-    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0)
-    if (difference !== 0) return difference < 0 ? -1 : 1
-  }
-  return 0
-}
-
-function versionParts(version: string): Array<number> {
-  const match = /^0\.(\d+)\.(\d+)(?:-nightly\.(\d+))?$/u.exec(version.trim())
-  if (!match) return [0, 0, 0]
-  return [
-    0,
-    Number(match[1]),
-    Number(match[2]),
-    match[3] === undefined ? Number.MAX_SAFE_INTEGER : Number(match[3]),
-  ]
 }
 
 function displayComponent(component: "hearth" | "relay"): string {

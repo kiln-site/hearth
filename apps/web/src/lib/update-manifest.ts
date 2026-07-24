@@ -4,12 +4,16 @@ import type { KilnReleaseManifest } from "@/effect/github-releases"
 
 export function validateUpdateManifest(
   manifest: KilnReleaseManifest,
-  version: string
+  version: string,
+  component: "hearth" | "relay"
 ): void {
   if (manifest.version !== version) {
     throw new Error("The release manifest version does not match its tag")
   }
-  if (manifest.compatibility.relayProtocol !== relayControlProtocolVersion) {
+  if (
+    component === "relay" &&
+    manifest.compatibility.relayProtocol !== relayControlProtocolVersion
+  ) {
     throw new Error(
       `This release requires Relay protocol ${manifest.compatibility.relayProtocol}; Hearth supports protocol ${relayControlProtocolVersion}`
     )

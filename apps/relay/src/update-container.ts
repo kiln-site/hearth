@@ -4,6 +4,8 @@ export type KilnComponent = "hearth" | "relay"
 
 export interface ContainerInspect {
   Config: Record<string, unknown> & {
+    Cmd?: unknown
+    Entrypoint?: unknown
     Healthcheck?: unknown
     Image?: string
     Labels?: Record<string, string> | null
@@ -93,6 +95,8 @@ export async function replaceContainer(
     backupRenamed = true
 
     const preservedConfig = { ...current.Config }
+    delete preservedConfig.Cmd
+    delete preservedConfig.Entrypoint
     delete preservedConfig.Healthcheck
     const targetHealthcheck = target.Config?.Healthcheck
     await docker.createContainer(input.targetContainer, {

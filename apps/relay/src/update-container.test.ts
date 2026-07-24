@@ -11,6 +11,8 @@ import {
 
 const currentContainer: ContainerInspect = {
   Config: {
+    Cmd: ["old-command"],
+    Entrypoint: ["old-entrypoint"],
     Env: ["EXAMPLE=true"],
     Healthcheck: {
       Interval: 10_000_000_000,
@@ -142,6 +144,8 @@ describe("container replacement", () => {
         },
       })
     )
+    expect(docker.createdConfiguration).not.toHaveProperty("Cmd")
+    expect(docker.createdConfiguration).not.toHaveProperty("Entrypoint")
     expect(docker.commands[0]).toEqual([
       "image",
       "tag",

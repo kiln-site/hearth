@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: kiln-release-line
+  cancel-in-progress: false
+
 permissions:
   contents: write
   packages: write
@@ -32,7 +36,8 @@ jobs:
         env:
           COMMIT_SHA: ${{ github.sha }}
         run: |
-          release_line="$(jq -er '.releaseLine' release.json)"
+          git fetch origin main
+          release_line="$(git show origin/main:release.json | jq -er '.releaseLine')"
           existing="$(git tag --points-at "$COMMIT_SHA" --list "v${release_line}-nightly.*" --sort=-v:refname | head -n 1)"
           if test -n "$existing"; then
             tag="$existing"
