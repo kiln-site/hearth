@@ -176,6 +176,7 @@ export const relayProxyModeSchema = z.enum([
 ])
 
 export const relayNameSchema = z.string().trim().min(1).max(120)
+export const relayInstanceNameSchema = z.string().trim().min(1).max(120)
 
 export const relayConnectionSettingsSchema = z
   .object({

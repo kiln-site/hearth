@@ -62,6 +62,11 @@ export interface RelayStoredWebRoute extends RelayInstanceWebRoute {
   readonly instanceId: string
 }
 
+export interface RelayStoredInstanceName {
+  readonly instanceId: string
+  readonly name: string
+}
+
 const RelayClientRoleSchema = Schema.Literals([
   "custom",
   "full_access",
@@ -137,6 +142,10 @@ export class RelayStateStore extends Context.Service<
     readonly listInvitations: (
       now: number
     ) => Effect.Effect<ReadonlyArray<RelayInvitation>, RelayStateError>
+    readonly listInstanceNames: () => Effect.Effect<
+      ReadonlyArray<RelayStoredInstanceName>,
+      RelayStateError
+    >
     readonly listInstanceRoutes: (
       instanceId: string
     ) => Effect.Effect<ReadonlyArray<RelayInstanceWebRoute>, RelayStateError>
@@ -158,6 +167,13 @@ export class RelayStateStore extends Context.Service<
     readonly setMetadata: (
       key: string,
       value: string
+    ) => Effect.Effect<void, RelayStateError>
+    readonly setInstanceName: (
+      instanceId: string,
+      name: string
+    ) => Effect.Effect<void, RelayStateError>
+    readonly deleteInstanceName: (
+      instanceId: string
     ) => Effect.Effect<void, RelayStateError>
     readonly replaceInstanceRoutes: (
       instanceId: string,
@@ -269,6 +285,16 @@ const migrations = SqliteMigrator.fromRecord({
     yield* sql`
       CREATE INDEX relay_web_routes_instance
       ON relay_web_routes (instance_id)
+    `
+  }),
+  "5_instance_names": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`
+      CREATE TABLE relay_instance_names (
+        instance_id TEXT PRIMARY KEY NOT NULL,
+        name TEXT NOT NULL UNIQUE,
+        updated_at INTEGER NOT NULL
+      ) STRICT
     `
   }),
 })
@@ -602,6 +628,15 @@ const makeRelayStateStore = Effect.gen(function* () {
           )
         })
       ),
+    listInstanceNames: () =>
+      run(
+        "list_instance_names",
+        sql<RelayStoredInstanceName>`
+          SELECT instance_id AS instanceId, name
+          FROM relay_instance_names
+          ORDER BY instance_id ASC
+        `
+      ),
     listInstanceRoutes: (instanceId) =>
       run(
         "list_instance_routes",
@@ -717,6 +752,23 @@ const makeRelayStateStore = Effect.gen(function* () {
           INSERT INTO relay_metadata (key, value)
           VALUES (${key}, ${value})
           ON CONFLICT (key) DO UPDATE SET value = excluded.value
+        `.pipe(Effect.asVoid)
+      ),
+    setInstanceName: (instanceId, name) =>
+      run(
+        "set_instance_name",
+        sql`
+          INSERT INTO relay_instance_names (instance_id, name, updated_at)
+          VALUES (${instanceId}, ${name}, ${Date.now()})
+          ON CONFLICT (instance_id) DO UPDATE
+          SET name = excluded.name, updated_at = excluded.updated_at
+        `.pipe(Effect.asVoid)
+      ),
+    deleteInstanceName: (instanceId) =>
+      run(
+        "delete_instance_name",
+        sql`
+          DELETE FROM relay_instance_names WHERE instance_id = ${instanceId}
         `.pipe(Effect.asVoid)
       ),
     replaceInstanceRoutes: (instanceId, routes) =>

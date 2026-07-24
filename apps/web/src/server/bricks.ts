@@ -14,7 +14,6 @@ import {
 import { z } from "zod"
 
 import { isPlatformAdmin, requireRelayPermission } from "@/lib/access-control"
-import { saveInstanceDisplayName } from "@/lib/instance-registry"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import { listPersistedRelays } from "@/lib/relay-registry"
 import { runAppEffect } from "@/effect/runtime"
@@ -91,12 +90,21 @@ export const createBrickInstance = createServerFn({ method: "POST" })
         360_000
       )
     )
-    await saveInstanceDisplayName(relay.id, instance.id, data.name)
+    const renamed = relayInstanceSchema.parse(
+      await requestRelay(
+        relay,
+        `/v1/instances/${encodeURIComponent(instance.id)}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ name: data.name }),
+        }
+      )
+    )
     await runAppEffect(
       "relay.snapshot.invalidate",
       invalidateRelayCache(relayCachePolicy.snapshot(relay.id))
     )
-    return relayInstanceSchema.parse({ ...instance, name: data.name })
+    return renamed
   })
 
 export const getInstanceStartup = createServerFn({ method: "GET" })

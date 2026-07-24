@@ -10,6 +10,7 @@ import {
   relayConsoleCompletionInputSchema,
   relayCreateInstanceSchema,
   relayInstanceActionSchema,
+  relayInstanceNameSchema,
   relayInstanceWebRoutesSchema,
   relayNetworkingSchema,
   relayProxySettingsSchema,
@@ -510,13 +511,23 @@ async function shutdownRelay(signal: NodeJS.Signals): Promise<void> {
 }
 
 async function relaySnapshot() {
-  const [node, instances] = await Promise.all([
+  const [node, instances, storedNames] = await Promise.all([
     nodeSnapshot(config, docker),
     docker.inspectInstances(),
+    runRelayEffect(
+      "relay.snapshot.instanceNames",
+      startup.state.listInstanceNames()
+    ),
   ])
+  const names = new Map(
+    storedNames.map((stored) => [stored.instanceId, stored.name])
+  )
   return {
     node,
-    instances,
+    instances: instances.map((instance) => ({
+      ...instance,
+      name: names.get(instance.id) ?? instance.name,
+    })),
     relay: {
       id: relayIdentity.fingerprint,
       name: relayIdentity.name,
@@ -693,10 +704,30 @@ async function executeControlRequest(
         lifecycle.reconfigureInstance(instanceId, input)
       )
     }
+    case "instance.rename": {
+      const instance = await requiredInstance(payload)
+      const name = relayInstanceNameSchema.parse(payload.name)
+      return serializeInstanceMutation(instance.id, async () => {
+        await runRelayEffect(
+          "relay.instance.rename",
+          startup.state.setInstanceName(instance.id, name)
+        )
+        const snapshot = await snapshotHub.refresh()
+        return (
+          snapshot.instances.find(
+            (candidate) => candidate.id === instance.id
+          ) ?? { ...instance, name }
+        )
+      })
+    }
     case "instance.delete": {
       const instanceId = requiredString(payload, "instanceId")
       await serializeInstanceMutation(instanceId, () =>
         lifecycle.deleteInstance(instanceId, payload.deleteData === true)
+      )
+      await runRelayEffect(
+        "relay.instance.deleteName",
+        startup.state.deleteInstanceName(instanceId)
       )
       await serializeWebRouteMutation(async () => {
         await runRelayEffect(

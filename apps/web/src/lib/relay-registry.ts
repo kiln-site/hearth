@@ -37,7 +37,11 @@ import { runAppEffect } from "@/effect/runtime"
 import { databasePool } from "@/lib/database"
 import { databaseTable } from "@/lib/database-config"
 import { betterAuthSecrets, kilnPublicUrl } from "@/lib/environment"
-import { syncInstanceRegistry } from "@/lib/instance-registry"
+import {
+  clearInstanceDisplayName,
+  listInstanceDisplayNames,
+  syncInstanceRegistry,
+} from "@/lib/instance-registry"
 
 import { decryptWithKeyring, encryptWithKeyring } from "../../keyring.mjs"
 
@@ -446,6 +450,25 @@ export async function maintainPersistedRelayConnections(): Promise<void> {
     relays.map(async (relay) => {
       const snapshot = relaySnapshotSchema.parse(
         await relayRpc(relay, "relay.snapshot", {}, 5_000)
+      )
+      const instanceIds = new Set(
+        snapshot.instances.map((instance) => instance.id)
+      )
+      const persistedNames = await listInstanceDisplayNames(relay.id)
+      await Promise.all(
+        persistedNames.map(async (persisted) => {
+          if (!instanceIds.has(persisted.instanceId)) return
+          await relayRpc(
+            relay,
+            "instance.rename",
+            {
+              instanceId: persisted.instanceId,
+              name: persisted.displayName,
+            },
+            10_000
+          )
+          await clearInstanceDisplayName(relay.id, persisted.instanceId)
+        })
       )
       await syncInstanceRegistry(relay.id, snapshot.instances)
     })

@@ -155,6 +155,34 @@ describe("Relay state", () => {
       })
     )
 
+    it.effect("persists Relay-owned instance names", () =>
+      Effect.gen(function* () {
+        const store = yield* RelayStateStore
+        yield* store.setInstanceName("instance-a", "Survival")
+        yield* store.setInstanceName("instance-b", "Creative")
+        assert.deepStrictEqual(yield* store.listInstanceNames(), [
+          { instanceId: "instance-a", name: "Survival" },
+          { instanceId: "instance-b", name: "Creative" },
+        ])
+
+        yield* store.setInstanceName("instance-a", "Survival SMP")
+        assert.deepInclude((yield* store.listInstanceNames())[0], {
+          instanceId: "instance-a",
+          name: "Survival SMP",
+        })
+
+        const duplicate = yield* Effect.result(
+          store.setInstanceName("instance-b", "Survival SMP")
+        )
+        assert.strictEqual(duplicate._tag, "Failure")
+
+        yield* store.deleteInstanceName("instance-a")
+        assert.deepStrictEqual(yield* store.listInstanceNames(), [
+          { instanceId: "instance-b", name: "Creative" },
+        ])
+      })
+    )
+
     it.effect(
       "replaces instance web routes and rejects hostname collisions",
       () =>

@@ -22,6 +22,7 @@ export const relayControlOperations = [
   "brick.recipe",
   "instance.create",
   "instance.startup.write",
+  "instance.rename",
   "instance.delete",
   "instance.action",
   "instance.files.list",

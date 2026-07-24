@@ -29,6 +29,14 @@ export class RelaySnapshotHub {
     return this.#sample().then(({ snapshot }) => snapshot)
   }
 
+  async refresh(): Promise<RelaySnapshot> {
+    if (this.#sampling) await this.#sampling
+    if (this.#timer) clearTimeout(this.#timer)
+    this.#timer = null
+    this.#last = null
+    return this.#sample().then(({ snapshot }) => snapshot)
+  }
+
   subscribe(listener: SnapshotListener, replay = true): () => void {
     if (this.#closed) throw new Error("Relay snapshot hub is closed")
     this.#listeners.add(listener)

@@ -12,6 +12,11 @@ interface InstanceNameRow extends RowDataPacket {
   instance_id: string
 }
 
+export interface PersistedInstanceDisplayName {
+  displayName: string
+  instanceId: string
+}
+
 export async function applyInstanceDisplayNames(
   relayId: string,
   instances: Array<RelayInstance>
@@ -49,31 +54,34 @@ export const applyInstanceDisplayNamesEffect = Effect.fn(
   }))
 })
 
-export async function saveInstanceDisplayName(
+export async function listInstanceDisplayNames(
+  relayId: string
+): Promise<Array<PersistedInstanceDisplayName>> {
+  const [rows] = await databasePool.query<Array<InstanceNameRow>>(
+    `SELECT instance_id, display_name
+       FROM ${databaseTable("instance")}
+      WHERE relay_id = ?
+        AND display_name IS NOT NULL
+        AND display_name <> ''
+      ORDER BY instance_id ASC`,
+    [relayId]
+  )
+  return rows.map((row) => ({
+    displayName: row.display_name,
+    instanceId: row.instance_id,
+  }))
+}
+
+export async function clearInstanceDisplayName(
   relayId: string,
-  instanceId: string,
-  displayName: string
+  instanceId: string
 ): Promise<void> {
-  try {
-    await databasePool.execute(
-      `INSERT INTO ${databaseTable("instance")} (relay_id, instance_id, display_name)
-       VALUES (?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         display_name = VALUES(display_name),
-         updated_at = CURRENT_TIMESTAMP(3)`,
-      [relayId, instanceId, displayName]
-    )
-  } catch (cause) {
-    if (
-      typeof cause === "object" &&
-      cause !== null &&
-      "code" in cause &&
-      cause.code === "ER_DUP_ENTRY"
-    ) {
-      throw new Error("An instance with this name already exists on the Relay")
-    }
-    throw cause
-  }
+  await databasePool.execute(
+    `UPDATE ${databaseTable("instance")}
+        SET display_name = NULL, updated_at = CURRENT_TIMESTAMP(3)
+      WHERE relay_id = ? AND instance_id = ?`,
+    [relayId, instanceId]
+  )
 }
 
 export async function syncInstanceRegistry(

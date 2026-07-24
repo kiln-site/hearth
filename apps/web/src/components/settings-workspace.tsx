@@ -262,7 +262,7 @@ function InstanceNameForm({
       >
         {error ??
           (canRename
-            ? "Stored by Hearth; the Relay and container keep their stable ID."
+            ? "Stored by Relay; the container keeps its stable ID."
             : "You do not have permission to rename this instance.")}
       </p>
     </form>

@@ -33,4 +33,19 @@ describe("Relay snapshot hub", () => {
     unsubscribe()
     hub.close()
   })
+
+  it("forces a fresh sample after a mutation", async () => {
+    let current = { instances: [] } as unknown as RelaySnapshot
+    const hub = new RelaySnapshotHub(() => Promise.resolve(current), 60_000)
+
+    expect(await hub.read()).toBe(current)
+    current = {
+      instances: [{ id: "instance-a", name: "Renamed" }],
+    } as unknown as RelaySnapshot
+
+    expect(await hub.read()).not.toBe(current)
+    expect(await hub.refresh()).toBe(current)
+    expect(await hub.read()).toBe(current)
+    hub.close()
+  })
 })

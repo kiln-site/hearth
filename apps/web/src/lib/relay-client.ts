@@ -219,6 +219,12 @@ function relayControlRequest(path: string, init?: RequestInit) {
       },
     }
   }
+  if (!resource && method === "PUT") {
+    return {
+      operation: "instance.rename" as const,
+      payload: { instanceId, name: body.name },
+    }
+  }
   if (resource === "startup" && method === "PUT") {
     return {
       operation: "instance.startup.write" as const,

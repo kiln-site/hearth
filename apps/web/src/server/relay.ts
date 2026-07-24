@@ -9,6 +9,7 @@ import {
   relayConsoleCompletionInputSchema,
   relayConsoleCompletionSchema,
   relayInstanceActionSchema,
+  relayInstanceNameSchema,
   relayInstanceWebRoutesSchema,
   relayInstanceWebRouteStateSchema,
   relayIdSchema,
@@ -25,7 +26,7 @@ import {
 } from "@/lib/access-control"
 import {
   applyInstanceDisplayNames,
-  saveInstanceDisplayName,
+  clearInstanceDisplayName,
 } from "@/lib/instance-registry"
 import {
   listFileActivity,
@@ -70,7 +71,7 @@ const treeInputSchema = instanceInputSchema.extend({
 })
 
 const instanceNameInputSchema = instanceInputSchema.extend({
-  name: z.string().trim().min(1).max(120),
+  name: relayInstanceNameSchema,
 })
 
 const filePathSchema = z
@@ -226,11 +227,22 @@ export const updateInstanceName = createServerFn({ method: "POST" })
     )
     if (!instance) throw new Error("Instance not found")
 
-    await saveInstanceDisplayName(relay.id, instance.id, data.name)
-    return {
-      ...relayInstanceSchema.parse({ ...instance, name: data.name }),
-      relayId: relay.id,
-    }
+    const renamed = relayInstanceSchema.parse(
+      await relayRequestRaw(
+        relay,
+        `/v1/instances/${encodeURIComponent(instance.id)}`,
+        {
+          body: JSON.stringify({ name: data.name }),
+          method: "PUT",
+        }
+      )
+    )
+    await clearInstanceDisplayName(relay.id, instance.id)
+    await runAppEffect(
+      "relay.snapshot.invalidate",
+      invalidateRelayCache(relayCachePolicy.snapshot(relay.id))
+    )
+    return { ...renamed, relayId: relay.id }
   })
 
 export const sendRelayConsoleCommand = createServerFn({ method: "POST" })
