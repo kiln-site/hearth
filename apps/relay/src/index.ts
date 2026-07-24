@@ -615,12 +615,15 @@ async function executeControlRequest(
           : hostname()
       )
     case "relay.update.apply": {
-      const operation = await systemUpdates.start({
-        helperImage: requiredString(payload, "helperImage"),
-        targetContainer: requiredString(payload, "targetContainer"),
-        targetImage: requiredString(payload, "targetImage"),
-        version: requiredString(payload, "version"),
-      })
+      const operation = await systemUpdates.start(
+        {
+          helperImage: requiredString(payload, "helperImage"),
+          targetContainer: requiredString(payload, "targetContainer"),
+          targetImage: requiredString(payload, "targetImage"),
+          version: requiredString(payload, "version"),
+        },
+        signal
+      )
       await appendRelayAudit("system.update_started", client.id, request.id, {
         component: operation.component,
         operationId: operation.id,

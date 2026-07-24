@@ -4,6 +4,7 @@ export type KilnComponent = "hearth" | "relay"
 
 export interface ContainerInspect {
   Config: Record<string, unknown> & {
+    Healthcheck?: unknown
     Image?: string
     Labels?: Record<string, string> | null
   }
@@ -23,6 +24,7 @@ export interface ContainerInspect {
 
 export interface ImageInspect {
   Config?: {
+    Healthcheck?: unknown
     Labels?: Record<string, string> | null
   }
 }
@@ -57,6 +59,7 @@ export async function replaceContainer(
     targetContainer: string
     targetImage: string
     targetReference: string
+    targetVersion: string
   },
   docker: ContainerUpdateDocker
 ): Promise<void> {
@@ -89,13 +92,20 @@ export async function replaceContainer(
     await docker.command(["rename", input.targetContainer, input.backupName])
     backupRenamed = true
 
+    const preservedConfig = { ...current.Config }
+    delete preservedConfig.Healthcheck
+    const targetHealthcheck = target.Config?.Healthcheck
     await docker.createContainer(input.targetContainer, {
-      ...current.Config,
+      ...preservedConfig,
       Image: input.targetReference,
       Labels: {
         ...current.Config.Labels,
         ...target.Config?.Labels,
+        "org.opencontainers.image.version": input.targetVersion,
       },
+      ...(targetHealthcheck === undefined
+        ? {}
+        : { Healthcheck: targetHealthcheck }),
       HostConfig: {
         ...current.HostConfig,
         NetworkMode: primaryNetwork,

@@ -12,10 +12,16 @@ export interface CommandResult {
   stdout: string
 }
 
+export interface CommandOptions {
+  cwd?: string
+  signal?: AbortSignal
+  timeout?: number
+}
+
 export async function command(
   executable: string,
   arguments_: Array<string>,
-  options: { cwd?: string; timeout?: number } = {}
+  options: CommandOptions = {}
 ): Promise<CommandResult> {
   return runRelayEffect(
     "command.execute",
@@ -26,7 +32,7 @@ export async function command(
 export const commandEffect = Effect.fn("command.execute")(function* (
   executable: string,
   arguments_: Array<string>,
-  options: { cwd?: string; timeout?: number } = {}
+  options: CommandOptions = {}
 ) {
   const result = yield* Effect.tryPromise({
     try: () =>
@@ -34,6 +40,7 @@ export const commandEffect = Effect.fn("command.execute")(function* (
         cwd: options.cwd,
         encoding: "utf8",
         maxBuffer: 4 * 1024 * 1024,
+        signal: options.signal,
         timeout: options.timeout ?? 30_000,
       }),
     catch: (cause) =>

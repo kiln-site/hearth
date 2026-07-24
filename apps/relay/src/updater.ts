@@ -32,6 +32,7 @@ const operationsDirectory = requiredEnvironment("KILN_UPDATE_DATA_DIR")
 const targetContainer = requiredEnvironment("KILN_UPDATE_TARGET_CONTAINER")
 const targetImage = requiredEnvironment("KILN_UPDATE_TARGET_IMAGE")
 const targetReference = requiredEnvironment("KILN_UPDATE_TARGET_REFERENCE")
+const targetVersion = requiredEnvironment("KILN_UPDATE_VERSION")
 const operationPath = join(operationsDirectory, `${operationId}.json`)
 
 async function run(): Promise<void> {
@@ -50,6 +51,7 @@ async function run(): Promise<void> {
         targetContainer,
         targetImage,
         targetReference,
+        targetVersion,
       },
       dockerRuntime
     )

@@ -125,7 +125,17 @@ export function InfraUpdatesPage() {
 
   React.useEffect(() => {
     const operation = operationQuery.data
-    if (!active || !operation || operation.status === "running") return
+    if (!active || !operationQuery.isSuccess) return
+    if (operation === null) {
+      window.localStorage.removeItem(activeUpdateStorageKey)
+      setMessage(
+        "The saved update operation could not be found. Check the target container before trying again."
+      )
+      setActive(null)
+      void queryClient.invalidateQueries({ queryKey: queryKeys.updates })
+      return
+    }
+    if (operation === undefined || operation.status === "running") return
     window.localStorage.removeItem(activeUpdateStorageKey)
     if (operation.status === "failed") {
       setMessage(
@@ -141,7 +151,7 @@ export function InfraUpdatesPage() {
     if (operation.component === "hearth") {
       window.setTimeout(() => window.location.reload(), 750)
     }
-  }, [active, operationQuery.data, queryClient])
+  }, [active, operationQuery.data, operationQuery.isSuccess, queryClient])
 
   const selectedRelease = overview.releases.find(
     (release) => release.version === selectedVersion

@@ -12,6 +12,10 @@ import {
 const currentContainer: ContainerInspect = {
   Config: {
     Env: ["EXAMPLE=true"],
+    Healthcheck: {
+      Interval: 10_000_000_000,
+      Test: ["CMD", "old-healthcheck"],
+    },
     Image: "ghcr.io/kiln-site/hearth:latest-nightly",
     Labels: {
       "coolify.managed": "true",
@@ -40,6 +44,10 @@ const currentContainer: ContainerInspect = {
 
 const targetImage: ImageInspect = {
   Config: {
+    Healthcheck: {
+      Interval: 5_000_000_000,
+      Test: ["CMD", "new-healthcheck"],
+    },
     Labels: {
       "io.kiln.component": "hearth",
       "org.opencontainers.image.revision": "new-commit",
@@ -104,7 +112,7 @@ describe("managed update channels", () => {
 })
 
 describe("container replacement", () => {
-  it("keeps the channel reference and refreshes image labels", async () => {
+  it("keeps the channel reference and refreshes image metadata", async () => {
     const docker = new FakeDocker()
 
     await replaceContainer(
@@ -113,6 +121,7 @@ describe("container replacement", () => {
         targetContainer: "hearth",
         targetImage: `ghcr.io/kiln-site/hearth@sha256:${"c".repeat(64)}`,
         targetReference: "ghcr.io/kiln-site/hearth:latest-nightly",
+        targetVersion: "0.1.0-nightly.2",
       },
       docker
     )
@@ -120,6 +129,10 @@ describe("container replacement", () => {
     expect(docker.createdConfiguration).toEqual(
       expect.objectContaining({
         Image: "ghcr.io/kiln-site/hearth:latest-nightly",
+        Healthcheck: {
+          Interval: 5_000_000_000,
+          Test: ["CMD", "new-healthcheck"],
+        },
         Labels: {
           "coolify.managed": "true",
           "io.kiln.component": "hearth",
@@ -148,6 +161,29 @@ describe("container replacement", () => {
     expect(docker.commands.at(-1)).toEqual(["rm", "--force", "hearth-backup"])
   })
 
+  it("records the stable release version for a promoted nightly image", async () => {
+    const docker = new FakeDocker()
+
+    await replaceContainer(
+      {
+        backupName: "hearth-backup",
+        targetContainer: "hearth",
+        targetImage: `ghcr.io/kiln-site/hearth@sha256:${"c".repeat(64)}`,
+        targetReference: "ghcr.io/kiln-site/hearth:latest",
+        targetVersion: "0.1.0",
+      },
+      docker
+    )
+
+    expect(docker.createdConfiguration).toEqual(
+      expect.objectContaining({
+        Labels: expect.objectContaining({
+          "org.opencontainers.image.version": "0.1.0",
+        }),
+      })
+    )
+  })
+
   it("restores the old container and channel image after a failed health check", async () => {
     const docker = new FakeDocker()
     docker.failHealthCheck = true
@@ -159,6 +195,7 @@ describe("container replacement", () => {
           targetContainer: "hearth",
           targetImage: `ghcr.io/kiln-site/hearth@sha256:${"c".repeat(64)}`,
           targetReference: "ghcr.io/kiln-site/hearth:latest-nightly",
+          targetVersion: "0.1.0-nightly.2",
         },
         docker
       )

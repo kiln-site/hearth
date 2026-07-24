@@ -74,6 +74,9 @@ continues to mark instances offline while Hearth is unavailable.
 Coolify remains free to manage the same containers. Kiln does not call the
 Coolify API and does not modify its project configuration. A later Coolify
 deployment is authoritative and may reapply the tag configured there.
+Pushes to `main` publish a nightly but no longer trigger provider deployment
+webhooks. Existing installations that relied on push-to-deploy must update
+through `/infra/updates` or redeploy through their provider.
 
 ## Relay provisioning policy
 
