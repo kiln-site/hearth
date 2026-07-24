@@ -28,6 +28,10 @@ import type {
 } from "@workspace/contracts"
 
 import { Database } from "@/effect/database"
+import {
+  mapPairingHttpResponse,
+  mapPairingTransportError,
+} from "@/lib/relay-pairing-errors"
 import { CredentialError, ResourceNotFoundError } from "@/effect/errors"
 import { runAppEffect } from "@/effect/runtime"
 import { databasePool } from "@/lib/database"
@@ -763,6 +767,9 @@ async function postPairingRequest(
   const encoded = Buffer.from(JSON.stringify(body))
   const request = url.protocol === "https:" ? httpsRequest : httpRequest
   return new Promise((resolve, reject) => {
+    const fail = (cause: unknown) => {
+      reject(mapPairingTransportError(cause) ?? cause)
+    }
     const outgoing = request(
       url,
       {
@@ -785,18 +792,23 @@ async function postPairingRequest(
             response.destroy(new Error("Pairing response is too large"))
           else chunks.push(chunk)
         })
-        response.once("error", reject)
+        response.once("error", fail)
         response.once("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8")
+          const statusCode = response.statusCode ?? 0
+          const edgeError = mapPairingHttpResponse(statusCode, text)
+          if (edgeError) {
+            reject(edgeError)
+            return
+          }
           try {
-            const payload = JSON.parse(
-              Buffer.concat(chunks).toString("utf8")
-            ) as unknown
-            if (response.statusCode !== 201) {
+            const payload = JSON.parse(text) as unknown
+            if (statusCode !== 201) {
               const message = z.object({ error: z.string() }).safeParse(payload)
               throw new Error(
                 message.success
                   ? message.data.error
-                  : `Relay pairing failed with HTTP ${response.statusCode}`
+                  : `Relay pairing failed with HTTP ${statusCode}`
               )
             }
             resolve(payload)
@@ -806,7 +818,7 @@ async function postPairingRequest(
         })
       }
     )
-    outgoing.once("error", reject)
+    outgoing.once("error", fail)
     outgoing.end(encoded)
   })
 }

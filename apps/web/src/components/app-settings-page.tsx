@@ -57,6 +57,7 @@ import {
 } from "@/components/workspace-data-table"
 import type { WorkspaceTableSearchStore } from "@/components/workspace-data-table"
 import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
+import { pairingFeedbackFrom } from "@/lib/relay-pairing-errors"
 import {
   queryKeys,
   relaySnapshotQueryOptions,
@@ -1048,7 +1049,10 @@ function AddRelayDialog({
   const queryClient = useQueryClient()
   const formRef = React.useRef<HTMLFormElement>(null)
   const [pending, setPending] = React.useState(false)
-  const [feedback, setFeedback] = React.useState<string | null>(null)
+  const [feedback, setFeedback] = React.useState<{
+    docsHref?: string
+    message: string
+  } | null>(null)
   const [reviewedPairing, setReviewedPairing] = React.useState<{
     pairingUri: string
     preview: {
@@ -1109,7 +1113,7 @@ function AddRelayDialog({
       setReviewedPairing(null)
       formRef.current?.reset()
     } catch (cause) {
-      setFeedback(messageFrom(cause, "Could not add Relay"))
+      setFeedback(pairingFeedbackFrom(cause))
     } finally {
       setPending(false)
     }
@@ -1175,7 +1179,12 @@ function AddRelayDialog({
             </>
           )}
 
-          {feedback ? <DialogFeedback message={feedback} /> : null}
+          {feedback ? (
+            <DialogFeedback
+              message={feedback.message}
+              docsHref={feedback.docsHref}
+            />
+          ) : null}
 
           <DialogFooter>
             <Button
@@ -1553,14 +1562,32 @@ const RelayEditSubmitButton = React.memo(function RelayEditSubmitButton({
   )
 })
 
-function DialogFeedback({ message }: { message: string }) {
+function DialogFeedback({
+  docsHref,
+  message,
+}: {
+  docsHref?: string
+  message: string
+}) {
   return (
     <div
       role="status"
       className="flex items-start gap-2 rounded-md border border-destructive/25 bg-destructive/[0.06] px-3 py-2 text-[10px] leading-4 text-destructive"
     >
       <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
-      {message}
+      <div className="min-w-0 space-y-1">
+        <p>{message}</p>
+        {docsHref ? (
+          <a
+            href={docsHref}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex font-medium underline underline-offset-2 hover:text-destructive/80"
+          >
+            Docs
+          </a>
+        ) : null}
+      </div>
     </div>
   )
 }
