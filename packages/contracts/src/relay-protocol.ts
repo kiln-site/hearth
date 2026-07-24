@@ -1,6 +1,7 @@
 import { Schema } from "effect"
 
 export const relayControlProtocol = "kiln-relay.v1" as const
+export const relayControlProtocolVersion = 1 as const
 export const relayBrowserProtocol = "kiln-relay-browser.v1" as const
 export const relayPairingProtocol = "kiln-relay-pair.v1" as const
 

@@ -16,7 +16,7 @@ COPY --chown=vp:vp patches ./patches
 RUN --mount=type=cache,target=/home/vp/.local/share/pnpm/store,uid=1000,gid=1000,sharing=locked \
   vp install --frozen-lockfile --ignore-scripts --filter web...
 
-COPY --chown=vp:vp tsconfig.json vite.config.ts ./
+COPY --chown=vp:vp tsconfig.json vite.config.ts release.json ./
 COPY --chown=vp:vp apps/web ./apps/web
 COPY --chown=vp:vp packages/contracts ./packages/contracts
 COPY --chown=vp:vp packages/ui ./packages/ui

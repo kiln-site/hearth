@@ -1,0 +1,25 @@
+import { relayControlProtocolVersion } from "@workspace/contracts"
+
+import type { KilnReleaseManifest } from "@/effect/github-releases"
+
+export function validateUpdateManifest(
+  manifest: KilnReleaseManifest,
+  version: string
+): void {
+  if (manifest.version !== version) {
+    throw new Error("The release manifest version does not match its tag")
+  }
+  if (manifest.compatibility.relayProtocol !== relayControlProtocolVersion) {
+    throw new Error(
+      `This release requires Relay protocol ${manifest.compatibility.relayProtocol}; Hearth supports protocol ${relayControlProtocolVersion}`
+    )
+  }
+  for (const [name, component] of Object.entries(manifest.components)) {
+    if (component.image !== `ghcr.io/kiln-site/${name}`) {
+      throw new Error("The release manifest contains an unexpected image")
+    }
+    if (!/^sha256:[a-f0-9]{64}$/u.test(component.digest)) {
+      throw new Error("The release manifest contains an invalid image digest")
+    }
+  }
+}

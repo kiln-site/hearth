@@ -5,12 +5,15 @@ import { join } from "node:path"
 
 import { command } from "./command.js"
 import type { RelayConfig } from "./config.js"
+import {
+  KILN_IMAGE_SOURCE,
+  kilnComponent,
+  managedImageChannel,
+  type KilnComponent,
+} from "./update-container.js"
 
-const IMAGE_SOURCE = "https://github.com/kiln-site/hearth"
 const RELEASE_IMAGE =
   /^ghcr\.io\/kiln-site\/(hearth|relay)@sha256:[a-f0-9]{64}$/u
-
-type KilnComponent = "hearth" | "relay"
 
 interface ContainerInspect {
   Config: {
@@ -59,12 +62,11 @@ export class SystemUpdateManager {
     const labels = inspected.Config.Labels ?? {}
     const component = kilnComponent(labels["io.kiln.component"])
     const currentImage = inspected.Config.Image
-    const official = labels["org.opencontainers.image.source"] === IMAGE_SOURCE
-    const eligibleTag =
-      currentImage === "ghcr.io/kiln-site/hearth:latest" ||
-      currentImage === "ghcr.io/kiln-site/hearth:latest-nightly" ||
-      currentImage === "ghcr.io/kiln-site/relay:latest" ||
-      currentImage === "ghcr.io/kiln-site/relay:latest-nightly"
+    const official =
+      labels["org.opencontainers.image.source"] === KILN_IMAGE_SOURCE
+    const eligibleTag = component
+      ? managedImageChannel(currentImage, component)
+      : null
 
     return {
       component,
@@ -97,7 +99,7 @@ export class SystemUpdateManager {
     const target = await inspectContainer(input.targetContainer)
     const targetLabels = target.Config.Labels ?? {}
     if (
-      targetLabels["org.opencontainers.image.source"] !== IMAGE_SOURCE ||
+      targetLabels["org.opencontainers.image.source"] !== KILN_IMAGE_SOURCE ||
       kilnComponent(targetLabels["io.kiln.component"]) !== targetComponent
     ) {
       throw new Error(
@@ -108,14 +110,29 @@ export class SystemUpdateManager {
     if (!eligibility.eligible) {
       throw new Error(eligibility.reason ?? "This container cannot be updated")
     }
+    const targetReference = managedImageChannel(
+      target.Config.Image,
+      targetComponent
+    )
+    if (!targetReference) {
+      throw new Error("The target no longer uses a managed channel tag")
+    }
 
+    let targetImage: ImageInspect
     if (input.helperImage === input.targetImage) {
-      await pullAndVerifyImage(input.helperImage, "relay")
+      targetImage = await pullAndVerifyImage(input.helperImage, "relay")
     } else {
-      await Promise.all([
+      const [, inspectedTarget] = await Promise.all([
         pullAndVerifyImage(input.helperImage, "relay"),
         pullAndVerifyImage(input.targetImage, targetComponent),
       ])
+      targetImage = inspectedTarget
+    }
+    if (
+      targetImage.Config?.Labels?.["org.opencontainers.image.version"] !==
+      input.version
+    ) {
+      throw new Error("The target image version does not match the release")
     }
     await mkdir(this.#operationsDirectory, { recursive: true, mode: 0o700 })
 
@@ -155,6 +172,8 @@ export class SystemUpdateManager {
           `KILN_UPDATE_TARGET_CONTAINER=${operation.targetContainer}`,
           "--env",
           `KILN_UPDATE_TARGET_IMAGE=${input.targetImage}`,
+          "--env",
+          `KILN_UPDATE_TARGET_REFERENCE=${targetReference}`,
           "--env",
           `KILN_UPDATE_VERSION=${input.version}`,
           input.helperImage,
@@ -223,28 +242,26 @@ async function inspectContainer(container: string): Promise<ContainerInspect> {
 async function pullAndVerifyImage(
   image: string,
   expectedComponent: KilnComponent
-): Promise<void> {
+): Promise<ImageInspect> {
   await command("docker", ["pull", image], { timeout: 10 * 60_000 })
   const result = await command("docker", ["image", "inspect", image])
   const inspected = (JSON.parse(result.stdout) as Array<ImageInspect>)[0]
+  if (!inspected) throw new Error("Docker could not inspect the pulled image")
   const labels = inspected?.Config?.Labels ?? {}
   if (
-    labels["org.opencontainers.image.source"] !== IMAGE_SOURCE ||
+    labels["org.opencontainers.image.source"] !== KILN_IMAGE_SOURCE ||
     labels["io.kiln.component"] !== expectedComponent
   ) {
     throw new Error(`The ${expectedComponent} image failed provenance checks`)
   }
+  return inspected
 }
 
 function releaseImageComponent(image: string): KilnComponent {
-  const match = RELEASE_IMAGE.exec(image)
-  if (!match)
+  if (!RELEASE_IMAGE.test(image)) {
     throw new Error("Updates require an official immutable GHCR digest")
-  return match[1] as KilnComponent
-}
-
-function kilnComponent(value: string | undefined): KilnComponent | null {
-  return value === "hearth" || value === "relay" ? value : null
+  }
+  return image.startsWith("ghcr.io/kiln-site/hearth@") ? "hearth" : "relay"
 }
 
 async function writeOperation(

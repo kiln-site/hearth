@@ -5,11 +5,11 @@ import {
   kilnReleaseManifestEffect,
   listKilnReleasesEffect,
 } from "@/effect/github-releases"
-import type { KilnReleaseManifest } from "@/effect/github-releases"
 import { runAppEffect } from "@/effect/runtime"
 import { isPlatformAdmin } from "@/lib/access-control"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import { listPersistedRelays } from "@/lib/relay-registry"
+import { validateUpdateManifest } from "@/lib/update-manifest"
 import { requireAuthenticatedUser } from "@/server/auth"
 
 const componentSchema = z.enum(["hearth", "relay"])
@@ -141,7 +141,7 @@ export const startSystemUpdate = createServerFn({ method: "POST" })
       "updates.manifest",
       kilnReleaseManifestEffect(`v${data.version}`)
     )
-    validateManifest(manifest, data.version)
+    validateUpdateManifest(manifest, data.version)
 
     const relays = (await listPersistedRelays()).filter(
       (relay) => relay.enabled
@@ -239,21 +239,4 @@ async function coLocatedRelay(
 
 function immutableImage(component: { digest: string; image: string }): string {
   return `${component.image}@${component.digest}`
-}
-
-function validateManifest(
-  manifest: KilnReleaseManifest,
-  version: string
-): void {
-  if (manifest.version !== version) {
-    throw new Error("The release manifest version does not match its tag")
-  }
-  for (const [name, component] of Object.entries(manifest.components)) {
-    if (component.image !== `ghcr.io/kiln-site/${name}`) {
-      throw new Error("The release manifest contains an unexpected image")
-    }
-    if (!/^sha256:[a-f0-9]{64}$/u.test(component.digest)) {
-      throw new Error("The release manifest contains an invalid image digest")
-    }
-  }
 }

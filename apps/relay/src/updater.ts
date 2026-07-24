@@ -4,26 +4,15 @@ import { request } from "node:http"
 import { join } from "node:path"
 import { promisify } from "node:util"
 
+import {
+  replaceContainer,
+  type ContainerInspect,
+  type ContainerUpdateDocker,
+  type ImageInspect,
+} from "./update-container.js"
+
 const executeFile = promisify(execFile)
 const dockerSocket = "/var/run/docker.sock"
-
-interface ContainerInspect {
-  Config: Record<string, unknown> & {
-    Image?: string
-    Labels?: Record<string, string> | null
-  }
-  HostConfig: Record<string, unknown> & {
-    NetworkMode?: string
-  }
-  Name: string
-  NetworkSettings?: {
-    Networks?: Record<string, { Aliases?: Array<string> | null }>
-  }
-  State: {
-    Health?: { Status?: string }
-    Running: boolean
-  }
-}
 
 interface UpdateOperation {
   component: "hearth" | "relay"
@@ -42,79 +31,28 @@ const operationId = requiredEnvironment("KILN_UPDATE_OPERATION_ID")
 const operationsDirectory = requiredEnvironment("KILN_UPDATE_DATA_DIR")
 const targetContainer = requiredEnvironment("KILN_UPDATE_TARGET_CONTAINER")
 const targetImage = requiredEnvironment("KILN_UPDATE_TARGET_IMAGE")
+const targetReference = requiredEnvironment("KILN_UPDATE_TARGET_REFERENCE")
 const operationPath = join(operationsDirectory, `${operationId}.json`)
-
-await run()
 
 async function run(): Promise<void> {
   const operation = JSON.parse(
     await readFile(operationPath, "utf8")
   ) as UpdateOperation
   const backupName = `${targetContainer}-kiln-backup-${Date.now()}`
-  let replacementCreated = false
-  let backupRenamed = false
 
   try {
     // Give Relay enough time to return the operation id before a self-update
     // closes its control socket.
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_500))
-    const current = await inspect(targetContainer)
-    const networks = current.NetworkSettings?.Networks ?? {}
-    const networkNames = Object.keys(networks)
-    const configuredNetwork = current.HostConfig.NetworkMode
-    const primaryNetwork =
-      configuredNetwork && Object.hasOwn(networks, configuredNetwork)
-        ? configuredNetwork
-        : networkNames[0]
-    if (!primaryNetwork) {
-      throw new Error("The target has no Docker network to preserve")
-    }
-
-    await docker(["stop", "--time", "30", targetContainer], 45_000)
-    await docker(["rename", targetContainer, backupName])
-    backupRenamed = true
-
-    const aliases = (networks[primaryNetwork]?.Aliases ?? []).filter(
-      (alias) => alias !== null && !/^[a-f0-9]{12,64}$/u.test(alias)
-    )
-    await dockerJson(
-      `/containers/create?name=${encodeURIComponent(targetContainer)}`,
+    await replaceContainer(
       {
-        ...current.Config,
-        Image: targetImage,
-        HostConfig: {
-          ...current.HostConfig,
-          NetworkMode: primaryNetwork,
-        },
-        NetworkingConfig: {
-          EndpointsConfig: {
-            [primaryNetwork]: {
-              Aliases: Array.from(new Set([...aliases, targetContainer])),
-            },
-          },
-        },
-      }
+        backupName,
+        targetContainer,
+        targetImage,
+        targetReference,
+      },
+      dockerRuntime
     )
-    replacementCreated = true
-
-    for (const network of networkNames) {
-      if (network === primaryNetwork) continue
-      const networkAliases = (networks[network]?.Aliases ?? []).filter(
-        (alias) => alias !== null && !/^[a-f0-9]{12,64}$/u.test(alias)
-      )
-      const arguments_ = ["network", "connect"]
-      for (const alias of Array.from(
-        new Set([...networkAliases, targetContainer])
-      )) {
-        arguments_.push("--alias", alias)
-      }
-      arguments_.push(network, targetContainer)
-      await docker(arguments_)
-    }
-
-    await docker(["start", targetContainer], 120_000)
-    await waitUntilHealthy(targetContainer)
-    await docker(["rm", "--force", backupName], 90_000)
     await updateOperation({
       ...operation,
       error: null,
@@ -122,17 +60,6 @@ async function run(): Promise<void> {
       status: "succeeded",
     })
   } catch (cause) {
-    if (replacementCreated) {
-      await docker(["rm", "--force", targetContainer], 90_000).catch(
-        () => undefined
-      )
-    }
-    if (backupRenamed) {
-      await docker(["rename", backupName, targetContainer]).catch(
-        () => undefined
-      )
-      await docker(["start", targetContainer], 120_000).catch(() => undefined)
-    }
     await updateOperation({
       ...operation,
       error: cause instanceof Error ? cause.message : "Unknown update failure",
@@ -142,6 +69,20 @@ async function run(): Promise<void> {
     process.exitCode = 1
   }
 }
+
+const dockerRuntime: ContainerUpdateDocker = {
+  command: docker,
+  createContainer: (name, configuration) =>
+    dockerJson(
+      `/containers/create?name=${encodeURIComponent(name)}`,
+      configuration
+    ),
+  inspectContainer: inspect,
+  inspectImage,
+  waitUntilHealthy,
+}
+
+await run()
 
 async function waitUntilHealthy(container: string): Promise<void> {
   const deadline = Date.now() + 120_000
@@ -169,6 +110,13 @@ async function inspect(container: string): Promise<ContainerInspect> {
   const result = await docker(["inspect", container])
   const inspected = (JSON.parse(result.stdout) as Array<ContainerInspect>)[0]
   if (!inspected) throw new Error("Docker could not inspect the target")
+  return inspected
+}
+
+async function inspectImage(image: string): Promise<ImageInspect> {
+  const result = await docker(["image", "inspect", image])
+  const inspected = (JSON.parse(result.stdout) as Array<ImageInspect>)[0]
+  if (!inspected) throw new Error("Docker could not inspect the target image")
   return inspected
 }
 
