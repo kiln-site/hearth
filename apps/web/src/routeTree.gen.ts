@@ -30,6 +30,8 @@ import { Route as AppServersRouteImport } from './routes/_app.servers'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as ApiHealthRouteImport } from './routes/api.health'
 import { Route as ApiSentryCheckRouteImport } from './routes/api.sentry-check'
+import { Route as AppInfraServersRouteImport } from './routes/_app.infra.servers'
+import { Route as AppInfraUpdatesRouteImport } from './routes/_app.infra.updates'
 import { Route as AppServerServerIdRouteImport } from './routes/_app/server/$serverId'
 import { Route as AppSettingsIndexRouteImport } from './routes/_app.settings.index'
 import { Route as AppSettingsAccountRouteImport } from './routes/_app.settings.account'
@@ -151,6 +153,16 @@ const ApiSentryCheckRoute = ApiSentryCheckRouteImport.update({
   path: '/api/sentry-check',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppInfraServersRoute = AppInfraServersRouteImport.update({
+  id: '/infra/servers',
+  path: '/infra/servers',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppInfraUpdatesRoute = AppInfraUpdatesRouteImport.update({
+  id: '/infra/updates',
+  path: '/infra/updates',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppServerServerIdRoute = AppServerServerIdRouteImport.update({
   id: '/server/$serverId',
   path: '/server/$serverId',
@@ -257,6 +269,8 @@ export interface FileRoutesByFullPath {
   '/settings': typeof AppSettingsRouteWithChildren
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
+  '/infra/servers': typeof AppInfraServersRoute
+  '/infra/updates': typeof AppInfraUpdatesRoute
   '/server/$serverId': typeof AppServerServerIdRouteWithChildren
   '/settings/account': typeof AppSettingsAccountRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
@@ -294,6 +308,8 @@ export interface FileRoutesByTo {
   '/servers': typeof AppServersRoute
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
+  '/infra/servers': typeof AppInfraServersRoute
+  '/infra/updates': typeof AppInfraUpdatesRoute
   '/settings/account': typeof AppSettingsAccountRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
   '/settings/billing': typeof AppSettingsBillingRoute
@@ -333,6 +349,8 @@ export interface FileRoutesById {
   '/_app/settings': typeof AppSettingsRouteWithChildren
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
+  '/_app/infra/servers': typeof AppInfraServersRoute
+  '/_app/infra/updates': typeof AppInfraUpdatesRoute
   '/_app/server/$serverId': typeof AppServerServerIdRouteWithChildren
   '/_app/settings/account': typeof AppSettingsAccountRoute
   '/_app/settings/appearance': typeof AppSettingsAppearanceRoute
@@ -373,6 +391,8 @@ export interface FileRouteTypes {
     | '/settings'
     | '/api/health'
     | '/api/sentry-check'
+    | '/infra/servers'
+    | '/infra/updates'
     | '/server/$serverId'
     | '/settings/account'
     | '/settings/appearance'
@@ -410,6 +430,8 @@ export interface FileRouteTypes {
     | '/servers'
     | '/api/health'
     | '/api/sentry-check'
+    | '/infra/servers'
+    | '/infra/updates'
     | '/settings/account'
     | '/settings/appearance'
     | '/settings/billing'
@@ -448,6 +470,8 @@ export interface FileRouteTypes {
     | '/_app/settings'
     | '/api/health'
     | '/api/sentry-check'
+    | '/_app/infra/servers'
+    | '/_app/infra/updates'
     | '/_app/server/$serverId'
     | '/_app/settings/account'
     | '/_app/settings/appearance'
@@ -636,6 +660,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiSentryCheckRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_app/infra/servers': {
+      id: '/_app/infra/servers'
+      path: '/infra/servers'
+      fullPath: '/infra/servers'
+      preLoaderRoute: typeof AppInfraServersRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/infra/updates': {
+      id: '/_app/infra/updates'
+      path: '/infra/updates'
+      fullPath: '/infra/updates'
+      preLoaderRoute: typeof AppInfraUpdatesRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/server/$serverId': {
       id: '/_app/server/$serverId'
       path: '/server/$serverId'
@@ -814,6 +852,8 @@ interface AppRouteChildren {
   AppSecurityRoute: typeof AppSecurityRoute
   AppServersRoute: typeof AppServersRoute
   AppSettingsRoute: typeof AppSettingsRouteWithChildren
+  AppInfraServersRoute: typeof AppInfraServersRoute
+  AppInfraUpdatesRoute: typeof AppInfraUpdatesRoute
   AppServerServerIdRoute: typeof AppServerServerIdRouteWithChildren
 }
 
@@ -823,6 +863,8 @@ const AppRouteChildren: AppRouteChildren = {
   AppSecurityRoute: AppSecurityRoute,
   AppServersRoute: AppServersRoute,
   AppSettingsRoute: AppSettingsRouteWithChildren,
+  AppInfraServersRoute: AppInfraServersRoute,
+  AppInfraUpdatesRoute: AppInfraUpdatesRoute,
   AppServerServerIdRoute: AppServerServerIdRouteWithChildren,
 }
 

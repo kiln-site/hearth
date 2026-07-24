@@ -7,6 +7,7 @@ import {
 import {
   ChevronsUpDown,
   CircleHelp,
+  CloudDownload,
   Folder,
   ListTodo,
   LoaderCircle,
@@ -170,7 +171,10 @@ const AppSidebarView = React.memo(function AppSidebarView({
       </SidebarHeader>
 
       <SidebarContent>
-        <InfrastructureNavigation relayConfigured={relayConfigured} />
+        <InfrastructureNavigation
+          isPlatformAdmin={isPlatformAdmin}
+          relayConfigured={relayConfigured}
+        />
 
         <SidebarInstanceNavigation
           initialSelectedInstanceRouteId={initialSelectedInstanceRouteId}
@@ -188,8 +192,10 @@ const AppSidebarView = React.memo(function AppSidebarView({
 })
 
 function InfrastructureNavigation({
+  isPlatformAdmin,
   relayConfigured,
 }: {
+  isPlatformAdmin: boolean
   relayConfigured: boolean
 }) {
   return (
@@ -200,6 +206,7 @@ function InfrastructureNavigation({
       <SidebarGroupContent>
         <SidebarMenu>
           <ServersNavigationItem relayConfigured={relayConfigured} />
+          {isPlatformAdmin ? <UpdatesNavigationItem /> : null}
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
@@ -219,7 +226,7 @@ function ServersNavigationItem({
         className="data-active:bg-primary/10 data-active:text-primary"
       >
         <Link
-          to="/servers"
+          to="/infra/servers"
           activeOptions={{ exact: true, includeSearch: false }}
           activeProps={{ "data-active": true }}
           preload="intent"
@@ -231,6 +238,28 @@ function ServersNavigationItem({
       <SidebarMenuBadge className="text-sidebar-foreground/25">
         <InfrastructureInstanceCount relayConfigured={relayConfigured} />
       </SidebarMenuBadge>
+    </SidebarMenuItem>
+  )
+}
+
+function UpdatesNavigationItem() {
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton
+        asChild
+        tooltip="Updates"
+        className="data-active:bg-primary/10 data-active:text-primary"
+      >
+        <Link
+          to="/infra/updates"
+          activeOptions={{ exact: true, includeSearch: false }}
+          activeProps={{ "data-active": true }}
+          preload="intent"
+        >
+          <CloudDownload />
+          <span>Updates</span>
+        </Link>
+      </SidebarMenuButton>
     </SidebarMenuItem>
   )
 }
@@ -393,7 +422,7 @@ const InstanceNavigation = React.memo(function InstanceNavigation({
 })
 
 function ambiguousServerHref(shortId: string) {
-  return `/servers?search=${encodeURIComponent(shortId)}`
+  return `/infra/servers?search=${encodeURIComponent(shortId)}`
 }
 
 const ServerSelector = React.memo(function ServerSelector({
@@ -505,7 +534,7 @@ const ServerSelector = React.memo(function ServerSelector({
                 Open the server workspace to provision or discover a server.
               </p>
               <Link
-                to="/servers"
+                to="/infra/servers"
                 className="mt-2 inline-flex text-[10px] font-medium text-primary hover:underline"
               >
                 View servers
@@ -596,7 +625,7 @@ const InstanceTabNavigationItem = React.memo(
         >
           {!instanceRouteId ? (
             <Link
-              to="/servers"
+              to="/infra/servers"
               search={unresolvedServerId ? { search: unresolvedServerId } : {}}
               activeOptions={{ exact: true, includeSearch: false }}
             >
@@ -837,7 +866,8 @@ function statusBorderTone(state: SidebarInstance["observedState"]): string {
 }
 
 function globalSectionFromPathname(pathname: string): GlobalSection {
-  if (pathname === "/servers") return "servers"
+  if (pathname === "/infra/servers") return "servers"
+  if (pathname === "/infra/updates") return "updates"
   if (pathname === "/access") return "access"
   if (pathname === "/security") return "security"
   if (pathname === "/settings" || pathname.startsWith("/settings/")) {

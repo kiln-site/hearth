@@ -2,6 +2,10 @@ name: Reusable container image
 
 on:
   workflow_call:
+    outputs:
+      digest:
+        description: Published multi-platform image digest
+        value: ${{ jobs.publish.outputs.digest }}
     inputs:
       name:
         description: Human-readable component name
@@ -29,6 +33,12 @@ on:
         required: false
         type: string
         default: ""
+      tags:
+        description: Newline-delimited docker/metadata-action tag rules
+        required: false
+        type: string
+        default: |
+          type=sha,prefix=sha-
       uses_sentry:
         description: Whether the image build uploads Sentry artifacts
         required: false
@@ -72,10 +82,7 @@ jobs:
         with:
           images: ${{ inputs.image }}
           flavor: latest=false
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=sha-
-            type=semver,pattern={{version}}
+          tags: ${{ inputs.tags }}
 
       - name: Build${{ github.event_name != 'pull_request' && ' and publish' || '' }} image
         id: build
@@ -118,6 +125,8 @@ jobs:
     needs: build
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
+    outputs:
+      digest: ${{ steps.manifest.outputs.digest }}
     steps:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
@@ -142,12 +151,10 @@ jobs:
         with:
           images: ${{ inputs.image }}
           flavor: latest=false
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=sha-
-            type=semver,pattern={{version}}
+          tags: ${{ inputs.tags }}
 
       - name: Create and verify multi-platform manifest
+        id: manifest
         env:
           ARCHITECTURES: ${{ inputs.architectures }}
           IMAGE: ${{ inputs.image }}
@@ -172,3 +179,6 @@ jobs:
 
           docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
           docker buildx imagetools inspect "${tags[0]}"
+          digest="sha256:$(docker buildx imagetools inspect "${tags[0]}" --raw | sha256sum | awk '{print $1}')"
+          test "${#digest}" -eq 71
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"

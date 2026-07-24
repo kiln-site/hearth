@@ -86,8 +86,8 @@ export const Route = createFileRoute("/")({
           : null
       throw redirect({
         href: collisionSearch
-          ? `/servers?search=${encodeURIComponent(collisionSearch)}`
-          : "/servers",
+          ? `/infra/servers?search=${encodeURIComponent(collisionSearch)}`
+          : "/infra/servers",
       })
     }
     throw redirect({

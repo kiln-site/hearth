@@ -5,18 +5,23 @@ import { defineConfig } from "vite-plus"
 
 const repositoryRoot = resolve(import.meta.dirname, "../..")
 const buildCommit = resolveBuildCommit()
+const release = JSON.parse(
+  readFileSync(resolve(repositoryRoot, "release.json"), "utf8")
+) as { releaseLine: string }
+const buildVersion = process.env.KILN_VERSION?.trim() || release.releaseLine
 
 export default defineConfig({
   pack: {
     define: {
       "import.meta.env.KILN_BUILD_SHA": JSON.stringify(buildCommit),
+      "import.meta.env.KILN_VERSION": JSON.stringify(buildVersion),
     },
     deps: {
       // Relay ships its locked production dependency tree. Keeping packages
       // external avoids rebundling CommonJS, native, and instrumented modules.
       skipNodeModulesBundle: true,
     },
-    entry: ["src/index.ts", "instrument.mjs"],
+    entry: ["src/index.ts", "src/updater.ts", "instrument.mjs"],
     format: "esm",
     minify: true,
     outDir: "dist",
@@ -29,7 +34,13 @@ export default defineConfig({
       build: {
         command: "vp pack",
         dependsOn: [{ task: "build", from: "dependencies" }],
-        env: ["COMMIT_SHA", "GITHUB_SHA", "KILN_BUILD_SHA", "SOURCE_COMMIT"],
+        env: [
+          "COMMIT_SHA",
+          "GITHUB_SHA",
+          "KILN_BUILD_SHA",
+          "KILN_VERSION",
+          "SOURCE_COMMIT",
+        ],
       },
       test: {
         command: "vp test run",

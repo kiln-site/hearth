@@ -36,6 +36,7 @@ export async function nodeSnapshot(
     id: config.nodeId,
     name: config.nodeName || hostname(),
     version: relayVersion,
+    canProvisionInstances: config.canProvisionInstances,
     platform: platform(),
     arch: arch(),
     uptimeSeconds: Number.isFinite(startedAtTimestamp)

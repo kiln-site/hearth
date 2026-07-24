@@ -33,14 +33,14 @@ export async function redirectLegacyPage(
     connection.snapshot.instances
   )
   if (!instance) {
-    throw redirect({ to: "/servers", replace: true })
+    throw redirect({ to: "/infra/servers", replace: true })
   }
   const routeIdentifier = relayInstanceRouteIdentifier(
     connection.snapshot.instances,
     instance
   )
   if (!routeIdentifier) {
-    throw redirect({ to: "/servers", replace: true })
+    throw redirect({ to: "/infra/servers", replace: true })
   }
   throw redirect({
     to: `/server/$serverId/${page}`,

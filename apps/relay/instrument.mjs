@@ -1,7 +1,7 @@
 import * as Sentry from "@sentry/node"
 
 const dsn = process.env.SENTRY_DSN?.trim()
-const bakedCommit = String(import.meta.env.KILN_BUILD_SHA ?? "").trim()
+const bakedCommit = String(import.meta.env?.KILN_BUILD_SHA ?? "").trim()
 
 if (dsn) {
   Sentry.init({

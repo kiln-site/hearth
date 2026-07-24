@@ -18,6 +18,7 @@ import {
 } from "@/server/relay"
 import { getRelays } from "@/server/relays"
 import { getAuthState } from "@/server/auth"
+import { getUpdateOverview } from "@/server/updates"
 import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 
 export type RelayConnection = Awaited<
@@ -60,6 +61,7 @@ export const queryKeys = {
       ["relay", relayId, "instances", instanceId, "files", "tree"] as const,
   },
   relays: ["relays"] as const,
+  updates: ["updates", "overview"] as const,
   uiPreferences: ["ui", "preferences"] as const,
 }
 
@@ -161,6 +163,14 @@ export function relaysQueryOptions() {
   })
 }
 
+export function updateOverviewQueryOptions() {
+  return queryOptions({
+    queryKey: queryKeys.updates,
+    queryFn: () => getUpdateOverview(),
+    staleTime: 30_000,
+  })
+}
+
 export function brickCatalogQueryOptions() {
   return queryOptions({
     queryKey: queryKeys.bricks,
@@ -173,13 +183,7 @@ export function instanceStartupQueryOptions(
   instanceId: string
 ) {
   return queryOptions({
-    queryKey: [
-      "relay",
-      relayId,
-      "instances",
-      instanceId,
-      "startup",
-    ] as const,
+    queryKey: ["relay", relayId, "instances", instanceId, "startup"] as const,
     queryFn: () => getInstanceStartup({ data: { instanceId, relayId } }),
     staleTime: 15_000,
   })

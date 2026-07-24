@@ -31,6 +31,7 @@ export interface RelayConfig {
   brickCatalogUrl: string
   bootstrapToken: string | null
   browserOrigin: string
+  canProvisionInstances: boolean
   coolifyPublicOrigin: string | null
   composeFile: string
   connectDomain: string
@@ -110,7 +111,11 @@ export function loadConfig(
         ? `https://${formatUrlHost(advertisedHost)}`
         : proxyMode === "coolify"
           ? (coolifyPublicOrigin ?? `https://${formatUrlHost(advertisedHost)}`)
-        : directBrowserOrigin,
+          : directBrowserOrigin,
+    canProvisionInstances: booleanEnvironment(
+      environment.KILN_RELAY_ALLOW_PROVISIONING,
+      true
+    ),
     coolifyPublicOrigin,
     composeFile: `${dataDirectory}/instances/compose.yaml`,
     connectDomain: "test",
@@ -150,9 +155,7 @@ function relayProxyMode(environment: NodeJS.ProcessEnv): RelayProxyMode {
   ) {
     return value
   }
-  throw new Error(
-    "KILN_RELAY_PROXY must be none, hearth, traefik, or coolify"
-  )
+  throw new Error("KILN_RELAY_PROXY must be none, hearth, traefik, or coolify")
 }
 
 function relayCoolifyPublicOrigin(
@@ -164,9 +167,7 @@ function relayCoolifyPublicOrigin(
 
   const configuredHost = environment.KILN_RELAY_HOST?.trim()
   if (configuredHost) {
-    return parseCoolifyPublicOrigin(
-      `https://${formatUrlHost(configuredHost)}`
-    )
+    return parseCoolifyPublicOrigin(`https://${formatUrlHost(configuredHost)}`)
   }
 
   const generatedServiceUrls = Object.entries(environment)
@@ -253,7 +254,7 @@ export async function discoverRelayAdvertisedHost(
         ? `https://${formatUrlHost(address)}`
         : config.proxyMode === "coolify"
           ? (config.coolifyPublicOrigin ?? `https://${formatUrlHost(address)}`)
-        : config.directBrowserOrigin
+          : config.directBrowserOrigin
     return "public_ip"
   } catch {
     return "hostname"

@@ -171,6 +171,7 @@ function RouteEmptyState() {
 
 function routeLabel(section: Exclude<GlobalSection, null>) {
   if (section === "servers") return "Infrastructure / Servers"
+  if (section === "updates") return "Infrastructure / Updates"
   if (section === "access") return "Administration / Access"
   if (section === "security") return "Account / Security"
   return "Settings"

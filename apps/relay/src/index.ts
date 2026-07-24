@@ -2,6 +2,7 @@ import { createServer as createHttpServer } from "node:http"
 import { createServer as createHttpsServer } from "node:https"
 import { createHmac, randomBytes, randomUUID } from "node:crypto"
 import { mkdir } from "node:fs/promises"
+import { hostname } from "node:os"
 import * as Sentry from "@sentry/node"
 import { Effect } from "effect"
 
@@ -56,6 +57,7 @@ import { actionsForRole, relayActions } from "./permissions.js"
 import type { RelayAction } from "./permissions.js"
 import { normalizeSourceCidrs } from "./source-policy.js"
 import { RelaySnapshotHub } from "./snapshot-hub.js"
+import { SystemUpdateManager } from "./system-updates.js"
 import { assignRelayWebRouteIds } from "./web-route-ids.js"
 import { planWebRouteRecovery } from "./web-route-labels.js"
 import type { IncomingMessage, ServerResponse } from "node:http"
@@ -90,6 +92,7 @@ let relayIdentity = startupCore.identity
 config.nodeName = relayIdentity.name
 const bricks = new BrickCatalog(config.brickCatalogUrl)
 const docker = new DockerDriver(config)
+const systemUpdates = new SystemUpdateManager(config)
 const filesystem = new FilesystemDriver(config)
 const lifecycle = new LifecycleDriver(config, docker, bricks)
 const startupProxySettings = await lifecycle.proxySettings()
@@ -605,6 +608,29 @@ async function executeControlRequest(
   switch (request.operation) {
     case "relay.snapshot":
       return snapshotHub.read()
+    case "relay.system.inspect":
+      return systemUpdates.inspect(
+        typeof payload.container === "string" && payload.container.trim()
+          ? payload.container
+          : hostname()
+      )
+    case "relay.update.apply": {
+      const operation = await systemUpdates.start({
+        helperImage: requiredString(payload, "helperImage"),
+        targetContainer: requiredString(payload, "targetContainer"),
+        targetImage: requiredString(payload, "targetImage"),
+        version: requiredString(payload, "version"),
+      })
+      await appendRelayAudit("system.update_started", client.id, request.id, {
+        component: operation.component,
+        operationId: operation.id,
+        targetContainer: operation.targetContainer,
+        version: operation.version,
+      })
+      return operation
+    }
+    case "relay.update.status":
+      return systemUpdates.status(requiredString(payload, "operationId"))
     case "relay.networking.read":
       return (await lifecycle.networking()) ?? null
     case "relay.networking.write":
@@ -741,6 +767,9 @@ async function executeControlRequest(
         source: requiredString(payload, "source"),
       }
     case "instance.create": {
+      if (!config.canProvisionInstances) {
+        throw new Error("New server provisioning is disabled on this Relay")
+      }
       const input = relayCreateInstanceSchema.parse(request.payload)
       const instance = await lifecycle.createInstance(input)
       const name = input.name ?? instance.name

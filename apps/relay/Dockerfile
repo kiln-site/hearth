@@ -18,7 +18,9 @@ COPY --chown=vp:vp apps/relay ./apps/relay
 COPY --chown=vp:vp packages/contracts ./packages/contracts
 
 ARG SOURCE_COMMIT
+ARG KILN_VERSION
 ENV SOURCE_COMMIT=$SOURCE_COMMIT
+ENV KILN_VERSION=$KILN_VERSION
 RUN vp run relay#build && \
   npm_config_ignore_scripts=true corepack pnpm --config.allowUnusedPatches=true \
     --filter relay deploy --prod --no-optional --legacy /source/runtime
@@ -27,8 +29,15 @@ FROM docker:29.6.2-cli AS docker-cli
 
 FROM gcr.io/distroless/nodejs24-debian12 AS runtime
 
+ARG KILN_VERSION
+ARG SOURCE_COMMIT
 ENV NODE_ENV=production
 WORKDIR /app
+
+LABEL org.opencontainers.image.source="https://github.com/kiln-site/hearth" \
+  org.opencontainers.image.version="${KILN_VERSION}" \
+  org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+  io.kiln.component="relay"
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose

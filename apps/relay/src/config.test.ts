@@ -94,9 +94,7 @@ describe("loadConfig", () => {
 
     expect(config.publicPort).toBe(8443)
     expect(config.browserOrigin).toBe("https://relay.example.com:8443")
-    expect(config.coolifyPublicOrigin).toBe(
-      "https://relay.example.com:8443"
-    )
+    expect(config.coolifyPublicOrigin).toBe("https://relay.example.com:8443")
   })
 
   it("requires a trusted public origin for Coolify mode", () => {
@@ -141,6 +139,7 @@ describe("loadConfig", () => {
 
   it("normalizes boolean environment values", async () => {
     const config = loadConfig({
+      KILN_RELAY_ALLOW_PROVISIONING: " false ",
       KILN_RELAY_DISCOVER_PUBLIC_IP: " false ",
       KILN_RELAY_SFTP_DEV_AUTH: " true ",
       NODE_ENV: "development",
@@ -153,6 +152,10 @@ describe("loadConfig", () => {
       )
     ).resolves.toBe("hostname")
     expect(config.sftpDevAuthentication).toBe(true)
+    expect(config.canProvisionInstances).toBe(false)
+    expect(loadConfig({ NODE_ENV: "development" }).canProvisionInstances).toBe(
+      true
+    )
   })
 
   it("rejects invalid ports", () => {

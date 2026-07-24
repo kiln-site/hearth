@@ -22,10 +22,12 @@ COPY --chown=vp:vp packages/contracts ./packages/contracts
 COPY --chown=vp:vp packages/ui ./packages/ui
 
 ARG SOURCE_COMMIT
+ARG KILN_VERSION
 ARG VITE_SENTRY_DSN
 ARG VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE=0.1
 ARG VITE_SENTRY_TRACES_SAMPLE_RATE=0.1
 ENV SOURCE_COMMIT=$SOURCE_COMMIT
+ENV KILN_VERSION=$KILN_VERSION
 ENV VITE_SENTRY_DSN=$VITE_SENTRY_DSN
 ENV VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE=$VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE
 ENV VITE_SENTRY_TRACES_SAMPLE_RATE=$VITE_SENTRY_TRACES_SAMPLE_RATE
@@ -42,10 +44,17 @@ RUN --mount=type=cache,target=/home/vp/.local/share/pnpm/store,uid=1000,gid=1000
 
 FROM gcr.io/distroless/nodejs24-debian12:nonroot AS runtime
 
+ARG KILN_VERSION
+ARG SOURCE_COMMIT
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
 ENV PORT=3000
 WORKDIR /app
+
+LABEL org.opencontainers.image.source="https://github.com/kiln-site/hearth" \
+  org.opencontainers.image.version="${KILN_VERSION}" \
+  org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+  io.kiln.component="hearth"
 
 COPY --from=runtime-deps --chown=65532:65532 /runtime/node_modules ./node_modules
 COPY --from=build --chown=65532:65532 /source/apps/web/dist ./dist

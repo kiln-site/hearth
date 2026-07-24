@@ -375,10 +375,7 @@ function authenticateSocket(
         return
       }
       const action = actionForRequest(request)
-      const actions = actionsForRole(
-        currentClient.role,
-        currentClient.actions
-      )
+      const actions = actionsForRole(currentClient.role, currentClient.actions)
       if (!action || !isActionAllowed(actions, action)) {
         sendError(socket, request.id, "forbidden", "Relay permission denied")
         return
@@ -531,6 +528,7 @@ function authenticateSocket(
 function isAuditedMutation(operation: RelayControlOperation): boolean {
   return (
     operation === "relay.rename" ||
+    operation === "relay.update.apply" ||
     operation === "relay.pairing.create" ||
     operation === "relay.pairing.revoke" ||
     operation === "relay.clients.update" ||
@@ -580,7 +578,11 @@ export function authenticationVerifier(options: {
 function actionForRequest(request: RelayControlRequest): RelayAction | null {
   switch (request.operation) {
     case "relay.snapshot":
+    case "relay.system.inspect":
+    case "relay.update.status":
       return "relay.read"
+    case "relay.update.apply":
+      return "relay.update"
     case "relay.rename":
       return "relay.rename"
     case "relay.audit.list":

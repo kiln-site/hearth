@@ -57,7 +57,7 @@ export const Route = createFileRoute("/_app/server/$serverId")({
 
 function redirectToServerList(shortId: string) {
   return redirect({
-    href: `/servers?search=${encodeURIComponent(shortId)}`,
+    href: `/infra/servers?search=${encodeURIComponent(shortId)}`,
     replace: true,
   })
 }

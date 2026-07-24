@@ -49,9 +49,20 @@ export const getBrickCatalog = createServerFn({ method: "GET" }).handler(
     if (!isPlatformAdmin(user)) {
       throw new Error("Platform administrator access required")
     }
-    const relays = (await listPersistedRelays()).filter(
+    const candidates = (await listPersistedRelays()).filter(
       (relay) => relay.enabled
     )
+    const snapshots = await Promise.allSettled(
+      candidates.map((relay) => requestRelay(relay, "/v1/snapshot"))
+    )
+    const relays = candidates.filter((_, index) => {
+      const snapshot = snapshots[index]
+      return (
+        snapshot?.status === "fulfilled" &&
+        relaySnapshotSchema.safeParse(snapshot.value).data?.node
+          .canProvisionInstances === true
+      )
+    })
     const relay = relays.at(0)
     if (!relay) return { relays, bricks: [] }
     const catalog = await runAppEffect(

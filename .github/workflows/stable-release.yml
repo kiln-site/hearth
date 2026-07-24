@@ -1,0 +1,96 @@
+name: Stable release
+
+on:
+  workflow_dispatch:
+    inputs:
+      nightly:
+        description: Nightly version to promote, without the leading v
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  promote:
+    name: Promote nightly
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Validate promotion
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY: ${{ inputs.nightly }}
+        run: |
+          release_line="$(jq -er '.releaseLine' release.json)"
+          case "$NIGHTLY" in
+            "$release_line"-nightly.*) ;;
+            *) echo "Nightly must belong to release line $release_line" >&2; exit 1 ;;
+          esac
+          test "$(gh release view "v$NIGHTLY" --json isPrerelease --jq '.isPrerelease')" = true
+          gh release download "v$NIGHTLY" --pattern release-manifest.json
+          test "$(jq -r '.version' release-manifest.json)" = "$NIGHTLY"
+          test "$(jq -r '.channel' release-manifest.json)" = nightly
+          echo "version=$release_line" >> "$GITHUB_OUTPUT"
+          echo "nightly_tag=v$NIGHTLY" >> "$GITHUB_OUTPUT"
+
+      - name: Reserve stable tag
+        env:
+          NIGHTLY_TAG: ${{ steps.version.outputs.nightly_tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          nightly_commit="$(git rev-list -n 1 "$NIGHTLY_TAG")"
+          if git rev-parse --verify --quiet "refs/tags/v$VERSION" >/dev/null; then
+            test "$(git rev-list -n 1 "v$VERSION")" = "$nightly_commit"
+          else
+            git tag "v$VERSION" "$nightly_commit"
+            git push origin "refs/tags/v$VERSION"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote immutable image digests
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          for component in hearth relay; do
+            image="$(jq -r ".components.$component.image" release-manifest.json)"
+            digest="$(jq -r ".components.$component.digest" release-manifest.json)"
+            docker buildx imagetools create \
+              --tag "$image:$VERSION" \
+              --tag "$image:latest" \
+              "$image@$digest"
+          done
+
+      - name: Publish stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          jq --arg version "$VERSION" \
+            --arg publishedAt "$(date -u +%FT%TZ)" \
+            '.version = $version | .channel = "stable" | .publishedAt = $publishedAt' \
+            release-manifest.json > promoted-release-manifest.json
+          mv promoted-release-manifest.json release-manifest.json
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release upload "v$VERSION" release-manifest.json --clobber
+          else
+            gh release create "v$VERSION" release-manifest.json \
+              --verify-tag \
+              --generate-notes \
+              --title "v$VERSION"
+          fi

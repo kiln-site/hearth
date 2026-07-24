@@ -1,19 +1,12 @@
 name: Container images
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
-
-concurrency:
-  group: container-images-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   code:
@@ -32,6 +25,7 @@ jobs:
             cache_scope: hearth
             build_args: |
               SOURCE_COMMIT=${{ github.sha }}
+              KILN_VERSION=0.1.0-pr.${{ github.event.pull_request.number || github.run_number }}
               VITE_SENTRY_DSN=${{ vars.VITE_SENTRY_DSN }}
               VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE=${{ vars.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE || '0.1' }}
               VITE_SENTRY_TRACES_SAMPLE_RATE=${{ vars.VITE_SENTRY_TRACES_SAMPLE_RATE || '0.1' }}
@@ -42,6 +36,7 @@ jobs:
             cache_scope: relay
             build_args: |
               SOURCE_COMMIT=${{ github.sha }}
+              KILN_VERSION=0.1.0-pr.${{ github.event.pull_request.number || github.run_number }}
             uses_sentry: false
     uses: ./.github/workflows/reusable-image.yml
     with:
@@ -50,30 +45,8 @@ jobs:
       dockerfile: ${{ matrix.dockerfile }}
       cache_scope: ${{ matrix.cache_scope }}
       build_args: ${{ matrix.build_args }}
+      tags: |
+        type=sha,prefix=sha-
       uses_sentry: ${{ matrix.uses_sentry }}
     secrets:
       sentry_auth_token: ${{ secrets.SENTRY_AUTH_TOKEN }}
-
-  deploy:
-    name: Deploy ${{ matrix.name }} to production
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [code, images]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Hearth
-            component: hearth
-          - name: Relay
-            component: relay
-    steps:
-      - name: Trigger rolling deployment
-        env:
-          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
-          COOLIFY_WEBHOOK: ${{ matrix.component == 'hearth' && secrets.COOLIFY_WEBHOOK_HEARTH || secrets.COOLIFY_WEBHOOK_RELAY }}
-        run: |
-          curl --fail-with-body --show-error --silent \
-            --request GET \
-            "$COOLIFY_WEBHOOK" \
-            --header "Authorization: Bearer $COOLIFY_TOKEN"

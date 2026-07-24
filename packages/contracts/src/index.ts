@@ -224,7 +224,10 @@ const webRouteHostnameSchema = z
 
 export const relayInstanceWebRouteShortIdSchema = z
   .string()
-  .regex(/^[a-f0-9]{8}$/u, "Route ID must be 8 lowercase hexadecimal characters")
+  .regex(
+    /^[a-f0-9]{8}$/u,
+    "Route ID must be 8 lowercase hexadecimal characters"
+  )
 
 export const relayInstanceWebRouteIdSchema = z.union([
   relayInstanceWebRouteShortIdSchema,
@@ -375,6 +378,7 @@ export const relayNodeSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   version: z.string().min(1),
+  canProvisionInstances: z.boolean().default(true),
   platform: z.string().min(1),
   arch: z.string().min(1),
   uptimeSeconds: z.number().nonnegative().nullable().default(null),

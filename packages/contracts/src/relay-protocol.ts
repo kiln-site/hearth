@@ -6,6 +6,9 @@ export const relayPairingProtocol = "kiln-relay-pair.v1" as const
 
 export const relayControlOperations = [
   "relay.snapshot",
+  "relay.system.inspect",
+  "relay.update.apply",
+  "relay.update.status",
   "relay.rename",
   "relay.audit.list",
   "relay.networking.read",
@@ -42,6 +45,7 @@ export type RelayControlOperation = (typeof relayControlOperations)[number]
 export function relayControlDeadlineMs(
   operation: RelayControlOperation
 ): number {
+  if (operation === "relay.update.apply") return 15 * 60_000
   if (
     operation === "instance.create" ||
     operation === "instance.startup.write"
