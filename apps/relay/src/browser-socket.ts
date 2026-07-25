@@ -1034,12 +1034,16 @@ class ConsoleHub {
   readonly #abort = new AbortController()
   readonly #docker: DockerDriver
   readonly #instance: RelayInstanceConfig
+  readonly #lineIds = new Set<string>()
   readonly #onEmpty: () => void
   readonly #recent: Array<RelayConsoleLine> = []
   readonly #subscribers = new Set<WebSocket>()
+  #backfillStartedAt: string | null | undefined
   #graceTimer: ReturnType<typeof setTimeout> | null = null
   #retryTimer: ReturnType<typeof setTimeout> | null = null
+  #sessionStartedAt: string | null | undefined
   #started = false
+  #truncated = false
 
   constructor(
     docker: DockerDriver,
@@ -1061,8 +1065,7 @@ class ConsoleHub {
     this.#graceTimer = null
     this.#retryTimer = null
     this.#subscribers.add(socket)
-    send(socket, { type: "ready", instanceId: this.#instance.id })
-    for (const line of this.#recent) send(socket, { type: "line", line })
+    if (this.#sessionStartedAt !== undefined) this.#sendSession(socket)
     if (!this.#started) {
       this.#started = true
       void this.#run()
@@ -1089,14 +1092,44 @@ class ConsoleHub {
 
   async #run(): Promise<void> {
     try {
+      const snapshot = await this.#docker.console(this.#instance, 200)
+      const startedAt = snapshot.startedAt ?? null
+      const sessionChanged = this.#sessionStartedAt !== startedAt
+      if (this.#sessionStartedAt === undefined || sessionChanged) {
+        this.#sessionStartedAt = startedAt
+        this.#backfillStartedAt = undefined
+        this.#truncated = snapshot.truncated
+        this.#recent.splice(0, this.#recent.length, ...snapshot.lines)
+        this.#lineIds.clear()
+        for (const line of snapshot.lines) this.#lineIds.add(line.id)
+        const encodedReset = JSON.stringify({
+          type: "reset",
+          instanceId: this.#instance.id,
+          startedAt,
+          lines: snapshot.lines,
+          truncated: snapshot.truncated,
+        })
+        const encodedReady = JSON.stringify({
+          type: "ready",
+          instanceId: this.#instance.id,
+          startedAt,
+        })
+        for (const socket of this.#subscribers) {
+          sendEncoded(socket, encodedReset)
+          sendEncoded(socket, encodedReady)
+        }
+      } else {
+        for (const line of snapshot.lines) this.#append(line)
+      }
+      if (this.#backfillStartedAt !== startedAt) {
+        this.#backfillStartedAt = startedAt
+        void this.#backfill(startedAt)
+      }
       for await (const line of this.#docker.streamConsole(
         this.#instance,
         this.#abort.signal
       )) {
-        this.#recent.push(line)
-        if (this.#recent.length > 5_000) this.#recent.shift()
-        const encoded = JSON.stringify({ type: "line", line })
-        for (const socket of this.#subscribers) sendEncoded(socket, encoded)
+        this.#append(line)
       }
     } catch (cause) {
       if (!this.#abort.signal.aborted) {
@@ -1118,6 +1151,102 @@ class ConsoleHub {
         }, 1_000)
         this.#retryTimer.unref()
       }
+    }
+  }
+
+  #append(line: RelayConsoleLine): void {
+    if (this.#lineIds.has(line.id)) return
+    this.#lineIds.add(line.id)
+    this.#recent.push(line)
+    if (this.#recent.length > 5_000) {
+      const removed = this.#recent.shift()
+      if (removed) this.#lineIds.delete(removed.id)
+      this.#truncated = true
+    }
+    const encoded = JSON.stringify({ type: "line", line })
+    for (const socket of this.#subscribers) sendEncoded(socket, encoded)
+  }
+
+  async #backfill(startedAt: string | null): Promise<void> {
+    try {
+      const history = await this.#docker.console(this.#instance, 5_000)
+      if (
+        this.#abort.signal.aborted ||
+        this.#sessionStartedAt !== startedAt ||
+        (history.startedAt ?? null) !== startedAt
+      ) {
+        return
+      }
+      const firstRecent = this.#recent[0]
+      const firstRecentIndex = firstRecent
+        ? history.lines.findIndex((line) => line.id === firstRecent.id)
+        : history.lines.length
+      const older =
+        firstRecentIndex >= 0
+          ? history.lines.slice(0, firstRecentIndex)
+          : history.lines.filter(
+              (line) =>
+                line.timestamp !== null &&
+                firstRecent?.timestamp !== null &&
+                line.timestamp < firstRecent.timestamp
+            )
+      if (older.length === 0) {
+        this.#truncated ||= history.truncated
+        return
+      }
+      const fresh = older.filter((line) => !this.#lineIds.has(line.id))
+      if (fresh.length === 0) return
+      for (const line of fresh) this.#lineIds.add(line.id)
+      this.#recent.unshift(...fresh)
+      if (this.#recent.length > 5_000) {
+        const removed = this.#recent.splice(0, this.#recent.length - 5_000)
+        for (const line of removed) this.#lineIds.delete(line.id)
+        this.#truncated = true
+      } else {
+        this.#truncated ||= history.truncated
+      }
+      this.#sendHistory(this.#subscribers, fresh)
+    } catch (cause) {
+      if (!this.#abort.signal.aborted) {
+        Sentry.captureException(cause, {
+          tags: { "kiln.operation": "browser.console.backfill" },
+        })
+      }
+    }
+  }
+
+  #sendSession(socket: WebSocket): void {
+    const snapshotStart = Math.max(0, this.#recent.length - 200)
+    send(socket, {
+      type: "reset",
+      instanceId: this.#instance.id,
+      startedAt: this.#sessionStartedAt ?? null,
+      lines: this.#recent.slice(snapshotStart),
+      truncated: this.#truncated || snapshotStart > 0,
+    })
+    send(socket, {
+      type: "ready",
+      instanceId: this.#instance.id,
+      startedAt: this.#sessionStartedAt ?? null,
+    })
+    this.#sendHistory(new Set([socket]), this.#recent.slice(0, snapshotStart))
+  }
+
+  #sendHistory(
+    sockets: ReadonlySet<WebSocket>,
+    lines: ReadonlyArray<RelayConsoleLine>
+  ): void {
+    const chunkSize = 200
+    for (let end = lines.length; end > 0; end -= chunkSize) {
+      const start = Math.max(0, end - chunkSize)
+      const encoded = JSON.stringify({
+        type: "history",
+        instanceId: this.#instance.id,
+        startedAt: this.#sessionStartedAt ?? null,
+        lines: lines.slice(start, end),
+        truncated: this.#truncated || start > 0,
+      })
+      for (const socket of sockets) sendEncoded(socket, encoded)
     }
   }
 }

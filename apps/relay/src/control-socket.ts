@@ -637,6 +637,7 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
       return "instance.console.write"
     case "instance.console.complete":
       return "instance.console.read"
+    case "instance.logs.console":
     case "instance.logs.latest":
       return "instance.logs.read"
     case "instance.network.routes.read":

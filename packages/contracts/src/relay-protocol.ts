@@ -35,6 +35,7 @@ export const relayControlOperations = [
   "instance.console.history",
   "instance.console.write",
   "instance.console.complete",
+  "instance.logs.console",
   "instance.logs.latest",
   "instance.network.routes.read",
   "instance.network.routes.write",

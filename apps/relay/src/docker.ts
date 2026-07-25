@@ -13,6 +13,8 @@ import type {
   RelayConsoleCompletion,
   RelayConsoleLevel,
   RelayConsoleLine,
+  RelayConsoleLog,
+  RelayConsoleSegment,
   RelayDesiredState,
   RelayInstance,
   RelayInstanceResources,
@@ -108,7 +110,8 @@ interface ResourceCacheEntry {
   value: RelayInstanceResources | null
 }
 
-// Docker TTY logs contain ANSI/control bytes that must be removed before parsing.
+// Docker TTY logs contain ANSI/control bytes. Cursor-editing frames are removed,
+// while SGR color and emphasis are retained as safe, structured segments.
 /* eslint-disable no-control-regex */
 const ANSI_PATTERN = new RegExp(
   "\\u001b(?:\\[[0-?]*[ -/]*[@-~]|\\][^\\u0007]*(?:\\u0007|\\u001b\\\\)|[=>])",
@@ -124,8 +127,13 @@ const TERMINAL_EDIT_PATTERN = new RegExp(
 )
 const MINECRAFT_LOG_PREFIX_PATTERN =
   /\[\d{2}:\d{2}:\d{2} (?:INFO|WARN(?:ING)?|ERROR|FATAL|SEVERE|DEBUG|TRACE)\]:/iu
+const CURL_PROGRESS_HEADER_PATTERN =
+  /^\s*%\s+Total\s+%\s+Received\s+%\s+Xferd\s+Average\s+Speed\s+Time\s+Time\s+Time\s+Current\s*$/iu
+const CURL_PROGRESS_ROW_PATTERN =
+  /^\s*\d+\s+\S+\s+\d+\s+\S+\s+\d+\s+\S+\s+\S+\s+\S+\s+(?:--:--:--|\d+:\d{2}:\d{2})\s+(?:--:--:--|\d+:\d{2}:\d{2})\s+(?:--:--:--|\d+:\d{2}:\d{2})\s+\S+\s*$/u
 const CONSOLE_TTY_COLUMNS = 120
 const CONSOLE_TTY_ROWS = 40
+const MAX_SHARED_CONSOLE_BYTES = 10 * 1024 * 1024
 /* eslint-enable no-control-regex */
 
 export class DockerDriver {
@@ -356,21 +364,20 @@ export class DockerDriver {
   ): Promise<RelayConsole> {
     const discovered = await this.#findDiscovered(instance.id)
     const boundedLimit = Math.min(Math.max(limit, 100), 5_000)
+    const startedAt = consoleStartedAt(discovered.container)
     const result = await command(
       "docker",
       [
         "logs",
         "--timestamps",
+        ...(startedAt ? ["--since", startedAt] : []),
         "--tail",
         String(boundedLimit),
         discovered.container.Id,
       ],
       { timeout: 15_000 }
     )
-    const rawLines = `${result.stdout}\n${result.stderr}`
-      .split("\n")
-      .map(parseConsoleLine)
-      .filter((line): line is ParsedConsoleLine => line !== null)
+    const rawLines = parseConsoleOutput(result)
     const occurrences = new Map<string, number>()
 
     return {
@@ -384,23 +391,61 @@ export class DockerDriver {
         occurrences.set(hash, occurrence + 1)
         return { ...line, id: `${hash}-${occurrence}` }
       }),
+      startedAt,
       truncated: rawLines.length >= boundedLimit,
+    }
+  }
+
+  async consoleLog(instance: RelayInstanceConfig): Promise<RelayConsoleLog> {
+    const discovered = await this.#findDiscovered(instance.id)
+    const startedAt = consoleStartedAt(discovered.container)
+    const result = await command(
+      "docker",
+      [
+        "logs",
+        "--timestamps",
+        ...(startedAt ? ["--since", startedAt] : []),
+        discovered.container.Id,
+      ],
+      {
+        maxBuffer: MAX_SHARED_CONSOLE_BYTES + 1024,
+        timeout: 30_000,
+      }
+    )
+    const lines = parseConsoleOutput(result).map((line) => line.text)
+    const content = lines.join("\n")
+    const size = Buffer.byteLength(content)
+    if (size > MAX_SHARED_CONSOLE_BYTES) {
+      throw new Error(
+        `Console log exceeds the ${MAX_SHARED_CONSOLE_BYTES} byte sharing limit`
+      )
+    }
+    if (!content) throw new Error("The current console session is empty")
+
+    return {
+      instanceId: instance.id,
+      path: "console.log",
+      content,
+      size,
+      startedAt,
     }
   }
 
   async *streamConsole(
     instance: RelayInstanceConfig,
     signal: AbortSignal,
-    limit = 3_000
+    limit = 200
   ): AsyncGenerator<RelayConsoleLine> {
     const discovered = await this.#findDiscovered(instance.id)
     const boundedLimit = Math.min(Math.max(limit, 100), 5_000)
+    const startedAt = consoleStartedAt(discovered.container)
     const child = spawn(
       "docker",
       [
         "logs",
         "--follow",
         "--timestamps",
+        ...(startedAt ? ["--since", startedAt] : []),
         "--tail",
         String(boundedLimit),
         discovered.container.Id,
@@ -1237,13 +1282,14 @@ function roundPercent(value: number): number {
   return Math.round(Math.max(value, 0) * 10) / 10
 }
 
-interface ParsedConsoleLine {
+export interface ParsedConsoleLine {
   level: RelayConsoleLevel
+  segments?: Array<RelayConsoleSegment>
   text: string
   timestamp: string | null
 }
 
-function parseConsoleLine(value: string): ParsedConsoleLine | null {
+export function parseConsoleLine(value: string): ParsedConsoleLine | null {
   if (isTerminalOnlyConsoleFrame(value)) return null
   const normalized = stripAnsi(value)
   const match = normalized.match(/^(\d{4}-\d{2}-\d{2}T\S+Z)\s(.*)$/u)
@@ -1261,11 +1307,25 @@ function parseConsoleLine(value: string): ParsedConsoleLine | null {
   else if (/\bDEBUG\b/iu.test(text)) level = "debug"
   else if (/\bTRACE\b/iu.test(text)) level = "trace"
 
-  return { timestamp, text, level }
+  const rawText = value.replace(/^\d{4}-\d{2}-\d{2}T\S+Z\s/u, "")
+  const segments = styledConsoleSegments(rawText, text)
+  return {
+    timestamp,
+    text,
+    level,
+    ...(segments ? { segments } : {}),
+  }
 }
 
 function isTerminalOnlyConsoleFrame(value: string): boolean {
   const normalized = stripAnsi(value)
+  const withoutTimestamp = normalized.replace(/^\d{4}-\d{2}-\d{2}T\S+Z\s*/u, "")
+  if (
+    CURL_PROGRESS_HEADER_PATTERN.test(withoutTimestamp) ||
+    CURL_PROGRESS_ROW_PATTERN.test(withoutTimestamp)
+  ) {
+    return true
+  }
   if (MINECRAFT_LOG_PREFIX_PATTERN.test(normalized)) return false
   const terminalText = normalized
     .replace(/^\d{4}-\d{2}-\d{2}T\S+Z\s*/u, "")
@@ -1284,6 +1344,229 @@ function isTerminalOnlyConsoleFrame(value: string): boolean {
     terminalColumns.length >= 2 &&
     terminalColumns.every((column) => /^[a-z0-9_:.?+/-]+$/iu.test(column))
   )
+}
+
+function parseConsoleOutput(result: {
+  stdout: string
+  stderr: string
+}): Array<ParsedConsoleLine> {
+  return [result.stdout, result.stderr]
+    .flatMap((output) => output.split("\n"))
+    .map(parseConsoleLine)
+    .filter((line): line is ParsedConsoleLine => line !== null)
+    .sort((left, right) =>
+      (left.timestamp ?? "").localeCompare(right.timestamp ?? "")
+    )
+}
+
+interface ConsoleStyle {
+  bold: boolean
+  color: string | undefined
+  italic: boolean
+  underline: boolean
+}
+
+const ANSI_COLORS = [
+  "#1f2937",
+  "#dc2626",
+  "#16a34a",
+  "#ca8a04",
+  "#2563eb",
+  "#c026d3",
+  "#0891b2",
+  "#d1d5db",
+  "#6b7280",
+  "#f87171",
+  "#4ade80",
+  "#facc15",
+  "#60a5fa",
+  "#e879f9",
+  "#22d3ee",
+  "#f9fafb",
+]
+
+const MINECRAFT_COLORS: Readonly<Record<string, string>> = {
+  "0": "#000000",
+  "1": "#0000aa",
+  "2": "#00aa00",
+  "3": "#00aaaa",
+  "4": "#aa0000",
+  "5": "#aa00aa",
+  "6": "#ffaa00",
+  "7": "#aaaaaa",
+  "8": "#555555",
+  "9": "#5555ff",
+  a: "#55ff55",
+  b: "#55ffff",
+  c: "#ff5555",
+  d: "#ff55ff",
+  e: "#ffff55",
+  f: "#ffffff",
+}
+
+function styledConsoleSegments(
+  value: string,
+  expectedText: string
+): Array<RelayConsoleSegment> | undefined {
+  const tokenPattern = new RegExp(
+    `${String.fromCodePoint(27)}\\[([\\d;:]*)m|§([0-9a-fk-or])`,
+    "giu"
+  )
+  const segments: Array<RelayConsoleSegment> = []
+  const style: ConsoleStyle = {
+    bold: false,
+    color: undefined,
+    italic: false,
+    underline: false,
+  }
+  let offset = 0
+  let styled = false
+
+  const append = (text: string) => {
+    const visible = text.replace(CONTROL_PATTERN, "").replace(/\r/gu, "")
+    if (!visible) return
+    const segment: RelayConsoleSegment = {
+      text: visible,
+      ...(style.color ? { color: style.color } : {}),
+      ...(style.bold ? { bold: true } : {}),
+      ...(style.italic ? { italic: true } : {}),
+      ...(style.underline ? { underline: true } : {}),
+    }
+    const previous = segments.at(-1)
+    if (
+      previous &&
+      previous.color === segment.color &&
+      previous.bold === segment.bold &&
+      previous.italic === segment.italic &&
+      previous.underline === segment.underline
+    ) {
+      previous.text += segment.text
+    } else {
+      segments.push(segment)
+    }
+  }
+
+  for (const match of value.matchAll(tokenPattern)) {
+    append(value.slice(offset, match.index))
+    offset = match.index + match[0].length
+    styled = true
+    if (match[2]) applyMinecraftStyle(match[2].toLowerCase(), style)
+    else applyAnsiStyle(match[1] ?? "", style)
+  }
+  append(value.slice(offset))
+  if (!styled) return undefined
+
+  const plain = segments.map((segment) => segment.text).join("")
+  const start = plain.indexOf(expectedText)
+  if (start < 0) return undefined
+  return sliceConsoleSegments(segments, start, expectedText.length)
+}
+
+function applyMinecraftStyle(code: string, style: ConsoleStyle): void {
+  const color = MINECRAFT_COLORS[code]
+  if (color) {
+    resetConsoleStyle(style)
+    style.color = color
+    return
+  }
+  if (code === "l") style.bold = true
+  else if (code === "m") style.underline = true
+  else if (code === "n") style.underline = true
+  else if (code === "o") style.italic = true
+  else if (code === "r") resetConsoleStyle(style)
+}
+
+function applyAnsiStyle(value: string, style: ConsoleStyle): void {
+  const parameters = (value ? value.split(/[;:]/u) : ["0"]).map(Number)
+  for (let index = 0; index < parameters.length; index++) {
+    const code = parameters[index] ?? 0
+    if (code === 0) resetConsoleStyle(style)
+    else if (code === 1) style.bold = true
+    else if (code === 3) style.italic = true
+    else if (code === 4) style.underline = true
+    else if (code === 22) style.bold = false
+    else if (code === 23) style.italic = false
+    else if (code === 24) style.underline = false
+    else if (code >= 30 && code <= 37) style.color = ANSI_COLORS[code - 30]
+    else if (code >= 90 && code <= 97) style.color = ANSI_COLORS[code - 82]
+    else if (code === 39) style.color = undefined
+    else if (code === 38 && parameters[index + 1] === 5) {
+      const paletteIndex = parameters[index + 2]
+      if (paletteIndex !== undefined) style.color = ansi256Color(paletteIndex)
+      index += 2
+    } else if (code === 38 && parameters[index + 1] === 2) {
+      const red = parameters[index + 2]
+      const green = parameters[index + 3]
+      const blue = parameters[index + 4]
+      if (red !== undefined && green !== undefined && blue !== undefined) {
+        style.color = rgbHex(red, green, blue)
+      }
+      index += 4
+    }
+  }
+}
+
+function resetConsoleStyle(style: ConsoleStyle): void {
+  style.bold = false
+  style.color = undefined
+  style.italic = false
+  style.underline = false
+}
+
+function ansi256Color(index: number): string {
+  const bounded = Math.max(0, Math.min(255, Math.trunc(index)))
+  if (bounded < 16) return ANSI_COLORS[bounded] ?? "#f9fafb"
+  if (bounded >= 232) {
+    const gray = 8 + (bounded - 232) * 10
+    return rgbHex(gray, gray, gray)
+  }
+  const cube = bounded - 16
+  const red = Math.floor(cube / 36)
+  const green = Math.floor((cube % 36) / 6)
+  const blue = cube % 6
+  const channel = (value: number) => (value === 0 ? 0 : 55 + value * 40)
+  return rgbHex(channel(red), channel(green), channel(blue))
+}
+
+function rgbHex(red: number, green: number, blue: number): string {
+  return `#${[red, green, blue]
+    .map((value) =>
+      Math.max(0, Math.min(255, Math.trunc(value)))
+        .toString(16)
+        .padStart(2, "0")
+    )
+    .join("")}`
+}
+
+function sliceConsoleSegments(
+  segments: ReadonlyArray<RelayConsoleSegment>,
+  start: number,
+  length: number
+): Array<RelayConsoleSegment> {
+  const sliced: Array<RelayConsoleSegment> = []
+  const end = start + length
+  let offset = 0
+  for (const segment of segments) {
+    const segmentEnd = offset + segment.text.length
+    const overlapStart = Math.max(start, offset)
+    const overlapEnd = Math.min(end, segmentEnd)
+    if (overlapStart < overlapEnd) {
+      sliced.push({
+        ...segment,
+        text: segment.text.slice(overlapStart - offset, overlapEnd - offset),
+      })
+    }
+    offset = segmentEnd
+    if (offset >= end) break
+  }
+  return sliced
+}
+
+function consoleStartedAt(container: DockerInspect): string | null {
+  const timestamp = Date.parse(container.State.StartedAt)
+  return Number.isFinite(timestamp) && timestamp > 0
+    ? new Date(timestamp).toISOString()
+    : null
 }
 
 function parseConsoleCompletion(

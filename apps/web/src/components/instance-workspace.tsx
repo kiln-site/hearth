@@ -6,6 +6,7 @@ import {
   useSuspenseQuery,
 } from "@tanstack/react-query"
 import { useRouterState } from "@tanstack/react-router"
+import type { RelayObservedState } from "@workspace/contracts"
 import {
   Check,
   CircleStop,
@@ -672,6 +673,25 @@ function InstancePowerControls({
   const handleAction = React.useCallback(
     async (nextAction: ServerAction) => {
       if (!relayConnected) return
+      const optimisticState: RelayObservedState =
+        nextAction === "start" ? "starting" : "stopping"
+      const previousSnapshot = queryClient.getQueryData<RelayFleetSnapshot>(
+        queryKeys.relay.snapshot
+      )
+      const previousInstance = previousSnapshot?.instances.find(
+        (item) => item.id === instance.id && item.relayId === instance.relayId
+      )
+      queryClient.setQueryData<RelayFleetSnapshot>(
+        queryKeys.relay.snapshot,
+        (snapshot) =>
+          updateInstancePowerState(
+            snapshot,
+            instance.id,
+            instance.relayId,
+            optimisticState,
+            nextAction === "start" ? null : undefined
+          )
+      )
       setAction(nextAction)
       onError(null)
       try {
@@ -683,12 +703,32 @@ function InstancePowerControls({
           },
         })
       } catch (cause) {
+        if (previousInstance) {
+          queryClient.setQueryData<RelayFleetSnapshot>(
+            queryKeys.relay.snapshot,
+            (snapshot) =>
+              updateInstancePowerState(
+                snapshot,
+                instance.id,
+                instance.relayId,
+                previousInstance.observedState,
+                previousInstance.startedAt
+              )
+          )
+        }
         onError(cause instanceof Error ? cause.message : "Relay action failed")
       } finally {
         setAction(null)
       }
     },
-    [instance.id, instance.relayId, mutateRelayAction, onError, relayConnected]
+    [
+      instance.id,
+      instance.relayId,
+      mutateRelayAction,
+      onError,
+      queryClient,
+      relayConnected,
+    ]
   )
 
   if (!observedState) {
@@ -712,6 +752,28 @@ function InstancePowerControls({
       relayConnected={relayConnected}
     />
   )
+}
+
+function updateInstancePowerState(
+  snapshot: RelayFleetSnapshot | undefined,
+  instanceId: string,
+  relayId: string,
+  observedState: RelayObservedState,
+  startedAt: string | null | undefined
+): RelayFleetSnapshot | undefined {
+  if (!snapshot) return snapshot
+  return {
+    ...snapshot,
+    instances: snapshot.instances.map((instance) =>
+      instance.id === instanceId && instance.relayId === relayId
+        ? {
+            ...instance,
+            observedState,
+            ...(startedAt !== undefined ? { startedAt } : {}),
+          }
+        : instance
+    ),
+  }
 }
 
 function PowerActionButton({

@@ -894,6 +894,8 @@ async function executeControlRequest(
       const input = relayConsoleCompletionInputSchema.parse(payload)
       return docker.completeCommand(instance, input.input, input.cursor)
     }
+    case "instance.logs.console":
+      return docker.consoleLog(await requiredInstance(payload))
     case "instance.logs.latest":
       return filesystem.latestLog(await requiredInstance(payload))
     case "instance.network.routes.read": {

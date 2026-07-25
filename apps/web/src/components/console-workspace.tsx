@@ -5,6 +5,8 @@ import type {
   RelayConsole,
   RelayConsoleLevel,
   RelayConsoleLine,
+  RelayConsoleSegment,
+  RelayObservedState,
 } from "@workspace/contracts"
 import {
   ArrowDown,
@@ -58,9 +60,13 @@ import {
 import { redactSensitiveText } from "@/lib/redaction"
 import { queryKeys, relaySnapshotQueryOptions } from "@/lib/query-options"
 import { selectInstanceObservedState } from "@/lib/relay-selectors"
-import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
+import {
+  selectInstanceRuntime,
+  type InstanceRuntime,
+  type InstanceWorkspaceInstance,
+} from "@/lib/relay-selectors"
 import { useInstanceRelayConnected } from "@/components/instance-workspace-context"
-import { uploadLatestLogToMclogs } from "@/server/relay"
+import { uploadConsoleLogToMclogs } from "@/server/relay"
 
 const consoleTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
@@ -155,7 +161,20 @@ function ConsoleStreamController({
   streamStore: ConsoleStreamStore
 }) {
   const relayConnected = useInstanceRelayConnected()
-  const snapshot = useRelayConsoleStream(relayId, instanceId, relayConnected)
+  const selectRuntime = React.useMemo(
+    () => selectInstanceRuntime(instanceId, relayId),
+    [instanceId, relayId]
+  )
+  const { data: runtime } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectRuntime,
+  })
+  const snapshot = useRelayConsoleStream(
+    relayId,
+    instanceId,
+    relayConnected,
+    runtime
+  )
   const effectiveSnapshot = React.useMemo(
     () =>
       relayConnected
@@ -207,7 +226,9 @@ const ConsoleLogViewportController = React.memo(
           filters.levels.has(line.level) &&
           (!normalizedQuery || text.toLowerCase().includes(normalizedQuery))
         ) {
-          filtered.push(text === line.text ? line : { ...line, text })
+          filtered.push(
+            text === line.text ? line : { ...line, text, segments: undefined }
+          )
         }
       }
       return filtered
@@ -444,7 +465,7 @@ function ConsoleShareButton({
   async function handleShare() {
     setState("uploading")
     try {
-      const result = await uploadLatestLogToMclogs({
+      const result = await uploadConsoleLogToMclogs({
         data: {
           instanceId: instance.id,
           relayId: instance.relayId,
@@ -943,7 +964,7 @@ const ConsoleLogRow = React.memo(function ConsoleLogRow({
       <span
         className={`min-w-0 flex-1 leading-[18px] ${wrapLines ? "break-words" : ""} ${showTimestamps ? "" : "ml-3"} ${lineTextTone(line.level)}`}
       >
-        {renderConsoleText(line.text, query)}
+        {renderConsoleText(line, query)}
       </span>
     </div>
   )
@@ -1529,7 +1550,39 @@ function formatTimestamp(timestamp: string | null): string {
   return consoleTimestampFormatter.format(new Date(timestamp))
 }
 
-function renderConsoleText(text: string, query: string): React.ReactNode {
+function renderConsoleText(
+  line: Pick<RelayConsoleLine, "segments" | "text">,
+  query: string
+): React.ReactNode {
+  if (!line.segments?.length) return renderConsoleTextPart(line.text, query)
+  let offset = 0
+  return line.segments.map((segment) => {
+    const start = offset
+    offset += segment.text.length
+    return (
+      <span
+        key={`${start}-${segment.text}`}
+        style={consoleSegmentStyle(segment)}
+      >
+        {renderConsoleTextPart(segment.text, query)}
+      </span>
+    )
+  })
+}
+
+function consoleSegmentStyle(
+  segment: RelayConsoleSegment
+): React.CSSProperties {
+  return {
+    color: segment.color,
+    fontStyle: segment.italic ? "italic" : undefined,
+    fontWeight: segment.bold ? 700 : undefined,
+    textDecoration: segment.underline ? "underline" : undefined,
+    textUnderlineOffset: segment.underline ? "2px" : undefined,
+  }
+}
+
+function renderConsoleTextPart(text: string, query: string): React.ReactNode {
   const redactedPattern = /(\*{3}(?:\.\*{3}){3}|(?=[*:]*\*)[*:]{2,})/gu
   let offset = 0
   return text.split(redactedPattern).map((part) => {
@@ -1627,13 +1680,29 @@ async function copyToClipboard(value: string) {
 function useRelayConsoleStream(
   relayId: string,
   instanceId: string,
-  relayConnected: boolean
+  relayConnected: boolean,
+  runtime: InstanceRuntime | null | undefined
 ) {
   const queryClient = useQueryClient()
   const hasEverBeenLiveRef = React.useRef(false)
+  const runtimeRef = React.useRef(runtime)
+  React.useLayoutEffect(() => {
+    runtimeRef.current = runtime
+  }, [runtime])
+  const cachedConsole =
+    queryClient.getQueryData<RelayConsole>(
+      queryKeys.relay.console(relayId, instanceId)
+    ) ?? null
   const consoleDataRef = React.useRef<RelayConsole | null>(
-    queryClient.getQueryData(queryKeys.relay.console(relayId, instanceId)) ??
-      null
+    consoleMatchesRuntime(cachedConsole, runtime) ? cachedConsole : null
+  )
+  const sessionStartedAtRef = React.useRef<string | null>(
+    consoleDataRef.current?.startedAt ?? null
+  )
+  const sessionInitializedRef = React.useRef(Boolean(consoleDataRef.current))
+  const awaitingNewSessionRef = React.useRef(false)
+  const previousStateRef = React.useRef<RelayObservedState | undefined>(
+    runtime?.observedState
   )
   const [snapshot, setSnapshot] = React.useState<ConsoleStreamSnapshot>(() => ({
     connection: relayConnected ? "opening" : "unavailable",
@@ -1643,6 +1712,52 @@ function useRelayConsoleStream(
     transport: null,
     transportMessage: null,
   }))
+
+  const commitConsole = React.useCallback(
+    (next: RelayConsole) => {
+      consoleDataRef.current = next
+      queryClient.setQueryData(
+        queryKeys.relay.console(relayId, instanceId),
+        next
+      )
+      setSnapshot((current) =>
+        updateConsoleStreamSnapshot(current, { consoleData: next })
+      )
+    },
+    [instanceId, queryClient, relayId]
+  )
+
+  React.useEffect(() => {
+    const state = runtime?.observedState
+    const previous = previousStateRef.current
+    if (!state || state === previous) return
+    previousStateRef.current = state
+
+    if (state === "starting") {
+      awaitingNewSessionRef.current = true
+      const line = consoleStateLine("starting", new Date().toISOString())
+      const next = {
+        instanceId,
+        lines: [line],
+        startedAt: null,
+        truncated: false,
+      }
+      sessionStartedAtRef.current = null
+      sessionInitializedRef.current = true
+      commitConsole(next)
+      return
+    }
+
+    if (!sessionInitializedRef.current && previous === undefined) return
+    const current = consoleDataRef.current
+    if (!current) return
+    const line = consoleStateLine(state, new Date().toISOString())
+    if (current.lines.some((existing) => existing.id === line.id)) return
+    commitConsole({
+      ...current,
+      lines: [...current.lines, line],
+    })
+  }, [commitConsole, instanceId, runtime?.observedState])
 
   React.useEffect(() => {
     if (!relayConnected) {
@@ -1662,11 +1777,7 @@ function useRelayConsoleStream(
     let flushTimer: number | null = null
     const pending: Array<RelayConsoleLine> = []
     const seen = new Set(
-      queryClient
-        .getQueryData<RelayConsole>(
-          queryKeys.relay.console(relayId, instanceId)
-        )
-        ?.lines.map((line) => line.id) ?? []
+      consoleDataRef.current?.lines.map((line) => line.id) ?? []
     )
     setSnapshot((current) =>
       updateConsoleStreamSnapshot(current, {
@@ -1693,7 +1804,8 @@ function useRelayConsoleStream(
       const current = consoleDataRef.current
       const next = {
         instanceId,
-        lines: [...(current?.lines ?? []), ...fresh].slice(-5_000),
+        lines: capConsoleLines([...(current?.lines ?? []), ...fresh]),
+        startedAt: current?.startedAt ?? sessionStartedAtRef.current,
         truncated: Boolean(current?.truncated) || seen.size > 5_000,
       }
       consoleDataRef.current = next
@@ -1730,19 +1842,25 @@ function useRelayConsoleStream(
             // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
             if (cancelled) break
             if (result.done) throw new Error("Console stream closed")
-            if (result.value.type === "transport") {
+            const event = result.value
+            if (event.type === "transport") {
               commitSnapshot({
                 error: null,
-                transport: result.value.transport,
-                transportMessage: result.value.message,
+                transport: event.transport,
+                transportMessage: event.message,
               })
-            } else if (result.value.type === "ready") {
+            } else if (event.type === "ready") {
               hasEverBeenLiveRef.current = true
               const nextConsole = consoleDataRef.current ?? {
                 instanceId,
                 lines: [],
+                startedAt: event.startedAt ?? null,
                 truncated: false,
               }
+              if (event.startedAt !== undefined) {
+                sessionStartedAtRef.current = event.startedAt
+              }
+              sessionInitializedRef.current = true
               consoleDataRef.current = nextConsole
               queryClient.setQueryData(
                 queryKeys.relay.console(relayId, instanceId),
@@ -1755,8 +1873,70 @@ function useRelayConsoleStream(
                 loading: false,
               })
               retryDelay = 400
-            } else {
-              append(result.value.line)
+            } else if (event.type === "reset") {
+              if (
+                awaitingNewSessionRef.current &&
+                event.startedAt === sessionStartedAtRef.current
+              ) {
+                continue
+              }
+              if (flushTimer !== null) {
+                window.clearTimeout(flushTimer)
+                flushTimer = null
+              }
+              pending.length = 0
+              awaitingNewSessionRef.current = false
+              sessionStartedAtRef.current = event.startedAt
+              sessionInitializedRef.current = true
+              const lines = [
+                ...initialConsoleStateLines(
+                  event.startedAt,
+                  runtimeRef.current?.observedState
+                ),
+                ...event.lines,
+              ]
+              seen.clear()
+              for (const line of lines) seen.add(line.id)
+              const nextConsole = {
+                instanceId,
+                lines,
+                startedAt: event.startedAt,
+                truncated: event.truncated,
+              }
+              consoleDataRef.current = nextConsole
+              queryClient.setQueryData(
+                queryKeys.relay.console(relayId, instanceId),
+                nextConsole
+              )
+              commitSnapshot({ consoleData: nextConsole })
+            } else if (event.type === "history") {
+              if (
+                awaitingNewSessionRef.current ||
+                event.startedAt !== sessionStartedAtRef.current
+              ) {
+                continue
+              }
+              const fresh = event.lines.filter((line) => {
+                if (seen.has(line.id)) return false
+                seen.add(line.id)
+                return true
+              })
+              if (fresh.length === 0) continue
+              const current = consoleDataRef.current
+              if (!current) continue
+              const nextConsole = {
+                ...current,
+                lines: prependConsoleHistory(current.lines, fresh),
+                truncated: event.truncated,
+              }
+              consoleDataRef.current = nextConsole
+              queryClient.setQueryData(
+                queryKeys.relay.console(relayId, instanceId),
+                nextConsole
+              )
+              commitSnapshot({ consoleData: nextConsole })
+            } else if (!awaitingNewSessionRef.current) {
+              append(event.line)
             }
           }
         } catch (cause) {
@@ -1786,6 +1966,85 @@ function useRelayConsoleStream(
   }, [instanceId, queryClient, relayConnected, relayId])
 
   return snapshot
+}
+
+function consoleMatchesRuntime(
+  consoleData: RelayConsole | null,
+  runtime: InstanceRuntime | null | undefined
+): boolean {
+  if (!consoleData || !runtime?.startedAt) return Boolean(consoleData)
+  return consoleData.startedAt === runtime.startedAt
+}
+
+function initialConsoleStateLines(
+  startedAt: string | null,
+  state: RelayObservedState | undefined
+): Array<RelayConsoleLine> {
+  if (!startedAt) return state ? [consoleStateLine(state, null)] : []
+  const lines = [consoleStateLine("starting", startedAt)]
+  if (state && state !== "starting" && state !== "provisioning") {
+    lines.push(consoleStateLine("running", startedAt))
+  }
+  if (state === "stopping" || state === "offline" || state === "failed") {
+    lines.push(consoleStateLine(state, null))
+  }
+  return lines
+}
+
+function consoleStateLine(
+  state: RelayObservedState,
+  timestamp: string | null
+): RelayConsoleLine {
+  const labels: Record<RelayObservedState, string> = {
+    failed: "Server failed.",
+    offline: "Server stopped.",
+    provisioning: "Server is provisioning.",
+    running: "Server is running.",
+    starting: "Server is starting.",
+    stopping: "Server is stopping.",
+  }
+  const color =
+    state === "failed"
+      ? "#f87171"
+      : state === "running"
+        ? "#4ade80"
+        : state === "stopping"
+          ? "#fbbf24"
+          : "#60a5fa"
+  return {
+    id: `kiln-state:${timestamp ?? "now"}:${state}`,
+    timestamp,
+    level: state === "failed" ? "error" : "info",
+    text: labels[state],
+    segments: [{ text: labels[state], color, bold: true }],
+  }
+}
+
+function prependConsoleHistory(
+  current: ReadonlyArray<RelayConsoleLine>,
+  history: ReadonlyArray<RelayConsoleLine>
+): Array<RelayConsoleLine> {
+  const lifecycleEnd = current.findIndex(
+    (line) => !line.id.endsWith(":starting") && !line.id.endsWith(":running")
+  )
+  const split = lifecycleEnd < 0 ? current.length : lifecycleEnd
+  return capConsoleLines([
+    ...current.slice(0, split),
+    ...history,
+    ...current.slice(split),
+  ])
+}
+
+function capConsoleLines(
+  lines: ReadonlyArray<RelayConsoleLine>
+): Array<RelayConsoleLine> {
+  if (lines.length <= 5_008) return [...lines]
+  let remaining = lines.length - 5_008
+  return lines.filter((line) => {
+    if (remaining === 0 || line.id.startsWith("kiln-state:")) return true
+    remaining -= 1
+    return false
+  })
 }
 
 function updateConsoleStreamSnapshot(

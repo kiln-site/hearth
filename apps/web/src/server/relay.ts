@@ -4,6 +4,7 @@ import {
   relayFileActivitySchema,
   relayFileContentSchema,
   relayFileTreeSchema,
+  relayConsoleLogSchema,
   relayConsoleCommandResultSchema,
   relayConsoleCommandSchema,
   relayConsoleCompletionInputSchema,
@@ -14,7 +15,6 @@ import {
   relayInstanceWebRouteStateSchema,
   relayIdSchema,
   relayInstanceSchema,
-  relayLatestLogSchema,
   relaySaveFileInputSchema,
   relaySnapshotSchema,
 } from "@workspace/contracts"
@@ -453,12 +453,12 @@ export const uploadToMclogs = createServerFn({ method: "POST" })
     return uploadLog(data)
   })
 
-export const uploadLatestLogToMclogs = createServerFn({ method: "POST" })
+export const uploadConsoleLogToMclogs = createServerFn({ method: "POST" })
   .validator(consoleShareInputSchema)
   .handler(async ({ data }) => {
-    const latest = relayLatestLogSchema.parse(
+    const consoleLog = relayConsoleLogSchema.parse(
       await relayRequest(
-        `/v1/instances/${encodeURIComponent(data.instanceId)}/latest-log`,
+        `/v1/instances/${encodeURIComponent(data.instanceId)}/console-log`,
         undefined,
         "instance.logs.share",
         data.instanceId,
@@ -468,9 +468,9 @@ export const uploadLatestLogToMclogs = createServerFn({ method: "POST" })
     return uploadLog({
       ...data,
       content: data.redactSensitive
-        ? redactSensitiveText(latest.content)
-        : latest.content,
-      path: latest.path,
+        ? redactSensitiveText(consoleLog.content)
+        : consoleLog.content,
+      path: consoleLog.path,
     })
   })
 
