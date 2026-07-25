@@ -366,9 +366,11 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
   ])
 
   const handleUpdate = React.useCallback(
-    (targets: ReadonlyArray<UpdateTarget>, latestVersion: string) =>
-      setPending({ latestVersion, targets }),
-    []
+    (targets: ReadonlyArray<UpdateTarget>, latestVersion: string) => {
+      if (updateMutation.isPending) return
+      setPending({ latestVersion, targets })
+    },
+    [updateMutation.isPending]
   )
 
   return (
@@ -387,6 +389,7 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
             changelogRevision={changelogRevision}
             focusedRelayId={initialRelayId}
             open={open}
+            starting={updateMutation.isPending}
             store={viewStore}
             onUpdate={handleUpdate}
           />
@@ -404,7 +407,9 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
         pending={updateMutation.isPending}
         targets={pending?.targets ?? []}
         onConfirm={() => {
-          if (pending) updateMutation.mutate(pending.targets)
+          if (pending && !updateMutation.isPending) {
+            updateMutation.mutate(pending.targets)
+          }
         }}
         onOpenChange={(nextOpen) => {
           if (!nextOpen && !updateMutation.isPending) {
@@ -422,6 +427,7 @@ const UpdateDialogData = React.memo(function UpdateDialogData({
   changelogRevision,
   focusedRelayId,
   open,
+  starting,
   store,
   onUpdate,
 }: {
@@ -429,6 +435,7 @@ const UpdateDialogData = React.memo(function UpdateDialogData({
   changelogRevision: number
   focusedRelayId: string | null
   open: boolean
+  starting: boolean
   store: UpdateDialogViewStore
   onUpdate: (
     targets: ReadonlyArray<UpdateTarget>,
@@ -459,6 +466,7 @@ const UpdateDialogData = React.memo(function UpdateDialogData({
       focusedRelayId={focusedRelayId}
       overview={overview}
       pending={overviewQuery.isPending}
+      starting={starting}
       store={store}
       targets={targets}
       onRetry={() => void overviewQuery.refetch()}
@@ -475,6 +483,7 @@ const UpdateDialogBody = React.memo(function UpdateDialogBody({
   focusedRelayId,
   overview,
   pending,
+  starting,
   store,
   targets,
   onRetry,
@@ -487,6 +496,7 @@ const UpdateDialogBody = React.memo(function UpdateDialogBody({
   focusedRelayId: string | null
   overview: UpdateOverview | undefined
   pending: boolean
+  starting: boolean
   store: UpdateDialogViewStore
   targets: Array<UpdateTarget>
   onRetry: () => void
@@ -527,6 +537,7 @@ const UpdateDialogBody = React.memo(function UpdateDialogBody({
               active={active}
               focusedRelayId={focusedRelayId}
               overview={overview}
+              starting={starting}
               targets={targets}
               onChangelog={store.openChangelog}
               onUpdate={onUpdate}
@@ -708,6 +719,7 @@ const UpdateOverviewView = React.memo(function UpdateOverviewView({
   active,
   focusedRelayId,
   overview,
+  starting,
   targets,
   onChangelog,
   onUpdate,
@@ -715,6 +727,7 @@ const UpdateOverviewView = React.memo(function UpdateOverviewView({
   active: ReadonlyArray<ActiveUpdate>
   focusedRelayId: string | null
   overview: UpdateOverview
+  starting: boolean
   targets: Array<UpdateTarget>
   onChangelog: (targetKey: string) => void
   onUpdate: (
@@ -750,7 +763,7 @@ const UpdateOverviewView = React.memo(function UpdateOverviewView({
         </div>
         <Button
           className="shrink-0"
-          disabled={availableTargets.length === 0}
+          disabled={starting || availableTargets.length === 0}
           size="sm"
           type="button"
           onClick={() => {
@@ -775,6 +788,7 @@ const UpdateOverviewView = React.memo(function UpdateOverviewView({
                 key={hearthTarget.key}
                 latestVersion={latestRelease.version}
                 releases={overview.releases}
+                starting={starting}
                 target={hearthTarget}
                 onChangelog={onChangelog}
                 onUpdate={onUpdate}
@@ -792,6 +806,7 @@ const UpdateOverviewView = React.memo(function UpdateOverviewView({
                       key={target.key}
                       latestVersion={latestRelease.version}
                       releases={overview.releases}
+                      starting={starting}
                       target={target}
                       onChangelog={onChangelog}
                       onUpdate={onUpdate}
@@ -841,6 +856,7 @@ type UpdateTargetRowProps = {
   focused: boolean
   latestVersion: string
   releases: ReadonlyArray<PublicKilnRelease>
+  starting: boolean
   target: UpdateTarget
   onChangelog: (targetKey: string) => void
   onUpdate: (
@@ -854,6 +870,7 @@ const UpdateTargetRow = React.memo(function UpdateTargetRow({
   focused,
   latestVersion,
   releases,
+  starting,
   target,
   onChangelog,
   onUpdate,
@@ -926,7 +943,7 @@ const UpdateTargetRow = React.memo(function UpdateTargetRow({
         <Button
           size="sm"
           type="button"
-          disabled={!updateAvailable || updating}
+          disabled={starting || !updateAvailable || updating}
           onClick={() => onUpdate([target], latestVersion)}
         >
           {updating ? (
@@ -1723,6 +1740,7 @@ function areUpdateTargetRowPropsEqual(
     previous.focused === next.focused &&
     previous.latestVersion === next.latestVersion &&
     previous.releases === next.releases &&
+    previous.starting === next.starting &&
     previous.onChangelog === next.onChangelog &&
     previous.onUpdate === next.onUpdate &&
     isTargetUpdating(previous.active, previous.target) ===
