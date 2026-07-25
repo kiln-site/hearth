@@ -31,6 +31,7 @@ import {
   DialogTitle,
 } from "@workspace/ui/components/dialog"
 import { Skeleton } from "@workspace/ui/components/skeleton"
+import { dismissToast, showToast } from "@workspace/ui/components/sonner"
 
 import type { PublicKilnRelease } from "@/effect/github-releases"
 import { queryKeys, updateOverviewQueryOptions } from "@/lib/query-options"
@@ -39,6 +40,14 @@ import {
   compareReleaseVersions,
   isKilnReleaseVersion,
 } from "@/lib/release-version"
+import {
+  applicationConnectionToastId,
+  applicationReconnectedToastId,
+  clearSystemUpdateActive,
+  markSystemUpdateActive,
+  relayDisconnectToastId,
+  relayReconnectToastId,
+} from "@/lib/system-update-presence"
 import type { UpdateOverview } from "@/server/updates"
 import { getSystemUpdateStatus, startSystemUpdate } from "@/server/updates"
 
@@ -56,7 +65,9 @@ type ActiveUpdate = {
   component: "hearth" | "relay"
   name: string
   operationId: string
+  previousVersion: string | null
   relayId: string
+  targetKey: string
 }
 
 type PendingUpdate = {
@@ -74,6 +85,11 @@ type ViewVisibility = {
 type UpdateDialogViewStore = ReturnType<typeof createUpdateDialogViewStore>
 
 const activeUpdateStorageKey = "kiln.active-system-update"
+const changelogRangeStorageKey = "kiln.system-update-changelog-ranges"
+const completedUpdateStorageKey = "kiln.completed-system-update"
+const updateFailureStorageKey = "kiln.system-update-failures"
+const githubIssuesUrl = "https://github.com/kiln-site/hearth/issues/new/choose"
+const githubReleasesUrl = "https://github.com/kiln-site/hearth/releases"
 const minimumUpdateCheckDuration = 750
 const releaseDateFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
@@ -108,16 +124,19 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
   initialRelayId,
   open,
   onOpenChange,
+  onRetryTarget,
 }: {
   initialRelayId: string | null
   open: boolean
   onOpenChange: (open: boolean) => void
+  onRetryTarget: (relayId: string | null) => void
 }) {
   const queryClient = useQueryClient()
   const [pending, setPending] = React.useState<PendingUpdate | null>(null)
   const [active, setActive] = React.useState<Array<ActiveUpdate>>([])
   const activeRef = React.useRef<ReadonlyArray<ActiveUpdate>>([])
-  const [message, setMessage] = React.useState<string | null>(null)
+  const completedOperations = React.useRef(new Set<string>())
+  const reconnectingOperations = React.useRef(new Set<string>())
   const viewStoreRef = React.useRef<UpdateDialogViewStore | null>(null)
   if (viewStoreRef.current === null) {
     viewStoreRef.current = createUpdateDialogViewStore(
@@ -136,13 +155,20 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
   )
 
   React.useEffect(() => {
+    const completedUpdate = readCompletedUpdate()
+    if (completedUpdate) {
+      showUpdateSuccess(completedUpdate, completedUpdate.version)
+    }
+
     const stored = window.localStorage.getItem(activeUpdateStorageKey)
     if (!stored) return
     try {
       const parsed: unknown = JSON.parse(stored)
       const restored = parseActiveUpdates(parsed)
-      if (restored.length > 0) replaceActive(restored)
-      else window.localStorage.removeItem(activeUpdateStorageKey)
+      if (restored.length > 0) {
+        for (const update of restored) announceUpdateStarted(update)
+        replaceActive(restored)
+      } else window.localStorage.removeItem(activeUpdateStorageKey)
     } catch {
       window.localStorage.removeItem(activeUpdateStorageKey)
     }
@@ -152,16 +178,13 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
     mutationFn: startUpdates,
     onSuccess: ({ failures, started }) => {
       if (started.length > 0) {
+        for (const update of started) announceUpdateStarted(update)
         replaceActive([...activeRef.current, ...started])
       }
       setPending(null)
-      setMessage(
-        failures.length > 0
-          ? failures
-              .map((failure) => `${failure.name}: ${failure.message}`)
-              .join(" ")
-          : null
-      )
+      for (const failure of failures) {
+        showUpdateFailure(failure.target, failure.message, onRetryTarget)
+      }
       void queryClient.invalidateQueries({ queryKey: queryKeys.updates })
     },
   })
@@ -172,41 +195,77 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
 
   React.useEffect(() => {
     for (const [index, operationQuery] of operationQueries.entries()) {
+      const update = active[index]
+      if (!update) continue
+      const reconnecting =
+        operationQuery.isError || operationQuery.isRefetchError
+      const wasReconnecting = reconnectingOperations.current.has(
+        update.operationId
+      )
+      if (reconnecting === wasReconnecting) continue
+
+      if (reconnecting) {
+        reconnectingOperations.current.add(update.operationId)
+      } else {
+        reconnectingOperations.current.delete(update.operationId)
+      }
+      showUpdateProgress(update, reconnecting)
+    }
+  }, [active, operationQueries])
+
+  React.useEffect(() => {
+    for (const [index, operationQuery] of operationQueries.entries()) {
       const completed = active[index]
       if (!completed || !operationQuery.isSuccess) continue
       const operation = operationQuery.data
       if (operation?.status === "running") continue
+      if (completedOperations.current.has(completed.operationId)) continue
+      completedOperations.current.add(completed.operationId)
 
       replaceActive(
         activeRef.current.filter(
           (item) => item.operationId !== completed.operationId
         )
       )
+      reconnectingOperations.current.delete(completed.operationId)
+      clearSystemUpdateActive(completed)
       if (operation === null || operation === undefined) {
-        setMessage(
-          `${completed.name}'s saved update operation could not be found. Check the target container before trying again.`
+        showUpdateFailure(
+          completed,
+          `${completed.name}'s saved update operation could not be found. Check the target container before trying again.`,
+          onRetryTarget
         )
         void queryClient.invalidateQueries({ queryKey: queryKeys.updates })
-        return
+        continue
       }
 
       if (operation.status === "failed") {
-        setMessage(
+        showUpdateFailure(
+          completed,
           operation.error ??
-            "The update failed. The previous container was restored."
+            "The update failed. The previous container was restored.",
+          onRetryTarget
         )
-        return
+        void queryClient.invalidateQueries({ queryKey: queryKeys.updates })
+        continue
       }
-      setMessage(`${completed.name} is now running v${operation.version}.`)
+      resetUpdateFailureCount(completed.targetKey)
+      storeChangelogRange(
+        completed.targetKey,
+        completed.previousVersion,
+        operation.version
+      )
+      showUpdateSuccess(completed, operation.version)
       void Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.updates }),
         queryClient.invalidateQueries({ queryKey: queryKeys.relays }),
       ])
       if (operation.component === "hearth") {
+        storeCompletedUpdate(completed, operation.version)
         window.setTimeout(() => window.location.reload(), 750)
       }
     }
-  }, [active, operationQueries, queryClient, replaceActive])
+  }, [active, onRetryTarget, operationQueries, queryClient, replaceActive])
 
   const handleUpdate = React.useCallback(
     (targets: ReadonlyArray<UpdateTarget>, latestVersion: string) =>
@@ -234,12 +293,6 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
           />
         </DialogContent>
       </Dialog>
-
-      {message ? (
-        <UpdateMessage message={message} onDismiss={() => setMessage(null)} />
-      ) : null}
-
-      {active.length > 0 ? <UpdateProgress active={active} /> : null}
 
       <UpdateConfirmation
         error={
@@ -761,7 +814,7 @@ const UpdateTargetRow = React.memo(function UpdateTargetRow({
           onClick={() => onChangelog(target.key)}
         >
           <History />
-          Changes
+          View changes
         </Button>
         <Button
           size="sm"
@@ -909,8 +962,11 @@ const ChangelogSelectionHeader = React.memo(function ChangelogSelectionHeader({
     store.getTargetSnapshot
   )
   const selectedTarget = findSelectedTarget(targets, selectedKey)
+  const changelogStartVersion = selectedTarget
+    ? previousChangelogVersion(selectedTarget, latestVersion)
+    : null
   const releaseCount = selectedTarget
-    ? changelogReleases(overview.releases, selectedTarget.currentVersion).length
+    ? changelogReleases(overview.releases, changelogStartVersion).length
     : 0
 
   return (
@@ -918,13 +974,24 @@ const ChangelogSelectionHeader = React.memo(function ChangelogSelectionHeader({
       <div>
         <p className="text-sm font-semibold">{selectedTarget?.name}</p>
         <p className="mt-1 font-mono text-[10px] text-muted-foreground">
-          {displayVersion(selectedTarget?.currentVersion ?? null)}
+          {displayVersion(changelogStartVersion)}
           <span className="mx-2 text-border">→</span>v{latestVersion}
         </p>
       </div>
-      <Badge variant="outline">
-        {releaseCount} {releaseCount === 1 ? "release" : "releases"}
-      </Badge>
+      <div className="flex items-center gap-2">
+        <Badge variant="outline">
+          {releaseCount} {releaseCount === 1 ? "release" : "releases"}
+        </Badge>
+        <a
+          className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          href={githubReleasesUrl}
+          rel="noreferrer"
+          target="_blank"
+        >
+          View all changelogs
+          <ExternalLink className="size-3" />
+        </a>
+      </div>
     </div>
   )
 }, areChangelogSelectionHeaderPropsEqual)
@@ -938,21 +1005,22 @@ const ChangelogTimeline = React.memo(function ChangelogTimeline({
   store: UpdateDialogViewStore
   targets: Array<UpdateTarget>
 }) {
-  const getCurrentVersionSnapshot = React.useCallback(() => {
-    const selectedTarget = findSelectedTarget(
-      targets,
-      store.getTargetSnapshot()
-    )
-    return selectedTarget?.currentVersion ?? null
-  }, [store, targets])
-  const currentVersion = React.useSyncExternalStore(
+  const selectedKey = React.useSyncExternalStore(
     store.subscribeTarget,
-    getCurrentVersionSnapshot,
-    getCurrentVersionSnapshot
+    store.getTargetSnapshot,
+    store.getTargetSnapshot
   )
+  const selectedTarget = findSelectedTarget(targets, selectedKey)
+  const currentVersion = selectedTarget?.currentVersion ?? null
+  const changelogStartVersion = selectedTarget
+    ? previousChangelogVersion(
+        selectedTarget,
+        availableReleases[0]?.version ?? null
+      )
+    : null
   const releases = React.useMemo(
-    () => changelogReleases(availableReleases, currentVersion),
-    [availableReleases, currentVersion]
+    () => changelogReleases(availableReleases, changelogStartVersion),
+    [availableReleases, changelogStartVersion, currentVersion]
   )
 
   return releases.length > 0 ? (
@@ -962,7 +1030,7 @@ const ChangelogTimeline = React.memo(function ChangelogTimeline({
           key={release.tag}
           latest={index === 0}
           release={release}
-          installed={release.version === currentVersion}
+          current={release.version === currentVersion}
         />
       ))}
     </div>
@@ -982,11 +1050,11 @@ const ChangelogTimeline = React.memo(function ChangelogTimeline({
 }, areChangelogTimelinePropsEqual)
 
 const ChangelogRelease = React.memo(function ChangelogRelease({
-  installed,
+  current,
   latest,
   release,
 }: {
-  installed: boolean
+  current: boolean
   latest: boolean
   release: PublicKilnRelease
 }) {
@@ -994,7 +1062,7 @@ const ChangelogRelease = React.memo(function ChangelogRelease({
     <article>
       <span
         className={`absolute -left-[0.34rem] mt-1.5 size-2.5 rounded-full border-2 border-popover ${
-          latest ? "bg-primary" : installed ? "bg-emerald-400" : "bg-border"
+          current ? "bg-emerald-400" : latest ? "bg-primary" : "bg-border"
         }`}
       />
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -1002,7 +1070,7 @@ const ChangelogRelease = React.memo(function ChangelogRelease({
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-sm font-semibold">{release.name}</h3>
             {latest ? <Badge>Latest</Badge> : null}
-            {installed ? <Badge variant="outline">Installed</Badge> : null}
+            {current ? <Badge variant="outline">Current</Badge> : null}
           </div>
           <p className="mt-1 font-mono text-[9px] text-muted-foreground">
             v{release.version} · {formatReleaseDate(release.publishedAt)}
@@ -1069,48 +1137,6 @@ function UpdateDialogError({
         <Button className="mt-4" size="sm" type="button" onClick={onRetry}>
           Try again
         </Button>
-      </div>
-    </div>
-  )
-}
-
-function UpdateMessage({
-  message,
-  onDismiss,
-}: {
-  message: string
-  onDismiss: () => void
-}) {
-  return (
-    <div className="fixed right-4 bottom-4 z-40 flex max-w-sm items-start gap-3 rounded-xl border border-amber-400/20 bg-popover px-4 py-3 shadow-2xl shadow-black/45">
-      <TriangleAlert className="mt-px size-4 shrink-0 text-amber-300" />
-      <p className="text-xs leading-5 text-muted-foreground">{message}</p>
-      <button
-        className="text-[10px] text-primary"
-        type="button"
-        onClick={onDismiss}
-      >
-        Dismiss
-      </button>
-    </div>
-  )
-}
-
-function UpdateProgress({ active }: { active: ReadonlyArray<ActiveUpdate> }) {
-  const names = active.map((item) => item.name)
-
-  return (
-    <div className="fixed right-4 bottom-4 z-40 flex max-w-sm items-center gap-3 rounded-xl border border-primary/25 bg-popover px-4 py-3 shadow-2xl shadow-black/45">
-      <LoaderCircle className="size-4 shrink-0 animate-spin text-primary" />
-      <div>
-        <p className="text-xs font-semibold">
-          Updating {active.length === 1 ? names[0] : `${active.length} systems`}
-        </p>
-        <p className="mt-0.5 text-[11px] text-muted-foreground">
-          {active.length === 1
-            ? "Replacing and checking the container…"
-            : names.join(", ")}
-        </p>
       </div>
     </div>
   )
@@ -1214,10 +1240,13 @@ function updateTargets(overview: UpdateOverview): Array<UpdateTarget> {
 
 type UpdateStartAttempt =
   | { active: ActiveUpdate; failure?: never }
-  | { active?: never; failure: { message: string; name: string } }
+  | {
+      active?: never
+      failure: { message: string; target: UpdateTarget }
+    }
 
 async function startUpdates(targets: ReadonlyArray<UpdateTarget>): Promise<{
-  failures: Array<{ message: string; name: string }>
+  failures: Array<{ message: string; target: UpdateTarget }>
   started: Array<ActiveUpdate>
 }> {
   const relayTargets = targets.filter((target) => target.component === "relay")
@@ -1227,7 +1256,7 @@ async function startUpdates(targets: ReadonlyArray<UpdateTarget>): Promise<{
   const attempts = hearthAttempt
     ? [...relayAttempts, hearthAttempt]
     : relayAttempts
-  const failures: Array<{ message: string; name: string }> = []
+  const failures: Array<{ message: string; target: UpdateTarget }> = []
   const started: Array<ActiveUpdate> = []
 
   for (const attempt of attempts) {
@@ -1251,7 +1280,9 @@ async function startUpdate(target: UpdateTarget): Promise<UpdateStartAttempt> {
         component: operation.component,
         name: target.name,
         operationId: operation.id,
+        previousVersion: target.currentVersion,
         relayId,
+        targetKey: target.key,
       },
     }
   } catch (cause) {
@@ -1259,10 +1290,138 @@ async function startUpdate(target: UpdateTarget): Promise<UpdateStartAttempt> {
       failure: {
         message:
           cause instanceof Error ? cause.message : "Update could not start.",
-        name: target.name,
+        target,
       },
     }
   }
+}
+
+function announceUpdateStarted(update: ActiveUpdate): void {
+  markSystemUpdateActive(update)
+  dismissConnectionToasts(update)
+  showUpdateProgress(update, false)
+}
+
+function showUpdateProgress(
+  update: Pick<ActiveUpdate, "name" | "targetKey">,
+  reconnecting: boolean
+): void {
+  showToast({
+    type: "loading",
+    message: `Updating ${update.name}`,
+    id: updateToastId(update.targetKey),
+    description: reconnecting
+      ? `Waiting for ${update.name} to reconnect…`
+      : "Replacing and checking the container…",
+    duration: Infinity,
+  })
+}
+
+function showUpdateSuccess(
+  update: Pick<ActiveUpdate, "component" | "name" | "relayId" | "targetKey">,
+  version: string
+): void {
+  dismissConnectionToasts(update)
+  showToast({
+    type: "success",
+    message: `${update.name} updated`,
+    id: updateToastId(update.targetKey),
+    description: `${update.name} is now running v${version}.`,
+    duration: 5_000,
+  })
+}
+
+type CompletedUpdate = Pick<
+  ActiveUpdate,
+  "component" | "name" | "relayId" | "targetKey"
+> & {
+  version: string
+}
+
+function storeCompletedUpdate(update: ActiveUpdate, version: string): void {
+  const completed: CompletedUpdate = { ...update, version }
+  window.sessionStorage.setItem(
+    completedUpdateStorageKey,
+    JSON.stringify(completed)
+  )
+}
+
+function readCompletedUpdate(): CompletedUpdate | null {
+  const stored = window.sessionStorage.getItem(completedUpdateStorageKey)
+  if (!stored) return null
+  window.sessionStorage.removeItem(completedUpdateStorageKey)
+  try {
+    const value: unknown = JSON.parse(stored)
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      "component" in value &&
+      (value.component === "hearth" || value.component === "relay") &&
+      "name" in value &&
+      typeof value.name === "string" &&
+      "relayId" in value &&
+      typeof value.relayId === "string" &&
+      "targetKey" in value &&
+      typeof value.targetKey === "string" &&
+      "version" in value &&
+      typeof value.version === "string"
+    ) {
+      return {
+        component: value.component,
+        name: value.name,
+        relayId: value.relayId,
+        targetKey: value.targetKey,
+        version: value.version,
+      }
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+function showUpdateFailure(
+  target: Pick<UpdateTarget, "key" | "name" | "relayId"> | ActiveUpdate,
+  message: string,
+  onRetryTarget: (relayId: string | null) => void
+): void {
+  const targetKey = "targetKey" in target ? target.targetKey : target.key
+  const failureCount = incrementUpdateFailureCount(targetKey)
+  showToast({
+    type: "error",
+    message: `${target.name} update failed`,
+    id: updateToastId(targetKey),
+    description: message,
+    duration: Infinity,
+    action: {
+      label: "Open updater",
+      onClick: () => onRetryTarget(target.relayId),
+    },
+    cancel:
+      failureCount > 1
+        ? {
+            label: "Report issue",
+            onClick: () =>
+              window.open(githubIssuesUrl, "_blank", "noopener,noreferrer"),
+          }
+        : undefined,
+  })
+}
+
+function dismissConnectionToasts(
+  update: Pick<ActiveUpdate, "component" | "relayId">
+): void {
+  if (update.component === "hearth") {
+    dismissToast(applicationConnectionToastId)
+    dismissToast(applicationReconnectedToastId)
+    return
+  }
+  dismissToast(relayDisconnectToastId(update.relayId))
+  dismissToast(relayReconnectToastId(update.relayId))
+}
+
+function updateToastId(targetKey: string): string {
+  return `system-update:${targetKey}`
 }
 
 function createUpdateDialogViewStore(initialTargetKey: string) {
@@ -1455,14 +1614,13 @@ function targetHasUpdate(
 
 function changelogReleases(
   releases: ReadonlyArray<PublicKilnRelease>,
-  currentVersion: string | null
+  fromVersion: string | null
 ): Array<PublicKilnRelease> {
-  if (!isKilnReleaseVersion(currentVersion)) return releases.slice(0, 1)
-  if (releases[0]?.version === currentVersion) return []
+  if (!isKilnReleaseVersion(fromVersion)) return releases.slice(0, 1)
   const currentReleaseIndex = releases.findIndex(
-    (release) => release.version === currentVersion
+    (release) => release.version === fromVersion
   )
-  if (currentReleaseIndex > 0) {
+  if (currentReleaseIndex >= 0) {
     return releases.slice(0, currentReleaseIndex + 1)
   }
   const publishedAtByVersion = releaseDates(releases)
@@ -1470,7 +1628,7 @@ function changelogReleases(
     (release) =>
       compareReleaseVersions(
         release.version,
-        currentVersion,
+        fromVersion,
         publishedAtByVersion
       ) >= 0
   )
@@ -1530,14 +1688,28 @@ function parseActiveUpdate(value: unknown): ActiveUpdate | null {
     "relayId" in value &&
     typeof value.relayId === "string"
   ) {
+    const component = value.component
+    const relayId = value.relayId
     return {
-      component: value.component,
+      component,
       name:
         "name" in value && typeof value.name === "string"
           ? value.name
-          : displayComponent(value.component),
+          : displayComponent(component),
       operationId: value.operationId,
-      relayId: value.relayId,
+      previousVersion:
+        "previousVersion" in value &&
+        (typeof value.previousVersion === "string" ||
+          value.previousVersion === null)
+          ? value.previousVersion
+          : null,
+      relayId,
+      targetKey:
+        "targetKey" in value && typeof value.targetKey === "string"
+          ? value.targetKey
+          : component === "hearth"
+            ? "hearth"
+            : relayTargetKey(relayId),
     }
   }
   return null
@@ -1549,6 +1721,71 @@ function storeActiveUpdates(active: ReadonlyArray<ActiveUpdate>): void {
     return
   }
   window.localStorage.setItem(activeUpdateStorageKey, JSON.stringify(active))
+}
+
+type ChangelogRange = {
+  fromVersion: string | null
+  toVersion: string
+}
+
+function previousChangelogVersion(
+  target: UpdateTarget,
+  latestVersion: string | null
+): string | null {
+  const ranges = readStorageRecord<ChangelogRange>(changelogRangeStorageKey)
+  const range = ranges[target.key]
+  return range?.toVersion === target.currentVersion &&
+    target.currentVersion === latestVersion
+    ? range.fromVersion
+    : target.currentVersion
+}
+
+function storeChangelogRange(
+  targetKey: string,
+  fromVersion: string | null,
+  toVersion: string
+): void {
+  const ranges = readStorageRecord<ChangelogRange>(changelogRangeStorageKey)
+  ranges[targetKey] = { fromVersion, toVersion }
+  window.localStorage.setItem(changelogRangeStorageKey, JSON.stringify(ranges))
+}
+
+function incrementUpdateFailureCount(targetKey: string): number {
+  const failures = readStorageRecord<number>(updateFailureStorageKey)
+  const previousCount = failures[targetKey]
+  const count =
+    (typeof previousCount === "number" && Number.isFinite(previousCount)
+      ? previousCount
+      : 0) + 1
+  failures[targetKey] = count
+  window.localStorage.setItem(updateFailureStorageKey, JSON.stringify(failures))
+  return count
+}
+
+function resetUpdateFailureCount(targetKey: string): void {
+  const failures = readStorageRecord<number>(updateFailureStorageKey)
+  if (!(targetKey in failures)) return
+  delete failures[targetKey]
+  if (Object.keys(failures).length === 0) {
+    window.localStorage.removeItem(updateFailureStorageKey)
+    return
+  }
+  window.localStorage.setItem(updateFailureStorageKey, JSON.stringify(failures))
+}
+
+function readStorageRecord<Value>(key: string): Record<string, Value> {
+  try {
+    const stored = window.localStorage.getItem(key)
+    if (!stored) return {}
+    const parsed: unknown = JSON.parse(stored)
+    return typeof parsed === "object" &&
+      parsed !== null &&
+      !Array.isArray(parsed)
+      ? (parsed as Record<string, Value>)
+      : {}
+  } catch {
+    return {}
+  }
 }
 
 function displayVersion(version: string | null): string {

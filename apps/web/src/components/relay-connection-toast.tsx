@@ -8,6 +8,14 @@ import { dismissToast, showToast } from "@workspace/ui/components/sonner"
 import { RelayToastTitle } from "@/components/relay-toast-title"
 import { relayConnectionQueryOptions } from "@/lib/query-options"
 import type { RelayConnection } from "@/lib/query-options"
+import {
+  applicationConnectionToastId,
+  applicationReconnectedToastId,
+  isHearthSystemUpdateActive,
+  isRelaySystemUpdateActive,
+  relayDisconnectToastId,
+  relayReconnectToastId,
+} from "@/lib/system-update-presence"
 
 const emptyRelayStates: ReadonlyArray<RelayState> = []
 
@@ -22,9 +30,6 @@ type ApplicationConnectionState =
   | "connecting"
   | "offline"
   | "unavailable"
-
-const applicationConnectionToastId = "kiln-connection"
-const applicationReconnectedToastId = "kiln-reconnected"
 
 export const RelayConnectionToastMonitor = React.memo(
   function RelayConnectionToastMonitor() {
@@ -43,6 +48,7 @@ export const RelayConnectionToastMonitor = React.memo(
     const previousStatuses = React.useRef(
       new Map<string, RelayState["status"]>()
     )
+    const updateDisconnects = React.useRef(new Set<string>())
     const activeToastIds = React.useRef(new Set<string>())
     const cleanupTimer = React.useRef<number | undefined>(undefined)
 
@@ -69,9 +75,22 @@ export const RelayConnectionToastMonitor = React.memo(
         const disconnectToastId = relayDisconnectToastId(relay.id)
         const reconnectToastId = relayReconnectToastId(relay.id)
         const previousStatus = previousStatuses.current.get(relay.id)
+        const updating = isRelaySystemUpdateActive(relay.id)
         nextStatuses.set(relay.id, relay.status)
 
-        if (relay.status === "unreachable" && previousStatus !== relay.status) {
+        if (updating) {
+          dismissToast(disconnectToastId)
+          dismissToast(reconnectToastId)
+          activeToastIds.current.delete(disconnectToastId)
+          if (relay.status === "unreachable") {
+            updateDisconnects.current.add(relay.id)
+          } else if (previousStatus === "unreachable") {
+            updateDisconnects.current.delete(relay.id)
+          }
+        } else if (
+          relay.status === "unreachable" &&
+          previousStatus !== relay.status
+        ) {
           dismissToast(reconnectToastId)
           activeToastIds.current.add(disconnectToastId)
           showToast({
@@ -92,6 +111,7 @@ export const RelayConnectionToastMonitor = React.memo(
         ) {
           dismissToast(disconnectToastId)
           activeToastIds.current.delete(disconnectToastId)
+          if (updateDisconnects.current.delete(relay.id)) continue
           showToast({
             type: "success",
             message: <RelayToastTitle name={relay.name} state="reconnected" />,
@@ -109,6 +129,7 @@ export const RelayConnectionToastMonitor = React.memo(
         dismissToast(disconnectToastId)
         dismissToast(relayReconnectToastId(relayId))
         activeToastIds.current.delete(disconnectToastId)
+        updateDisconnects.current.delete(relayId)
       }
 
       previousStatuses.current = nextStatuses
@@ -131,6 +152,7 @@ function useApplicationConnectionToasts({
   const [hearthReachable, setHearthReachable] = React.useState(() => !isError)
   const [verifyingConnection, setVerifyingConnection] = React.useState(false)
   const previousState = React.useRef<ApplicationConnectionState | null>(null)
+  const updateDisconnected = React.useRef(false)
   const previousQueryError = React.useRef(isError)
   const mounted = React.useRef(true)
   const cleanupTimer = React.useRef<number | undefined>(undefined)
@@ -186,6 +208,12 @@ function useApplicationConnectionToasts({
 
     dismissToast(applicationReconnectedToastId)
 
+    if (isHearthSystemUpdateActive() && state !== "offline") {
+      dismissToast(applicationConnectionToastId)
+      updateDisconnected.current = state !== "connected"
+      return
+    }
+
     if (state === "offline") {
       showToast({
         type: "error",
@@ -230,6 +258,10 @@ function useApplicationConnectionToasts({
 
     dismissToast(applicationConnectionToastId)
     if (previous && previous !== "connected") {
+      if (updateDisconnected.current) {
+        updateDisconnected.current = false
+        return
+      }
       showToast({
         type: "success",
         message: "Connected to Kiln",
@@ -276,12 +308,4 @@ function selectRelayStates(
   return connection.status === "unconfigured" || connection.status === "paused"
     ? emptyRelayStates
     : connection.relays
-}
-
-function relayDisconnectToastId(relayId: string): string {
-  return `relay-disconnected:${relayId}`
-}
-
-function relayReconnectToastId(relayId: string): string {
-  return `relay-reconnected:${relayId}`
 }

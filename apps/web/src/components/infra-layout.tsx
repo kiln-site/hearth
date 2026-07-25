@@ -1,6 +1,6 @@
 import * as React from "react"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { Link, Outlet } from "@tanstack/react-router"
+import { Link, Outlet, useRouter } from "@tanstack/react-router"
 import {
   CloudDownload,
   Database,
@@ -45,6 +45,8 @@ const closedUpdateDialogState: InfraUpdateDialogState = {
   relayId: null,
   requestId: 0,
 }
+const pendingUpdateDialogStorageKey = "kiln.pending-update-dialog"
+const hearthUpdateDialogTarget = "hearth"
 
 const InfraUpdateDialogContext =
   React.createContext<InfraUpdateDialogStore | null>(null)
@@ -96,6 +98,15 @@ export const InfraShell = React.memo(function InfraShell({
   children: React.ReactNode
 }) {
   const [updateDialogStore] = React.useState(createInfraUpdateDialogStore)
+
+  React.useEffect(() => {
+    const target = window.sessionStorage.getItem(pendingUpdateDialogStorageKey)
+    if (target === null) return
+    window.sessionStorage.removeItem(pendingUpdateDialogStorageKey)
+    updateDialogStore.open(
+      target === hearthUpdateDialogTarget ? undefined : target
+    )
+  }, [updateDialogStore])
 
   return (
     <InfraUpdateDialogContext.Provider value={updateDialogStore}>
@@ -189,6 +200,20 @@ const PlatformAdminInfraUpdatesDialogHost = React.memo(
   }: {
     store: InfraUpdateDialogStore
   }) {
+    const router = useRouter()
+    const returnToUpdater = React.useCallback(
+      (relayId: string | null) => {
+        window.sessionStorage.setItem(
+          pendingUpdateDialogStorageKey,
+          relayId ?? hearthUpdateDialogTarget
+        )
+        void router.navigate({ to: "/infra/relays" }).then(() => {
+          window.sessionStorage.removeItem(pendingUpdateDialogStorageKey)
+          store.open(relayId ?? undefined)
+        })
+      },
+      [router, store]
+    )
     const state = React.useSyncExternalStore(
       store.subscribe,
       store.getSnapshot,
@@ -200,6 +225,7 @@ const PlatformAdminInfraUpdatesDialogHost = React.memo(
         initialRelayId={state.relayId}
         key={state.requestId}
         open={state.open}
+        onRetryTarget={returnToUpdater}
         onOpenChange={(open) => {
           if (!open) store.close()
         }}
