@@ -48,7 +48,7 @@ import {
 } from "@workspace/contracts"
 
 import { RelayToastTitle } from "@/components/relay-toast-title"
-import { useInfraUpdateDialogStore } from "@/components/infra-layout"
+import { useInfraUpdateDialogStore } from "@/components/infra-update-dialog-provider"
 import {
   WorkspaceDataTable,
   WorkspaceTableCell,

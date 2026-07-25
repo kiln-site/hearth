@@ -10,6 +10,7 @@ import {
 
 import { AppRouteContent } from "@/components/app-route-content"
 import { AppSidebar } from "@/components/app-sidebar"
+import { InfraUpdateDialogProvider } from "@/components/infra-update-dialog-provider"
 import { PanelFooter } from "@/components/panel-footer"
 import { RelayConnectionToastMonitor } from "@/components/relay-connection-toast"
 import { uiPreferencesQueryOptions } from "@/lib/query-options"
@@ -23,20 +24,22 @@ export const AppFrame = React.memo(function AppFrame({
 
   return (
     <SidebarProvider defaultOpen={uiPreferences.sidebarOpen}>
-      <RelayConnectionToastMonitor />
-      <MobileSidebarNavigationDismiss />
-      <AppSidebar
-        initialSelectedInstanceRouteId={uiPreferences.selectedInstanceRouteId}
-      />
-      <SidebarInset className="h-dvh min-w-0 overflow-hidden">
-        <div
-          data-slot="app-content"
-          className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
-        >
-          <AppRouteContent>{children}</AppRouteContent>
-        </div>
-        <PanelFooter />
-      </SidebarInset>
+      <InfraUpdateDialogProvider>
+        <RelayConnectionToastMonitor />
+        <MobileSidebarNavigationDismiss />
+        <AppSidebar
+          initialSelectedInstanceRouteId={uiPreferences.selectedInstanceRouteId}
+        />
+        <SidebarInset className="h-dvh min-w-0 overflow-hidden">
+          <div
+            data-slot="app-content"
+            className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
+          >
+            <AppRouteContent>{children}</AppRouteContent>
+          </div>
+          <PanelFooter />
+        </SidebarInset>
+      </InfraUpdateDialogProvider>
     </SidebarProvider>
   )
 })

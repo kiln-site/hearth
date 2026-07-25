@@ -11,8 +11,12 @@ import type { RelayConnection } from "@/lib/query-options"
 import {
   applicationConnectionToastId,
   applicationReconnectedToastId,
+  consumeRelayUpdateReconnect,
+  hydrateSystemUpdatePresence,
   isHearthSystemUpdateActive,
   isRelaySystemUpdateActive,
+  noteRelayDisconnectedDuringUpdate,
+  noteRelayReconnectedDuringUpdate,
   relayDisconnectToastId,
   relayReconnectToastId,
 } from "@/lib/system-update-presence"
@@ -33,6 +37,7 @@ type ApplicationConnectionState =
 
 export const RelayConnectionToastMonitor = React.memo(
   function RelayConnectionToastMonitor() {
+    hydrateSystemUpdatePresence()
     const queryClient = useQueryClient()
     const router = useRouter()
     const connectionQuery = useSuspenseQuery({
@@ -48,7 +53,6 @@ export const RelayConnectionToastMonitor = React.memo(
     const previousStatuses = React.useRef(
       new Map<string, RelayState["status"]>()
     )
-    const updateDisconnects = React.useRef(new Set<string>())
     const activeToastIds = React.useRef(new Set<string>())
     const cleanupTimer = React.useRef<number | undefined>(undefined)
 
@@ -83,9 +87,9 @@ export const RelayConnectionToastMonitor = React.memo(
           dismissToast(reconnectToastId)
           activeToastIds.current.delete(disconnectToastId)
           if (relay.status === "unreachable") {
-            updateDisconnects.current.add(relay.id)
+            noteRelayDisconnectedDuringUpdate(relay.id)
           } else if (previousStatus === "unreachable") {
-            updateDisconnects.current.delete(relay.id)
+            noteRelayReconnectedDuringUpdate(relay.id)
           }
         } else if (
           relay.status === "unreachable" &&
@@ -111,7 +115,7 @@ export const RelayConnectionToastMonitor = React.memo(
         ) {
           dismissToast(disconnectToastId)
           activeToastIds.current.delete(disconnectToastId)
-          if (updateDisconnects.current.delete(relay.id)) continue
+          if (consumeRelayUpdateReconnect(relay.id)) continue
           showToast({
             type: "success",
             message: <RelayToastTitle name={relay.name} state="reconnected" />,
@@ -129,7 +133,7 @@ export const RelayConnectionToastMonitor = React.memo(
         dismissToast(disconnectToastId)
         dismissToast(relayReconnectToastId(relayId))
         activeToastIds.current.delete(disconnectToastId)
-        updateDisconnects.current.delete(relayId)
+        consumeRelayUpdateReconnect(relayId)
       }
 
       previousStatuses.current = nextStatuses

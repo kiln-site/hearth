@@ -1,6 +1,6 @@
 import * as React from "react"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { Link, Outlet, useRouter } from "@tanstack/react-router"
+import { Link, Outlet } from "@tanstack/react-router"
 import {
   CloudDownload,
   Database,
@@ -16,7 +16,7 @@ import {
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
 
-import { InfraUpdatesDialog } from "@/components/infra-updates-dialog"
+import { useInfraUpdateDialogStore } from "@/components/infra-update-dialog-provider"
 import { accessCapabilitiesQueryOptions } from "@/lib/query-options"
 
 const infraTabs = [
@@ -26,100 +26,20 @@ const infraTabs = [
   { label: "Databases", to: "/infra/databases", icon: Database },
 ] as const
 
-type InfraUpdateDialogState = {
-  open: boolean
-  relayId: string | null
-  requestId: number
-}
-
-export interface InfraUpdateDialogStore {
-  close: () => void
-  getServerSnapshot: () => InfraUpdateDialogState
-  getSnapshot: () => InfraUpdateDialogState
-  open: (relayId?: string) => void
-  subscribe: (listener: () => void) => () => void
-}
-
-const closedUpdateDialogState: InfraUpdateDialogState = {
-  open: false,
-  relayId: null,
-  requestId: 0,
-}
-const pendingUpdateDialogStorageKey = "kiln.pending-update-dialog"
-const hearthUpdateDialogTarget = "hearth"
-
-const InfraUpdateDialogContext =
-  React.createContext<InfraUpdateDialogStore | null>(null)
-
-function createInfraUpdateDialogStore(): InfraUpdateDialogStore {
-  let state = closedUpdateDialogState
-  const listeners = new Set<() => void>()
-
-  function publish(nextState: InfraUpdateDialogState) {
-    state = nextState
-    for (const listener of listeners) listener()
-  }
-
-  return {
-    close: () =>
-      publish({
-        open: false,
-        relayId: null,
-        requestId: state.requestId,
-      }),
-    getServerSnapshot: () => closedUpdateDialogState,
-    getSnapshot: () => state,
-    open: (relayId) =>
-      publish({
-        open: true,
-        relayId: relayId ?? null,
-        requestId: state.requestId + 1,
-      }),
-    subscribe: (listener) => {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
-  }
-}
-
-export function useInfraUpdateDialogStore(): InfraUpdateDialogStore {
-  const store = React.useContext(InfraUpdateDialogContext)
-  if (!store) {
-    throw new Error(
-      "useInfraUpdateDialogStore must be used inside the Infrastructure shell"
-    )
-  }
-  return store
-}
-
 export const InfraShell = React.memo(function InfraShell({
   children,
 }: {
   children: React.ReactNode
 }) {
-  const [updateDialogStore] = React.useState(createInfraUpdateDialogStore)
-
-  React.useEffect(() => {
-    const target = window.sessionStorage.getItem(pendingUpdateDialogStorageKey)
-    if (target === null) return
-    window.sessionStorage.removeItem(pendingUpdateDialogStorageKey)
-    updateDialogStore.open(
-      target === hearthUpdateDialogTarget ? undefined : target
-    )
-  }, [updateDialogStore])
-
   return (
-    <InfraUpdateDialogContext.Provider value={updateDialogStore}>
-      <div className="min-h-full bg-background">
-        <header className="mx-auto w-full max-w-[90rem] px-3 pt-3 sm:px-5">
-          <InfraNavigation />
-        </header>
-        <div data-slot="infra-content" className="[contain:paint]">
-          {children}
-        </div>
+    <div className="min-h-full bg-background">
+      <header className="mx-auto w-full max-w-[90rem] px-3 pt-3 sm:px-5">
+        <InfraNavigation />
+      </header>
+      <div data-slot="infra-content" className="[contain:paint]">
+        {children}
       </div>
-      <InfraUpdatesDialogHost store={updateDialogStore} />
-    </InfraUpdateDialogContext.Provider>
+    </div>
   )
 })
 
@@ -179,57 +99,3 @@ const InfraNavigation = React.memo(function InfraNavigation() {
     </div>
   )
 })
-
-const InfraUpdatesDialogHost = React.memo(function InfraUpdatesDialogHost({
-  store,
-}: {
-  store: InfraUpdateDialogStore
-}) {
-  const { data: capabilities } = useSuspenseQuery(
-    accessCapabilitiesQueryOptions()
-  )
-
-  return capabilities.isPlatformAdmin ? (
-    <PlatformAdminInfraUpdatesDialogHost store={store} />
-  ) : null
-})
-
-const PlatformAdminInfraUpdatesDialogHost = React.memo(
-  function PlatformAdminInfraUpdatesDialogHost({
-    store,
-  }: {
-    store: InfraUpdateDialogStore
-  }) {
-    const router = useRouter()
-    const returnToUpdater = React.useCallback(
-      (relayId: string | null) => {
-        window.sessionStorage.setItem(
-          pendingUpdateDialogStorageKey,
-          relayId ?? hearthUpdateDialogTarget
-        )
-        void router.navigate({ to: "/infra/relays" }).then(() => {
-          window.sessionStorage.removeItem(pendingUpdateDialogStorageKey)
-          store.open(relayId ?? undefined)
-        })
-      },
-      [router, store]
-    )
-    const state = React.useSyncExternalStore(
-      store.subscribe,
-      store.getSnapshot,
-      store.getServerSnapshot
-    )
-
-    return (
-      <InfraUpdatesDialog
-        initialRelayId={state.relayId}
-        key={state.requestId}
-        open={state.open}
-        onRetryTarget={returnToUpdater}
-        onOpenChange={(open) => {
-          if (!open) store.close()
-        }}
-      />
-    )
-  }
-)

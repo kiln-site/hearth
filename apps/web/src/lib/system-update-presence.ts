@@ -4,8 +4,13 @@ type SystemUpdatePresence = {
   relayId: string
 }
 
+export const activeSystemUpdateStorageKey = "kiln.active-system-update"
+
 const hearthOperations = new Set<string>()
 const relayOperations = new Map<string, Set<string>>()
+const relayDisconnects = new Set<string>()
+const relayStatusDuringUpdate = new Map<string, "connected" | "unreachable">()
+let hydrated = false
 
 export const applicationConnectionToastId = "kiln-connection"
 export const applicationReconnectedToastId = "kiln-reconnected"
@@ -30,7 +35,13 @@ export function clearSystemUpdateActive(update: SystemUpdatePresence): void {
   const operations = relayOperations.get(update.relayId)
   if (!operations) return
   operations.delete(update.operationId)
-  if (operations.size === 0) relayOperations.delete(update.relayId)
+  if (operations.size > 0) return
+
+  relayOperations.delete(update.relayId)
+  if (relayStatusDuringUpdate.get(update.relayId) === "connected") {
+    relayDisconnects.delete(update.relayId)
+  }
+  relayStatusDuringUpdate.delete(update.relayId)
 }
 
 export function isHearthSystemUpdateActive(): boolean {
@@ -41,6 +52,20 @@ export function isRelaySystemUpdateActive(relayId: string): boolean {
   return (relayOperations.get(relayId)?.size ?? 0) > 0
 }
 
+export function noteRelayDisconnectedDuringUpdate(relayId: string): void {
+  relayDisconnects.add(relayId)
+  relayStatusDuringUpdate.set(relayId, "unreachable")
+}
+
+export function noteRelayReconnectedDuringUpdate(relayId: string): void {
+  relayStatusDuringUpdate.set(relayId, "connected")
+}
+
+export function consumeRelayUpdateReconnect(relayId: string): boolean {
+  relayStatusDuringUpdate.delete(relayId)
+  return relayDisconnects.delete(relayId)
+}
+
 export function relayDisconnectToastId(relayId: string): string {
   return `relay-disconnected:${relayId}`
 }
@@ -48,3 +73,37 @@ export function relayDisconnectToastId(relayId: string): string {
 export function relayReconnectToastId(relayId: string): string {
   return `relay-reconnected:${relayId}`
 }
+
+export function hydrateSystemUpdatePresence(): void {
+  if (hydrated || typeof window === "undefined") return
+  hydrated = true
+  try {
+    const stored = window.localStorage.getItem(activeSystemUpdateStorageKey)
+    if (!stored) return
+    const parsed: unknown = JSON.parse(stored)
+    const values = Array.isArray(parsed) ? parsed : [parsed]
+    for (const value of values) {
+      if (
+        typeof value !== "object" ||
+        value === null ||
+        !("component" in value) ||
+        (value.component !== "hearth" && value.component !== "relay") ||
+        !("operationId" in value) ||
+        typeof value.operationId !== "string" ||
+        !("relayId" in value) ||
+        typeof value.relayId !== "string"
+      ) {
+        continue
+      }
+      markSystemUpdateActive({
+        component: value.component,
+        operationId: value.operationId,
+        relayId: value.relayId,
+      })
+    }
+  } catch {
+    window.localStorage.removeItem(activeSystemUpdateStorageKey)
+  }
+}
+
+hydrateSystemUpdatePresence()
