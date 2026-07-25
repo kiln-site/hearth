@@ -52,7 +52,19 @@ type ActiveUpdate = {
   relayId: string
 }
 
+type PendingUpdate = {
+  latestVersion: string
+  target: UpdateTarget
+}
+
 type DialogView = "changelog" | "overview"
+
+type ViewVisibility = {
+  changelogMounted: boolean
+  view: DialogView
+}
+
+type UpdateDialogViewStore = ReturnType<typeof createUpdateDialogViewStore>
 
 const activeUpdateStorageKey = "kiln.active-system-update"
 const releaseDateFormatter = new Intl.DateTimeFormat("en-US", {
@@ -74,21 +86,16 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const queryClient = useQueryClient()
-  const overviewQuery = useQuery({
-    ...updateOverviewQueryOptions(),
-    enabled: open,
-  })
-  const [pending, setPending] = React.useState<UpdateTarget | null>(null)
+  const [pending, setPending] = React.useState<PendingUpdate | null>(null)
   const [active, setActive] = React.useState<ActiveUpdate | null>(null)
   const [message, setMessage] = React.useState<string | null>(null)
-  const [lastCheckedAt, setLastCheckedAt] = React.useState("Not yet")
-
-  React.useEffect(() => {
-    if (overviewQuery.dataUpdatedAt === 0) return
-    setLastCheckedAt(
-      lastCheckedFormatter.format(new Date(overviewQuery.dataUpdatedAt))
+  const viewStoreRef = React.useRef<UpdateDialogViewStore | null>(null)
+  if (viewStoreRef.current === null) {
+    viewStoreRef.current = createUpdateDialogViewStore(
+      initialRelayId ? relayTargetKey(initialRelayId) : "hearth"
     )
-  }, [overviewQuery.dataUpdatedAt])
+  }
+  const viewStore = viewStoreRef.current
 
   React.useEffect(() => {
     const stored = window.localStorage.getItem(activeUpdateStorageKey)
@@ -178,10 +185,10 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
     }
   }, [active, operationQuery.data, operationQuery.isSuccess, queryClient])
 
-  const overview = overviewQuery.data
-  const targets = React.useMemo(
-    () => (overview ? updateTargets(overview) : []),
-    [overview]
+  const handleUpdate = React.useCallback(
+    (target: UpdateTarget, latestVersion: string) =>
+      setPending({ latestVersion, target }),
+    []
   )
 
   return (
@@ -191,22 +198,16 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
           aria-describedby={undefined}
           className="h-[min(46rem,calc(100dvh-2rem))] max-h-none grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-[calc(100%-2rem)] xl:max-w-5xl"
         >
-          <UpdateDialogContent
+          <div className="border-b bg-background/35 px-5 pt-5">
+            <UpdaterTitleBar open={open} />
+            <UpdaterViewTabs store={viewStore} />
+          </div>
+          <UpdateDialogData
             active={active}
-            checking={overviewQuery.isFetching}
-            errorMessage={
-              overviewQuery.error instanceof Error
-                ? overviewQuery.error.message
-                : "Update information is unavailable."
-            }
-            failed={overviewQuery.isError}
             focusedRelayId={initialRelayId}
-            lastCheckedAt={lastCheckedAt}
-            overview={overview}
-            pending={overviewQuery.isPending}
-            targets={targets}
-            onCheck={() => void overviewQuery.refetch()}
-            onUpdate={setPending}
+            open={open}
+            store={viewStore}
+            onUpdate={handleUpdate}
           />
         </DialogContent>
       </Dialog>
@@ -229,12 +230,12 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
             ? updateMutation.error.message
             : null
         }
-        latestVersion={overview?.releases[0]?.version ?? null}
+        latestVersion={pending?.latestVersion ?? null}
         open={pending !== null}
         pending={updateMutation.isPending}
-        target={pending}
+        target={pending?.target ?? null}
         onConfirm={() => {
-          if (pending) updateMutation.mutate(pending)
+          if (pending) updateMutation.mutate(pending.target)
         }}
         onOpenChange={(nextOpen) => {
           if (!nextOpen && !updateMutation.isPending) {
@@ -247,147 +248,139 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
   )
 })
 
-const UpdateDialogContent = React.memo(function UpdateDialogContent({
+const UpdateDialogData = React.memo(function UpdateDialogData({
   active,
-  checking,
-  errorMessage,
-  failed,
   focusedRelayId,
-  lastCheckedAt,
-  overview,
-  pending,
-  targets,
-  onCheck,
+  open,
+  store,
   onUpdate,
 }: {
   active: ActiveUpdate | null
-  checking: boolean
+  focusedRelayId: string | null
+  open: boolean
+  store: UpdateDialogViewStore
+  onUpdate: (target: UpdateTarget, latestVersion: string) => void
+}) {
+  const overviewQuery = useQuery({
+    ...updateOverviewQueryOptions(),
+    enabled: open,
+    notifyOnChangeProps: ["data", "error", "isError", "isPending"],
+  })
+  const overview = overviewQuery.data
+  const targets = React.useMemo(
+    () => (overview ? updateTargets(overview) : []),
+    [overview]
+  )
+
+  return (
+    <UpdateDialogBody
+      active={active}
+      errorMessage={
+        overviewQuery.error instanceof Error
+          ? overviewQuery.error.message
+          : "Update information is unavailable."
+      }
+      failed={overviewQuery.isError}
+      focusedRelayId={focusedRelayId}
+      overview={overview}
+      pending={overviewQuery.isPending}
+      store={store}
+      targets={targets}
+      onRetry={() => void overviewQuery.refetch()}
+      onUpdate={onUpdate}
+    />
+  )
+})
+
+const UpdateDialogBody = React.memo(function UpdateDialogBody({
+  active,
+  errorMessage,
+  failed,
+  focusedRelayId,
+  overview,
+  pending,
+  store,
+  targets,
+  onRetry,
+  onUpdate,
+}: {
+  active: ActiveUpdate | null
   errorMessage: string
   failed: boolean
   focusedRelayId: string | null
-  lastCheckedAt: string
   overview: UpdateOverview | undefined
   pending: boolean
+  store: UpdateDialogViewStore
   targets: Array<UpdateTarget>
-  onCheck: () => void
-  onUpdate: (target: UpdateTarget) => void
+  onRetry: () => void
+  onUpdate: (target: UpdateTarget, latestVersion: string) => void
 }) {
-  const [view, setView] = React.useState<DialogView>("overview")
-  const [changelogMounted, setChangelogMounted] = React.useState(false)
-  const [changelogTargetKey, setChangelogTargetKey] = React.useState(() =>
-    focusedRelayId ? relayTargetKey(focusedRelayId) : "hearth"
+  const visibility = React.useSyncExternalStore(
+    store.subscribeVisibility,
+    store.getVisibilitySnapshot,
+    store.getVisibilitySnapshot
   )
-  const selectedChangelogTarget = React.useMemo(
-    () =>
-      targets.find((target) => target.key === changelogTargetKey) ??
-      targets[0] ??
-      null,
-    [changelogTargetKey, targets]
-  )
-  const showOverview = React.useCallback(() => setView("overview"), [])
-  const showChangelog = React.useCallback(() => {
-    setChangelogMounted(true)
-    setView("changelog")
-  }, [])
-  const openChangelog = React.useCallback((targetKey: string) => {
-    setChangelogTargetKey(targetKey)
-    setChangelogMounted(true)
-    setView("changelog")
-  }, [])
 
   return (
-    <>
-      <div className="border-b bg-background/35 px-5 pt-5">
-        <UpdaterTitleBar
-          checking={checking}
-          lastCheckedAt={lastCheckedAt}
-          onCheck={onCheck}
-        />
-
-        <div
-          aria-label="Update dialog views"
-          className="mt-4 flex gap-1"
-          role="tablist"
-        >
-          <ViewButton
-            active={view === "overview"}
-            label="Overview"
-            onClick={showOverview}
-          />
-          <ViewButton
-            active={view === "changelog"}
-            icon={History}
-            label="Changelog"
-            onClick={showChangelog}
-          />
+    <div className="relative min-h-0 overflow-hidden">
+      {pending ? (
+        <div className="h-full overflow-y-auto overscroll-contain">
+          <UpdateDialogSkeleton />
         </div>
-      </div>
+      ) : failed ? (
+        <div className="h-full overflow-y-auto overscroll-contain">
+          <UpdateDialogError message={errorMessage} onRetry={onRetry} />
+        </div>
+      ) : overview ? (
+        <>
+          <div
+            aria-hidden={visibility.view !== "overview"}
+            className={`absolute inset-0 overflow-y-auto overscroll-contain [will-change:opacity] [contain:strict] ${
+              visibility.view === "overview"
+                ? "pointer-events-auto opacity-100"
+                : "pointer-events-none opacity-0"
+            }`}
+            inert={visibility.view !== "overview"}
+            role="tabpanel"
+          >
+            <UpdateOverviewView
+              active={active}
+              focusedRelayId={focusedRelayId}
+              overview={overview}
+              targets={targets}
+              onChangelog={store.openChangelog}
+              onUpdate={onUpdate}
+            />
+          </div>
 
-      <div className="relative min-h-0 overflow-hidden">
-        {pending ? (
-          <div className="h-full overflow-y-auto overscroll-contain">
-            <UpdateDialogSkeleton />
-          </div>
-        ) : failed ? (
-          <div className="h-full overflow-y-auto overscroll-contain">
-            <UpdateDialogError message={errorMessage} onRetry={onCheck} />
-          </div>
-        ) : overview ? (
-          <>
+          {visibility.changelogMounted ? (
             <div
-              aria-hidden={view !== "overview"}
+              aria-hidden={visibility.view !== "changelog"}
               className={`absolute inset-0 overflow-y-auto overscroll-contain [will-change:opacity] [contain:strict] ${
-                view === "overview"
+                visibility.view === "changelog"
                   ? "pointer-events-auto opacity-100"
                   : "pointer-events-none opacity-0"
               }`}
-              inert={view !== "overview"}
+              inert={visibility.view !== "changelog"}
               role="tabpanel"
             >
-              <UpdateOverviewView
-                active={active}
-                focusedRelayId={focusedRelayId}
+              <UpdateChangelogView
                 overview={overview}
+                store={store}
                 targets={targets}
-                onChangelog={openChangelog}
-                onUpdate={onUpdate}
               />
             </div>
-
-            {changelogMounted ? (
-              <div
-                aria-hidden={view !== "changelog"}
-                className={`absolute inset-0 overflow-y-auto overscroll-contain [will-change:opacity] [contain:strict] ${
-                  view === "changelog"
-                    ? "pointer-events-auto opacity-100"
-                    : "pointer-events-none opacity-0"
-                }`}
-                inert={view !== "changelog"}
-                role="tabpanel"
-              >
-                <UpdateChangelogView
-                  overview={overview}
-                  selectedTarget={selectedChangelogTarget}
-                  targets={targets}
-                  onTargetChange={setChangelogTargetKey}
-                />
-              </div>
-            ) : null}
-          </>
-        ) : null}
-      </div>
-    </>
+          ) : null}
+        </>
+      ) : null}
+    </div>
   )
 })
 
 const UpdaterTitleBar = React.memo(function UpdaterTitleBar({
-  checking,
-  lastCheckedAt,
-  onCheck,
+  open,
 }: {
-  checking: boolean
-  lastCheckedAt: string
-  onCheck: () => void
+  open: boolean
 }) {
   return (
     <DialogHeader className="flex-row items-center justify-between gap-3 pr-10">
@@ -395,26 +388,86 @@ const UpdaterTitleBar = React.memo(function UpdaterTitleBar({
         <CloudDownload className="size-5 text-primary" />
         Kiln Updater
       </DialogTitle>
-      <div className="flex shrink-0 flex-col items-end gap-1">
-        <Button
-          aria-busy={checking}
-          aria-label={checking ? "Checking for updates" : "Check for updates"}
-          disabled={checking}
-          size="sm"
-          type="button"
-          variant="outline"
-          onClick={onCheck}
-        >
-          <RefreshCw className={checking ? "animate-spin" : ""} />
-          <span className="hidden sm:inline">
-            {checking ? "Checking..." : "Check for updates"}
-          </span>
-        </Button>
-        <p className="hidden text-[9px] text-muted-foreground sm:block">
-          Last Checked: {lastCheckedAt}
-        </p>
-      </div>
+      <UpdaterCheckControl open={open} />
     </DialogHeader>
+  )
+})
+
+const UpdaterCheckControl = React.memo(function UpdaterCheckControl({
+  open,
+}: {
+  open: boolean
+}) {
+  const overviewQuery = useQuery({
+    ...updateOverviewQueryOptions(),
+    enabled: open,
+    notifyOnChangeProps: ["dataUpdatedAt", "isFetching"],
+  })
+  const [lastCheckedAt, setLastCheckedAt] = React.useState("Not yet")
+
+  React.useEffect(() => {
+    if (overviewQuery.dataUpdatedAt === 0) return
+    setLastCheckedAt(
+      lastCheckedFormatter.format(new Date(overviewQuery.dataUpdatedAt))
+    )
+  }, [overviewQuery.dataUpdatedAt])
+
+  return (
+    <div className="flex shrink-0 flex-col items-end gap-1">
+      <Button
+        aria-busy={overviewQuery.isFetching}
+        aria-label={
+          overviewQuery.isFetching
+            ? "Checking for updates"
+            : "Check for updates"
+        }
+        disabled={overviewQuery.isFetching}
+        size="sm"
+        type="button"
+        variant="outline"
+        onClick={() => void overviewQuery.refetch()}
+      >
+        <RefreshCw className={overviewQuery.isFetching ? "animate-spin" : ""} />
+        <span className="hidden sm:inline">
+          {overviewQuery.isFetching ? "Checking..." : "Check for updates"}
+        </span>
+      </Button>
+      <p className="hidden text-[9px] text-muted-foreground sm:block">
+        Last Checked: {lastCheckedAt}
+      </p>
+    </div>
+  )
+})
+
+const UpdaterViewTabs = React.memo(function UpdaterViewTabs({
+  store,
+}: {
+  store: UpdateDialogViewStore
+}) {
+  const visibility = React.useSyncExternalStore(
+    store.subscribeVisibility,
+    store.getVisibilitySnapshot,
+    store.getVisibilitySnapshot
+  )
+
+  return (
+    <div
+      aria-label="Update dialog views"
+      className="mt-4 flex gap-1"
+      role="tablist"
+    >
+      <ViewButton
+        active={visibility.view === "overview"}
+        label="Overview"
+        onClick={store.showOverview}
+      />
+      <ViewButton
+        active={visibility.view === "changelog"}
+        icon={History}
+        label="Changelog"
+        onClick={store.showChangelog}
+      />
+    </div>
   )
 })
 
@@ -460,7 +513,7 @@ const UpdateOverviewView = React.memo(function UpdateOverviewView({
   overview: UpdateOverview
   targets: Array<UpdateTarget>
   onChangelog: (targetKey: string) => void
-  onUpdate: (target: UpdateTarget) => void
+  onUpdate: (target: UpdateTarget, latestVersion: string) => void
 }) {
   const latestRelease = overview.releases[0] ?? null
 
@@ -496,7 +549,18 @@ const UpdateOverviewView = React.memo(function UpdateOverviewView({
   )
 })
 
-function UpdateTargetRow({
+type UpdateTargetRowProps = {
+  active: ActiveUpdate | null
+  first: boolean
+  focused: boolean
+  latestVersion: string
+  releases: ReadonlyArray<PublicKilnRelease>
+  target: UpdateTarget
+  onChangelog: (targetKey: string) => void
+  onUpdate: (target: UpdateTarget, latestVersion: string) => void
+}
+
+const UpdateTargetRow = React.memo(function UpdateTargetRow({
   active,
   first,
   focused,
@@ -505,16 +569,7 @@ function UpdateTargetRow({
   target,
   onChangelog,
   onUpdate,
-}: {
-  active: ActiveUpdate | null
-  first: boolean
-  focused: boolean
-  latestVersion: string
-  releases: ReadonlyArray<PublicKilnRelease>
-  target: UpdateTarget
-  onChangelog: (targetKey: string) => void
-  onUpdate: (target: UpdateTarget) => void
-}) {
+}: UpdateTargetRowProps) {
   const rowRef = React.useRef<HTMLDivElement>(null)
   const comparison = compareLatestReleaseVersion(
     target.currentVersion,
@@ -590,7 +645,7 @@ function UpdateTargetRow({
           size="sm"
           type="button"
           disabled={!updateAvailable || active !== null}
-          onClick={() => onUpdate(target)}
+          onClick={() => onUpdate(target, latestVersion)}
         >
           {updating ? (
             <LoaderCircle className="animate-spin" />
@@ -610,96 +665,36 @@ function UpdateTargetRow({
       </div>
     </div>
   )
-}
+}, areUpdateTargetRowPropsEqual)
 
 const UpdateChangelogView = React.memo(function UpdateChangelogView({
   overview,
-  selectedTarget,
+  store,
   targets,
-  onTargetChange,
 }: {
   overview: UpdateOverview
-  selectedTarget: UpdateTarget | null
+  store: UpdateDialogViewStore
   targets: Array<UpdateTarget>
-  onTargetChange: (targetKey: string) => void
 }) {
-  const releases = selectedTarget
-    ? changelogReleases(overview.releases, selectedTarget.currentVersion)
-    : []
   const latestVersion = overview.releases[0]?.version ?? null
 
   return (
     <div className="p-4 sm:p-5">
-      <div
-        aria-label="Changelog target"
-        className="mb-5 no-scrollbar flex gap-2 overflow-x-auto pb-1"
-      >
-        {targets.map((target, index) => (
-          <button
-            aria-pressed={target.key === selectedTarget?.key}
-            className={`flex shrink-0 items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/35 ${
-              target.key === selectedTarget?.key
-                ? "border-primary/35 bg-primary/[0.08] text-foreground"
-                : "bg-background/35 text-muted-foreground hover:text-foreground"
-            }`}
-            key={target.key}
-            type="button"
-            onClick={() => onTargetChange(target.key)}
-          >
-            {index === 0 ? (
-              <ServerCog className="size-3.5 text-primary" />
-            ) : (
-              <Container className="size-3.5" />
-            )}
-            <span>
-              <span className="block text-xs font-semibold">{target.name}</span>
-              <span className="block font-mono text-[8px]">
-                {displayVersion(target.currentVersion)}
-              </span>
-            </span>
-          </button>
-        ))}
-      </div>
+      <ChangelogTargetPicker store={store} targets={targets} />
 
-      {selectedTarget && latestVersion ? (
+      {targets.length > 0 && latestVersion ? (
         <div className="rounded-xl border bg-card/40 p-4 sm:p-5">
-          <div className="mb-5 flex flex-wrap items-center justify-between gap-2 border-b pb-4">
-            <div>
-              <p className="text-sm font-semibold">{selectedTarget.name}</p>
-              <p className="mt-1 font-mono text-[10px] text-muted-foreground">
-                {displayVersion(selectedTarget.currentVersion)}
-                <span className="mx-2 text-border">→</span>v{latestVersion}
-              </p>
-            </div>
-            <Badge variant="outline">
-              {releases.length} {releases.length === 1 ? "release" : "releases"}
-            </Badge>
-          </div>
-
-          {releases.length > 0 ? (
-            <div className="relative ml-1 space-y-6 border-l border-border/80 pl-5">
-              {releases.map((release, index) => (
-                <ChangelogRelease
-                  key={release.tag}
-                  latest={index === 0}
-                  release={release}
-                  installed={release.version === selectedTarget.currentVersion}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="grid min-h-40 place-items-center text-center">
-              <div>
-                <Check className="mx-auto size-5 text-emerald-400" />
-                <p className="mt-3 text-sm font-semibold">
-                  Already on the latest release
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  No newer release notes are waiting for this component.
-                </p>
-              </div>
-            </div>
-          )}
+          <ChangelogSelectionHeader
+            latestVersion={latestVersion}
+            overview={overview}
+            store={store}
+            targets={targets}
+          />
+          <ChangelogTimeline
+            releases={overview.releases}
+            store={store}
+            targets={targets}
+          />
         </div>
       ) : (
         <p className="rounded-xl border border-dashed p-6 text-center text-xs text-muted-foreground">
@@ -710,7 +705,164 @@ const UpdateChangelogView = React.memo(function UpdateChangelogView({
   )
 })
 
-function ChangelogRelease({
+const ChangelogTargetPicker = React.memo(function ChangelogTargetPicker({
+  store,
+  targets,
+}: {
+  store: UpdateDialogViewStore
+  targets: Array<UpdateTarget>
+}) {
+  const selectedKey = React.useSyncExternalStore(
+    store.subscribeTarget,
+    store.getTargetSnapshot,
+    store.getTargetSnapshot
+  )
+
+  return (
+    <div
+      aria-label="Changelog target"
+      className="mb-5 no-scrollbar flex gap-2 overflow-x-auto pb-1"
+    >
+      {targets.map((target, index) => (
+        <ChangelogTargetButton
+          first={index === 0}
+          key={target.key}
+          selected={target.key === selectedKey}
+          target={target}
+          onSelect={store.setTarget}
+        />
+      ))}
+    </div>
+  )
+})
+
+const ChangelogTargetButton = React.memo(function ChangelogTargetButton({
+  first,
+  selected,
+  target,
+  onSelect,
+}: {
+  first: boolean
+  selected: boolean
+  target: UpdateTarget
+  onSelect: (targetKey: string) => void
+}) {
+  return (
+    <button
+      aria-pressed={selected}
+      className={`flex shrink-0 items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/35 ${
+        selected
+          ? "border-primary/35 bg-primary/[0.08] text-foreground"
+          : "bg-background/35 text-muted-foreground hover:text-foreground"
+      }`}
+      type="button"
+      onClick={() => onSelect(target.key)}
+    >
+      {first ? (
+        <ServerCog className="size-3.5 text-primary" />
+      ) : (
+        <Container className="size-3.5" />
+      )}
+      <span>
+        <span className="block text-xs font-semibold">{target.name}</span>
+        <span className="block font-mono text-[8px]">
+          {displayVersion(target.currentVersion)}
+        </span>
+      </span>
+    </button>
+  )
+}, areChangelogTargetButtonPropsEqual)
+
+const ChangelogSelectionHeader = React.memo(function ChangelogSelectionHeader({
+  latestVersion,
+  overview,
+  store,
+  targets,
+}: {
+  latestVersion: string
+  overview: UpdateOverview
+  store: UpdateDialogViewStore
+  targets: Array<UpdateTarget>
+}) {
+  const selectedKey = React.useSyncExternalStore(
+    store.subscribeTarget,
+    store.getTargetSnapshot,
+    store.getTargetSnapshot
+  )
+  const selectedTarget = findSelectedTarget(targets, selectedKey)
+  const releaseCount = selectedTarget
+    ? changelogReleases(overview.releases, selectedTarget.currentVersion).length
+    : 0
+
+  return (
+    <div className="mb-5 flex flex-wrap items-center justify-between gap-2 border-b pb-4">
+      <div>
+        <p className="text-sm font-semibold">{selectedTarget?.name}</p>
+        <p className="mt-1 font-mono text-[10px] text-muted-foreground">
+          {displayVersion(selectedTarget?.currentVersion ?? null)}
+          <span className="mx-2 text-border">→</span>v{latestVersion}
+        </p>
+      </div>
+      <Badge variant="outline">
+        {releaseCount} {releaseCount === 1 ? "release" : "releases"}
+      </Badge>
+    </div>
+  )
+}, areChangelogSelectionHeaderPropsEqual)
+
+const ChangelogTimeline = React.memo(function ChangelogTimeline({
+  releases: availableReleases,
+  store,
+  targets,
+}: {
+  releases: ReadonlyArray<PublicKilnRelease>
+  store: UpdateDialogViewStore
+  targets: Array<UpdateTarget>
+}) {
+  const getCurrentVersionSnapshot = React.useCallback(() => {
+    const selectedTarget = findSelectedTarget(
+      targets,
+      store.getTargetSnapshot()
+    )
+    return selectedTarget?.currentVersion ?? null
+  }, [store, targets])
+  const currentVersion = React.useSyncExternalStore(
+    store.subscribeTarget,
+    getCurrentVersionSnapshot,
+    getCurrentVersionSnapshot
+  )
+  const releases = React.useMemo(
+    () => changelogReleases(availableReleases, currentVersion),
+    [availableReleases, currentVersion]
+  )
+
+  return releases.length > 0 ? (
+    <div className="relative ml-1 space-y-6 border-l border-border/80 pl-5">
+      {releases.map((release, index) => (
+        <ChangelogRelease
+          key={release.tag}
+          latest={index === 0}
+          release={release}
+          installed={release.version === currentVersion}
+        />
+      ))}
+    </div>
+  ) : (
+    <div className="grid min-h-40 place-items-center text-center">
+      <div>
+        <Check className="mx-auto size-5 text-emerald-400" />
+        <p className="mt-3 text-sm font-semibold">
+          Already on the latest release
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          No newer release notes are waiting for this component.
+        </p>
+      </div>
+    </div>
+  )
+}, areChangelogTimelinePropsEqual)
+
+const ChangelogRelease = React.memo(function ChangelogRelease({
   installed,
   latest,
   release,
@@ -751,7 +903,7 @@ function ChangelogRelease({
       </p>
     </article>
   )
-}
+})
 
 function UpdateDialogSkeleton() {
   return (
@@ -929,6 +1081,189 @@ function updateTargets(overview: UpdateOverview): Array<UpdateTarget> {
       })
     ),
   ]
+}
+
+function createUpdateDialogViewStore(initialTargetKey: string) {
+  let visibility: ViewVisibility = {
+    changelogMounted: false,
+    view: "overview",
+  }
+  let targetKey = initialTargetKey
+  const visibilityListeners = new Set<() => void>()
+  const targetListeners = new Set<() => void>()
+
+  const setVisibility = (next: ViewVisibility) => {
+    if (
+      next.view === visibility.view &&
+      next.changelogMounted === visibility.changelogMounted
+    ) {
+      return
+    }
+    visibility = next
+    visibilityListeners.forEach((listener) => listener())
+  }
+
+  const setTarget = (nextTargetKey: string) => {
+    if (nextTargetKey === targetKey) return
+    targetKey = nextTargetKey
+    targetListeners.forEach((listener) => listener())
+  }
+
+  return {
+    getTargetSnapshot: () => targetKey,
+    getVisibilitySnapshot: () => visibility,
+    openChangelog: (nextTargetKey: string) => {
+      setTarget(nextTargetKey)
+      setVisibility({ changelogMounted: true, view: "changelog" })
+    },
+    setTarget,
+    showChangelog: () =>
+      setVisibility({ changelogMounted: true, view: "changelog" }),
+    showOverview: () =>
+      setVisibility({
+        changelogMounted: visibility.changelogMounted,
+        view: "overview",
+      }),
+    subscribeTarget: (listener: () => void) => {
+      targetListeners.add(listener)
+      return () => targetListeners.delete(listener)
+    },
+    subscribeVisibility: (listener: () => void) => {
+      visibilityListeners.add(listener)
+      return () => visibilityListeners.delete(listener)
+    },
+  }
+}
+
+function findSelectedTarget(
+  targets: ReadonlyArray<UpdateTarget>,
+  selectedKey: string
+): UpdateTarget | null {
+  return (
+    targets.find((target) => target.key === selectedKey) ?? targets[0] ?? null
+  )
+}
+
+function areUpdateTargetRowPropsEqual(
+  previous: UpdateTargetRowProps,
+  next: UpdateTargetRowProps
+): boolean {
+  return (
+    previous.first === next.first &&
+    previous.focused === next.focused &&
+    previous.latestVersion === next.latestVersion &&
+    previous.releases === next.releases &&
+    previous.onChangelog === next.onChangelog &&
+    previous.onUpdate === next.onUpdate &&
+    (previous.active === null) === (next.active === null) &&
+    isTargetUpdating(previous.active, previous.target) ===
+      isTargetUpdating(next.active, next.target) &&
+    areUpdateTargetsEqual(previous.target, next.target)
+  )
+}
+
+function areChangelogTargetButtonPropsEqual(
+  previous: {
+    first: boolean
+    selected: boolean
+    target: UpdateTarget
+    onSelect: (targetKey: string) => void
+  },
+  next: {
+    first: boolean
+    selected: boolean
+    target: UpdateTarget
+    onSelect: (targetKey: string) => void
+  }
+): boolean {
+  return (
+    previous.first === next.first &&
+    previous.selected === next.selected &&
+    previous.onSelect === next.onSelect &&
+    previous.target.currentVersion === next.target.currentVersion &&
+    previous.target.key === next.target.key &&
+    previous.target.name === next.target.name
+  )
+}
+
+function areChangelogTimelinePropsEqual(
+  previous: {
+    releases: ReadonlyArray<PublicKilnRelease>
+    store: UpdateDialogViewStore
+    targets: Array<UpdateTarget>
+  },
+  next: {
+    releases: ReadonlyArray<PublicKilnRelease>
+    store: UpdateDialogViewStore
+    targets: Array<UpdateTarget>
+  }
+): boolean {
+  if (
+    previous.releases !== next.releases ||
+    previous.store !== next.store
+  ) {
+    return false
+  }
+  const selectedKey = next.store.getTargetSnapshot()
+  return (
+    findSelectedTarget(previous.targets, selectedKey)?.currentVersion ===
+    findSelectedTarget(next.targets, selectedKey)?.currentVersion
+  )
+}
+
+function areChangelogSelectionHeaderPropsEqual(
+  previous: {
+    latestVersion: string
+    overview: UpdateOverview
+    store: UpdateDialogViewStore
+    targets: Array<UpdateTarget>
+  },
+  next: {
+    latestVersion: string
+    overview: UpdateOverview
+    store: UpdateDialogViewStore
+    targets: Array<UpdateTarget>
+  }
+): boolean {
+  if (
+    previous.latestVersion !== next.latestVersion ||
+    previous.overview.releases !== next.overview.releases ||
+    previous.store !== next.store
+  ) {
+    return false
+  }
+  const selectedKey = next.store.getTargetSnapshot()
+  const previousTarget = findSelectedTarget(previous.targets, selectedKey)
+  const nextTarget = findSelectedTarget(next.targets, selectedKey)
+  return (
+    previousTarget?.currentVersion === nextTarget?.currentVersion &&
+    previousTarget?.name === nextTarget?.name
+  )
+}
+
+function areUpdateTargetsEqual(
+  previous: UpdateTarget,
+  next: UpdateTarget
+): boolean {
+  return (
+    previous.component === next.component &&
+    previous.currentVersion === next.currentVersion &&
+    previous.eligible === next.eligible &&
+    previous.key === next.key &&
+    previous.name === next.name &&
+    previous.reason === next.reason &&
+    previous.relayId === next.relayId
+  )
+}
+
+function isTargetUpdating(
+  active: ActiveUpdate | null,
+  target: UpdateTarget
+): boolean {
+  return (
+    active?.component === target.component &&
+    (target.component === "hearth" || active.relayId === target.relayId)
+  )
 }
 
 function changelogReleases(
