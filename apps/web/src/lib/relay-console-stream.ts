@@ -1,5 +1,7 @@
 import {
+  relayBrowserConsoleProtocol,
   relayBrowserProofTranscript,
+  relayBrowserConsoleProtocols,
   relayBrowserProtocol,
   relayConsoleStreamEventSchema,
 } from "@workspace/contracts"
@@ -129,7 +131,7 @@ async function* openDirectRelayConsoleStream(
   const relayOrigin = new URL(capability.browserOrigin)
   relayOrigin.protocol = relayOrigin.protocol === "https:" ? "wss:" : "ws:"
   relayOrigin.pathname = "/v1/browser"
-  const socket = new WebSocket(relayOrigin, relayBrowserProtocol)
+  const socket = new WebSocket(relayOrigin, [...relayBrowserConsoleProtocols])
   const inbox = createSocketInbox(socket, signal)
 
   try {
@@ -148,13 +150,18 @@ async function* openDirectRelayConsoleStream(
       { hash: "SHA-256", name: "ECDSA" },
       keys.privateKey,
       new TextEncoder().encode(
-        relayBrowserProofTranscript({
-          capabilityId: capabilityId(capability.capability),
-          expiresAt: challenge.expiresAt,
-          nonce: challenge.nonce,
-          relayId,
-          sessionId: challenge.sessionId,
-        })
+        relayBrowserProofTranscript(
+          {
+            capabilityId: capabilityId(capability.capability),
+            expiresAt: challenge.expiresAt,
+            nonce: challenge.nonce,
+            relayId,
+            sessionId: challenge.sessionId,
+          },
+          socket.protocol === relayBrowserConsoleProtocol
+            ? relayBrowserConsoleProtocol
+            : relayBrowserProtocol
+        )
       )
     )
     socket.send(

@@ -42,6 +42,7 @@ export interface RelayConfig {
   dataDirectory: string
   host: string
   managedLabel: string
+  mclogsApiUrl: string
   serverIdLabel: string
   nodeId: string
   nodeName: string
@@ -126,6 +127,8 @@ export function loadConfig(
     dataDirectory,
     host: environment.KILN_RELAY_BIND_HOST?.trim() || "0.0.0.0",
     managedLabel: "kiln.relay.managed=true",
+    mclogsApiUrl:
+      environment.MCLOGS_API_URL?.trim() || "https://api.mclo.gs/1/log",
     nodeId: "kiln-relay",
     nodeName: environment.KILN_RELAY_NAME?.trim() || hostname() || "Kiln Relay",
     port,

@@ -580,12 +580,16 @@ export const relayLatestLogSchema = z.object({
   size: z.number().int().nonnegative(),
 })
 
-export const relayConsoleLogSchema = z.object({
-  instanceId: z.string().min(1),
-  path: z.literal("console.log"),
-  content: z.string(),
-  size: z.number().int().nonnegative(),
-  startedAt: z.string().datetime().nullable(),
+export const relayConsoleShareInputSchema = z.object({
+  implementation: z.string().min(1),
+  version: z.string().min(1),
+  redactSensitive: z.boolean().default(false),
+})
+
+export const relayMclogsUploadResultSchema = z.object({
+  id: z.string().min(1),
+  url: z.url(),
+  expires: z.number().int(),
 })
 
 export const relayErrorSchema = z.object({
@@ -666,5 +670,10 @@ export type RelayConsoleCompletionInput = z.infer<
 export type RelayConsoleCompletion = z.infer<
   typeof relayConsoleCompletionSchema
 >
-export type RelayConsoleLog = z.infer<typeof relayConsoleLogSchema>
+export type RelayConsoleShareInput = z.infer<
+  typeof relayConsoleShareInputSchema
+>
+export type RelayMclogsUploadResult = z.infer<
+  typeof relayMclogsUploadResultSchema
+>
 export type RelayLatestLog = z.infer<typeof relayLatestLogSchema>

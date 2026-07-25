@@ -14,6 +14,7 @@ describe("loadConfig", () => {
     expect(config.sftpPort).toBe(2022)
     expect(config.tlsMode).toBe("development")
     expect(config.sftpDevAuthentication).toBe(true)
+    expect(config.mclogsApiUrl).toBe("https://api.mclo.gs/1/log")
   })
 
   it("uses an independent advertised port", () => {

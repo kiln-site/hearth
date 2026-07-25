@@ -329,6 +329,7 @@ function testConfig(dataDirectory: string): RelayConfig {
     dockerSocket: "/var/run/docker.sock",
     host: "127.0.0.1",
     managedLabel: "kiln.relay.managed=true",
+    mclogsApiUrl: "https://api.mclo.gs/1/log",
     nodeId: "test",
     nodeName: "Test Relay",
     port: 4100,

@@ -20,6 +20,21 @@ describe("Docker console parsing", () => {
     })
   })
 
+  it("parses raw Minecraft section formatting into plain text and segments", () => {
+    expect(
+      parseConsoleLine("2026-07-25T17:59:03.000000000Z §aGreen §lBold §rPlain")
+    ).toEqual({
+      level: "info",
+      segments: [
+        { text: "Green ", color: "#55ff55" },
+        { text: "Bold ", color: "#55ff55", bold: true },
+        { text: "Plain" },
+      ],
+      text: "Green Bold Plain",
+      timestamp: "2026-07-25T17:59:03.000000000Z",
+    })
+  })
+
   it.each([
     "% Total    % Received % Xferd  Average Speed   Time    Time     Time  Current",
     "0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0",

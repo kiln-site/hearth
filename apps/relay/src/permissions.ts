@@ -38,6 +38,7 @@ export const relayActions = [
   "instance.network.read",
   "instance.network.write",
   "instance.logs.read",
+  "instance.logs.share",
 ] as const
 
 export type RelayAction = (typeof relayActions)[number]

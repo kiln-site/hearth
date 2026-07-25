@@ -2,7 +2,10 @@ import { generateKeyPairSync, sign } from "node:crypto"
 import { WebSocket } from "ws"
 
 import {
+  relayBrowserConsoleProtocol,
   relayBrowserProofTranscript,
+  relayBrowserConsoleProtocols,
+  relayBrowserMaxFrameBytes,
   relayBrowserProtocol,
   relayConsoleStreamEventSchema,
 } from "@workspace/contracts"
@@ -52,13 +55,13 @@ export async function* openHearthRelayConsoleStream(input: {
   const protocol = control.useTls ? "wss" : "ws"
   const socket = new WebSocket(
     `${protocol}://${formatHost(control.hostname)}:${control.port}/v1/browser`,
-    relayBrowserProtocol,
+    [...relayBrowserConsoleProtocols],
     {
       ca: control.useTls
         ? (credentials.caCertificatePem ?? undefined)
         : undefined,
       handshakeTimeout: 5_000,
-      maxPayload: 256 * 1024,
+      maxPayload: relayBrowserMaxFrameBytes,
       origin: kilnPublicUrl().origin,
       perMessageDeflate: false,
       rejectUnauthorized: control.useTls,
@@ -81,13 +84,18 @@ export async function* openHearthRelayConsoleStream(input: {
     const proof = sign(
       "sha256",
       Buffer.from(
-        relayBrowserProofTranscript({
-          capabilityId: capabilityId(capability.capability),
-          expiresAt: challenge.expiresAt,
-          nonce: challenge.nonce,
-          relayId: input.relayId,
-          sessionId: challenge.sessionId,
-        })
+        relayBrowserProofTranscript(
+          {
+            capabilityId: capabilityId(capability.capability),
+            expiresAt: challenge.expiresAt,
+            nonce: challenge.nonce,
+            relayId: input.relayId,
+            sessionId: challenge.sessionId,
+          },
+          socket.protocol === relayBrowserConsoleProtocol
+            ? relayBrowserConsoleProtocol
+            : relayBrowserProtocol
+        )
       ),
       { dsaEncoding: "ieee-p1363", key: keys.privateKey }
     )

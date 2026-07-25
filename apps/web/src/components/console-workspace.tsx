@@ -1613,7 +1613,8 @@ function renderConsoleTextPart(text: string, query: string): React.ReactNode {
 }
 
 function renderConsoleSegment(text: string, query: string): React.ReactNode {
-  const urlPattern = /(https?:\/\/[^\s]+)/gu
+  const urlPattern =
+    /(https?:\/\/[^\s<>"']*?[^\s<>"'.,;:!?)}\]])(?=[.,;:!?)}\]]*(?:\s|$))/gu
   let offset = 0
   return text.split(urlPattern).map((part) => {
     const start = offset

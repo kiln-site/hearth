@@ -3,6 +3,12 @@ import { Schema } from "effect"
 export const relayControlProtocol = "kiln-relay.v1" as const
 export const relayControlProtocolVersion = 1 as const
 export const relayBrowserProtocol = "kiln-relay-browser.v1" as const
+export const relayBrowserConsoleProtocol = "kiln-relay-browser.v2" as const
+export const relayBrowserConsoleProtocols = [
+  relayBrowserConsoleProtocol,
+  relayBrowserProtocol,
+] as const
+export const relayBrowserMaxFrameBytes = 256 * 1024
 export const relayPairingProtocol = "kiln-relay-pair.v1" as const
 
 export const relayControlOperations = [
@@ -35,7 +41,7 @@ export const relayControlOperations = [
   "instance.console.history",
   "instance.console.write",
   "instance.console.complete",
-  "instance.logs.console",
+  "instance.logs.share",
   "instance.logs.latest",
   "instance.network.routes.read",
   "instance.network.routes.write",
@@ -48,6 +54,7 @@ export function relayControlDeadlineMs(
   operation: RelayControlOperation
 ): number {
   if (operation === "relay.update.apply") return 15 * 60_000
+  if (operation === "instance.logs.share") return 60_000
   if (
     operation === "instance.create" ||
     operation === "instance.startup.write"
@@ -294,15 +301,20 @@ export function relayPairingResponseTranscript(
   ])
 }
 
-export function relayBrowserProofTranscript(input: {
-  readonly capabilityId: string
-  readonly expiresAt: number
-  readonly nonce: string
-  readonly relayId: string
-  readonly sessionId: string
-}): string {
+export function relayBrowserProofTranscript(
+  input: {
+    readonly capabilityId: string
+    readonly expiresAt: number
+    readonly nonce: string
+    readonly relayId: string
+    readonly sessionId: string
+  },
+  protocol:
+    | typeof relayBrowserProtocol
+    | typeof relayBrowserConsoleProtocol = relayBrowserProtocol
+): string {
   return JSON.stringify([
-    relayBrowserProtocol,
+    protocol,
     "proof",
     input.relayId,
     input.sessionId,

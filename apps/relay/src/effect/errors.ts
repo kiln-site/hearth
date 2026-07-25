@@ -21,6 +21,18 @@ export class RelayOperationError extends Schema.TaggedErrorClass<RelayOperationE
   }
 }
 
+export class MclogsUploadError extends Schema.TaggedErrorClass<MclogsUploadError>()(
+  "MclogsUploadError",
+  {
+    reason: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  }
+) {
+  override get message() {
+    return this.reason
+  }
+}
+
 export class BrickRecipeError extends Schema.TaggedErrorClass<BrickRecipeError>()(
   "BrickRecipeError",
   {

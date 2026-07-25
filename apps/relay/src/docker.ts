@@ -13,7 +13,6 @@ import type {
   RelayConsoleCompletion,
   RelayConsoleLevel,
   RelayConsoleLine,
-  RelayConsoleLog,
   RelayConsoleSegment,
   RelayDesiredState,
   RelayInstance,
@@ -125,6 +124,7 @@ const TERMINAL_EDIT_PATTERN = new RegExp(
   "(?:\\u0008|\\u001b\\[[0-?]*[ -/]*[ABCDEFGHJKSTfhl])",
   "u"
 )
+const MINECRAFT_STYLE_PATTERN = /§x(?:§[\da-f]){6}|§[0-9a-fk-or]/giu
 const MINECRAFT_LOG_PREFIX_PATTERN =
   /\[\d{2}:\d{2}:\d{2} (?:INFO|WARN(?:ING)?|ERROR|FATAL|SEVERE|DEBUG|TRACE)\]:/iu
 const CURL_PROGRESS_HEADER_PATTERN =
@@ -396,7 +396,7 @@ export class DockerDriver {
     }
   }
 
-  async consoleLog(instance: RelayInstanceConfig): Promise<RelayConsoleLog> {
+  async consoleLog(instance: RelayInstanceConfig): Promise<DockerConsoleLog> {
     const discovered = await this.#findDiscovered(instance.id)
     const startedAt = consoleStartedAt(discovered.container)
     const result = await command(
@@ -1291,7 +1291,7 @@ export interface ParsedConsoleLine {
 
 export function parseConsoleLine(value: string): ParsedConsoleLine | null {
   if (isTerminalOnlyConsoleFrame(value)) return null
-  const normalized = stripAnsi(value)
+  const normalized = stripConsoleFormatting(value)
   const match = normalized.match(/^(\d{4}-\d{2}-\d{2}T\S+Z)\s(.*)$/u)
   const timestamp = match?.[1] ?? null
   const text = (match?.[2] ?? normalized)
@@ -1318,7 +1318,7 @@ export function parseConsoleLine(value: string): ParsedConsoleLine | null {
 }
 
 function isTerminalOnlyConsoleFrame(value: string): boolean {
-  const normalized = stripAnsi(value)
+  const normalized = stripConsoleFormatting(value)
   const withoutTimestamp = normalized.replace(/^\d{4}-\d{2}-\d{2}T\S+Z\s*/u, "")
   if (
     CURL_PROGRESS_HEADER_PATTERN.test(withoutTimestamp) ||
@@ -1366,6 +1366,14 @@ interface ConsoleStyle {
   underline: boolean
 }
 
+export interface DockerConsoleLog {
+  content: string
+  instanceId: string
+  path: "console.log"
+  size: number
+  startedAt: string | null
+}
+
 const ANSI_COLORS = [
   "#1f2937",
   "#dc2626",
@@ -1409,7 +1417,7 @@ function styledConsoleSegments(
   expectedText: string
 ): Array<RelayConsoleSegment> | undefined {
   const tokenPattern = new RegExp(
-    `${String.fromCodePoint(27)}\\[([\\d;:]*)m|§([0-9a-fk-or])`,
+    `${String.fromCodePoint(27)}\\[([\\d;:]*)m|§x((?:§[\\da-f]){6})|§([0-9a-fk-or])`,
     "giu"
   )
   const segments: Array<RelayConsoleSegment> = []
@@ -1450,7 +1458,8 @@ function styledConsoleSegments(
     append(value.slice(offset, match.index))
     offset = match.index + match[0].length
     styled = true
-    if (match[2]) applyMinecraftStyle(match[2].toLowerCase(), style)
+    if (match[3]) applyMinecraftStyle(match[3].toLowerCase(), style)
+    else if (match[2]) applyMinecraftHexStyle(match[2], style)
     else applyAnsiStyle(match[1] ?? "", style)
   }
   append(value.slice(offset))
@@ -1460,6 +1469,11 @@ function styledConsoleSegments(
   const start = plain.indexOf(expectedText)
   if (start < 0) return undefined
   return sliceConsoleSegments(segments, start, expectedText.length)
+}
+
+function applyMinecraftHexStyle(value: string, style: ConsoleStyle): void {
+  resetConsoleStyle(style)
+  style.color = `#${value.replaceAll("§", "")}`
 }
 
 function applyMinecraftStyle(code: string, style: ConsoleStyle): void {
@@ -1565,7 +1579,7 @@ function sliceConsoleSegments(
 function consoleStartedAt(container: DockerInspect): string | null {
   const timestamp = Date.parse(container.State.StartedAt)
   return Number.isFinite(timestamp) && timestamp > 0
-    ? new Date(timestamp).toISOString()
+    ? container.State.StartedAt
     : null
 }
 
@@ -1659,6 +1673,10 @@ function renderTerminalLine(value: string): string {
 
 function stripAnsi(value: string): string {
   return value.replace(ANSI_PATTERN, "").replace(/\r/gu, "")
+}
+
+function stripConsoleFormatting(value: string): string {
+  return stripAnsi(value).replace(MINECRAFT_STYLE_PATTERN, "")
 }
 
 function titleCase(value: string): string {

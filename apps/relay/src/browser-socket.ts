@@ -13,6 +13,8 @@ import * as Sentry from "@sentry/node"
 import {
   relayBrowserProofTranscript,
   relayBrowserRequestProofTranscript,
+  relayBrowserConsoleProtocol,
+  relayBrowserConsoleProtocols,
   relayBrowserProtocol,
 } from "@workspace/contracts"
 import type { RelayConsoleLine } from "@workspace/contracts"
@@ -22,6 +24,11 @@ import {
 } from "@workspace/contracts"
 
 import type { DockerDriver } from "./docker.js"
+import {
+  encodeConsoleHistoryFrames,
+  encodeConsoleLineFrame,
+  encodeNewestConsoleBatch,
+} from "./console-frames.js"
 import type { FilesystemDriver } from "./files.js"
 import type { RelayInstanceConfig } from "./config.js"
 import type { RelayIdentity } from "./effect/identity.js"
@@ -132,8 +139,12 @@ export function attachBrowserSocket(
   const resourceHubs = new ResourceHubRegistry(options.subscribeSnapshots)
   const wss = new WebSocketServer({
     clientTracking: false,
-    handleProtocols: (protocols) =>
-      protocols.has(relayBrowserProtocol) ? relayBrowserProtocol : false,
+    handleProtocols: (protocols) => {
+      if (protocols.has(relayBrowserConsoleProtocol)) {
+        return relayBrowserConsoleProtocol
+      }
+      return protocols.has(relayBrowserProtocol) ? relayBrowserProtocol : false
+    },
     maxPayload: 64 * 1024,
     noServer: true,
     perMessageDeflate: false,
@@ -142,9 +153,12 @@ export function attachBrowserSocket(
   options.server.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url ?? "/", "http://relay")
     if (url.pathname !== "/v1/browser") return
+    const requestedProtocols = parseProtocols(
+      request.headers["sec-websocket-protocol"]
+    )
     if (
-      !parseProtocols(request.headers["sec-websocket-protocol"]).includes(
-        relayBrowserProtocol
+      !relayBrowserConsoleProtocols.some((protocol) =>
+        requestedProtocols.includes(protocol)
       )
     ) {
       socket.write("HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\n\r\n")
@@ -348,13 +362,18 @@ function authenticateBrowser(
     const validProof = verify(
       "sha256",
       Buffer.from(
-        relayBrowserProofTranscript({
-          capabilityId: parsed.payload.capabilityId,
-          expiresAt: challenge.expiresAt,
-          nonce: challenge.nonce,
-          relayId: challenge.relayId,
-          sessionId: challenge.sessionId,
-        })
+        relayBrowserProofTranscript(
+          {
+            capabilityId: parsed.payload.capabilityId,
+            expiresAt: challenge.expiresAt,
+            nonce: challenge.nonce,
+            relayId: challenge.relayId,
+            sessionId: challenge.sessionId,
+          },
+          socket.protocol === relayBrowserConsoleProtocol
+            ? relayBrowserConsoleProtocol
+            : relayBrowserProtocol
+        )
       ),
       { dsaEncoding: "ieee-p1363", key: browserKey },
       Buffer.from(auth.signature, "base64url")
@@ -1102,22 +1121,7 @@ class ConsoleHub {
         this.#recent.splice(0, this.#recent.length, ...snapshot.lines)
         this.#lineIds.clear()
         for (const line of snapshot.lines) this.#lineIds.add(line.id)
-        const encodedReset = JSON.stringify({
-          type: "reset",
-          instanceId: this.#instance.id,
-          startedAt,
-          lines: snapshot.lines,
-          truncated: snapshot.truncated,
-        })
-        const encodedReady = JSON.stringify({
-          type: "ready",
-          instanceId: this.#instance.id,
-          startedAt,
-        })
-        for (const socket of this.#subscribers) {
-          sendEncoded(socket, encodedReset)
-          sendEncoded(socket, encodedReady)
-        }
+        for (const socket of this.#subscribers) this.#sendSession(socket)
       } else {
         for (const line of snapshot.lines) this.#append(line)
       }
@@ -1163,7 +1167,7 @@ class ConsoleHub {
       if (removed) this.#lineIds.delete(removed.id)
       this.#truncated = true
     }
-    const encoded = JSON.stringify({ type: "line", line })
+    const encoded = encodeConsoleLineFrame(line)
     for (const socket of this.#subscribers) sendEncoded(socket, encoded)
   }
 
@@ -1216,37 +1220,55 @@ class ConsoleHub {
   }
 
   #sendSession(socket: WebSocket): void {
+    const startedAt = this.#sessionStartedAt ?? null
     const snapshotStart = Math.max(0, this.#recent.length - 200)
-    send(socket, {
+    if (socket.protocol === relayBrowserProtocol) {
+      send(socket, {
+        type: "ready",
+        instanceId: this.#instance.id,
+        startedAt,
+      })
+      for (const line of this.#recent.slice(snapshotStart)) {
+        sendEncoded(socket, encodeConsoleLineFrame(line))
+      }
+      return
+    }
+
+    const reset = encodeNewestConsoleBatch({
       type: "reset",
       instanceId: this.#instance.id,
-      startedAt: this.#sessionStartedAt ?? null,
+      startedAt,
       lines: this.#recent.slice(snapshotStart),
       truncated: this.#truncated || snapshotStart > 0,
     })
+    sendEncoded(socket, reset.encoded)
     send(socket, {
       type: "ready",
       instanceId: this.#instance.id,
-      startedAt: this.#sessionStartedAt ?? null,
+      startedAt,
     })
-    this.#sendHistory(new Set([socket]), this.#recent.slice(0, snapshotStart))
+    this.#sendHistory(
+      new Set([socket]),
+      this.#recent.slice(0, snapshotStart + reset.start)
+    )
   }
 
   #sendHistory(
     sockets: ReadonlySet<WebSocket>,
     lines: ReadonlyArray<RelayConsoleLine>
   ): void {
-    const chunkSize = 200
-    for (let end = lines.length; end > 0; end -= chunkSize) {
-      const start = Math.max(0, end - chunkSize)
-      const encoded = JSON.stringify({
-        type: "history",
-        instanceId: this.#instance.id,
-        startedAt: this.#sessionStartedAt ?? null,
-        lines: lines.slice(start, end),
-        truncated: this.#truncated || start > 0,
-      })
-      for (const socket of sockets) sendEncoded(socket, encoded)
+    const subscribers = [...sockets].filter(
+      (socket) => socket.protocol === relayBrowserConsoleProtocol
+    )
+    if (subscribers.length === 0) return
+    const frames = encodeConsoleHistoryFrames({
+      instanceId: this.#instance.id,
+      startedAt: this.#sessionStartedAt ?? null,
+      lines,
+      truncated: this.#truncated,
+    })
+    for (const encoded of frames) {
+      for (const socket of subscribers) sendEncoded(socket, encoded)
     }
   }
 }

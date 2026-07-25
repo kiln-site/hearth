@@ -9,6 +9,7 @@ import { Effect } from "effect"
 import {
   relayConsoleCommandSchema,
   relayConsoleCompletionInputSchema,
+  relayConsoleShareInputSchema,
   relayCreateInstanceSchema,
   relayInstanceActionSchema,
   relayInstanceNameSchema,
@@ -51,6 +52,7 @@ import type { RelayClientGrant, RelayClientRole } from "./effect/state.js"
 import { loadRelayTls } from "./effect/tls.js"
 import { applyStoredInstanceNames } from "./instance-names.js"
 import { normalizedRoute } from "./route-label.js"
+import { uploadConsoleLogToMclogs } from "./mclogs.js"
 import { closeRelayServer } from "./shutdown.js"
 import { attachSftpServer } from "./sftp-server.js"
 import { actionsForRole, relayActions } from "./permissions.js"
@@ -894,8 +896,15 @@ async function executeControlRequest(
       const input = relayConsoleCompletionInputSchema.parse(payload)
       return docker.completeCommand(instance, input.input, input.cursor)
     }
-    case "instance.logs.console":
-      return docker.consoleLog(await requiredInstance(payload))
+    case "instance.logs.share": {
+      const instance = await requiredInstance(payload)
+      const input = relayConsoleShareInputSchema.parse(payload)
+      const log = await docker.consoleLog(instance)
+      return runRelayEffect(
+        "mclogs.upload",
+        uploadConsoleLogToMclogs(config.mclogsApiUrl, log, input)
+      )
+    }
     case "instance.logs.latest":
       return filesystem.latestLog(await requiredInstance(payload))
     case "instance.network.routes.read": {
