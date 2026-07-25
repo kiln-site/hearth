@@ -17,7 +17,7 @@ import {
   relayBrowserConsoleProtocols,
   relayBrowserProtocol,
 } from "@workspace/contracts"
-import type { RelayConsoleLine } from "@workspace/contracts"
+import type { RelayConsole, RelayConsoleLine } from "@workspace/contracts"
 import {
   relayConsoleCommandSchema,
   relayConsoleCompletionInputSchema,
@@ -135,7 +135,10 @@ export function attachBrowserSocket(
   const requestProofs = new Map<string, number>()
   const pendingRequestProofs = new Set<string>()
   const transfers = { active: 0, byClient: new Map<string, number>() }
-  const hubs = new ConsoleHubRegistry(options.docker)
+  const hubs = new ConsoleHubRegistry(
+    options.docker,
+    options.subscribeSnapshots
+  )
   const resourceHubs = new ResourceHubRegistry(options.subscribeSnapshots)
   const wss = new WebSocketServer({
     clientTracking: false,
@@ -945,10 +948,15 @@ class ConsoleHubRegistry {
   readonly #docker: DockerDriver
   readonly #hubs = new Map<string, ConsoleHub>()
   readonly #pendingHubs = new Map<string, Promise<ConsoleHub>>()
+  readonly #subscribeSnapshots: BrowserSocketOptions["subscribeSnapshots"]
   readonly #subscriptions = new Map<WebSocket, string>()
 
-  constructor(docker: DockerDriver) {
+  constructor(
+    docker: DockerDriver,
+    subscribeSnapshots: BrowserSocketOptions["subscribeSnapshots"]
+  ) {
     this.#docker = docker
+    this.#subscribeSnapshots = subscribeSnapshots
   }
 
   async subscribe(socket: WebSocket, instanceId: string): Promise<void> {
@@ -998,9 +1006,14 @@ class ConsoleHubRegistry {
   async #createHub(instanceId: string): Promise<ConsoleHub> {
     const instance = await this.#docker.findInstance(instanceId)
     if (!instance) throw new Error("Instance not found")
-    const hub = new ConsoleHub(this.#docker, instance, () => {
-      if (hub.subscriberCount === 0) this.#hubs.delete(instanceId)
-    })
+    const hub = new ConsoleHub(
+      this.#docker,
+      instance,
+      this.#subscribeSnapshots,
+      () => {
+        if (hub.subscriberCount === 0) this.#hubs.delete(instanceId)
+      }
+    )
     this.#hubs.set(instanceId, hub)
     return hub
   }
@@ -1060,18 +1073,25 @@ class ConsoleHub {
   #backfillStartedAt: string | null | undefined
   #graceTimer: ReturnType<typeof setTimeout> | null = null
   #retryTimer: ReturnType<typeof setTimeout> | null = null
+  #sessionFloor: string | null = null
   #sessionStartedAt: string | null | undefined
   #started = false
+  #transitionStartedAt: string | null = null
   #truncated = false
+  #unsubscribeSnapshots: (() => void) | null
 
   constructor(
     docker: DockerDriver,
     instance: NonNullable<Awaited<ReturnType<DockerDriver["findInstance"]>>>,
+    subscribeSnapshots: BrowserSocketOptions["subscribeSnapshots"],
     onEmpty: () => void
   ) {
     this.#docker = docker
     this.#instance = instance
     this.#onEmpty = onEmpty
+    this.#unsubscribeSnapshots = subscribeSnapshots((sample) => {
+      this.#observeSnapshot(sample)
+    })
   }
 
   get subscriberCount(): number {
@@ -1105,6 +1125,8 @@ class ConsoleHub {
     if (this.#retryTimer) clearTimeout(this.#retryTimer)
     this.#graceTimer = null
     this.#retryTimer = null
+    this.#unsubscribeSnapshots?.()
+    this.#unsubscribeSnapshots = null
     this.#abort.abort()
     this.#onEmpty()
   }
@@ -1115,13 +1137,7 @@ class ConsoleHub {
       const startedAt = snapshot.startedAt ?? null
       const sessionChanged = this.#sessionStartedAt !== startedAt
       if (this.#sessionStartedAt === undefined || sessionChanged) {
-        this.#sessionStartedAt = startedAt
-        this.#backfillStartedAt = undefined
-        this.#truncated = snapshot.truncated
-        this.#recent.splice(0, this.#recent.length, ...snapshot.lines)
-        this.#lineIds.clear()
-        for (const line of snapshot.lines) this.#lineIds.add(line.id)
-        for (const socket of this.#subscribers) this.#sendSession(socket)
+        this.#replaceSession(snapshot)
       } else {
         for (const line of snapshot.lines) this.#append(line)
       }
@@ -1159,6 +1175,13 @@ class ConsoleHub {
   }
 
   #append(line: RelayConsoleLine): void {
+    if (
+      this.#sessionFloor &&
+      line.timestamp &&
+      line.timestamp < this.#sessionFloor
+    ) {
+      return
+    }
     if (this.#lineIds.has(line.id)) return
     this.#lineIds.add(line.id)
     this.#recent.push(line)
@@ -1169,6 +1192,63 @@ class ConsoleHub {
     }
     const encoded = encodeConsoleLineFrame(line)
     for (const socket of this.#subscribers) sendEncoded(socket, encoded)
+  }
+
+  #observeSnapshot(sample: RelaySnapshotSample): void {
+    if (this.#abort.signal.aborted || this.#sessionStartedAt === undefined) {
+      return
+    }
+    const startedAt = sample.snapshot.instances.find(
+      (instance) => instance.id === this.#instance.id
+    )?.startedAt
+    if (
+      !startedAt ||
+      startedAt === this.#sessionStartedAt ||
+      startedAt === this.#transitionStartedAt
+    ) {
+      return
+    }
+    this.#transitionStartedAt = startedAt
+    void this.#transitionSession(startedAt)
+  }
+
+  #replaceSession(snapshot: RelayConsole): void {
+    const startedAt = snapshot.startedAt ?? null
+    this.#sessionFloor = startedAt ? new Date(startedAt).toISOString() : null
+    this.#sessionStartedAt = startedAt
+    this.#backfillStartedAt = undefined
+    this.#truncated = snapshot.truncated
+    this.#recent.splice(0, this.#recent.length, ...snapshot.lines)
+    this.#lineIds.clear()
+    for (const line of snapshot.lines) this.#lineIds.add(line.id)
+    for (const socket of this.#subscribers) this.#sendSession(socket)
+  }
+
+  async #transitionSession(startedAt: string): Promise<void> {
+    try {
+      const snapshot = await this.#docker.console(this.#instance, 200)
+      if (
+        this.#abort.signal.aborted ||
+        this.#transitionStartedAt !== startedAt ||
+        this.#sessionStartedAt === startedAt ||
+        snapshot.startedAt !== startedAt
+      ) {
+        return
+      }
+      this.#replaceSession(snapshot)
+      this.#backfillStartedAt = startedAt
+      void this.#backfill(startedAt)
+    } catch (cause) {
+      if (!this.#abort.signal.aborted) {
+        Sentry.captureException(cause, {
+          tags: { "kiln.operation": "browser.console.session-transition" },
+        })
+      }
+    } finally {
+      if (this.#transitionStartedAt === startedAt) {
+        this.#transitionStartedAt = null
+      }
+    }
   }
 
   async #backfill(startedAt: string | null): Promise<void> {

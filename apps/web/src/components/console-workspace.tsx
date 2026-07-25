@@ -1743,7 +1743,6 @@ function useRelayConsoleStream(
         startedAt: null,
         truncated: false,
       }
-      sessionStartedAtRef.current = null
       sessionInitializedRef.current = true
       commitConsole(next)
       return
@@ -1759,6 +1758,26 @@ function useRelayConsoleStream(
       lines: [...current.lines, line],
     })
   }, [commitConsole, instanceId, runtime?.observedState])
+
+  React.useEffect(() => {
+    const startedAt = runtime?.startedAt
+    if (
+      !awaitingNewSessionRef.current ||
+      !startedAt ||
+      startedAt === sessionStartedAtRef.current
+    ) {
+      return
+    }
+    awaitingNewSessionRef.current = false
+    sessionStartedAtRef.current = startedAt
+    sessionInitializedRef.current = true
+    commitConsole({
+      instanceId,
+      lines: initialConsoleStateLines(startedAt, runtime.observedState),
+      startedAt,
+      truncated: false,
+    })
+  }, [commitConsole, instanceId, runtime?.observedState, runtime?.startedAt])
 
   React.useEffect(() => {
     if (!relayConnected) {
@@ -1825,6 +1844,42 @@ function useRelayConsoleStream(
       }
     }
 
+    function replaceSession(
+      startedAt: string | null,
+      lines: ReadonlyArray<RelayConsoleLine>,
+      truncated: boolean
+    ) {
+      if (flushTimer !== null) {
+        window.clearTimeout(flushTimer)
+        flushTimer = null
+      }
+      pending.length = 0
+      awaitingNewSessionRef.current = false
+      sessionStartedAtRef.current = startedAt
+      sessionInitializedRef.current = true
+      const nextLines = [
+        ...initialConsoleStateLines(
+          startedAt,
+          runtimeRef.current?.observedState
+        ),
+        ...lines,
+      ]
+      seen.clear()
+      for (const line of nextLines) seen.add(line.id)
+      const nextConsole = {
+        instanceId,
+        lines: nextLines,
+        startedAt,
+        truncated,
+      }
+      consoleDataRef.current = nextConsole
+      queryClient.setQueryData(
+        queryKeys.relay.console(relayId, instanceId),
+        nextConsole
+      )
+      commitSnapshot({ consoleData: nextConsole })
+    }
+
     async function connect() {
       let retryDelay = 400
       while (!cancelled) {
@@ -1852,6 +1907,13 @@ function useRelayConsoleStream(
               })
             } else if (event.type === "ready") {
               hasEverBeenLiveRef.current = true
+              if (
+                awaitingNewSessionRef.current &&
+                event.startedAt !== undefined &&
+                event.startedAt !== sessionStartedAtRef.current
+              ) {
+                replaceSession(event.startedAt, [], false)
+              }
               const nextConsole = consoleDataRef.current ?? {
                 instanceId,
                 lines: [],
@@ -1881,35 +1943,7 @@ function useRelayConsoleStream(
               ) {
                 continue
               }
-              if (flushTimer !== null) {
-                window.clearTimeout(flushTimer)
-                flushTimer = null
-              }
-              pending.length = 0
-              awaitingNewSessionRef.current = false
-              sessionStartedAtRef.current = event.startedAt
-              sessionInitializedRef.current = true
-              const lines = [
-                ...initialConsoleStateLines(
-                  event.startedAt,
-                  runtimeRef.current?.observedState
-                ),
-                ...event.lines,
-              ]
-              seen.clear()
-              for (const line of lines) seen.add(line.id)
-              const nextConsole = {
-                instanceId,
-                lines,
-                startedAt: event.startedAt,
-                truncated: event.truncated,
-              }
-              consoleDataRef.current = nextConsole
-              queryClient.setQueryData(
-                queryKeys.relay.console(relayId, instanceId),
-                nextConsole
-              )
-              commitSnapshot({ consoleData: nextConsole })
+              replaceSession(event.startedAt, event.lines, event.truncated)
             } else if (event.type === "history") {
               if (
                 awaitingNewSessionRef.current ||
@@ -1936,8 +1970,16 @@ function useRelayConsoleStream(
                 nextConsole
               )
               commitSnapshot({ consoleData: nextConsole })
-            } else if (!awaitingNewSessionRef.current) {
-              append(event.line)
+            } else {
+              if (awaitingNewSessionRef.current) {
+                const startedAt = runtimeRef.current?.startedAt
+                if (!startedAt || startedAt === sessionStartedAtRef.current) {
+                  continue
+                }
+                replaceSession(startedAt, [event.line], false)
+              } else {
+                append(event.line)
+              }
             }
           }
         } catch (cause) {
