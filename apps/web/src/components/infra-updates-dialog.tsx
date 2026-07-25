@@ -67,6 +67,7 @@ type ViewVisibility = {
 type UpdateDialogViewStore = ReturnType<typeof createUpdateDialogViewStore>
 
 const activeUpdateStorageKey = "kiln.active-system-update"
+const minimumUpdateCheckDuration = 750
 const releaseDateFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
   timeZone: "UTC",
@@ -404,6 +405,8 @@ const UpdaterCheckControl = React.memo(function UpdaterCheckControl({
     notifyOnChangeProps: ["dataUpdatedAt", "isFetching"],
   })
   const [lastCheckedAt, setLastCheckedAt] = React.useState("Not yet")
+  const [checking, setChecking] = React.useState(overviewQuery.isFetching)
+  const checkStartedAtRef = React.useRef<number | null>(null)
 
   React.useEffect(() => {
     if (overviewQuery.dataUpdatedAt === 0) return
@@ -412,24 +415,48 @@ const UpdaterCheckControl = React.memo(function UpdaterCheckControl({
     )
   }, [overviewQuery.dataUpdatedAt])
 
+  React.useEffect(() => {
+    if (overviewQuery.isFetching) {
+      if (checkStartedAtRef.current === null) {
+        checkStartedAtRef.current = performance.now()
+      }
+      setChecking(true)
+      return
+    }
+
+    const checkStartedAt = checkStartedAtRef.current
+    if (checkStartedAt === null) {
+      setChecking(false)
+      return
+    }
+
+    const remainingDuration = Math.max(
+      0,
+      minimumUpdateCheckDuration - (performance.now() - checkStartedAt)
+    )
+    const timeoutId = window.setTimeout(() => {
+      checkStartedAtRef.current = null
+      setChecking(false)
+    }, remainingDuration)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [overviewQuery.isFetching])
+
   return (
     <div className="flex shrink-0 flex-col items-end gap-1">
       <Button
-        aria-busy={overviewQuery.isFetching}
-        aria-label={
-          overviewQuery.isFetching
-            ? "Checking for updates"
-            : "Check for updates"
-        }
-        disabled={overviewQuery.isFetching}
+        aria-busy={checking}
+        aria-label={checking ? "Checking for updates" : "Check for updates"}
+        className="w-10 sm:w-40"
+        disabled={checking}
         size="sm"
         type="button"
         variant="outline"
         onClick={() => void overviewQuery.refetch()}
       >
-        <RefreshCw className={overviewQuery.isFetching ? "animate-spin" : ""} />
+        <RefreshCw className={checking ? "animate-spin" : ""} />
         <span className="hidden sm:inline">
-          {overviewQuery.isFetching ? "Checking..." : "Check for updates"}
+          {checking ? "Checking..." : "Check for updates"}
         </span>
       </Button>
       <p className="hidden text-[9px] text-muted-foreground sm:block">
