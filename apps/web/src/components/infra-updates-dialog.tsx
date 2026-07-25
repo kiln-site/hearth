@@ -336,29 +336,6 @@ function UpdateOverviewView({
   return (
     <div className="p-4 sm:p-5">
       <section className="overflow-hidden rounded-xl border bg-card/45">
-        <div className="flex flex-col gap-3 border-b bg-background/30 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="font-mono text-[9px] tracking-[0.14em] text-primary uppercase">
-              Latest supported release
-            </p>
-            <p className="mt-1 font-heading text-lg font-semibold tracking-[-0.03em]">
-              {latestRelease ? `Kiln v${latestRelease.version}` : "Unavailable"}
-            </p>
-          </div>
-          {latestRelease ? (
-            <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-              <Badge
-                variant={
-                  latestRelease.channel === "stable" ? "default" : "outline"
-                }
-              >
-                {latestRelease.channel}
-              </Badge>
-              <span>{formatReleaseDate(latestRelease.publishedAt)}</span>
-            </div>
-          ) : null}
-        </div>
-
         {latestRelease ? (
           <div className="divide-y divide-border/70">
             {targets.map((target, index) => (
