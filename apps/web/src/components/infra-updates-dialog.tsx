@@ -89,8 +89,9 @@ type UpdateDialogViewStore = ReturnType<typeof createUpdateDialogViewStore>
 const changelogRangeStorageKey = "kiln.system-update-changelog-ranges"
 const completedUpdateStorageKey = "kiln.completed-system-update"
 const updateFailureStorageKey = "kiln.system-update-failures"
+const githubRepositoryUrl = "https://github.com/kiln-site/hearth"
 const githubIssuesUrl = "https://github.com/kiln-site/hearth/issues/new/choose"
-const githubReleasesUrl = "https://github.com/kiln-site/hearth/releases"
+const githubReleasesUrl = `${githubRepositoryUrl}/releases`
 const updatesContinuingToastId = "system-updates:continuing"
 const updatesFinishedToastId = "system-updates:finished"
 const minimumUpdateCheckDuration = 750
@@ -197,6 +198,7 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
   const registerStartedUpdate = React.useCallback(
     (update: ActiveUpdate) => {
       announceUpdateStarted(update)
+      setPending(null)
       replaceActive([...activeRef.current, update])
     },
     [replaceActive]
@@ -502,18 +504,18 @@ const UpdateDialogBody = React.memo(function UpdateDialogBody({
   return (
     <div className="relative min-h-0 overflow-hidden">
       {pending ? (
-        <div className="h-full overflow-y-auto overscroll-contain">
+        <div className="h-full overflow-x-hidden overflow-y-auto overscroll-contain">
           <UpdateDialogSkeleton />
         </div>
       ) : failed ? (
-        <div className="h-full overflow-y-auto overscroll-contain">
+        <div className="h-full overflow-x-hidden overflow-y-auto overscroll-contain">
           <UpdateDialogError message={errorMessage} onRetry={onRetry} />
         </div>
       ) : overview ? (
         <>
           <div
             aria-hidden={visibility.view !== "overview"}
-            className={`absolute inset-0 overflow-y-auto overscroll-contain [will-change:opacity] [contain:strict] ${
+            className={`absolute inset-0 overflow-x-hidden overflow-y-auto overscroll-contain [will-change:opacity] [contain:strict] ${
               visibility.view === "overview"
                 ? "pointer-events-auto opacity-100"
                 : "pointer-events-none opacity-0"
@@ -534,7 +536,7 @@ const UpdateDialogBody = React.memo(function UpdateDialogBody({
           {visibility.changelogMounted ? (
             <div
               aria-hidden={visibility.view !== "changelog"}
-              className={`absolute inset-0 overflow-y-auto overscroll-contain [will-change:opacity] [contain:strict] ${
+              className={`absolute inset-0 overflow-x-hidden overflow-y-auto overscroll-contain [will-change:opacity] [contain:strict] ${
                 visibility.view === "changelog"
                   ? "pointer-events-auto opacity-100"
                   : "pointer-events-none opacity-0"
@@ -733,7 +735,7 @@ const UpdateOverviewView = React.memo(function UpdateOverviewView({
 
   return (
     <div className="space-y-4 p-4 sm:p-5">
-      <section className="flex flex-col gap-3 rounded-xl border border-primary/20 bg-primary/[0.045] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <section className="sticky top-0 z-10 flex flex-col gap-3 rounded-xl border border-primary/20 bg-background/95 px-4 py-3 shadow-sm backdrop-blur-sm sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-start gap-2.5">
           <ShieldCheck className="mt-0.5 size-4 shrink-0 text-primary" />
           <div>
@@ -897,8 +899,10 @@ const UpdateTargetRow = React.memo(function UpdateTargetRow({
             </span>
           </div>
           <p className="mt-1 font-mono text-[10px] text-muted-foreground">
-            {displayVersion(target.currentVersion)}
-            <span className="mx-2 text-border">→</span>v{latestVersion}
+            <OverviewVersionLink
+              currentVersion={target.currentVersion}
+              latestVersion={latestVersion}
+            />
           </p>
           {!target.eligible && target.reason ? (
             <p className="mt-1.5 flex max-w-2xl gap-1.5 text-[10px] leading-4 text-muted-foreground">
@@ -944,6 +948,60 @@ const UpdateTargetRow = React.memo(function UpdateTargetRow({
     </div>
   )
 }, areUpdateTargetRowPropsEqual)
+
+const OverviewVersionLink = React.memo(function OverviewVersionLink({
+  currentVersion,
+  latestVersion,
+}: {
+  currentVersion: string | null
+  latestVersion: string
+}) {
+  if (currentVersion === latestVersion) {
+    return (
+      <GitHubVersionLink href={githubReleaseUrl(latestVersion)}>
+        v{latestVersion}
+      </GitHubVersionLink>
+    )
+  }
+
+  if (isKilnReleaseVersion(currentVersion)) {
+    return (
+      <GitHubVersionLink href={githubCompareUrl(currentVersion, latestVersion)}>
+        v{currentVersion}
+        <span className="mx-2 text-border">→</span>v{latestVersion}
+      </GitHubVersionLink>
+    )
+  }
+
+  return (
+    <>
+      {displayVersion(currentVersion)}
+      <span className="mx-2 text-border">→</span>
+      <GitHubVersionLink href={githubReleaseUrl(latestVersion)}>
+        v{latestVersion}
+      </GitHubVersionLink>
+    </>
+  )
+})
+
+const GitHubVersionLink = React.memo(function GitHubVersionLink({
+  children,
+  href,
+}: {
+  children: React.ReactNode
+  href: string
+}) {
+  return (
+    <a
+      className="rounded-sm transition-colors hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+      href={href}
+      rel="noreferrer"
+      target="_blank"
+    >
+      {children}
+    </a>
+  )
+})
 
 const UpdateChangelogView = React.memo(function UpdateChangelogView({
   changelogRevision,
@@ -1128,7 +1186,7 @@ const ChangelogTimeline = React.memo(function ChangelogTimeline({
     store.getTargetSnapshot
   )
   const selectedTarget = findSelectedTarget(targets, selectedKey)
-  const currentVersion = selectedTarget?.currentVersion ?? null
+  const selectedVersion = selectedTarget?.currentVersion ?? null
   const selection = selectedTarget
     ? changelogSelection(selectedTarget, availableReleases[0]?.version ?? null)
     : { alreadyLatest: false, fromVersion: null }
@@ -1139,7 +1197,7 @@ const ChangelogTimeline = React.memo(function ChangelogTimeline({
         : changelogReleases(availableReleases, selection.fromVersion),
     [
       availableReleases,
-      currentVersion,
+      selectedVersion,
       selection.alreadyLatest,
       selection.fromVersion,
     ]
@@ -1151,8 +1209,8 @@ const ChangelogTimeline = React.memo(function ChangelogTimeline({
         <ChangelogRelease
           key={release.tag}
           latest={index === 0}
+          previous={release.version === selection.fromVersion}
           release={release}
-          current={release.version === currentVersion}
         />
       ))}
     </div>
@@ -1172,19 +1230,19 @@ const ChangelogTimeline = React.memo(function ChangelogTimeline({
 }, areChangelogTimelinePropsEqual)
 
 const ChangelogRelease = React.memo(function ChangelogRelease({
-  current,
   latest,
+  previous,
   release,
 }: {
-  current: boolean
   latest: boolean
+  previous: boolean
   release: PublicKilnRelease
 }) {
   return (
     <article>
       <span
         className={`absolute -left-[0.34rem] mt-1.5 size-2.5 rounded-full border-2 border-popover ${
-          current ? "bg-emerald-400" : latest ? "bg-primary" : "bg-border"
+          latest ? "bg-primary" : previous ? "bg-amber-300" : "bg-border"
         }`}
       />
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -1192,10 +1250,10 @@ const ChangelogRelease = React.memo(function ChangelogRelease({
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-sm font-semibold">{release.name}</h3>
             {latest ? <Badge>Latest</Badge> : null}
-            {current ? <Badge variant="outline">Current</Badge> : null}
+            {previous ? <Badge variant="outline">Previous</Badge> : null}
           </div>
           <p className="mt-1 font-mono text-[9px] text-muted-foreground">
-            v{release.version} · {formatReleaseDate(release.publishedAt)}
+            {formatReleaseDate(release.publishedAt)}
           </p>
         </div>
         <a
@@ -1282,27 +1340,21 @@ function UpdateConfirmation({
   onOpenChange: (open: boolean) => void
 }) {
   const targetLabel =
-    targets.length === 1 ? targets[0]?.name : `${targets.length} systems`
+    targets.length === 1
+      ? (targets[0]?.name ?? "system")
+      : `${targets.length} systems`
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Confirm system update</DialogTitle>
+          <DialogTitle>Update {targetLabel}?</DialogTitle>
           <DialogDescription>
             {targets.length > 0 && latestVersion
-              ? `${targetLabel} will update to the latest supported release, v${latestVersion}. Running game servers stay online and players remain connected.`
+              ? `${targetLabel} will update to v${latestVersion}.`
               : ""}
           </DialogDescription>
         </DialogHeader>
-        <div className="flex gap-3 rounded-lg border border-primary/20 bg-primary/[0.05] p-3 text-xs text-muted-foreground">
-          <ShieldCheck className="size-4 shrink-0 text-primary" />
-          <p>
-            Kiln verifies the replacement container and automatically restores
-            the previous one if its health checks fail. The Panel may be briefly
-            unavailable while its own container is replaced.
-          </p>
-        </div>
         {error ? (
           <p className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-xs text-destructive">
             {error}
@@ -1323,7 +1375,7 @@ function UpdateConfirmation({
             ) : (
               <CloudDownload />
             )}
-            {targets.length > 1 ? `Update ${targets.length} systems` : "Update"}
+            Confirm
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -2004,6 +2056,16 @@ function formatReleaseDate(publishedAt: string | null): string {
     : "Recently published"
 }
 
+function githubReleaseUrl(version: string): string {
+  return `${githubReleasesUrl}/tag/${encodeURIComponent(`v${version}`)}`
+}
+
+function githubCompareUrl(fromVersion: string, toVersion: string): string {
+  const fromTag = encodeURIComponent(`v${fromVersion}`)
+  const toTag = encodeURIComponent(`v${toVersion}`)
+  return `${githubRepositoryUrl}/compare/${fromTag}...${toTag}`
+}
+
 function markdownTextLines(
   notes: string | null
 ): Array<{ id: string; text: string }> {
@@ -2021,7 +2083,8 @@ function markdownTextLines(
       (line) =>
         line.length > 0 &&
         !/^(```|~~~)/u.test(line) &&
-        !/^[-*_]{3,}$/u.test(line)
+        !/^[-*_]{3,}$/u.test(line) &&
+        !isReleaseNoteBoilerplate(line)
     )
   const occurrences = new Map<string, number>()
 
@@ -2032,9 +2095,17 @@ function markdownTextLines(
   })
 }
 
+function isReleaseNoteBoilerplate(line: string): boolean {
+  const plainLine = stripInlineMarkdown(line).trim()
+  return (
+    /^what(?:'|’)?s changed:?$/iu.test(plainLine) ||
+    /^full changelog\s*:/iu.test(plainLine)
+  )
+}
+
 function linkedMarkdownText(text: string): React.ReactNode {
   const linkPattern =
-    /!?\[([^\]]*)\]\((https?:\/\/[^)\s]+)(?:\s+"[^"]*")?\)|(https?:\/\/[^\s<]+)/gu
+    /!?\[([^\]]*)\]\((https?:\/\/[^)\s]+)(?:\s+"[^"]*")?\)|(https?:\/\/[^\s<]+)|(?<![\w@])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)/gu
   const content: Array<React.ReactNode> = []
   let cursor = 0
 
@@ -2043,14 +2114,33 @@ function linkedMarkdownText(text: string): React.ReactNode {
     const markdownLabel = match[1]
     const markdownUrl = match[2]
     const bareUrl = match[3]
+    const githubUsername = match[4]
     if (index > cursor) {
       content.push(stripInlineMarkdown(text.slice(cursor, index)))
+    }
+
+    if (githubUsername) {
+      content.push(
+        <a
+          className="text-primary underline decoration-primary/35 underline-offset-2 transition-colors hover:decoration-primary"
+          href={`https://github.com/${githubUsername}`}
+          key={`${index}:github:${githubUsername}`}
+          rel="noreferrer"
+          target="_blank"
+        >
+          @{githubUsername}
+        </a>
+      )
+      cursor = index + match[0].length
+      continue
     }
 
     const rawUrl = markdownUrl ?? bareUrl
     if (!rawUrl) continue
     const url = bareUrl ? trimBareUrl(rawUrl) : rawUrl
-    const label = markdownLabel ? stripInlineMarkdown(markdownLabel) : url
+    const label =
+      githubPullRequestLabel(url) ??
+      (markdownLabel ? stripInlineMarkdown(markdownLabel) : url)
     content.push(
       <a
         className="text-primary underline decoration-primary/35 underline-offset-2 transition-colors hover:decoration-primary"
@@ -2070,6 +2160,13 @@ function linkedMarkdownText(text: string): React.ReactNode {
     content.push(stripInlineMarkdown(text.slice(cursor)))
   }
   return content.length > 0 ? content : stripInlineMarkdown(text)
+}
+
+function githubPullRequestLabel(url: string): string | null {
+  const match = url.match(
+    /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/(\d+)\/?$/u
+  )
+  return match?.[1] ? `#${match[1]}` : null
 }
 
 function stripInlineMarkdown(text: string): string {
