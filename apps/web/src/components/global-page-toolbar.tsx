@@ -75,7 +75,6 @@ function sectionPageFromPathname(
     if (pathname.startsWith("/infra/relays")) return "Relays"
     if (pathname.startsWith("/infra/servers")) return "Servers"
     if (pathname.startsWith("/infra/databases")) return "Databases"
-    if (pathname.startsWith("/infra/updates")) return "Updates"
     return "Infrastructure"
   }
   if (pathname.startsWith("/settings/appearance")) return "Appearance"

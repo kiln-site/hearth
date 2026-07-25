@@ -36,7 +36,6 @@ import { Route as AppInfraDatabasesRouteImport } from './routes/_app.infra.datab
 import { Route as AppInfraRelaysRouteImport } from './routes/_app.infra.relays'
 import { Route as AppInfraServersRouteImport } from './routes/_app.infra.servers'
 import { Route as AppInfraSetupRouteImport } from './routes/_app.infra.setup'
-import { Route as AppInfraUpdatesRouteImport } from './routes/_app.infra.updates'
 import { Route as AppServerServerIdRouteImport } from './routes/_app/server/$serverId'
 import { Route as AppSettingsIndexRouteImport } from './routes/_app.settings.index'
 import { Route as AppSettingsAccountRouteImport } from './routes/_app.settings.account'
@@ -188,11 +187,6 @@ const AppInfraSetupRoute = AppInfraSetupRouteImport.update({
   path: '/setup',
   getParentRoute: () => AppInfraRoute,
 } as any)
-const AppInfraUpdatesRoute = AppInfraUpdatesRouteImport.update({
-  id: '/updates',
-  path: '/updates',
-  getParentRoute: () => AppInfraRoute,
-} as any)
 const AppServerServerIdRoute = AppServerServerIdRouteImport.update({
   id: '/server/$serverId',
   path: '/server/$serverId',
@@ -304,7 +298,6 @@ export interface FileRoutesByFullPath {
   '/infra/relays': typeof AppInfraRelaysRoute
   '/infra/servers': typeof AppInfraServersRoute
   '/infra/setup': typeof AppInfraSetupRoute
-  '/infra/updates': typeof AppInfraUpdatesRoute
   '/server/$serverId': typeof AppServerServerIdRouteWithChildren
   '/settings/account': typeof AppSettingsAccountRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
@@ -347,7 +340,6 @@ export interface FileRoutesByTo {
   '/infra/relays': typeof AppInfraRelaysRoute
   '/infra/servers': typeof AppInfraServersRoute
   '/infra/setup': typeof AppInfraSetupRoute
-  '/infra/updates': typeof AppInfraUpdatesRoute
   '/settings/account': typeof AppSettingsAccountRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
   '/settings/billing': typeof AppSettingsBillingRoute
@@ -393,7 +385,6 @@ export interface FileRoutesById {
   '/_app/infra/relays': typeof AppInfraRelaysRoute
   '/_app/infra/servers': typeof AppInfraServersRoute
   '/_app/infra/setup': typeof AppInfraSetupRoute
-  '/_app/infra/updates': typeof AppInfraUpdatesRoute
   '/_app/server/$serverId': typeof AppServerServerIdRouteWithChildren
   '/_app/settings/account': typeof AppSettingsAccountRoute
   '/_app/settings/appearance': typeof AppSettingsAppearanceRoute
@@ -440,7 +431,6 @@ export interface FileRouteTypes {
     | '/infra/relays'
     | '/infra/servers'
     | '/infra/setup'
-    | '/infra/updates'
     | '/server/$serverId'
     | '/settings/account'
     | '/settings/appearance'
@@ -483,7 +473,6 @@ export interface FileRouteTypes {
     | '/infra/relays'
     | '/infra/servers'
     | '/infra/setup'
-    | '/infra/updates'
     | '/settings/account'
     | '/settings/appearance'
     | '/settings/billing'
@@ -528,7 +517,6 @@ export interface FileRouteTypes {
     | '/_app/infra/relays'
     | '/_app/infra/servers'
     | '/_app/infra/setup'
-    | '/_app/infra/updates'
     | '/_app/server/$serverId'
     | '/_app/settings/account'
     | '/_app/settings/appearance'
@@ -760,13 +748,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppInfraSetupRouteImport
       parentRoute: typeof AppInfraRoute
     }
-    '/_app/infra/updates': {
-      id: '/_app/infra/updates'
-      path: '/updates'
-      fullPath: '/infra/updates'
-      preLoaderRoute: typeof AppInfraUpdatesRouteImport
-      parentRoute: typeof AppInfraRoute
-    }
     '/_app/server/$serverId': {
       id: '/_app/server/$serverId'
       path: '/server/$serverId'
@@ -887,7 +868,6 @@ interface AppInfraRouteChildren {
   AppInfraRelaysRoute: typeof AppInfraRelaysRoute
   AppInfraServersRoute: typeof AppInfraServersRoute
   AppInfraSetupRoute: typeof AppInfraSetupRoute
-  AppInfraUpdatesRoute: typeof AppInfraUpdatesRoute
   AppInfraIndexRoute: typeof AppInfraIndexRoute
 }
 
@@ -896,7 +876,6 @@ const AppInfraRouteChildren: AppInfraRouteChildren = {
   AppInfraRelaysRoute: AppInfraRelaysRoute,
   AppInfraServersRoute: AppInfraServersRoute,
   AppInfraSetupRoute: AppInfraSetupRoute,
-  AppInfraUpdatesRoute: AppInfraUpdatesRoute,
   AppInfraIndexRoute: AppInfraIndexRoute,
 }
 

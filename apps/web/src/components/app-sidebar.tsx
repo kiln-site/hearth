@@ -7,7 +7,6 @@ import {
 import {
   ChevronsUpDown,
   CircleHelp,
-  CloudDownload,
   Folder,
   ListTodo,
   LoaderCircle,
@@ -171,10 +170,7 @@ const AppSidebarView = React.memo(function AppSidebarView({
       </SidebarHeader>
 
       <SidebarContent>
-        <InfrastructureNavigation
-          isPlatformAdmin={isPlatformAdmin}
-          relayConfigured={relayConfigured}
-        />
+        <InfrastructureNavigation relayConfigured={relayConfigured} />
 
         <SidebarInstanceNavigation
           initialSelectedInstanceRouteId={initialSelectedInstanceRouteId}
@@ -192,10 +188,8 @@ const AppSidebarView = React.memo(function AppSidebarView({
 })
 
 function InfrastructureNavigation({
-  isPlatformAdmin,
   relayConfigured,
 }: {
-  isPlatformAdmin: boolean
   relayConfigured: boolean
 }) {
   return (
@@ -206,7 +200,6 @@ function InfrastructureNavigation({
       <SidebarGroupContent>
         <SidebarMenu>
           <ServersNavigationItem relayConfigured={relayConfigured} />
-          {isPlatformAdmin ? <UpdatesNavigationItem /> : null}
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
@@ -238,28 +231,6 @@ function ServersNavigationItem({
       <SidebarMenuBadge className="text-sidebar-foreground/25">
         <InfrastructureInstanceCount relayConfigured={relayConfigured} />
       </SidebarMenuBadge>
-    </SidebarMenuItem>
-  )
-}
-
-function UpdatesNavigationItem() {
-  return (
-    <SidebarMenuItem>
-      <SidebarMenuButton
-        asChild
-        tooltip="Updates"
-        className="data-active:bg-primary/10 data-active:text-primary"
-      >
-        <Link
-          to="/infra/updates"
-          activeOptions={{ exact: true, includeSearch: false }}
-          activeProps={{ "data-active": true }}
-          preload="intent"
-        >
-          <CloudDownload />
-          <span>Updates</span>
-        </Link>
-      </SidebarMenuButton>
     </SidebarMenuItem>
   )
 }

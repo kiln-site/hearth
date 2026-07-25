@@ -21,6 +21,7 @@ import {
   Search,
   ServerCog,
   Trash2,
+  TriangleAlert,
   X,
 } from "lucide-react"
 
@@ -47,6 +48,7 @@ import {
 } from "@workspace/contracts"
 
 import { RelayToastTitle } from "@/components/relay-toast-title"
+import { useInfraUpdateDialogStore } from "@/components/infra-layout"
 import {
   WorkspaceDataTable,
   WorkspaceTableCell,
@@ -59,10 +61,16 @@ import type { WorkspaceTableSearchStore } from "@/components/workspace-data-tabl
 import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 import { pairingFeedbackFrom } from "@/lib/relay-pairing-errors"
 import {
+  accessCapabilitiesQueryOptions,
   queryKeys,
   relaySnapshotQueryOptions,
   relaysQueryOptions,
+  updateOverviewQueryOptions,
 } from "@/lib/query-options"
+import {
+  compareLatestReleaseVersion,
+  isKilnReleaseVersion,
+} from "@/lib/release-version"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import {
   addRelay,
@@ -75,6 +83,7 @@ import {
   updateRelay,
   updateRelayProxy,
 } from "@/server/relays"
+import type { UpdateOverview } from "@/server/updates"
 
 const relayTimestampFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
@@ -89,6 +98,7 @@ const invitationTimeFormatter = new Intl.DateTimeFormat("en-US", {
 })
 const minimumRelaySyncFeedbackMs = 500
 const pendingRelayResumes = new Map<string, Promise<void>>()
+const noOutdatedRelays: ReadonlySet<string> = new Set()
 
 function relayProxyQueryOptions(relayId: string) {
   return queryOptions({
@@ -145,6 +155,11 @@ interface RelayUptimeView {
 export const RelaysPage = React.memo(function RelaysPage() {
   const [searchStore] = React.useState(createWorkspaceTableSearchStore)
   const [dialogStore] = React.useState(createRelayDialogStore)
+  const updateDialogStore = useInfraUpdateDialogStore()
+  const { data: canReviewUpdates } = useSuspenseQuery({
+    ...accessCapabilitiesQueryOptions(),
+    select: selectCanReviewUpdates,
+  })
 
   return (
     <div className="mx-auto w-full max-w-[90rem] px-3 pb-10 sm:px-5">
@@ -152,9 +167,11 @@ export const RelaysPage = React.memo(function RelaysPage() {
         <RelayToolbar searchStore={searchStore} onAdd={dialogStore.openAdd} />
 
         <FilteredRelayTable
+          canReviewUpdates={canReviewUpdates}
           searchStore={searchStore}
           onAdd={dialogStore.openAdd}
           onEdit={dialogStore.openEdit}
+          onOpenUpdates={updateDialogStore.open}
         />
       </section>
 
@@ -381,25 +398,37 @@ const RelaySearchInput = React.memo(function RelaySearchInput({
 })
 
 const FilteredRelayTable = React.memo(function FilteredRelayTable({
+  canReviewUpdates,
   searchStore,
   onAdd,
   onEdit,
+  onOpenUpdates,
 }: {
+  canReviewUpdates: boolean
   searchStore: WorkspaceTableSearchStore
   onAdd: () => void
   onEdit: (relayId: string) => void
+  onOpenUpdates: (relayId?: string) => void
 }) {
   const { data: relays } = useSuspenseQuery({
     ...relaysQueryOptions(),
     select: selectRelayTableItems,
   })
+  const { data: outdatedRelayIds = noOutdatedRelays } = useQuery({
+    ...updateOverviewQueryOptions(),
+    enabled: canReviewUpdates,
+    retry: false,
+    select: selectOutdatedRelayIds,
+  })
 
   return (
     <RelayTable
+      outdatedRelayIds={outdatedRelayIds}
       relays={relays}
       searchStore={searchStore}
       onAdd={onAdd}
       onEdit={onEdit}
+      onOpenUpdates={onOpenUpdates}
     />
   )
 })
@@ -482,21 +511,30 @@ const RelaySyncButton = React.memo(function RelaySyncButton() {
 })
 
 function RelayTable({
+  outdatedRelayIds,
   relays,
   searchStore,
   onAdd,
   onEdit,
+  onOpenUpdates,
 }: {
+  outdatedRelayIds: ReadonlySet<string>
   relays: Array<RelayTableItem>
   searchStore: WorkspaceTableSearchStore
   onAdd: () => void
   onEdit: (relayId: string) => void
+  onOpenUpdates: (relayId?: string) => void
 }) {
   const renderRow = React.useCallback(
     (relay: RelayTableItem) => (
-      <RelayTableRow relayId={relay.id} onEdit={onEdit} />
+      <RelayTableRow
+        outdated={outdatedRelayIds.has(relay.id)}
+        relayId={relay.id}
+        onEdit={onEdit}
+        onOpenUpdates={onOpenUpdates}
+      />
     ),
-    [onEdit]
+    [onEdit, onOpenUpdates, outdatedRelayIds]
   )
   const renderEmpty = React.useCallback(
     (searchActive: boolean) => (
@@ -550,18 +588,26 @@ const RelayTableHead = React.memo(function RelayTableHead() {
 })
 
 const RelayTableRow = React.memo(function RelayTableRow({
+  outdated,
   relayId,
   onEdit,
+  onOpenUpdates,
 }: {
+  outdated: boolean
   relayId: string
   onEdit: (relayId: string) => void
+  onOpenUpdates: (relayId?: string) => void
 }) {
   return (
     <tr className="group transition-colors hover:bg-accent/25">
       <WorkspaceTableCell className="px-2 sm:px-3">
         <RelayStatus relayId={relayId} />
       </WorkspaceTableCell>
-      <RelayStaticCells relayId={relayId} />
+      <RelayStaticCells
+        outdated={outdated}
+        relayId={relayId}
+        onOpenUpdates={onOpenUpdates}
+      />
       <WorkspaceTableCell className="hidden font-mono text-[9px] whitespace-nowrap text-foreground sm:table-cell">
         <RelayUptime relayId={relayId} />
       </WorkspaceTableCell>
@@ -577,9 +623,13 @@ const RelayTableRow = React.memo(function RelayTableRow({
 })
 
 const RelayStaticCells = React.memo(function RelayStaticCells({
+  outdated,
   relayId,
+  onOpenUpdates,
 }: {
+  outdated: boolean
   relayId: string
+  onOpenUpdates: (relayId?: string) => void
 }) {
   const selectRelay = React.useCallback(
     (relays: Array<PersistedRelay>): RelayStaticView | null => {
@@ -614,6 +664,15 @@ const RelayStaticCells = React.memo(function RelayStaticCells({
           <p className="truncate font-mono text-[8px] text-foreground lg:hidden">
             {relay.hostname}
           </p>
+          <div className="mt-0.5 lg:hidden">
+            <RelayVersion
+              name={relay.name}
+              outdated={outdated}
+              relayId={relayId}
+              version={relay.nodeVersion}
+              onOpenUpdates={onOpenUpdates}
+            />
+          </div>
         </div>
       </WorkspaceTableCell>
       <WorkspaceTableCell className="hidden xl:table-cell">
@@ -647,7 +706,13 @@ const RelayStaticCells = React.memo(function RelayStaticCells({
         </Tooltip>
       </WorkspaceTableCell>
       <WorkspaceTableCell className="hidden lg:table-cell">
-        <RelayVersion version={relay.nodeVersion} />
+        <RelayVersion
+          name={relay.name}
+          outdated={outdated}
+          relayId={relayId}
+          version={relay.nodeVersion}
+          onOpenUpdates={onOpenUpdates}
+        />
       </WorkspaceTableCell>
       <WorkspaceTableCell className="hidden xl:table-cell">
         <span className="font-mono text-[9px] text-foreground">
@@ -1665,6 +1730,28 @@ function selectHasEnabledRelay(relays: Array<PersistedRelay>): boolean {
   return relays.some((relay) => relay.enabled)
 }
 
+function selectCanReviewUpdates(capabilities: {
+  isPlatformAdmin: boolean
+}): boolean {
+  return capabilities.isPlatformAdmin
+}
+
+function selectOutdatedRelayIds(overview: UpdateOverview): ReadonlySet<string> {
+  const latestRelease = overview.releases[0]
+  if (!latestRelease) return noOutdatedRelays
+
+  const outdatedRelayIds = new Set<string>()
+  for (const relay of overview.relays) {
+    if (
+      isKilnReleaseVersion(relay.currentVersion) &&
+      compareLatestReleaseVersion(relay.currentVersion, overview.releases) === 1
+    ) {
+      outdatedRelayIds.add(relay.relayId)
+    }
+  }
+  return outdatedRelayIds
+}
+
 function relaySearchText(relay: RelayTableItem): string {
   return [
     relay.name,
@@ -1692,34 +1779,58 @@ function isGitCommitSha(value: string): boolean {
   return /^[0-9a-f]{7,40}$/i.test(value)
 }
 
-function RelayVersion({ version }: { version: string | null }) {
-  if (!version) {
-    return (
-      <span className="block truncate font-mono text-[9px] text-foreground">
-        —
-      </span>
-    )
-  }
-
-  if (!isGitCommitSha(version)) {
-    return (
-      <span className="block truncate font-mono text-[9px] text-foreground">
-        {version}
-      </span>
-    )
-  }
-
-  const shortCommit = version.slice(0, 7)
-  return (
+function RelayVersion({
+  name,
+  outdated,
+  relayId,
+  version,
+  onOpenUpdates,
+}: {
+  name: string
+  outdated: boolean
+  relayId: string
+  version: string | null
+  onOpenUpdates: (relayId?: string) => void
+}) {
+  const versionLabel = !version ? (
+    <span className="truncate font-mono text-[9px] text-foreground">—</span>
+  ) : isGitCommitSha(version) ? (
     <a
       href={`${hearthRepositoryUrl}/commit/${version}`}
       target="_blank"
       rel="noreferrer"
       aria-label={`View Relay commit ${version}`}
-      className="block truncate font-mono text-[9px] text-primary/90 transition-colors hover:text-primary focus-visible:text-primary focus-visible:outline-none"
+      className="truncate font-mono text-[9px] text-primary/90 transition-colors hover:text-primary focus-visible:text-primary focus-visible:outline-none"
     >
-      {shortCommit}
+      {version.slice(0, 7)}
     </a>
+  ) : (
+    <span className="truncate font-mono text-[9px] text-foreground">
+      {version}
+    </span>
+  )
+
+  return (
+    <div className="flex min-w-0 items-center gap-1">
+      {versionLabel}
+      {outdated ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              aria-label={`Update ${name} to the latest release`}
+              className="shrink-0 rounded-sm text-amber-400 transition-colors hover:text-amber-300 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+              type="button"
+              onClick={() => onOpenUpdates(relayId)}
+            >
+              <TriangleAlert className="size-3.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" sideOffset={6}>
+            Update available
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
+    </div>
   )
 }
 

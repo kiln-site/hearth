@@ -16,7 +16,6 @@ const componentSchema = z.enum(["hearth", "relay"])
 const startUpdateSchema = z.object({
   component: componentSchema,
   relayId: z.string().min(1).nullable(),
-  version: z.string().regex(/^0\.\d+\.\d+(?:-nightly\.\d+)?$/u),
 })
 const updateStatusSchema = z.object({
   operationId: z.uuid(),
@@ -137,11 +136,19 @@ export const startSystemUpdate = createServerFn({ method: "POST" })
   .validator(startUpdateSchema)
   .handler(async ({ data }) => {
     await requirePlatformAdministrator()
+    const releases = await runAppEffect(
+      "updates.latest-release",
+      listKilnReleasesEffect()
+    )
+    const latestRelease = releases[0]
+    if (!latestRelease) {
+      throw new Error("No public Kiln release is available to install")
+    }
     const manifest = await runAppEffect(
       "updates.manifest",
-      kilnReleaseManifestEffect(`v${data.version}`)
+      kilnReleaseManifestEffect(latestRelease.tag)
     )
-    validateUpdateManifest(manifest, data.version, data.component)
+    validateUpdateManifest(manifest, latestRelease.version, data.component)
 
     const relays = (await listPersistedRelays()).filter(
       (relay) => relay.enabled
@@ -240,3 +247,5 @@ async function coLocatedRelay(
 function immutableImage(component: { digest: string; image: string }): string {
   return `${component.image}@${component.digest}`
 }
+
+export type UpdateOverview = Awaited<ReturnType<typeof getUpdateOverview>>

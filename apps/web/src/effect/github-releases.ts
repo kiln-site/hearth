@@ -16,6 +16,7 @@ const GitHubAssetSchema = Schema.Struct({
 
 const GitHubReleaseSchema = Schema.Struct({
   assets: Schema.Array(GitHubAssetSchema),
+  body: Schema.NullOr(Schema.String),
   draft: Schema.Boolean,
   html_url: Schema.String,
   name: Schema.NullOr(Schema.String),
@@ -48,6 +49,8 @@ export type KilnReleaseManifest = typeof ReleaseManifestSchema.Type
 export type PublicKilnRelease = {
   channel: "nightly" | "stable"
   manifestUrl: string
+  name: string
+  notes: string | null
   publishedAt: string | null
   tag: string
   url: string
@@ -72,6 +75,8 @@ export const listKilnReleasesEffect = Effect.fn("github.releases.list")(
         {
           channel: release.prerelease ? "nightly" : "stable",
           manifestUrl: manifest.browser_download_url,
+          name: release.name?.trim() || release.tag_name,
+          notes: release.body?.trim() || null,
           publishedAt: release.published_at,
           tag: release.tag_name,
           url: release.html_url,

@@ -28,6 +28,52 @@ export function compareReleaseVersions(
   return leftParts.nightly === null ? 1 : -1
 }
 
+export function isKilnReleaseVersion(
+  version: string | null
+): version is string {
+  return (
+    version !== null && /^0\.\d+\.\d+(?:-nightly\.\d+)?$/u.test(version.trim())
+  )
+}
+
+export function compareLatestReleaseVersion(
+  currentVersion: string | null,
+  releases: ReadonlyArray<{
+    publishedAt: string | null
+    version: string
+  }>
+): -1 | 0 | 1 | null {
+  const latestRelease = releases[0]
+  if (!latestRelease || !isKilnReleaseVersion(currentVersion)) return null
+  if (latestRelease.version === currentVersion) return 0
+
+  const currentReleaseIndex = releases.findIndex(
+    (release) => release.version === currentVersion
+  )
+  if (currentReleaseIndex > 0) return 1
+
+  const publishedAtByVersion = new Map(
+    releases.map((release) => [release.version, release.publishedAt])
+  )
+  const comparison = compareReleaseVersions(
+    latestRelease.version,
+    currentVersion,
+    publishedAtByVersion
+  )
+
+  // The feed's first entry is authoritative for the latest-only policy. A
+  // stable and nightly build can share a numeric version even when the older
+  // build is no longer present in GitHub's retained release window.
+  if (
+    comparison === -1 &&
+    releaseVersionCore(latestRelease.version) ===
+      releaseVersionCore(currentVersion)
+  ) {
+    return 1
+  }
+  return comparison
+}
+
 function versionParts(version: string): {
   nightly: number | null
   numbers: [number, number, number]
@@ -38,6 +84,10 @@ function versionParts(version: string): {
     nightly: match[3] === undefined ? null : Number(match[3]),
     numbers: [0, Number(match[1]), Number(match[2])],
   }
+}
+
+function releaseVersionCore(version: string): string {
+  return version.replace(/-nightly\.\d+$/u, "")
 }
 
 function comparePublishedAt(
