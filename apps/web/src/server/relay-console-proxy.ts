@@ -128,7 +128,7 @@ export async function* openHearthRelayConsoleStream(input: {
     }
   } finally {
     inbox.close()
-    socket.close(1000, "Hearth console proxy closed")
+    closeSocket(socket, 1000, "Hearth console proxy closed")
   }
 }
 
@@ -222,7 +222,7 @@ function createSocketInbox(socket: WebSocket, signal: AbortSignal) {
     )
   const abort = () => {
     fail(new Error("Console proxy was cancelled"))
-    socket.close(1000, "Console proxy cancelled")
+    closeSocket(socket, 1000, "Console proxy cancelled")
   }
   socket.on("message", receive)
   socket.once("error", failed)
@@ -248,6 +248,19 @@ function createSocketInbox(socket: WebSocket, signal: AbortSignal) {
         waiters.push({ reject, resolve })
       )
     },
+  }
+}
+
+function closeSocket(socket: WebSocket, code: number, reason: string): void {
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.close(code, reason)
+    return
+  }
+  if (socket.readyState === WebSocket.CONNECTING) {
+    // ws reports an aborted handshake through "error"; retain a listener even
+    // after the inbox detaches so cancellation cannot become an uncaught error.
+    socket.once("error", () => undefined)
+    socket.terminate()
   }
 }
 
