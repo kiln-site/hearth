@@ -78,10 +78,6 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
     ...updateOverviewQueryOptions(),
     enabled: open,
   })
-  const [view, setView] = React.useState<DialogView>("overview")
-  const [changelogTargetKey, setChangelogTargetKey] = React.useState(() =>
-    initialRelayId ? relayTargetKey(initialRelayId) : "hearth"
-  )
   const [pending, setPending] = React.useState<UpdateTarget | null>(null)
   const [active, setActive] = React.useState<ActiveUpdate | null>(null)
   const [message, setMessage] = React.useState<string | null>(null)
@@ -187,10 +183,6 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
     () => (overview ? updateTargets(overview) : []),
     [overview]
   )
-  const selectedChangelogTarget =
-    targets.find((target) => target.key === changelogTargetKey) ??
-    targets[0] ??
-    null
 
   return (
     <>
@@ -199,95 +191,23 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
           aria-describedby={undefined}
           className="h-[min(46rem,calc(100dvh-2rem))] max-h-none grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-[calc(100%-2rem)] xl:max-w-5xl"
         >
-          <div className="border-b bg-background/35 px-5 pt-5">
-            <DialogHeader className="flex-row items-center justify-between gap-3 pr-10">
-              <DialogTitle className="flex items-center gap-2.5 text-2xl text-white">
-                <CloudDownload className="size-5 text-primary" />
-                Kiln Updater
-              </DialogTitle>
-              <div className="flex shrink-0 flex-col items-end gap-1">
-                <Button
-                  aria-busy={overviewQuery.isFetching}
-                  aria-label={
-                    overviewQuery.isFetching
-                      ? "Checking for updates"
-                      : "Check for updates"
-                  }
-                  disabled={overviewQuery.isFetching}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                  onClick={() => void overviewQuery.refetch()}
-                >
-                  <RefreshCw
-                    className={overviewQuery.isFetching ? "animate-spin" : ""}
-                  />
-                  <span className="hidden sm:inline">
-                    {overviewQuery.isFetching
-                      ? "Checking..."
-                      : "Check for updates"}
-                  </span>
-                </Button>
-                <p className="hidden text-[9px] text-muted-foreground sm:block">
-                  Last Checked: {lastCheckedAt}
-                </p>
-              </div>
-            </DialogHeader>
-
-            <div
-              aria-label="Update dialog views"
-              className="mt-4 flex gap-1"
-              role="tablist"
-            >
-              <ViewButton
-                active={view === "overview"}
-                label="Overview"
-                onClick={() => setView("overview")}
-              />
-              <ViewButton
-                active={view === "changelog"}
-                icon={History}
-                label="Changelog"
-                onClick={() => setView("changelog")}
-              />
-            </div>
-          </div>
-
-          <div className="min-h-0 overflow-y-auto overscroll-contain">
-            {overviewQuery.isPending ? (
-              <UpdateDialogSkeleton />
-            ) : overviewQuery.isError ? (
-              <UpdateDialogError
-                message={
-                  overviewQuery.error instanceof Error
-                    ? overviewQuery.error.message
-                    : "Update information is unavailable."
-                }
-                onRetry={() => void overviewQuery.refetch()}
-              />
-            ) : overview ? (
-              view === "overview" ? (
-                <UpdateOverviewView
-                  active={active}
-                  focusedRelayId={initialRelayId}
-                  overview={overview}
-                  targets={targets}
-                  onChangelog={(targetKey) => {
-                    setChangelogTargetKey(targetKey)
-                    setView("changelog")
-                  }}
-                  onUpdate={setPending}
-                />
-              ) : (
-                <UpdateChangelogView
-                  overview={overview}
-                  selectedTarget={selectedChangelogTarget}
-                  targets={targets}
-                  onTargetChange={setChangelogTargetKey}
-                />
-              )
-            ) : null}
-          </div>
+          <UpdateDialogContent
+            active={active}
+            checking={overviewQuery.isFetching}
+            errorMessage={
+              overviewQuery.error instanceof Error
+                ? overviewQuery.error.message
+                : "Update information is unavailable."
+            }
+            failed={overviewQuery.isError}
+            focusedRelayId={initialRelayId}
+            lastCheckedAt={lastCheckedAt}
+            overview={overview}
+            pending={overviewQuery.isPending}
+            targets={targets}
+            onCheck={() => void overviewQuery.refetch()}
+            onUpdate={setPending}
+          />
         </DialogContent>
       </Dialog>
 
@@ -327,7 +247,178 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
   )
 })
 
-function ViewButton({
+const UpdateDialogContent = React.memo(function UpdateDialogContent({
+  active,
+  checking,
+  errorMessage,
+  failed,
+  focusedRelayId,
+  lastCheckedAt,
+  overview,
+  pending,
+  targets,
+  onCheck,
+  onUpdate,
+}: {
+  active: ActiveUpdate | null
+  checking: boolean
+  errorMessage: string
+  failed: boolean
+  focusedRelayId: string | null
+  lastCheckedAt: string
+  overview: UpdateOverview | undefined
+  pending: boolean
+  targets: Array<UpdateTarget>
+  onCheck: () => void
+  onUpdate: (target: UpdateTarget) => void
+}) {
+  const [view, setView] = React.useState<DialogView>("overview")
+  const [changelogMounted, setChangelogMounted] = React.useState(false)
+  const [changelogTargetKey, setChangelogTargetKey] = React.useState(() =>
+    focusedRelayId ? relayTargetKey(focusedRelayId) : "hearth"
+  )
+  const selectedChangelogTarget = React.useMemo(
+    () =>
+      targets.find((target) => target.key === changelogTargetKey) ??
+      targets[0] ??
+      null,
+    [changelogTargetKey, targets]
+  )
+  const showOverview = React.useCallback(() => setView("overview"), [])
+  const showChangelog = React.useCallback(() => {
+    setChangelogMounted(true)
+    setView("changelog")
+  }, [])
+  const openChangelog = React.useCallback((targetKey: string) => {
+    setChangelogTargetKey(targetKey)
+    setChangelogMounted(true)
+    setView("changelog")
+  }, [])
+
+  return (
+    <>
+      <div className="border-b bg-background/35 px-5 pt-5">
+        <UpdaterTitleBar
+          checking={checking}
+          lastCheckedAt={lastCheckedAt}
+          onCheck={onCheck}
+        />
+
+        <div
+          aria-label="Update dialog views"
+          className="mt-4 flex gap-1"
+          role="tablist"
+        >
+          <ViewButton
+            active={view === "overview"}
+            label="Overview"
+            onClick={showOverview}
+          />
+          <ViewButton
+            active={view === "changelog"}
+            icon={History}
+            label="Changelog"
+            onClick={showChangelog}
+          />
+        </div>
+      </div>
+
+      <div className="relative min-h-0 overflow-hidden">
+        {pending ? (
+          <div className="h-full overflow-y-auto overscroll-contain">
+            <UpdateDialogSkeleton />
+          </div>
+        ) : failed ? (
+          <div className="h-full overflow-y-auto overscroll-contain">
+            <UpdateDialogError message={errorMessage} onRetry={onCheck} />
+          </div>
+        ) : overview ? (
+          <>
+            <div
+              aria-hidden={view !== "overview"}
+              className={`absolute inset-0 overflow-y-auto overscroll-contain [will-change:opacity] [contain:strict] ${
+                view === "overview"
+                  ? "pointer-events-auto opacity-100"
+                  : "pointer-events-none opacity-0"
+              }`}
+              inert={view !== "overview"}
+              role="tabpanel"
+            >
+              <UpdateOverviewView
+                active={active}
+                focusedRelayId={focusedRelayId}
+                overview={overview}
+                targets={targets}
+                onChangelog={openChangelog}
+                onUpdate={onUpdate}
+              />
+            </div>
+
+            {changelogMounted ? (
+              <div
+                aria-hidden={view !== "changelog"}
+                className={`absolute inset-0 overflow-y-auto overscroll-contain [will-change:opacity] [contain:strict] ${
+                  view === "changelog"
+                    ? "pointer-events-auto opacity-100"
+                    : "pointer-events-none opacity-0"
+                }`}
+                inert={view !== "changelog"}
+                role="tabpanel"
+              >
+                <UpdateChangelogView
+                  overview={overview}
+                  selectedTarget={selectedChangelogTarget}
+                  targets={targets}
+                  onTargetChange={setChangelogTargetKey}
+                />
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+    </>
+  )
+})
+
+const UpdaterTitleBar = React.memo(function UpdaterTitleBar({
+  checking,
+  lastCheckedAt,
+  onCheck,
+}: {
+  checking: boolean
+  lastCheckedAt: string
+  onCheck: () => void
+}) {
+  return (
+    <DialogHeader className="flex-row items-center justify-between gap-3 pr-10">
+      <DialogTitle className="flex items-center gap-2.5 text-2xl text-white">
+        <CloudDownload className="size-5 text-primary" />
+        Kiln Updater
+      </DialogTitle>
+      <div className="flex shrink-0 flex-col items-end gap-1">
+        <Button
+          aria-busy={checking}
+          aria-label={checking ? "Checking for updates" : "Check for updates"}
+          disabled={checking}
+          size="sm"
+          type="button"
+          variant="outline"
+          onClick={onCheck}
+        >
+          <RefreshCw className={checking ? "animate-spin" : ""} />
+          <span className="hidden sm:inline">
+            {checking ? "Checking..." : "Check for updates"}
+          </span>
+        </Button>
+        <p className="hidden text-[9px] text-muted-foreground sm:block">
+          Last Checked: {lastCheckedAt}
+        </p>
+      </div>
+    </DialogHeader>
+  )
+})
+
+const ViewButton = React.memo(function ViewButton({
   active,
   icon: Icon,
   label,
@@ -354,9 +445,9 @@ function ViewButton({
       {label}
     </button>
   )
-}
+})
 
-function UpdateOverviewView({
+const UpdateOverviewView = React.memo(function UpdateOverviewView({
   active,
   focusedRelayId,
   overview,
@@ -403,7 +494,7 @@ function UpdateOverviewView({
       </section>
     </div>
   )
-}
+})
 
 function UpdateTargetRow({
   active,
@@ -521,7 +612,7 @@ function UpdateTargetRow({
   )
 }
 
-function UpdateChangelogView({
+const UpdateChangelogView = React.memo(function UpdateChangelogView({
   overview,
   selectedTarget,
   targets,
@@ -617,7 +708,7 @@ function UpdateChangelogView({
       )}
     </div>
   )
-}
+})
 
 function ChangelogRelease({
   installed,
