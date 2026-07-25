@@ -16,7 +16,7 @@ const GitHubAssetSchema = Schema.Struct({
 
 const GitHubReleaseSchema = Schema.Struct({
   assets: Schema.Array(GitHubAssetSchema),
-  body: Schema.NullOr(Schema.String),
+  body: Schema.optionalKey(Schema.NullOr(Schema.String)),
   draft: Schema.Boolean,
   html_url: Schema.String,
   name: Schema.NullOr(Schema.String),

@@ -7,7 +7,7 @@ import { relaysQueryOptions } from "@/lib/query-options"
 export const Route = createFileRoute("/_app/infra/relays")({
   beforeLoad: ({ context }) => {
     if (!context.user.isDevelopmentBypass && context.user.role !== "admin") {
-      throw redirect({ to: "/infra/servers" })
+      throw redirect({ to: "/infra/servers", replace: true })
     }
   },
   loader: ({ context }) =>

@@ -128,20 +128,22 @@ const InfraNavigation = React.memo(function InfraNavigation() {
         aria-label="Infrastructure sections"
         className="no-scrollbar flex min-w-0 flex-1 gap-1 overflow-x-auto overflow-y-hidden"
       >
-        {infraTabs.map((tab) => (
-          <Link
-            key={tab.to}
-            to={tab.to}
-            className="relative flex h-10 shrink-0 items-center gap-2 px-3 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-            activeProps={{
-              className:
-                "text-foreground after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:bg-primary",
-            }}
-          >
-            <tab.icon className="size-3.5" />
-            {tab.label}
-          </Link>
-        ))}
+        {infraTabs.map((tab) =>
+          tab.to === "/infra/relays" && !capabilities.isPlatformAdmin ? null : (
+            <Link
+              key={tab.to}
+              to={tab.to}
+              className="relative flex h-10 shrink-0 items-center gap-2 px-3 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+              activeProps={{
+                className:
+                  "text-foreground after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:bg-primary",
+              }}
+            >
+              <tab.icon className="size-3.5" />
+              {tab.label}
+            </Link>
+          )
+        )}
       </nav>
       {capabilities.isPlatformAdmin ? (
         <Tooltip>
@@ -172,20 +174,36 @@ const InfraUpdatesDialogHost = React.memo(function InfraUpdatesDialogHost({
 }: {
   store: InfraUpdateDialogStore
 }) {
-  const state = React.useSyncExternalStore(
-    store.subscribe,
-    store.getSnapshot,
-    store.getServerSnapshot
+  const { data: capabilities } = useSuspenseQuery(
+    accessCapabilitiesQueryOptions()
   )
 
-  return (
-    <InfraUpdatesDialog
-      initialRelayId={state.relayId}
-      key={state.requestId}
-      open={state.open}
-      onOpenChange={(open) => {
-        if (!open) store.close()
-      }}
-    />
-  )
+  return capabilities.isPlatformAdmin ? (
+    <PlatformAdminInfraUpdatesDialogHost store={store} />
+  ) : null
 })
+
+const PlatformAdminInfraUpdatesDialogHost = React.memo(
+  function PlatformAdminInfraUpdatesDialogHost({
+    store,
+  }: {
+    store: InfraUpdateDialogStore
+  }) {
+    const state = React.useSyncExternalStore(
+      store.subscribe,
+      store.getSnapshot,
+      store.getServerSnapshot
+    )
+
+    return (
+      <InfraUpdatesDialog
+        initialRelayId={state.relayId}
+        key={state.requestId}
+        open={state.open}
+        onOpenChange={(open) => {
+          if (!open) store.close()
+        }}
+      />
+    )
+  }
+)

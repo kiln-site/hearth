@@ -923,7 +923,7 @@ const ChangelogRelease = React.memo(function ChangelogRelease({
         </a>
       </div>
       <p className="mt-3 max-w-3xl text-[11px] leading-5 whitespace-pre-wrap text-muted-foreground">
-        {release.notes ?? "No release notes were published for this version."}
+        {release.notes ?? "No changes were specified."}
       </p>
     </article>
   )
