@@ -182,25 +182,21 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="h-[min(46rem,calc(100dvh-2rem))] max-h-none gap-0 overflow-hidden p-0 sm:max-w-[calc(100%-2rem)] xl:max-w-5xl">
+        <DialogContent
+          aria-describedby={undefined}
+          className="h-[min(46rem,calc(100dvh-2rem))] max-h-none gap-0 overflow-hidden p-0 sm:max-w-[calc(100%-2rem)] xl:max-w-5xl"
+        >
           <div className="border-b bg-background/35 px-5 pt-5">
             <DialogHeader>
-              <div className="flex items-center gap-2 text-primary">
-                <CloudDownload className="size-4" />
-                <span className="font-mono text-[9px] tracking-[0.16em] uppercase">
-                  Release control
-                </span>
-              </div>
-              <DialogTitle className="text-2xl">System updates</DialogTitle>
-              <DialogDescription className="max-w-2xl">
-                Review Hearth and every enabled Relay, then move supported
-                containers directly to the latest Kiln release.
-              </DialogDescription>
+              <DialogTitle className="flex items-center gap-2.5 text-2xl text-white">
+                <CloudDownload className="size-5 text-primary" />
+                Kiln Updater
+              </DialogTitle>
             </DialogHeader>
 
             <div
               aria-label="Update dialog views"
-              className="mt-5 flex gap-1"
+              className="mt-4 flex gap-1"
               role="tablist"
             >
               <ViewButton
@@ -338,7 +334,7 @@ function UpdateOverviewView({
   const latestRelease = overview.releases[0] ?? null
 
   return (
-    <div className="space-y-5 p-4 sm:p-5">
+    <div className="p-4 sm:p-5">
       <section className="overflow-hidden rounded-xl border bg-card/45">
         <div className="flex flex-col gap-3 border-b bg-background/30 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -387,19 +383,6 @@ function UpdateOverviewView({
             No public Kiln releases are available yet.
           </p>
         )}
-      </section>
-
-      <section className="grid gap-3 rounded-xl border border-primary/15 bg-primary/[0.035] p-4 sm:grid-cols-[auto_1fr]">
-        <ShieldCheck className="mt-0.5 size-5 text-primary" />
-        <div>
-          <h2 className="text-sm font-semibold">Latest-only update policy</h2>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            Kiln installs only the newest published release. Docker environment,
-            mounts, labels, ports, restart policy, and networks are retained
-            while the previous container remains available for automatic
-            rollback.
-          </p>
-        </div>
       </section>
     </div>
   )
@@ -539,19 +522,6 @@ function UpdateChangelogView({
 
   return (
     <div className="p-4 sm:p-5">
-      <div className="mb-5">
-        <p className="font-mono text-[9px] tracking-[0.14em] text-primary uppercase">
-          Version path
-        </p>
-        <h2 className="mt-1 font-heading text-xl font-semibold tracking-[-0.03em]">
-          Virtual changelog
-        </h2>
-        <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">
-          Release notes from each installed version through the latest supported
-          Kiln release.
-        </p>
-      </div>
-
       <div
         aria-label="Changelog target"
         className="mb-5 no-scrollbar flex gap-2 overflow-x-auto pb-1"
