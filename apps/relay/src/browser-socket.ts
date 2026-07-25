@@ -1214,7 +1214,7 @@ class ConsoleHub {
 
   #replaceSession(snapshot: RelayConsole): void {
     const startedAt = snapshot.startedAt ?? null
-    this.#sessionFloor = startedAt ? new Date(startedAt).toISOString() : null
+    this.#sessionFloor = startedAt
     this.#sessionStartedAt = startedAt
     this.#backfillStartedAt = undefined
     this.#truncated = snapshot.truncated
