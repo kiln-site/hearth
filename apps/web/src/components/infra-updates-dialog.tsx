@@ -447,7 +447,6 @@ const UpdaterCheckControl = React.memo(function UpdaterCheckControl({
       <Button
         aria-busy={checking}
         aria-label={checking ? "Checking for updates" : "Check for updates"}
-        className="w-10 sm:w-40"
         disabled={checking}
         size="sm"
         type="button"
@@ -455,9 +454,7 @@ const UpdaterCheckControl = React.memo(function UpdaterCheckControl({
         onClick={() => void overviewQuery.refetch()}
       >
         <RefreshCw className={checking ? "animate-spin" : ""} />
-        <span className="hidden sm:inline">
-          {checking ? "Checking..." : "Check for updates"}
-        </span>
+        <span className="hidden sm:inline">Check for updates</span>
       </Button>
       <p className="hidden text-[9px] text-muted-foreground sm:block">
         Last Checked: {lastCheckedAt}
