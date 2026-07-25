@@ -21,7 +21,7 @@ export async function redirectLegacyPage(
   const connection = await getRelayConnectionState()
   if (connection.status !== "connected") {
     if (user.isDevelopmentBypass || user.role === "admin") {
-      throw redirect({ to: "/settings", replace: true })
+      throw redirect({ to: "/infra/relays", replace: true })
     }
     throw redirect({
       to: `/server/$serverId/${page}`,

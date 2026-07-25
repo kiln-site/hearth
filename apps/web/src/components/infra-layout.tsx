@@ -1,14 +1,15 @@
 import * as React from "react"
 import { Link, Outlet } from "@tanstack/react-router"
-import { CircleUserRound, CreditCard, Palette } from "lucide-react"
+import { Database, RadioTower, Server, Wrench } from "lucide-react"
 
-const settingsTabs = [
-  { label: "Appearance", to: "/settings/appearance", icon: Palette },
-  { label: "Account", to: "/settings/account", icon: CircleUserRound },
-  { label: "Billing", to: "/settings/billing", icon: CreditCard },
+const infraTabs = [
+  { label: "Setup", to: "/infra/setup", icon: Wrench },
+  { label: "Relays", to: "/infra/relays", icon: RadioTower },
+  { label: "Servers", to: "/infra/servers", icon: Server },
+  { label: "Databases", to: "/infra/databases", icon: Database },
 ] as const
 
-export const SettingsShell = React.memo(function SettingsShell({
+export const InfraShell = React.memo(function InfraShell({
   children,
 }: {
   children: React.ReactNode
@@ -16,26 +17,26 @@ export const SettingsShell = React.memo(function SettingsShell({
   return (
     <div className="min-h-full bg-background">
       <header className="mx-auto w-full max-w-[90rem] px-3 pt-3 sm:px-5">
-        <SettingsNavigation />
+        <InfraNavigation />
       </header>
-      <div data-slot="settings-content" className="[contain:paint]">
+      <div data-slot="infra-content" className="[contain:paint]">
         {children}
       </div>
     </div>
   )
 })
 
-export function SettingsRouteOutlet() {
+export function InfraRouteOutlet() {
   return <Outlet />
 }
 
-const SettingsNavigation = React.memo(function SettingsNavigation() {
+const InfraNavigation = React.memo(function InfraNavigation() {
   return (
     <nav
-      aria-label="Settings sections"
+      aria-label="Infrastructure sections"
       className="mb-6 flex gap-1 overflow-x-auto overflow-y-hidden border-b"
     >
-      {settingsTabs.map((tab) => (
+      {infraTabs.map((tab) => (
         <Link
           key={tab.to}
           to={tab.to}

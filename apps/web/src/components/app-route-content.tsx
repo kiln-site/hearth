@@ -7,6 +7,7 @@ import {
 import { useNavigate, useRouterState } from "@tanstack/react-router"
 
 import { EmptyServerState } from "@/components/empty-server-state"
+import { InfraShell } from "@/components/infra-layout"
 import { InstanceRouteFrame } from "@/components/instance-route-frame"
 import { InstanceWorkspaceShell } from "@/components/instance-workspace"
 import { RelayUnavailableState } from "@/components/relay-unavailable-state"
@@ -79,7 +80,13 @@ const GlobalRouteFrame = React.memo(function GlobalRouteFrame({
       header={
         <GlobalPageToolbar
           label={routeLabel(section)}
-          settings={section === "settings"}
+          identity={
+            section === "infra"
+              ? "infra"
+              : section === "settings"
+                ? "settings"
+                : undefined
+          }
         />
       }
     >
@@ -87,7 +94,9 @@ const GlobalRouteFrame = React.memo(function GlobalRouteFrame({
         data-slot="global-route-content"
         className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-background/55"
       >
-        {section === "settings" ? (
+        {section === "infra" ? (
+          <InfraShell>{children}</InfraShell>
+        ) : section === "settings" ? (
           <SettingsShell>{children}</SettingsShell>
         ) : (
           children
@@ -154,7 +163,7 @@ function RouteEmptyState() {
     await connectionQuery.refetch()
   }, [connectionQuery.refetch])
   const configure = React.useCallback(() => {
-    void navigate({ to: "/settings/relays" })
+    void navigate({ to: "/infra/relays" })
   }, [navigate])
 
   return connectionQuery.data.status === "connected" ? (
@@ -170,8 +179,7 @@ function RouteEmptyState() {
 }
 
 function routeLabel(section: Exclude<GlobalSection, null>) {
-  if (section === "servers") return "Infrastructure / Servers"
-  if (section === "updates") return "Infrastructure / Updates"
+  if (section === "infra") return "Infrastructure"
   if (section === "access") return "Administration / Access"
   if (section === "security") return "Account / Security"
   return "Settings"

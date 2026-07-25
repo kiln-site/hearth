@@ -142,7 +142,7 @@ interface RelayUptimeView {
   startedAt: string | null
 }
 
-export const AppSettingsPage = React.memo(function AppSettingsPage() {
+export const RelaysPage = React.memo(function RelaysPage() {
   const [searchStore] = React.useState(createWorkspaceTableSearchStore)
   const [dialogStore] = React.useState(createRelayDialogStore)
 

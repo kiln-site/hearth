@@ -83,7 +83,7 @@ export const RelayConnectionToastMonitor = React.memo(
             duration: Infinity,
             action: {
               label: "View Relays",
-              onClick: () => void router.navigate({ to: "/settings/relays" }),
+              onClick: () => void router.navigate({ to: "/infra/relays" }),
             },
           })
         } else if (

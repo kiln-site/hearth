@@ -25,12 +25,17 @@ import { Route as TwoFactorRouteImport } from './routes/two-factor'
 import { Route as XRouteImport } from './routes/x'
 import { Route as AppSplatRouteImport } from './routes/_app.$'
 import { Route as AppAccessRouteImport } from './routes/_app.access'
+import { Route as AppInfraRouteImport } from './routes/_app.infra'
 import { Route as AppSecurityRouteImport } from './routes/_app.security'
 import { Route as AppServersRouteImport } from './routes/_app.servers'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as ApiHealthRouteImport } from './routes/api.health'
 import { Route as ApiSentryCheckRouteImport } from './routes/api.sentry-check'
+import { Route as AppInfraIndexRouteImport } from './routes/_app.infra.index'
+import { Route as AppInfraDatabasesRouteImport } from './routes/_app.infra.databases'
+import { Route as AppInfraRelaysRouteImport } from './routes/_app.infra.relays'
 import { Route as AppInfraServersRouteImport } from './routes/_app.infra.servers'
+import { Route as AppInfraSetupRouteImport } from './routes/_app.infra.setup'
 import { Route as AppInfraUpdatesRouteImport } from './routes/_app.infra.updates'
 import { Route as AppServerServerIdRouteImport } from './routes/_app/server/$serverId'
 import { Route as AppSettingsIndexRouteImport } from './routes/_app.settings.index'
@@ -128,6 +133,11 @@ const AppAccessRoute = AppAccessRouteImport.update({
   path: '/access',
   getParentRoute: () => AppRoute,
 } as any)
+const AppInfraRoute = AppInfraRouteImport.update({
+  id: '/infra',
+  path: '/infra',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppSecurityRoute = AppSecurityRouteImport.update({
   id: '/security',
   path: '/security',
@@ -153,15 +163,35 @@ const ApiSentryCheckRoute = ApiSentryCheckRouteImport.update({
   path: '/api/sentry-check',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppInfraIndexRoute = AppInfraIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppInfraRoute,
+} as any)
+const AppInfraDatabasesRoute = AppInfraDatabasesRouteImport.update({
+  id: '/databases',
+  path: '/databases',
+  getParentRoute: () => AppInfraRoute,
+} as any)
+const AppInfraRelaysRoute = AppInfraRelaysRouteImport.update({
+  id: '/relays',
+  path: '/relays',
+  getParentRoute: () => AppInfraRoute,
+} as any)
 const AppInfraServersRoute = AppInfraServersRouteImport.update({
-  id: '/infra/servers',
-  path: '/infra/servers',
-  getParentRoute: () => AppRoute,
+  id: '/servers',
+  path: '/servers',
+  getParentRoute: () => AppInfraRoute,
+} as any)
+const AppInfraSetupRoute = AppInfraSetupRouteImport.update({
+  id: '/setup',
+  path: '/setup',
+  getParentRoute: () => AppInfraRoute,
 } as any)
 const AppInfraUpdatesRoute = AppInfraUpdatesRouteImport.update({
-  id: '/infra/updates',
-  path: '/infra/updates',
-  getParentRoute: () => AppRoute,
+  id: '/updates',
+  path: '/updates',
+  getParentRoute: () => AppInfraRoute,
 } as any)
 const AppServerServerIdRoute = AppServerServerIdRouteImport.update({
   id: '/server/$serverId',
@@ -264,12 +294,16 @@ export interface FileRoutesByFullPath {
   '/x': typeof XRoute
   '/$': typeof AppSplatRoute
   '/access': typeof AppAccessRoute
+  '/infra': typeof AppInfraRouteWithChildren
   '/security': typeof AppSecurityRoute
   '/servers': typeof AppServersRoute
   '/settings': typeof AppSettingsRouteWithChildren
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
+  '/infra/databases': typeof AppInfraDatabasesRoute
+  '/infra/relays': typeof AppInfraRelaysRoute
   '/infra/servers': typeof AppInfraServersRoute
+  '/infra/setup': typeof AppInfraSetupRoute
   '/infra/updates': typeof AppInfraUpdatesRoute
   '/server/$serverId': typeof AppServerServerIdRouteWithChildren
   '/settings/account': typeof AppSettingsAccountRoute
@@ -278,6 +312,7 @@ export interface FileRoutesByFullPath {
   '/settings/relays': typeof AppSettingsRelaysRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/console/$instanceId': typeof ApiConsoleInstanceIdRoute
+  '/infra/': typeof AppInfraIndexRoute
   '/settings/': typeof AppSettingsIndexRoute
   '/server/$serverId/$': typeof AppServerServerIdSplatRoute
   '/server/$serverId/console': typeof AppServerServerIdConsoleRoute
@@ -308,7 +343,10 @@ export interface FileRoutesByTo {
   '/servers': typeof AppServersRoute
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
+  '/infra/databases': typeof AppInfraDatabasesRoute
+  '/infra/relays': typeof AppInfraRelaysRoute
   '/infra/servers': typeof AppInfraServersRoute
+  '/infra/setup': typeof AppInfraSetupRoute
   '/infra/updates': typeof AppInfraUpdatesRoute
   '/settings/account': typeof AppSettingsAccountRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
@@ -316,6 +354,7 @@ export interface FileRoutesByTo {
   '/settings/relays': typeof AppSettingsRelaysRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/console/$instanceId': typeof ApiConsoleInstanceIdRoute
+  '/infra': typeof AppInfraIndexRoute
   '/settings': typeof AppSettingsIndexRoute
   '/server/$serverId/$': typeof AppServerServerIdSplatRoute
   '/server/$serverId/console': typeof AppServerServerIdConsoleRoute
@@ -344,12 +383,16 @@ export interface FileRoutesById {
   '/x': typeof XRoute
   '/_app/$': typeof AppSplatRoute
   '/_app/access': typeof AppAccessRoute
+  '/_app/infra': typeof AppInfraRouteWithChildren
   '/_app/security': typeof AppSecurityRoute
   '/_app/servers': typeof AppServersRoute
   '/_app/settings': typeof AppSettingsRouteWithChildren
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
+  '/_app/infra/databases': typeof AppInfraDatabasesRoute
+  '/_app/infra/relays': typeof AppInfraRelaysRoute
   '/_app/infra/servers': typeof AppInfraServersRoute
+  '/_app/infra/setup': typeof AppInfraSetupRoute
   '/_app/infra/updates': typeof AppInfraUpdatesRoute
   '/_app/server/$serverId': typeof AppServerServerIdRouteWithChildren
   '/_app/settings/account': typeof AppSettingsAccountRoute
@@ -358,6 +401,7 @@ export interface FileRoutesById {
   '/_app/settings/relays': typeof AppSettingsRelaysRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/console/$instanceId': typeof ApiConsoleInstanceIdRoute
+  '/_app/infra/': typeof AppInfraIndexRoute
   '/_app/settings/': typeof AppSettingsIndexRoute
   '/_app/server/$serverId/$': typeof AppServerServerIdSplatRoute
   '/_app/server/$serverId/console': typeof AppServerServerIdConsoleRoute
@@ -386,12 +430,16 @@ export interface FileRouteTypes {
     | '/x'
     | '/$'
     | '/access'
+    | '/infra'
     | '/security'
     | '/servers'
     | '/settings'
     | '/api/health'
     | '/api/sentry-check'
+    | '/infra/databases'
+    | '/infra/relays'
     | '/infra/servers'
+    | '/infra/setup'
     | '/infra/updates'
     | '/server/$serverId'
     | '/settings/account'
@@ -400,6 +448,7 @@ export interface FileRouteTypes {
     | '/settings/relays'
     | '/api/auth/$'
     | '/api/console/$instanceId'
+    | '/infra/'
     | '/settings/'
     | '/server/$serverId/$'
     | '/server/$serverId/console'
@@ -430,7 +479,10 @@ export interface FileRouteTypes {
     | '/servers'
     | '/api/health'
     | '/api/sentry-check'
+    | '/infra/databases'
+    | '/infra/relays'
     | '/infra/servers'
+    | '/infra/setup'
     | '/infra/updates'
     | '/settings/account'
     | '/settings/appearance'
@@ -438,6 +490,7 @@ export interface FileRouteTypes {
     | '/settings/relays'
     | '/api/auth/$'
     | '/api/console/$instanceId'
+    | '/infra'
     | '/settings'
     | '/server/$serverId/$'
     | '/server/$serverId/console'
@@ -465,12 +518,16 @@ export interface FileRouteTypes {
     | '/x'
     | '/_app/$'
     | '/_app/access'
+    | '/_app/infra'
     | '/_app/security'
     | '/_app/servers'
     | '/_app/settings'
     | '/api/health'
     | '/api/sentry-check'
+    | '/_app/infra/databases'
+    | '/_app/infra/relays'
     | '/_app/infra/servers'
+    | '/_app/infra/setup'
     | '/_app/infra/updates'
     | '/_app/server/$serverId'
     | '/_app/settings/account'
@@ -479,6 +536,7 @@ export interface FileRouteTypes {
     | '/_app/settings/relays'
     | '/api/auth/$'
     | '/api/console/$instanceId'
+    | '/_app/infra/'
     | '/_app/settings/'
     | '/_app/server/$serverId/$'
     | '/_app/server/$serverId/console'
@@ -625,6 +683,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppAccessRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/infra': {
+      id: '/_app/infra'
+      path: '/infra'
+      fullPath: '/infra'
+      preLoaderRoute: typeof AppInfraRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/security': {
       id: '/_app/security'
       path: '/security'
@@ -660,19 +725,47 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiSentryCheckRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_app/infra/': {
+      id: '/_app/infra/'
+      path: '/'
+      fullPath: '/infra/'
+      preLoaderRoute: typeof AppInfraIndexRouteImport
+      parentRoute: typeof AppInfraRoute
+    }
+    '/_app/infra/databases': {
+      id: '/_app/infra/databases'
+      path: '/databases'
+      fullPath: '/infra/databases'
+      preLoaderRoute: typeof AppInfraDatabasesRouteImport
+      parentRoute: typeof AppInfraRoute
+    }
+    '/_app/infra/relays': {
+      id: '/_app/infra/relays'
+      path: '/relays'
+      fullPath: '/infra/relays'
+      preLoaderRoute: typeof AppInfraRelaysRouteImport
+      parentRoute: typeof AppInfraRoute
+    }
     '/_app/infra/servers': {
       id: '/_app/infra/servers'
-      path: '/infra/servers'
+      path: '/servers'
       fullPath: '/infra/servers'
       preLoaderRoute: typeof AppInfraServersRouteImport
-      parentRoute: typeof AppRoute
+      parentRoute: typeof AppInfraRoute
+    }
+    '/_app/infra/setup': {
+      id: '/_app/infra/setup'
+      path: '/setup'
+      fullPath: '/infra/setup'
+      preLoaderRoute: typeof AppInfraSetupRouteImport
+      parentRoute: typeof AppInfraRoute
     }
     '/_app/infra/updates': {
       id: '/_app/infra/updates'
-      path: '/infra/updates'
+      path: '/updates'
       fullPath: '/infra/updates'
       preLoaderRoute: typeof AppInfraUpdatesRouteImport
-      parentRoute: typeof AppRoute
+      parentRoute: typeof AppInfraRoute
     }
     '/_app/server/$serverId': {
       id: '/_app/server/$serverId'
@@ -789,6 +882,28 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface AppInfraRouteChildren {
+  AppInfraDatabasesRoute: typeof AppInfraDatabasesRoute
+  AppInfraRelaysRoute: typeof AppInfraRelaysRoute
+  AppInfraServersRoute: typeof AppInfraServersRoute
+  AppInfraSetupRoute: typeof AppInfraSetupRoute
+  AppInfraUpdatesRoute: typeof AppInfraUpdatesRoute
+  AppInfraIndexRoute: typeof AppInfraIndexRoute
+}
+
+const AppInfraRouteChildren: AppInfraRouteChildren = {
+  AppInfraDatabasesRoute: AppInfraDatabasesRoute,
+  AppInfraRelaysRoute: AppInfraRelaysRoute,
+  AppInfraServersRoute: AppInfraServersRoute,
+  AppInfraSetupRoute: AppInfraSetupRoute,
+  AppInfraUpdatesRoute: AppInfraUpdatesRoute,
+  AppInfraIndexRoute: AppInfraIndexRoute,
+}
+
+const AppInfraRouteWithChildren = AppInfraRoute._addFileChildren(
+  AppInfraRouteChildren,
+)
+
 interface AppSettingsRouteChildren {
   AppSettingsAccountRoute: typeof AppSettingsAccountRoute
   AppSettingsAppearanceRoute: typeof AppSettingsAppearanceRoute
@@ -849,22 +964,20 @@ const AppServerServerIdRouteWithChildren =
 interface AppRouteChildren {
   AppSplatRoute: typeof AppSplatRoute
   AppAccessRoute: typeof AppAccessRoute
+  AppInfraRoute: typeof AppInfraRouteWithChildren
   AppSecurityRoute: typeof AppSecurityRoute
   AppServersRoute: typeof AppServersRoute
   AppSettingsRoute: typeof AppSettingsRouteWithChildren
-  AppInfraServersRoute: typeof AppInfraServersRoute
-  AppInfraUpdatesRoute: typeof AppInfraUpdatesRoute
   AppServerServerIdRoute: typeof AppServerServerIdRouteWithChildren
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppSplatRoute: AppSplatRoute,
   AppAccessRoute: AppAccessRoute,
+  AppInfraRoute: AppInfraRouteWithChildren,
   AppSecurityRoute: AppSecurityRoute,
   AppServersRoute: AppServersRoute,
   AppSettingsRoute: AppSettingsRouteWithChildren,
-  AppInfraServersRoute: AppInfraServersRoute,
-  AppInfraUpdatesRoute: AppInfraUpdatesRoute,
   AppServerServerIdRoute: AppServerServerIdRouteWithChildren,
 }
 

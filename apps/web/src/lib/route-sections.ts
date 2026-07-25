@@ -1,16 +1,9 @@
-export type GlobalSection =
-  | "access"
-  | "security"
-  | "servers"
-  | "settings"
-  | "updates"
-  | null
+export type GlobalSection = "access" | "infra" | "security" | "settings" | null
 
 export function globalSectionFromRouteId(
   routeId: string | undefined
 ): GlobalSection {
-  if (routeId === "/_app/infra/servers") return "servers"
-  if (routeId === "/_app/infra/updates") return "updates"
+  if (routeId?.startsWith("/_app/infra")) return "infra"
   if (routeId === "/_app/access") return "access"
   if (routeId === "/_app/security") return "security"
   if (routeId?.startsWith("/_app/settings")) return "settings"

@@ -866,8 +866,7 @@ function statusBorderTone(state: SidebarInstance["observedState"]): string {
 }
 
 function globalSectionFromPathname(pathname: string): GlobalSection {
-  if (pathname === "/infra/servers") return "servers"
-  if (pathname === "/infra/updates") return "updates"
+  if (pathname === "/infra" || pathname.startsWith("/infra/")) return "infra"
   if (pathname === "/access") return "access"
   if (pathname === "/security") return "security"
   if (pathname === "/settings" || pathname.startsWith("/settings/")) {

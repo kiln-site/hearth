@@ -54,7 +54,7 @@ export const Route = createFileRoute("/")({
     ])
     if (connection.status !== "connected") {
       if (state.user.isDevelopmentBypass || state.user.role === "admin") {
-        throw redirect({ to: "/settings" })
+        throw redirect({ to: "/infra/relays" })
       }
       throw redirect({
         to: "/server/$serverId/console",

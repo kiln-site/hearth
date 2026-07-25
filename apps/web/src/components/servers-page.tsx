@@ -81,7 +81,7 @@ export const ServersPage = React.memo(function ServersPage({
   }, [canProvision, queryClient])
 
   return (
-    <div className="mx-auto w-full max-w-[90rem] px-3 py-3 pb-10 sm:px-5 sm:py-5">
+    <div className="mx-auto w-full max-w-[90rem] px-3 pb-10 sm:px-5">
       <section
         data-slot="servers-workspace"
         className="overflow-hidden rounded-xl border bg-card/45 [contain:paint]"

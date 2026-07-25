@@ -9,19 +9,19 @@ import {
 } from "@workspace/ui/components/tooltip"
 
 export const GlobalPageToolbar = React.memo(function GlobalPageToolbar({
+  identity,
   label,
-  settings = false,
 }: {
+  identity?: "infra" | "settings"
   label: string
-  settings?: boolean
 }) {
   return (
     <header className="shrink-0 border-b bg-background/90 backdrop-blur-xl">
       <div className="flex min-h-20 items-center gap-3 px-3 py-3 sm:px-5 lg:py-2">
         <ToolbarSidebarTrigger />
         <span className="h-6 w-px shrink-0 bg-border/80" aria-hidden="true" />
-        {settings ? (
-          <SettingsIdentity />
+        {identity ? (
+          <SectionIdentity section={identity} />
         ) : (
           <div className="min-w-0">
             <p className="font-mono text-[9px] tracking-[0.16em] text-primary uppercase">
@@ -37,16 +37,20 @@ export const GlobalPageToolbar = React.memo(function GlobalPageToolbar({
   )
 })
 
-const SettingsIdentity = React.memo(function SettingsIdentity() {
+const SectionIdentity = React.memo(function SectionIdentity({
+  section,
+}: {
+  section: "infra" | "settings"
+}) {
   return (
     <div className="min-w-0 flex-1">
       <h1 className="flex min-w-0 items-baseline gap-1.5 font-heading tracking-[-0.03em]">
         <span className="shrink-0 text-lg font-semibold text-foreground sm:text-xl">
-          Settings
+          {section === "infra" ? "Infrastructure" : "Settings"}
         </span>
         <span className="shrink-0 text-border">/</span>
         <span className="min-w-0 truncate text-sm font-medium text-muted-foreground sm:text-base">
-          <SettingsRouteTitle />
+          <SectionRouteTitle section={section} />
         </span>
       </h1>
       <HearthBuildMetadata />
@@ -54,15 +58,26 @@ const SettingsIdentity = React.memo(function SettingsIdentity() {
   )
 })
 
-function SettingsRouteTitle() {
+function SectionRouteTitle({ section }: { section: "infra" | "settings" }) {
   const title = useRouterState({
-    select: (state) => settingsPageFromPathname(state.location.pathname),
+    select: (state) =>
+      sectionPageFromPathname(section, state.location.pathname),
   })
   return <>{title}</>
 }
 
-function settingsPageFromPathname(pathname: string) {
-  if (pathname.startsWith("/settings/relays")) return "Relays"
+function sectionPageFromPathname(
+  section: "infra" | "settings",
+  pathname: string
+) {
+  if (section === "infra") {
+    if (pathname.startsWith("/infra/setup")) return "Setup"
+    if (pathname.startsWith("/infra/relays")) return "Relays"
+    if (pathname.startsWith("/infra/servers")) return "Servers"
+    if (pathname.startsWith("/infra/databases")) return "Databases"
+    if (pathname.startsWith("/infra/updates")) return "Updates"
+    return "Infrastructure"
+  }
   if (pathname.startsWith("/settings/appearance")) return "Appearance"
   if (pathname.startsWith("/settings/account")) return "Account"
   if (pathname.startsWith("/settings/billing")) return "Billing"

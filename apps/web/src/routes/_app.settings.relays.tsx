@@ -1,12 +1,7 @@
-import { createFileRoute } from "@tanstack/react-router"
-
-import { AppSettingsPage } from "@/components/app-settings-page"
-import { pageTitle } from "@/lib/page-title"
-import { relaysQueryOptions } from "@/lib/query-options"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
 export const Route = createFileRoute("/_app/settings/relays")({
-  loader: ({ context }) =>
-    context.queryClient.ensureQueryData(relaysQueryOptions()),
-  head: () => ({ meta: [{ title: pageTitle("Relay Settings") }] }),
-  component: AppSettingsPage,
+  beforeLoad: () => {
+    throw redirect({ to: "/infra/relays", replace: true })
+  },
 })
