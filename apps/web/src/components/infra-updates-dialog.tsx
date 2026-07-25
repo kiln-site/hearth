@@ -201,17 +201,22 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
     },
     [replaceActive]
   )
+  const markUpdateBatchFailed = React.useCallback(() => {
+    awayBatchHadFailure.current = true
+  }, [])
 
   const updateMutation = useMutation({
     mutationFn: (targets: ReadonlyArray<UpdateTarget>) =>
-      startUpdates(targets, registerStartedUpdate),
+      startUpdates(targets, registerStartedUpdate, markUpdateBatchFailed),
+    onMutate: () => {
+      if (activeRef.current.length === 0) {
+        awayBatchHadFailure.current = false
+      }
+    },
     onSuccess: ({ failures }) => {
       setPending(null)
       for (const failure of failures) {
         showUpdateFailure(failure.target, failure.message, onRetryTarget)
-      }
-      if (failures.length > 0 && awayBatchActive.current) {
-        awayBatchHadFailure.current = true
       }
       if (awayFromInfrastructure && activeRef.current.length > 0) {
         showUpdatesContinuingToast(activeRef.current, () => onRetryTarget(null))
@@ -294,7 +299,7 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
       reconnectingOperations.current.delete(completed.operationId)
       if (operation === null || operation === undefined) {
         clearSystemUpdateActive(completed)
-        if (awayBatchActive.current) awayBatchHadFailure.current = true
+        awayBatchHadFailure.current = true
         showUpdateFailure(
           completed,
           `${completed.name}'s saved update operation could not be found. Check the target container before trying again.`,
@@ -311,7 +316,7 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
 
       if (operation.status === "failed") {
         clearSystemUpdateActive(completed)
-        if (awayBatchActive.current) awayBatchHadFailure.current = true
+        awayBatchHadFailure.current = true
         showUpdateFailure(
           completed,
           operation.error ??
@@ -1364,17 +1369,18 @@ type UpdateStartAttempt =
 
 async function startUpdates(
   targets: ReadonlyArray<UpdateTarget>,
-  onStarted: (update: ActiveUpdate) => void
+  onStarted: (update: ActiveUpdate) => void,
+  onFailure: () => void
 ): Promise<{
   failures: Array<{ message: string; target: UpdateTarget }>
 }> {
   const relayTargets = targets.filter((target) => target.component === "relay")
   const hearthTarget = targets.find((target) => target.component === "hearth")
   const relayAttempts = await Promise.all(
-    relayTargets.map((target) => startUpdate(target, onStarted))
+    relayTargets.map((target) => startUpdate(target, onStarted, onFailure))
   )
   const hearthAttempt = hearthTarget
-    ? await startUpdate(hearthTarget, onStarted)
+    ? await startUpdate(hearthTarget, onStarted, onFailure)
     : null
   const attempts = hearthAttempt
     ? [...relayAttempts, hearthAttempt]
@@ -1390,7 +1396,8 @@ async function startUpdates(
 
 async function startUpdate(
   target: UpdateTarget,
-  onStarted: (update: ActiveUpdate) => void
+  onStarted: (update: ActiveUpdate) => void,
+  onFailure: () => void
 ): Promise<UpdateStartAttempt> {
   let started: Awaited<ReturnType<typeof startSystemUpdate>>
   try {
@@ -1401,6 +1408,7 @@ async function startUpdate(
       },
     })
   } catch (cause) {
+    onFailure()
     return {
       failure: {
         message:
