@@ -7,6 +7,7 @@ import {
   ExternalLink,
   History,
   LoaderCircle,
+  RefreshCw,
   ServerCog,
   ShieldCheck,
   TriangleAlert,
@@ -58,6 +59,10 @@ const releaseDateFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
   timeZone: "UTC",
 })
+const lastCheckedFormatter = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+  timeStyle: "short",
+})
 
 export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
   initialRelayId,
@@ -80,6 +85,14 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
   const [pending, setPending] = React.useState<UpdateTarget | null>(null)
   const [active, setActive] = React.useState<ActiveUpdate | null>(null)
   const [message, setMessage] = React.useState<string | null>(null)
+  const [lastCheckedAt, setLastCheckedAt] = React.useState("Not yet")
+
+  React.useEffect(() => {
+    if (overviewQuery.dataUpdatedAt === 0) return
+    setLastCheckedAt(
+      lastCheckedFormatter.format(new Date(overviewQuery.dataUpdatedAt))
+    )
+  }, [overviewQuery.dataUpdatedAt])
 
   React.useEffect(() => {
     const stored = window.localStorage.getItem(activeUpdateStorageKey)
@@ -187,11 +200,38 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
           className="h-[min(46rem,calc(100dvh-2rem))] max-h-none grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-[calc(100%-2rem)] xl:max-w-5xl"
         >
           <div className="border-b bg-background/35 px-5 pt-5">
-            <DialogHeader>
+            <DialogHeader className="flex-row items-center justify-between gap-3 pr-10">
               <DialogTitle className="flex items-center gap-2.5 text-2xl text-white">
                 <CloudDownload className="size-5 text-primary" />
                 Kiln Updater
               </DialogTitle>
+              <div className="flex shrink-0 flex-col items-end gap-1">
+                <Button
+                  aria-busy={overviewQuery.isFetching}
+                  aria-label={
+                    overviewQuery.isFetching
+                      ? "Checking for updates"
+                      : "Check for updates"
+                  }
+                  disabled={overviewQuery.isFetching}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                  onClick={() => void overviewQuery.refetch()}
+                >
+                  <RefreshCw
+                    className={overviewQuery.isFetching ? "animate-spin" : ""}
+                  />
+                  <span className="hidden sm:inline">
+                    {overviewQuery.isFetching
+                      ? "Checking..."
+                      : "Check for updates"}
+                  </span>
+                </Button>
+                <p className="hidden text-[9px] text-muted-foreground sm:block">
+                  Last Checked: {lastCheckedAt}
+                </p>
+              </div>
             </DialogHeader>
 
             <div
