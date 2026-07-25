@@ -10,6 +10,7 @@ import {
   relayConsoleCompletionSchema,
   relayInstanceActionSchema,
   relayInstanceNameSchema,
+  relayInstanceResourceSnapshotSchema,
   relayInstanceWebRouteInputsSchema,
   relayInstanceWebRouteStateSchema,
   relayMclogsUploadResultSchema,
@@ -285,6 +286,19 @@ export const getInstanceWebRoutes = createServerFn({ method: "GET" })
       data.relayId
     )
     return relayInstanceWebRouteStateSchema.parse(value)
+  })
+
+export const getRelayInstanceResources = createServerFn({ method: "GET" })
+  .validator(instanceInputSchema)
+  .handler(async ({ data }) => {
+    const value = await relayRequest(
+      `/v1/instances/${encodeURIComponent(data.instanceId)}/resources`,
+      undefined,
+      "instance.read",
+      data.instanceId,
+      data.relayId
+    )
+    return relayInstanceResourceSnapshotSchema.parse(value)
   })
 
 export const updateInstanceWebRoutes = createServerFn({ method: "POST" })

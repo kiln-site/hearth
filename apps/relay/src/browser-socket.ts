@@ -139,7 +139,10 @@ export function attachBrowserSocket(
     options.docker,
     options.subscribeSnapshots
   )
-  const resourceHubs = new ResourceHubRegistry(options.subscribeSnapshots)
+  const resourceHubs = new ResourceHubRegistry(
+    options.docker,
+    options.subscribeSnapshots
+  )
   const wss = new WebSocketServer({
     clientTracking: false,
     handleProtocols: (protocols) => {
@@ -1020,11 +1023,17 @@ class ConsoleHubRegistry {
 }
 
 class ResourceHubRegistry {
+  readonly #docker: DockerDriver
+  readonly #historyDelivered = new Set<WebSocket>()
   readonly #subscribeSnapshots: BrowserSocketOptions["subscribeSnapshots"]
   readonly #subscriptions = new Map<WebSocket, string>()
   #unsubscribe: (() => void) | null = null
 
-  constructor(subscribeSnapshots: BrowserSocketOptions["subscribeSnapshots"]) {
+  constructor(
+    docker: DockerDriver,
+    subscribeSnapshots: BrowserSocketOptions["subscribeSnapshots"]
+  ) {
+    this.#docker = docker
     this.#subscribeSnapshots = subscribeSnapshots
   }
 
@@ -1037,11 +1046,16 @@ class ResourceHubRegistry {
       for (const [subscriber, subscribedInstanceId] of this.#subscriptions) {
         const instance = byId.get(subscribedInstanceId)
         if (instance) {
+          const includeHistory = !this.#historyDelivered.has(subscriber)
           send(subscriber, {
+            history: includeHistory
+              ? this.#docker.resourceHistory(instance.id)
+              : [],
             instance,
             sequence: sample.sequence,
             type: "resource",
           })
+          this.#historyDelivered.add(subscriber)
         }
       }
     })
@@ -1049,6 +1063,7 @@ class ResourceHubRegistry {
 
   remove(socket: WebSocket): void {
     this.#subscriptions.delete(socket)
+    this.#historyDelivered.delete(socket)
     if (this.#subscriptions.size === 0) {
       this.#unsubscribe?.()
       this.#unsubscribe = null
@@ -1059,6 +1074,7 @@ class ResourceHubRegistry {
     this.#unsubscribe?.()
     this.#unsubscribe = null
     this.#subscriptions.clear()
+    this.#historyDelivered.clear()
   }
 }
 

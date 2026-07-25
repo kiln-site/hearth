@@ -6,7 +6,7 @@ import {
 import type { RelayResourceStreamEvent } from "@workspace/contracts"
 
 import { issueResourceCapability } from "@/server/relay-capability"
-import { getRelaySnapshot } from "@/server/relay"
+import { getRelayInstanceResources } from "@/server/relay"
 
 export async function* openRelayResourceStream(
   relayId: string,
@@ -111,14 +111,12 @@ async function* openHearthResourceStream(
   while (!signal.aborted) {
     // Polls are deliberately sequential so only one snapshot request is in flight.
     // oxlint-disable-next-line react-doctor/async-await-in-loop
-    const snapshot = await getRelaySnapshot()
-    const instance = snapshot.instances.find(
-      (candidate) =>
-        candidate.id === instanceId && candidate.relayId === relayId
-    )
-    if (!instance) throw new Error("Instance is no longer available")
+    const snapshot = await getRelayInstanceResources({
+      data: { instanceId, relayId },
+    })
     yield relayResourceStreamEventSchema.parse({
-      instance,
+      history: snapshot.history,
+      instance: snapshot.instance,
       sequence: sequence++,
       type: "resource",
     })

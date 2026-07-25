@@ -7,6 +7,7 @@ import { hostname } from "node:os"
 import { basename, relative, resolve } from "node:path"
 
 import { command } from "./command.js"
+import { directoryApparentSize } from "./disk-usage.js"
 import type {
   BrickVariableValue,
   RelayConsole,
@@ -35,6 +36,9 @@ interface DockerInspect {
     Tty?: boolean
   }
   Id: string
+  HostConfig?: {
+    Memory?: number
+  }
   Mounts: Array<{
     Destination: string
     Source: string
@@ -109,6 +113,12 @@ interface ResourceCacheEntry {
   value: RelayInstanceResources | null
 }
 
+interface DiskUsageCacheEntry {
+  lastAttempt: number
+  pending: boolean
+  usedBytes: number
+}
+
 // Docker TTY logs contain ANSI/control bytes. Cursor-editing frames are removed,
 // while SGR color and emphasis are retained as safe, structured segments.
 /* eslint-disable no-control-regex */
@@ -134,6 +144,8 @@ const CURL_PROGRESS_ROW_PATTERN =
 const CONSOLE_TTY_COLUMNS = 120
 const CONSOLE_TTY_ROWS = 40
 const MAX_SHARED_CONSOLE_BYTES = 10 * 1024 * 1024
+const RESOURCE_HISTORY_WINDOW_MS = 60_000
+const DISK_USAGE_REFRESH_MS = 60_000
 /* eslint-enable no-control-regex */
 
 export class DockerDriver {
@@ -142,8 +154,11 @@ export class DockerDriver {
   readonly #consoleLocks = new Map<string, Promise<void>>()
   readonly #consoleSizeStarts = new Map<string, string>()
   readonly #consoleSizePending = new Map<string, Promise<void>>()
+  readonly #diskUsageCache = new Map<string, DiskUsageCacheEntry>()
+  #diskUsageQueue = Promise.resolve()
   #relayStartedAt: Promise<string | null> | undefined
   readonly #resourceCache = new Map<string, ResourceCacheEntry>()
+  readonly #resourceHistory = new Map<string, Array<RelayInstanceResources>>()
 
   constructor(config: RelayConfig) {
     this.#config = config
@@ -154,6 +169,7 @@ export class DockerDriver {
     const activeContainerIds = new Set(
       discovered.map(({ container }) => container.Id)
     )
+    const activeInstanceIds = new Set(discovered.map(({ config }) => config.id))
     for (const containerId of this.#resourceCache.keys()) {
       if (!activeContainerIds.has(containerId))
         this.#resourceCache.delete(containerId)
@@ -161,6 +177,14 @@ export class DockerDriver {
     for (const containerId of this.#consoleSizeStarts.keys()) {
       if (!activeContainerIds.has(containerId))
         this.#consoleSizeStarts.delete(containerId)
+    }
+    for (const instanceId of this.#diskUsageCache.keys()) {
+      if (!activeInstanceIds.has(instanceId))
+        this.#diskUsageCache.delete(instanceId)
+    }
+    for (const instanceId of this.#resourceHistory.keys()) {
+      if (!activeInstanceIds.has(instanceId))
+        this.#resourceHistory.delete(instanceId)
     }
     await Promise.all(
       discovered.map(({ config, container }) =>
@@ -204,6 +228,12 @@ export class DockerDriver {
       matchesInstanceId(item.config, id)
     )
     return found?.config ?? null
+  }
+
+  resourceHistory(instanceId: string): Array<RelayInstanceResources> {
+    const history = this.#resourceHistory.get(instanceId) ?? []
+    const cutoff = Date.now() - RESOURCE_HISTORY_WINDOW_MS
+    return history.filter((sample) => Date.parse(sample.sampledAt) >= cutoff)
   }
 
   async webRouteLabelSnapshots(): Promise<Array<RelayWebRouteLabelSnapshot>> {
@@ -853,12 +883,14 @@ export class DockerDriver {
       void this.#sampleResources(instance, cached.value)
         .then((resources) => {
           cached.value = resources
+          this.#recordResourceHistory(instance.config.id, resources)
         })
         .catch(() => {
           // Resource sampling is observational. Keep the last healthy value so
           // a slow Docker stats response can never take down the Relay snapshot.
         })
         .finally(() => {
+          cached.lastAttempt = Date.now()
           cached.pending = false
         })
     } else if (!instance.container.State.Running) {
@@ -881,6 +913,7 @@ export class DockerDriver {
       this.#dockerStats(instance.container.Id),
       statfs(directory),
     ])
+    const instanceStorageUsed = this.#directoryUsageFor(instance)
     const cpuCurrent = stats.cpu_stats?.cpu_usage?.total_usage ?? 0
     const cpuPrevious = stats.precpu_stats?.cpu_usage?.total_usage ?? 0
     const systemCurrent = stats.cpu_stats?.system_cpu_usage ?? 0
@@ -888,12 +921,16 @@ export class DockerDriver {
     const cpuDelta = cpuCurrent - cpuPrevious
     const systemDelta = systemCurrent - systemPrevious
     const onlineCpus = Math.max(stats.cpu_stats?.online_cpus ?? 1, 1)
+    const cpuCapacityPercent = onlineCpus * 100
     const cpuPercent =
       cpuDelta > 0 && systemDelta > 0
         ? (cpuDelta / systemDelta) * onlineCpus * 100
         : 0
 
-    const memoryTotal = Math.max(stats.memory_stats?.limit ?? 0, 0)
+    const memoryTotal = Math.max(
+      instance.config.limits.memoryBytes || stats.memory_stats?.limit || 0,
+      0
+    )
     const memoryCache = Math.max(
       stats.memory_stats?.stats?.total_inactive_file ??
         stats.memory_stats?.stats?.inactive_file ??
@@ -904,9 +941,10 @@ export class DockerDriver {
       Math.min((stats.memory_stats?.usage ?? 0) - memoryCache, memoryTotal),
       0
     )
-    const storageTotal = filesystem.blocks * filesystem.bsize
-    const storageAvailable = filesystem.bavail * filesystem.bsize
-    const storageUsed = Math.max(storageTotal - storageAvailable, 0)
+    const nodeStorageTotal = filesystem.blocks * filesystem.bsize
+    const nodeStorageAvailable = filesystem.bavail * filesystem.bsize
+    const nodeStorageUsed = Math.max(nodeStorageTotal - nodeStorageAvailable, 0)
+    const storageLimit = instance.config.limits.diskBytes
     const network = Object.values(stats.networks ?? {}).reduce(
       (total, current) => ({
         receivedBytes: total.receivedBytes + (current.rx_bytes ?? 0),
@@ -939,16 +977,22 @@ export class DockerDriver {
 
     return {
       sampledAt: new Date(sampledAt).toISOString(),
-      cpu: { percent: roundPercent(cpuPercent) },
+      cpu: {
+        capacityPercent: cpuCapacityPercent,
+        percent: roundPercent(cpuPercent),
+      },
       memory: {
         totalBytes: memoryTotal,
         usedBytes: memoryUsed,
         percent: roundPercent(percentOf(memoryUsed, memoryTotal)),
       },
       storage: {
-        totalBytes: storageTotal,
-        usedBytes: storageUsed,
-        percent: roundPercent(percentOf(storageUsed, storageTotal)),
+        totalBytes: storageLimit,
+        usedBytes: instanceStorageUsed,
+        percent: roundPercent(percentOf(instanceStorageUsed, storageLimit)),
+        nodeTotalBytes: nodeStorageTotal,
+        nodeUsedBytes: nodeStorageUsed,
+        nodePercent: roundPercent(percentOf(nodeStorageUsed, nodeStorageTotal)),
       },
       network: {
         ...network,
@@ -956,6 +1000,65 @@ export class DockerDriver {
         sentBytesPerSecond,
       },
     }
+  }
+
+  #directoryUsageFor(instance: DiscoveredInstance): number {
+    const now = Date.now()
+    const cached = this.#diskUsageCache.get(instance.config.id) ?? {
+      lastAttempt: 0,
+      pending: false,
+      usedBytes: 0,
+    }
+    if (!cached.pending && now - cached.lastAttempt >= DISK_USAGE_REFRESH_MS) {
+      cached.lastAttempt = now
+      cached.pending = true
+      this.#diskUsageCache.set(instance.config.id, cached)
+      const directory = resolve(
+        this.#config.rootDirectory,
+        instance.config.directory
+      )
+      this.#diskUsageQueue = this.#diskUsageQueue.then(async () => {
+        try {
+          cached.usedBytes = await directoryApparentSize(directory)
+          if (
+            instance.container.State.Running &&
+            instance.config.limits.diskBytes > 0 &&
+            cached.usedBytes > instance.config.limits.diskBytes
+          ) {
+            console.warn(
+              `Stopping ${instance.config.name}: disk usage exceeded its configured quota`
+            )
+            await command(
+              "docker",
+              ["stop", "--time", "30", instance.config.service],
+              { timeout: 45_000 }
+            )
+          }
+        } catch {
+          // Keep the last healthy value. Directory scans race with normal game
+          // writes and should never make resource sampling fail.
+        } finally {
+          cached.lastAttempt = Date.now()
+          cached.pending = false
+        }
+      })
+    }
+    return cached.usedBytes
+  }
+
+  #recordResourceHistory(
+    instanceId: string,
+    resources: RelayInstanceResources
+  ): void {
+    const timestamp = Date.parse(resources.sampledAt)
+    const cutoff = timestamp - RESOURCE_HISTORY_WINDOW_MS
+    const history = this.#resourceHistory.get(instanceId) ?? []
+    this.#resourceHistory.set(
+      instanceId,
+      [...history, resources].filter(
+        (sample) => Date.parse(sample.sampledAt) >= cutoff
+      )
+    )
   }
 
   async #dockerStats(containerId: string): Promise<DockerStats> {
@@ -1230,6 +1333,13 @@ export class DockerDriver {
       shortId: id.slice(0, 8),
       service,
       variables: parseBrickVariablesLabel(labels["kiln.brick.variables"]),
+      limits: {
+        diskBytes: nonnegativeIntegerLabel(labels["kiln.instance.disk-bytes"]),
+        memoryBytes: Math.max(
+          nonnegativeIntegerLabel(labels["kiln.instance.memory-bytes"]),
+          container.HostConfig?.Memory ?? 0
+        ),
+      },
       version,
       managedByRelay: owned,
     }
@@ -1684,6 +1794,12 @@ function titleCase(value: string): string {
     .split("-")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ")
+}
+
+function nonnegativeIntegerLabel(value: string | undefined): number {
+  if (!value || !/^\d+$/u.test(value)) return 0
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0
 }
 
 function inferStandaloneVersion(

@@ -613,6 +613,8 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
     case "instance.create":
     case "instance.startup.write":
       return "instance.create"
+    case "instance.resources.read":
+      return "instance.read"
     case "instance.rename":
       return "instance.rename"
     case "instance.delete":

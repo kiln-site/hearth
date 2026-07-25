@@ -1,9 +1,19 @@
 import { createHash, randomBytes } from "node:crypto"
-import { chmod, chown, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import {
+  chmod,
+  chown,
+  mkdir,
+  readFile,
+  rm,
+  statfs,
+  writeFile,
+} from "node:fs/promises"
+import { totalmem } from "node:os"
 import { join } from "node:path"
 
 import { interpolateTemplate, resolveBrick } from "./bricks.js"
 import { command } from "./command.js"
+import { directoryApparentSize } from "./disk-usage.js"
 import type {
   RelayCreateInstance,
   RelayInstance,
@@ -31,6 +41,35 @@ const RELAY_EDGE_NETWORK_NAME = "kiln-relay-edge"
 const RELAY_EDGE_ALIAS = "kiln-relay"
 const OWNED_LABEL = "kiln.relay.owned=true"
 const TRAEFIK_CONTAINER = "kiln-traefik"
+
+function dockerMemoryBytes(value: string): number {
+  const match = value.match(/^(\d+)([bkmgt])$/iu)
+  if (!match?.[1] || !match[2]) {
+    throw new Error(`Invalid Docker memory limit ${value}`)
+  }
+  const amount = Number(match[1])
+  const exponent =
+    match[2].toLowerCase() === "b"
+      ? 0
+      : match[2].toLowerCase() === "k"
+        ? 1
+        : match[2].toLowerCase() === "m"
+          ? 2
+          : match[2].toLowerCase() === "g"
+            ? 3
+            : 4
+  const bytes = amount * 1024 ** exponent
+  if (!Number.isSafeInteger(bytes)) {
+    throw new Error(`Docker memory limit ${value} is too large`)
+  }
+  return bytes
+}
+
+function formatAllocationBytes(bytes: number): string {
+  const gibibytes = bytes / 1024 ** 3
+  return `${gibibytes.toFixed(gibibytes >= 10 ? 0 : 1)} GiB`
+}
+
 export interface BackendRoute {
   hostname: string
   implementation: string
@@ -451,6 +490,19 @@ export class LifecycleDriver {
     action: "start" | "stop" | "restart" | "kill",
     routes: ReadonlyArray<RelayInstanceWebRoute>
   ): Promise<RelayInstance> {
+    if (
+      instance.limits.diskBytes > 0 &&
+      (action === "start" || action === "restart")
+    ) {
+      const usedBytes = await directoryApparentSize(
+        join(this.#config.rootDirectory, instance.directory)
+      )
+      if (usedBytes > instance.limits.diskBytes) {
+        throw new Error(
+          `Cannot ${action} ${instance.name}: its ${formatAllocationBytes(usedBytes)} of files exceed the ${formatAllocationBytes(instance.limits.diskBytes)} disk quota`
+        )
+      }
+    }
     const settings = await this.proxySettings()
     if (
       instance.managedByRelay &&
@@ -486,6 +538,7 @@ export class LifecycleDriver {
   async createInstance(input: RelayCreateInstance): Promise<RelayInstance> {
     const id = randomBytes(32).toString("hex").slice(0, 40)
     return this.#provisionManagedInstance({
+      diskLimitBytes: input.diskLimitBytes,
       id,
       prepareDirectory: true,
       recipe: input.recipe,
@@ -507,6 +560,18 @@ export class LifecycleDriver {
     if (!recipe) {
       throw new Error("Instance is missing its Brick recipe source")
     }
+    const diskLimitBytes = input.diskLimitBytes ?? existing.limits.diskBytes
+    const definition = await this.#bricks.recipe(recipe)
+    const resolved = resolveBrick(definition, input.variables, recipe)
+    await this.#assertAllocationAvailable({
+      checkExistingUsage: true,
+      directory: join(this.#config.rootDirectory, existing.directory),
+      diskLimitBytes,
+      existing: (await this.#docker.inspectInstances()).filter(
+        (instance) => instance.id !== existing.id
+      ),
+      memoryLimitBytes: dockerMemoryBytes(resolved.memory),
+    })
 
     await command("docker", ["stop", "--time", "30", existing.service], {
       timeout: 45_000,
@@ -517,6 +582,7 @@ export class LifecycleDriver {
 
     try {
       return await this.#provisionManagedInstance({
+        diskLimitBytes,
         id: existing.id,
         prepareDirectory: false,
         recipe,
@@ -532,6 +598,7 @@ export class LifecycleDriver {
   }
 
   async #provisionManagedInstance(input: {
+    diskLimitBytes: number
     id: string
     prepareDirectory: boolean
     recipe: string
@@ -541,6 +608,14 @@ export class LifecycleDriver {
     const definition = await this.#bricks.recipe(input.recipe)
     const resolved = resolveBrick(definition, input.variables, input.recipe)
     const existing = await this.#docker.inspectInstances()
+    const memoryLimitBytes = dockerMemoryBytes(resolved.memory)
+    await this.#assertAllocationAvailable({
+      checkExistingUsage: !input.prepareDirectory,
+      directory: join(this.#config.rootDirectory, input.id),
+      diskLimitBytes: input.diskLimitBytes,
+      existing,
+      memoryLimitBytes,
+    })
     if (
       input.prepareDirectory &&
       definition.constraints.singleton &&
@@ -706,6 +781,10 @@ export class LifecycleDriver {
       "--label",
       `kiln.instance.directory=${id}`,
       "--label",
+      `kiln.instance.memory-bytes=${memoryLimitBytes}`,
+      "--label",
+      `kiln.instance.disk-bytes=${input.diskLimitBytes}`,
+      "--label",
       `kiln.instance.mount=${definition.runtime.storage.mount}`,
       "--volume",
       `${hostDirectory}:${definition.runtime.storage.mount}`,
@@ -784,6 +863,47 @@ export class LifecycleDriver {
         "Docker created the instance but Relay could not discover it"
       )
     return created
+  }
+
+  async #assertAllocationAvailable(input: {
+    checkExistingUsage: boolean
+    directory: string
+    diskLimitBytes: number
+    existing: ReadonlyArray<RelayInstance>
+    memoryLimitBytes: number
+  }): Promise<void> {
+    const filesystem = await statfs(this.#config.rootDirectory)
+    const nodeDiskBytes = filesystem.blocks * filesystem.bsize
+    const allocatedMemoryBytes = input.existing.reduce(
+      (total, instance) => total + instance.limits.memoryBytes,
+      0
+    )
+    const allocatedDiskBytes = input.existing.reduce(
+      (total, instance) => total + instance.limits.diskBytes,
+      0
+    )
+
+    if (allocatedMemoryBytes + input.memoryLimitBytes > totalmem()) {
+      throw new Error(
+        `Container memory exceeds the node's assignable capacity (${formatAllocationBytes(Math.max(totalmem() - allocatedMemoryBytes, 0))} available)`
+      )
+    }
+    if (
+      input.diskLimitBytes > 0 &&
+      allocatedDiskBytes + input.diskLimitBytes > nodeDiskBytes
+    ) {
+      throw new Error(
+        `Disk quota exceeds the node's assignable capacity (${formatAllocationBytes(Math.max(nodeDiskBytes - allocatedDiskBytes, 0))} available)`
+      )
+    }
+    if (input.diskLimitBytes > 0 && input.checkExistingUsage) {
+      const usedBytes = await directoryApparentSize(input.directory)
+      if (usedBytes > input.diskLimitBytes) {
+        throw new Error(
+          `Disk quota is below this server's current ${formatAllocationBytes(usedBytes)} usage`
+        )
+      }
+    }
   }
 
   async deleteInstance(id: string, deleteData: boolean): Promise<void> {

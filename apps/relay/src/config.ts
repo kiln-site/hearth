@@ -15,6 +15,10 @@ export interface RelayInstanceConfig {
   shortId: string
   implementation: string
   javaVersion: string
+  limits: {
+    diskBytes: number
+    memoryBytes: number
+  }
   name: string
   service: string
   variables?: Record<string, boolean | number | string>

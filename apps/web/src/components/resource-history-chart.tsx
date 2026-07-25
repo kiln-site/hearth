@@ -1,17 +1,16 @@
 import * as React from "react"
 
-import { Area, Line } from "@/components/dither-kit/area"
-import { AreaChart, LineChart } from "@/components/dither-kit/area-chart"
+import { Area } from "@/components/dither-kit/area"
+import { AreaChart } from "@/components/dither-kit/area-chart"
 import { useChartPart } from "@/components/dither-kit/chart-context"
 import type { ChartConfig } from "@/components/dither-kit/chart-context"
 import { Grid } from "@/components/dither-kit/grid"
 import type { Rgb, Seed } from "@/components/dither-kit/palette"
 import { Tooltip } from "@/components/dither-kit/tooltip"
 
-const networkSentColor = "oklch(0.73 0.15 65)"
-
 const NETWORK_SENT_SEED = seedFromOklch(0.73, 0.15, 65)
 const NETWORK_RECEIVED_SEED = seedFromOklch(0.78, 0.11, 205)
+const NODE_STORAGE_SEED = seedFromOklch(0.58, 0.035, 210)
 
 function clamp01(value: number) {
   return Math.min(1, Math.max(0, value))
@@ -47,9 +46,7 @@ function seedFromOklch(L: number, C: number, h: number): Seed {
 }
 
 function seedFromCssColor(color: string): Seed {
-  const match = color.match(
-    /oklch\(\s*([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s*\)/i
-  )
+  const match = color.match(/oklch\(\s*([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s*\)/i)
   if (match) {
     return seedFromOklch(Number(match[1]), Number(match[2]), Number(match[3]))
   }
@@ -95,11 +92,13 @@ export function ResourceHistoryChart({
   resourceId,
   label,
   color,
+  maxValue,
   formatValue,
 }: {
   data: Array<{
     timestamp: number
     value: number | null
+    secondary: number | null
     received: number | null
     sent: number | null
   }>
@@ -108,6 +107,7 @@ export function ResourceHistoryChart({
   color: string
   domainStart: number
   domainEnd: number
+  maxValue?: number
   formatValue: (value: number) => string
 }) {
   const chartConfig = React.useMemo<ChartConfig>(() => {
@@ -115,6 +115,13 @@ export function ResourceHistoryChart({
       const config: ChartConfig = {
         received: { label: "Download", color: NETWORK_RECEIVED_SEED },
         sent: { label: "Upload", color: NETWORK_SENT_SEED },
+      }
+      return config
+    }
+    if (resourceId === "storage") {
+      const config: ChartConfig = {
+        secondary: { label: "Node volume", color: NODE_STORAGE_SEED },
+        value: { label: "Instance quota", color: seedFromCssColor(color) },
       }
       return config
     }
@@ -129,6 +136,7 @@ export function ResourceHistoryChart({
       data.map((sample) => ({
         timestamp: sample.timestamp,
         value: numericOrZero(sample.value),
+        secondary: numericOrZero(sample.secondary),
         received: numericOrZero(sample.received),
         sent: numericOrZero(sample.sent),
       })),
@@ -138,15 +146,16 @@ export function ResourceHistoryChart({
   const yDomain = React.useMemo((): [number, number] | undefined => {
     if (resourceId === "network") return undefined
     if (resourceId === "memory" || resourceId === "storage") return [0, 100]
+    if (resourceId === "cpu" && maxValue) return [0, maxValue]
     const peak = chartData.reduce(
       (max, sample) => Math.max(max, sample.value),
       0
     )
     return [0, Math.max(10, Math.ceil(peak * 1.15))]
-  }, [chartData, resourceId])
+  }, [chartData, maxValue, resourceId])
 
   const margins = {
-    top: resourceId === "network" ? 18 : 7,
+    top: resourceId === "network" || resourceId === "storage" ? 18 : 7,
     right: 16,
     bottom: 22,
     left: 16,
@@ -156,30 +165,28 @@ export function ResourceHistoryChart({
 
   return (
     <div className="relative">
-      {resourceId === "network" ? (
+      {resourceId === "network" || resourceId === "storage" ? (
         <div className="pointer-events-none absolute top-0 right-3 z-10 flex items-center gap-3 font-mono text-[8px] tracking-[0.07em] text-muted-foreground">
           <span className="flex items-center gap-1.5">
-            <span className="h-px w-3" style={{ backgroundColor: color }} />↓
-            DOWN
+            <span className="h-1.5 w-3 bg-current opacity-70" />
+            {resourceId === "network" ? "↓ DOWN" : "NODE"}
           </span>
           <span className="flex items-center gap-1.5">
-            <span
-              className="w-3 border-t border-dashed"
-              style={{ borderColor: networkSentColor }}
-            />
-            ↑ UP
+            <span className="h-1.5 w-3" style={{ backgroundColor: color }} />
+            {resourceId === "network" ? "↑ UP" : "INSTANCE"}
           </span>
         </div>
       ) : null}
 
       {resourceId === "network" ? (
-        <LineChart
+        <AreaChart
           data={chartData}
           config={chartConfig}
-          animate={false}
+          animate
           bloom="off"
           hovered
           margins={margins}
+          stackType="stacked"
           className={chartClassName}
           yDomain={yDomain}
         >
@@ -190,14 +197,14 @@ export function ResourceHistoryChart({
               `${name === "received" ? "↓" : "↑"} ${formatValue(value)}`
             }
           />
-          <Line dataKey="received" />
-          <Line dataKey="sent" strokeVariant="dashed" />
-        </LineChart>
+          <Area dataKey="received" variant="gradient" />
+          <Area dataKey="sent" variant="gradient" />
+        </AreaChart>
       ) : (
         <AreaChart
           data={chartData}
           config={chartConfig}
-          animate={false}
+          animate
           bloom="off"
           hovered
           margins={margins}
@@ -207,6 +214,9 @@ export function ResourceHistoryChart({
           <Grid horizontal vertical={false} strokeDasharray="2 4" />
           <HistoryXAxis />
           <Tooltip valueFormatter={(value) => formatValue(value)} />
+          {resourceId === "storage" ? (
+            <Area dataKey="secondary" variant="gradient" />
+          ) : null}
           <Area dataKey="value" variant="gradient" />
         </AreaChart>
       )}

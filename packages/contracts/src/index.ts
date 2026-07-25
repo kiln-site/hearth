@@ -143,6 +143,7 @@ export const brickVariableValuesSchema = z.record(
 )
 
 export const relayCreateInstanceSchema = z.object({
+  diskLimitBytes: z.number().int().nonnegative().default(0),
   name: relayInstanceNameSchema.optional(),
   recipe: brickSourceSchema,
   variables: brickVariableValuesSchema,
@@ -150,6 +151,7 @@ export const relayCreateInstanceSchema = z.object({
 })
 
 export const relayUpdateInstanceStartupSchema = z.object({
+  diskLimitBytes: z.number().int().nonnegative().optional(),
   recipe: brickSourceSchema.optional(),
   variables: brickVariableValuesSchema,
   start: z.boolean().default(true),
@@ -324,6 +326,7 @@ export const relayProxyDiagnosticsSchema = z
 export const relayInstanceResourcesSchema = z.object({
   sampledAt: z.string().datetime(),
   cpu: z.object({
+    capacityPercent: z.number().positive().default(100),
     percent: z.number().nonnegative(),
   }),
   memory: z.object({
@@ -335,6 +338,9 @@ export const relayInstanceResourcesSchema = z.object({
     totalBytes: z.number().nonnegative(),
     usedBytes: z.number().nonnegative(),
     percent: z.number().nonnegative(),
+    nodeTotalBytes: z.number().nonnegative().default(0),
+    nodeUsedBytes: z.number().nonnegative().default(0),
+    nodePercent: z.number().nonnegative().default(0),
   }),
   network: z
     .object({
@@ -345,6 +351,13 @@ export const relayInstanceResourcesSchema = z.object({
     })
     .optional(),
 })
+
+export const relayInstanceLimitsSchema = z
+  .object({
+    diskBytes: z.number().int().nonnegative(),
+    memoryBytes: z.number().int().nonnegative(),
+  })
+  .strict()
 
 export const relayInstanceSchema = z.object({
   id: z.string().regex(/^[a-f0-9]{40}$/u),
@@ -371,6 +384,7 @@ export const relayInstanceSchema = z.object({
   brickSource: brickSourceSchema.optional(),
   variables: brickVariableValuesSchema.optional(),
   managedByRelay: z.boolean().default(false),
+  limits: relayInstanceLimitsSchema.default({ diskBytes: 0, memoryBytes: 0 }),
   resources: relayInstanceResourcesSchema.nullable().default(null),
 })
 
@@ -529,7 +543,13 @@ export const relayConsoleStreamEventSchema = z.discriminatedUnion("type", [
 export const relayResourceStreamEventSchema = z.object({
   type: z.literal("resource"),
   instance: relayInstanceSchema,
+  history: z.array(relayInstanceResourcesSchema).max(64).default([]),
   sequence: z.number().int().nonnegative(),
+})
+
+export const relayInstanceResourceSnapshotSchema = z.object({
+  instance: relayInstanceSchema,
+  history: z.array(relayInstanceResourcesSchema).max(64),
 })
 
 export const relayConsoleCommandSchema = z.object({
@@ -639,6 +659,7 @@ export type RelayObservedState = z.infer<typeof relayObservedStateSchema>
 export type RelayInstanceResources = z.infer<
   typeof relayInstanceResourcesSchema
 >
+export type RelayInstanceLimits = z.infer<typeof relayInstanceLimitsSchema>
 export type RelayInstance = z.infer<typeof relayInstanceSchema>
 export type RelayNode = z.infer<typeof relayNodeSchema>
 export type RelaySnapshot = z.infer<typeof relaySnapshotSchema>

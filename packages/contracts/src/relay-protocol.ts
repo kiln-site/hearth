@@ -35,6 +35,7 @@ export const relayControlOperations = [
   "instance.rename",
   "instance.delete",
   "instance.action",
+  "instance.resources.read",
   "instance.files.list",
   "instance.files.read",
   "instance.files.write",

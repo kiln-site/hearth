@@ -205,7 +205,7 @@ function relayControlRequest(path: string, init?: RequestInit) {
     return { operation: "instance.create" as const, payload: body }
   }
   const match = url.pathname.match(
-    /^\/v1\/instances\/([^/]+)(?:\/(tree|file|actions|console|console-completions|console-share|latest-log|web-routes|startup))?$/u
+    /^\/v1\/instances\/([^/]+)(?:\/(tree|file|actions|resources|console|console-completions|console-share|latest-log|web-routes|startup))?$/u
   )
   if (!match) throw new Error("Unsupported Relay request")
   const instanceId = decodeURIComponent(match[1])
@@ -234,6 +234,12 @@ function relayControlRequest(path: string, init?: RequestInit) {
   if (resource === "tree" && method === "GET") {
     return {
       operation: "instance.files.list" as const,
+      payload: { instanceId },
+    }
+  }
+  if (resource === "resources" && method === "GET") {
+    return {
+      operation: "instance.resources.read" as const,
       payload: { instanceId },
     }
   }

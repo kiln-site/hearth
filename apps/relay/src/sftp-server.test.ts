@@ -357,6 +357,7 @@ function testInstance(id: string): RelayInstanceConfig {
     id,
     implementation: "Paper",
     javaVersion: "21",
+    limits: { diskBytes: 0, memoryBytes: 0 },
     managedByRelay: true,
     name: "Test Instance",
     service: "test",

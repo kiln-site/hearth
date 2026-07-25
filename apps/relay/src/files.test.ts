@@ -37,7 +37,9 @@ describeLinux("Relay direct file transfers", () => {
     await writeFile(outside, "sensitive")
     await symlink(outside, resolve(root, "world", "escape.txt"))
 
-    await expect(driver.download(instance, "world/escape.txt")).rejects.toThrow()
+    await expect(
+      driver.download(instance, "world/escape.txt")
+    ).rejects.toThrow()
     await expect(
       driver.upload(instance, "world/escape.txt", chunks("overwrite"))
     ).rejects.toThrow("Path is not a file")
@@ -74,6 +76,7 @@ function testInstance(): RelayInstanceConfig {
     id: "instance-1",
     implementation: "Paper",
     javaVersion: "21",
+    limits: { diskBytes: 0, memoryBytes: 0 },
     managedByRelay: true,
     name: "Test Instance",
     service: "test",

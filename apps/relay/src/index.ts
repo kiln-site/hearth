@@ -866,6 +866,17 @@ async function executeControlRequest(
           : await runAction()
       return relayInstanceWithStoredName(updated)
     }
+    case "instance.resources.read": {
+      const instanceId = requiredString(payload, "instanceId")
+      const instance = (await snapshotHub.read()).instances.find(
+        (candidate) => candidate.id === instanceId
+      )
+      if (!instance) throw new Error("Instance not found")
+      return {
+        history: docker.resourceHistory(instance.id),
+        instance,
+      }
+    }
     case "instance.files.list":
       return filesystem.tree(await requiredInstance(payload))
     case "instance.files.read":

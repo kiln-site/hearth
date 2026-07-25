@@ -1,9 +1,5 @@
 import * as React from "react"
-import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   ArrowLeftRight,
   CircleAlert,
@@ -12,7 +8,11 @@ import {
   Rocket,
   Save,
 } from "lucide-react"
-import type { Brick, BrickVariableValue } from "@workspace/contracts"
+import type {
+  Brick,
+  BrickVariableValue,
+  RelayInstanceLimits,
+} from "@workspace/contracts"
 
 import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
@@ -23,6 +23,11 @@ import {
 } from "@/components/brick-selector"
 import { BrickVariableField } from "@/components/brick-variable-fields"
 import { ServerTypeIcon } from "@/components/server-type-icon"
+import {
+  formatResourceBytes,
+  ResourceAllocationCard,
+  type StartupResourceAllocation,
+} from "@/components/startup-resource-allocation"
 import {
   useInstanceIdentity,
   useInstancePermissions,
@@ -47,6 +52,7 @@ type BrickView = {
   description: string
   game: string
   id: string
+  memoryTemplate: string
   name: string
   source: string
   variables: Brick["variables"]
@@ -57,6 +63,7 @@ function brickViewFromBrick(brick: Brick, source = brick.source): BrickView {
     description: brick.metadata.description,
     game: brick.metadata.game,
     id: brick.metadata.id,
+    memoryTemplate: brick.runtime.resources.memory,
     name: brick.metadata.name,
     source,
     variables: brick.variables,
@@ -100,6 +107,8 @@ export function StartupWorkspace() {
       brick={startupQuery.data.brick}
       brickSource={startupQuery.data.brickSource}
       canEdit={permissions.settings && relayConnected}
+      allocation={startupQuery.data.allocation}
+      initialLimits={startupQuery.data.instance.limits}
       initialVariables={startupQuery.data.variables}
       instanceId={instance.id}
       observedState={startupQuery.data.instance.observedState}
@@ -112,6 +121,8 @@ const StartupForm = React.memo(function StartupForm({
   brick: initialBrick,
   brickSource: initialBrickSource,
   canEdit,
+  allocation,
+  initialLimits,
   initialVariables,
   instanceId,
   observedState,
@@ -120,6 +131,8 @@ const StartupForm = React.memo(function StartupForm({
   brick: Brick
   brickSource: string
   canEdit: boolean
+  allocation: StartupResourceAllocation
+  initialLimits: RelayInstanceLimits
   initialVariables: Record<string, BrickVariableValue>
   instanceId: string
   observedState: string
@@ -131,6 +144,9 @@ const StartupForm = React.memo(function StartupForm({
   )
   const [variables, setVariables] =
     React.useState<Record<string, BrickVariableValue>>(initialVariables)
+  const [diskLimitGiB, setDiskLimitGiB] = React.useState(() =>
+    bytesToGiBInput(initialLimits.diskBytes)
+  )
   const [startAfterSave, setStartAfterSave] = React.useState(
     () => observedState !== "running"
   )
@@ -184,6 +200,7 @@ const StartupForm = React.memo(function StartupForm({
       description: "Custom HTTPS recipe",
       game: "Custom",
       id: "custom",
+      memoryTemplate: "",
       name: "Custom Brick",
       source,
       variables: {},
@@ -196,10 +213,35 @@ const StartupForm = React.memo(function StartupForm({
     event.preventDefault()
     if (!canEdit || pending || submittingRef.current) return
     setError(null)
+    const diskLimitBytes = gibibytesToBytes(diskLimitGiB)
+    if (diskLimitBytes === null) {
+      setError("Enter a valid disk quota in GiB.")
+      return
+    }
+    if (
+      diskLimitBytes > 0 &&
+      diskLimitBytes > allocation.storage.availableBytes
+    ) {
+      setError(
+        `Disk quota exceeds the ${formatResourceBytes(allocation.storage.availableBytes)} available to this server.`
+      )
+      return
+    }
+    const memoryLimitBytes = resolvedMemoryBytes(view.memoryTemplate, variables)
+    if (
+      memoryLimitBytes !== null &&
+      memoryLimitBytes > allocation.memory.availableBytes
+    ) {
+      setError(
+        `Container memory exceeds the ${formatResourceBytes(allocation.memory.availableBytes)} available to this server.`
+      )
+      return
+    }
     submittingRef.current = true
     try {
       await saveMutation.mutateAsync({
         data: {
+          diskLimitBytes,
           instanceId,
           recipe: view.source,
           relayId,
@@ -217,6 +259,9 @@ const StartupForm = React.memo(function StartupForm({
   }
 
   const entries = Object.entries(view.variables)
+  const configuredMemoryBytes =
+    resolvedMemoryBytes(view.memoryTemplate, variables) ??
+    initialLimits.memoryBytes
   const catalogBrick =
     catalogQuery.data?.bricks.find((item) => item.source === view.source) ??
     (initialBrick.source === view.source ? initialBrick : null)
@@ -245,45 +290,22 @@ const StartupForm = React.memo(function StartupForm({
           </p>
         </div>
 
-        <div className="mt-6 flex flex-col gap-3 rounded-xl border border-border/75 bg-background/45 p-4 sm:flex-row sm:items-center">
-          <div className="flex min-w-0 flex-1 items-center gap-3">
-            <span className="grid size-10 shrink-0 place-items-center rounded-lg border border-border/80 bg-background/70 text-muted-foreground">
-              <ServerTypeIcon
-                implementation={view.id}
-                className="size-5"
-              />
-            </span>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="truncate text-sm font-semibold">{view.name}</p>
-                <Badge variant="outline" className="font-mono text-[9px]">
-                  {view.game}
-                </Badge>
-              </div>
-              <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
-                {view.description}
-              </p>
-              <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground/70">
-                {view.source}
-              </p>
-            </div>
-          </div>
-          {canEdit ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="shrink-0"
-              disabled={pending}
-              onClick={() => setSwapOpen(true)}
-            >
-              <ArrowLeftRight />
-              Swap Brick
-            </Button>
-          ) : null}
-        </div>
+        <BrickSummary
+          view={view}
+          canEdit={canEdit}
+          pending={pending}
+          onSwap={() => setSwapOpen(true)}
+        />
 
         <form className="mt-5 space-y-4" onSubmit={onSubmit}>
+          <ResourceAllocationCard
+            allocation={allocation}
+            configuredMemoryBytes={configuredMemoryBytes}
+            diskLimitGiB={diskLimitGiB}
+            disabled={!canEdit || pending}
+            onDiskLimitChange={setDiskLimitGiB}
+          />
+
           {entries.length === 0 ? (
             <div className="rounded-xl border border-border/75 bg-background/45 px-4 py-8 text-center text-xs text-muted-foreground">
               This Brick has no configurable Startup variables.
@@ -373,6 +395,96 @@ const StartupForm = React.memo(function StartupForm({
     </section>
   )
 })
+
+function BrickSummary({
+  view,
+  canEdit,
+  pending,
+  onSwap,
+}: {
+  view: BrickView
+  canEdit: boolean
+  pending: boolean
+  onSwap: () => void
+}) {
+  return (
+    <div className="mt-6 flex flex-col gap-3 rounded-xl border border-border/75 bg-background/45 p-4 sm:flex-row sm:items-center">
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <span className="grid size-10 shrink-0 place-items-center rounded-lg border border-border/80 bg-background/70 text-muted-foreground">
+          <ServerTypeIcon implementation={view.id} className="size-5" />
+        </span>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="truncate text-sm font-semibold">{view.name}</p>
+            <Badge variant="outline" className="font-mono text-[9px]">
+              {view.game}
+            </Badge>
+          </div>
+          <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
+            {view.description}
+          </p>
+          <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground/70">
+            {view.source}
+          </p>
+        </div>
+      </div>
+      {canEdit ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="shrink-0"
+          disabled={pending}
+          onClick={onSwap}
+        >
+          <ArrowLeftRight />
+          Swap Brick
+        </Button>
+      ) : null}
+    </div>
+  )
+}
+
+function resolvedMemoryBytes(
+  template: string,
+  variables: Readonly<Record<string, BrickVariableValue>>
+): number | null {
+  const variable = template.match(
+    /^\{\{\s*variables\.([a-z][a-z0-9_]{0,47})\s*\}\}$/u
+  )?.[1]
+  const value = variable ? variables[variable] : template
+  return typeof value === "string" ? dockerMemoryBytes(value) : null
+}
+
+function dockerMemoryBytes(value: string): number | null {
+  const match = value.trim().match(/^(\d+)([bkmgt])$/iu)
+  if (!match?.[1] || !match[2]) return null
+  const amount = Number(match[1])
+  const unit = match[2].toLowerCase()
+  const exponent =
+    unit === "b"
+      ? 0
+      : unit === "k"
+        ? 1
+        : unit === "m"
+          ? 2
+          : unit === "g"
+            ? 3
+            : 4
+  const bytes = amount * 1024 ** exponent
+  return Number.isSafeInteger(bytes) ? bytes : null
+}
+
+function gibibytesToBytes(value: string): number | null {
+  const gibibytes = Number(value)
+  if (!Number.isFinite(gibibytes) || gibibytes < 0) return null
+  const bytes = Math.round(gibibytes * 1024 ** 3)
+  return Number.isSafeInteger(bytes) ? bytes : null
+}
+
+function bytesToGiBInput(bytes: number): string {
+  return String(Number((bytes / 1024 ** 3).toFixed(2)))
+}
 
 const StartupBrickSwapDialog = React.memo(function StartupBrickSwapDialog({
   open,

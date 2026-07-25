@@ -53,7 +53,7 @@ function snapshotWithCpu(percent: number): RelayFleetSnapshot {
         resources: {
           ...instance.resources!,
           sampledAt: `2026-07-20T12:00:0${percent}.000Z`,
-          cpu: { percent },
+          cpu: { capacityPercent: 400, percent },
         },
       },
     ],
