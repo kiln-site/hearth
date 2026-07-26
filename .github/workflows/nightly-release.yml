@@ -34,6 +34,7 @@ jobs:
         id: version
         env:
           COMMIT_SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           git fetch origin main
           release_line="$(git show origin/main:release.json | jq -er '.releaseLine')"
@@ -41,16 +42,17 @@ jobs:
           if test -n "$existing"; then
             tag="$existing"
           else
-            last="$(git tag --list "v${release_line}-nightly.*" --sort=-v:refname | head -n 1)"
-            increment="${last##*.}"
-            if test -z "$last"; then increment=0; fi
-            tag="v${release_line}-nightly.$((increment + 1))"
+            tag="v${release_line}-nightly.${RUN_NUMBER}"
+            if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
+              echo "$tag is already assigned to another workflow run" >&2
+              exit 1
+            fi
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
-  hearth:
-    name: Hearth image
+  hearth_arm:
+    name: Hearth arm64 image
     needs: version
     uses: ./.github/workflows/reusable-image.yml
     with:
@@ -58,6 +60,28 @@ jobs:
       image: ghcr.io/kiln-site/hearth
       dockerfile: apps/web/Dockerfile
       cache_scope: hearth
+      architectures: '["arm64"]'
+      build_args: |
+        SOURCE_COMMIT=${{ github.sha }}
+        KILN_VERSION=${{ needs.version.outputs.version }}
+        VITE_SENTRY_DSN=${{ vars.VITE_SENTRY_DSN }}
+        VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE=${{ vars.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE || '0.1' }}
+        VITE_SENTRY_TRACES_SAMPLE_RATE=${{ vars.VITE_SENTRY_TRACES_SAMPLE_RATE || '0.1' }}
+      tags: |
+        type=raw,value=${{ needs.version.outputs.version }}
+        type=sha,prefix=sha-
+      publish_manifest: false
+
+  hearth_amd:
+    name: Hearth amd64 image
+    needs: [code, version]
+    uses: ./.github/workflows/reusable-image.yml
+    with:
+      name: Hearth
+      image: ghcr.io/kiln-site/hearth
+      dockerfile: apps/web/Dockerfile
+      cache_scope: hearth
+      architectures: '["amd64"]'
       build_args: |
         SOURCE_COMMIT=${{ github.sha }}
         KILN_VERSION=${{ needs.version.outputs.version }}
@@ -91,7 +115,7 @@ jobs:
 
   release:
     name: Publish nightly release
-    needs: [code, version, hearth, relay]
+    needs: [code, version, hearth_arm, hearth_amd, relay]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Check out repository
