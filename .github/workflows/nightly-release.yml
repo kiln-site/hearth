@@ -215,6 +215,7 @@ jobs:
 
       - name: Publish prerelease
         env:
+          COMMIT_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
@@ -224,6 +225,7 @@ jobs:
             gh release create "$TAG" release-manifest.json \
               --prerelease \
               --latest=false \
+              --target "$COMMIT_SHA" \
               --verify-tag \
               --generate-notes \
               --title "$TAG"
