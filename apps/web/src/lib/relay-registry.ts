@@ -32,6 +32,7 @@ import {
   mapPairingHttpResponse,
   mapPairingTransportError,
 } from "@/lib/relay-pairing-errors"
+import { relayPairingOrigin } from "@/lib/relay-pairing-origin"
 import { CredentialError, ResourceNotFoundError } from "@/effect/errors"
 import { runAppEffect } from "@/effect/runtime"
 import { databasePool } from "@/lib/database"
@@ -455,7 +456,11 @@ export async function initializeRelayFromEnvironment(): Promise<PersistedRelay |
     ...bootstrap.envelope,
     token,
   })
-  return pairWithEnvelope(envelope, { bootstrapProof: "pending", token: null })
+  return pairWithEnvelope(
+    envelope,
+    { bootstrapProof: "pending", token: null },
+    publicUrl
+  )
 }
 
 export async function maintainPersistedRelayConnections(): Promise<void> {
@@ -473,7 +478,8 @@ export async function maintainPersistedRelayConnections(): Promise<void> {
 
 async function pairWithEnvelope(
   envelope: z.infer<typeof pairingEnvelopeSchema>,
-  credential: { bootstrapProof: string | null; token: string | null }
+  credential: { bootstrapProof: string | null; token: string | null },
+  enrollmentOrigin?: URL
 ) {
   if (envelope.expiresAt <= Date.now()) {
     throw new Error("This Relay pairing invitation has expired")
@@ -559,7 +565,14 @@ async function pairWithEnvelope(
   }
   const response = pairingResponseSchema.parse(
     await postPairingRequest(
-      new URL("/v1/pair", browserOrigin),
+      new URL(
+        "/v1/pair",
+        relayPairingOrigin({
+          browserOrigin,
+          caCertificatePem: envelope.caCertificatePem,
+          enrollmentOrigin,
+        })
+      ),
       envelope.caCertificatePem,
       request
     )

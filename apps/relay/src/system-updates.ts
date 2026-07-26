@@ -20,9 +20,9 @@ import {
 
 import { command } from "./command.js"
 import type { CommandOptions, CommandResult } from "./command.js"
-import type { RelayConfig } from "./config.js"
 import {
   KILN_IMAGE_SOURCE,
+  KILN_INSTALLATION_LABEL,
   kilnComponent,
   managedImageChannel,
   type KilnComponent,
@@ -76,13 +76,18 @@ export interface UpdateOperation {
 
 export class SystemUpdateManager {
   readonly #command: RunCommand
+  readonly #installationId: string | null
   readonly #operationsDirectory: string
 
   constructor(
-    config: Pick<RelayConfig, "dataDirectory">,
+    config: {
+      dataDirectory: string
+      installationId?: string | null
+    },
     runCommand: RunCommand = command
   ) {
     this.#command = runCommand
+    this.#installationId = config.installationId ?? null
     this.#operationsDirectory = join(config.dataDirectory, "updates")
   }
 
@@ -92,9 +97,14 @@ export class SystemUpdateManager {
     currentImage: string
     currentVersion: string | null
     eligible: boolean
+    installationId: string | null
     reason: string | null
+    sameInstallation: boolean
   }> {
-    return updateEligibility(await inspectContainer(container, this.#command))
+    return updateEligibility(
+      await inspectContainer(container, this.#command),
+      this.#installationId
+    )
   }
 
   async start(
@@ -113,7 +123,7 @@ export class SystemUpdateManager {
     }
     const targetComponent = releaseImageComponent(input.targetImage)
     const target = await inspectContainer(input.targetContainer, this.#command)
-    const eligibility = updateEligibility(target)
+    const eligibility = updateEligibility(target, this.#installationId)
     if (eligibility.component !== targetComponent) {
       throw new Error(
         "The selected container is not an official Kiln component"
@@ -342,17 +352,24 @@ export function imageVersionMatchesRelease(
   )
 }
 
-function updateEligibility(inspected: ContainerInspect): {
+function updateEligibility(
+  inspected: ContainerInspect,
+  expectedInstallationId: string | null
+): {
   component: KilnComponent | null
   container: string
   currentImage: string
   currentVersion: string | null
   eligible: boolean
+  installationId: string | null
   reason: string | null
+  sameInstallation: boolean
 } {
   const labels = inspected.Config.Labels ?? {}
   const component = kilnComponent(labels["io.kiln.component"])
   const currentImage = inspected.Config.Image
+  const installationId = labels[KILN_INSTALLATION_LABEL]?.trim() || null
+  const sameInstallation = installationId === expectedInstallationId
   const official =
     labels["org.opencontainers.image.source"] === KILN_IMAGE_SOURCE
   const eligibleTag = component
@@ -364,14 +381,18 @@ function updateEligibility(inspected: ContainerInspect): {
     container: inspected.Name.replace(/^\//u, ""),
     currentImage,
     currentVersion: labels["org.opencontainers.image.version"]?.trim() || null,
-    eligible: Boolean(component && official && eligibleTag),
-    reason: !component
-      ? "The container is not a Hearth or Relay image."
-      : !official
-        ? "Only official public Kiln images can be updated."
-        : !eligibleTag
-          ? "This container is pinned. Change it to :latest or :latest-nightly to enable one-click updates."
-          : null,
+    eligible: Boolean(sameInstallation && component && official && eligibleTag),
+    installationId,
+    reason: !sameInstallation
+      ? "The container belongs to a different Kiln installation."
+      : !component
+        ? "The container is not a Hearth or Relay image."
+        : !official
+          ? "Only official public Kiln images can be updated."
+          : !eligibleTag
+            ? "This container is pinned. Change it to :latest or :latest-nightly to enable one-click updates."
+            : null,
+    sameInstallation,
   }
 }
 

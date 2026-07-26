@@ -340,6 +340,25 @@ describe("container identity", () => {
       await removeTemporaryDirectory(dataDirectory)
     }
   })
+
+  it("rejects a container from another Kiln installation", async () => {
+    const dataDirectory = await temporaryDataDirectory()
+    try {
+      const docker = new FakeCommand()
+      const manager = new SystemUpdateManager(
+        { dataDirectory, installationId: "hearth-feature-a1b2c3" },
+        docker.run
+      )
+
+      const inspection = await manager.inspect("custom-relay-hostname")
+
+      expect(inspection.sameInstallation).toBe(false)
+      expect(inspection.eligible).toBe(false)
+      expect(inspection.reason).toContain("different Kiln installation")
+    } finally {
+      await removeTemporaryDirectory(dataDirectory)
+    }
+  })
 })
 
 function staleOperation(): UpdateOperation {

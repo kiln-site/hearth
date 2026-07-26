@@ -159,6 +159,27 @@ describe("loadConfig", () => {
     )
   })
 
+  it("scopes Docker resources and updates to a development installation", () => {
+    const config = loadConfig({
+      KILN_INSTALLATION_ID: "hearth-feature-a1b2c3",
+      KILN_RELAY_RESOURCE_NAMESPACE: "hearth-feature-a1b2c3",
+      NODE_ENV: "development",
+    })
+
+    expect(config.installationId).toBe("hearth-feature-a1b2c3")
+    expect(config.resourceNamespace).toBe("hearth-feature-a1b2c3")
+    expect(config.projectName).toBe("hearth-feature-a1b2c3-mc-servers")
+  })
+
+  it("rejects unsafe Docker scope identifiers", () => {
+    expect(() =>
+      loadConfig({
+        KILN_RELAY_RESOURCE_NAMESPACE: "Feature Branch",
+        NODE_ENV: "development",
+      })
+    ).toThrow("KILN_RELAY_RESOURCE_NAMESPACE")
+  })
+
   it("rejects invalid ports", () => {
     expect(() =>
       loadConfig({

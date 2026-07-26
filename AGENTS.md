@@ -6,16 +6,18 @@ Favor simple operation and existing patterns over new abstractions,
 Performance/Speed and UX is always the most important thing to keep in mind for every change you do. Make sure any UI change doesn't cause react to re-render/paint other components. If needed react-scan and react-audit can be used to verify.
 
 <!-- intent-skills:start -->
+
 ## Skill Loading
 
 Before editing files for a substantial task:
+
 - Run `pnpm dlx @tanstack/intent@latest list` from the workspace root to see available local skills.
 - If a listed skill matches the task, run `pnpm dlx @tanstack/intent@latest load <package>#<skill>` before changing files.
 - Use the loaded `SKILL.md` guidance while making the change.
 - Monorepos: when working across packages, run the skill check from the workspace root and prefer the local skill for the package being changed.
 - Multiple matches: prefer the most specific local skill for the package or concern you are changing; load additional skills only when the task spans multiple packages or concerns.
-<!-- intent-skills:end -->
 
+<!-- intent-skills:end -->
 
 ## Work
 
@@ -25,27 +27,29 @@ Before editing files for a substantial task:
 - Avoid patching framework/library internals unless explicitly given permission.
 
 For user-visible or runtime work, use T3 Code's collaborative Preview tools
-against `https://hearth.hearth.orb.local`; Avoid using local IP (ie. 127.0...) for dev/testing.
+against the OrbStack URL printed by `pnpm dev:docker`; avoid using local IP
+(ie. 127.0...) for dev/testing.
 
 When making changes, you should make sure you're on a fresh worktree and not on main. You can push the PR (no need to make it a draft) but never merge the PR.
 
-After a successful merge: leave the existing `pnpm dev:docker` session running, switch to
-`main`, pull with `--ff-only`, delete the merged local branch, run
+After a successful merge: switch to `main`, pull with `--ff-only`, delete the
+merged worktree and local branch, run
 `pnpm dev:docker:refresh`, and verify the OrbStack URL in T3 Preview. Reserve
 `pnpm dev:docker:down` for changes that require rebuilding the Compose network or volumes.
 
 ## Setup
 
-Copy `.env.hearth.example` to `.env`, fill its required values, and set
-`KILN_URL=https://hearth.hearth.orb.local`. Then run:
+Run the shared development setup once per clone, then start the current
+worktree's isolated stack:
 
 ```sh
 vp install --frozen-lockfile
+pnpm dev:setup
 pnpm dev:docker
 ```
 
 # Reference Repos
 
-This project takes inspiration on Pterodactyl's Panel (https://github.com/pterodactyl/panel) and wings (https://github.com/pterodactyl/wings). There's also a properly fully pterodactyl compliant alternative Hyrodactyl (formerly Pyrodactyl) that we reference (https://github.com/blueprintframework/hydrodactyl). 
+This project takes inspiration on Pterodactyl's Panel (https://github.com/pterodactyl/panel) and wings (https://github.com/pterodactyl/wings). There's also a properly fully pterodactyl compliant alternative Hyrodactyl (formerly Pyrodactyl) that we reference (https://github.com/blueprintframework/hydrodactyl).
 
 References Note: Do not assume that the decisions they make is the correct one. The vision for our project is to be a reimagined pterodactyl, not a pterodactyl clone. We can still learn from them as they have been battletested for millions of users.

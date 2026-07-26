@@ -1,4 +1,7 @@
 services:
+  mysql:
+    ports: !reset []
+
   relay:
     build: !reset null
     image: node:24-alpine
@@ -7,7 +10,7 @@ services:
     environment:
       NODE_ENV: development
       KILN_RELAY_TLS_MODE: managed
-      KILN_RELAY_NAME: L01
+      KILN_RELAY_NAME: ${KILN_RELAY_NAME:-L01}
     command:
       - /bin/sh
       - -lc
@@ -39,7 +42,8 @@ services:
       - relay-dev-node-modules:/workspace/node_modules
       - relay-dev-app-node-modules:/workspace/apps/relay/node_modules
       - relay-dev-contracts-node-modules:/workspace/packages/contracts/node_modules
-      - relay-dev-pnpm-store:/root/.local/share/pnpm/store
+      - kiln-dev-pnpm-store:/root/.local/share/pnpm/store
+    ports: !reset []
 
   hearth:
     build: !reset null
@@ -54,7 +58,6 @@ services:
     environment:
       NODE_ENV: development
       KILN_ENVIRONMENT: dev
-      KILN_RELAY_CONTROL_URL: ws://relay:4100
       KILN_SENTRY_VERIFICATION_TOKEN: ${KILN_SENTRY_VERIFICATION_TOKEN:-}
     command:
       - /bin/sh
@@ -88,15 +91,17 @@ services:
       - hearth-dev-web-node-modules:/workspace/apps/web/node_modules
       - hearth-dev-contracts-node-modules:/workspace/packages/contracts/node_modules
       - hearth-dev-ui-node-modules:/workspace/packages/ui/node_modules
-      - hearth-dev-pnpm-store:/root/.local/share/pnpm/store
+      - kiln-dev-pnpm-store:/root/.local/share/pnpm/store
+    ports: !reset []
 
 volumes:
   relay-dev-node-modules:
   relay-dev-app-node-modules:
   relay-dev-contracts-node-modules:
-  relay-dev-pnpm-store:
   hearth-dev-node-modules:
   hearth-dev-web-node-modules:
   hearth-dev-contracts-node-modules:
   hearth-dev-ui-node-modules:
-  hearth-dev-pnpm-store:
+  kiln-dev-pnpm-store:
+    external: true
+    name: kiln-dev-pnpm-store

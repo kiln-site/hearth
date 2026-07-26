@@ -30,7 +30,9 @@ const systemInspectionSchema = z.object({
   currentImage: z.string().min(1),
   currentVersion: z.string().nullable(),
   eligible: z.boolean(),
+  installationId: z.string().nullable().optional().default(null),
   reason: z.string().nullable(),
+  sameInstallation: z.boolean().optional().default(true),
 })
 const updateOperationSchema = z.object({
   component: componentSchema,
@@ -110,7 +112,8 @@ export const getUpdateOverview = createServerFn({ method: "GET" }).handler(
                 5_000
               )
             )
-            return inspection.component === "hearth"
+            return inspection.component === "hearth" &&
+              inspection.sameInstallation
               ? {
                   ...inspection,
                   relayId: relay.id,
@@ -199,11 +202,14 @@ export const getSystemUpdateStatus = createServerFn({ method: "POST" })
   .validator(updateStatusSchema)
   .handler(async ({ data }) => {
     await requirePlatformAdministrator()
+    const [relays, { relayRpc }] = await Promise.all([
+      listPersistedRelays(),
+      import("@/lib/relay-connection"),
+    ])
     const relay = await selectedRelay(
-      (await listPersistedRelays()).filter((item) => item.enabled),
+      relays.filter((item) => item.enabled),
       data.relayId
     )
-    const { relayRpc } = await import("@/lib/relay-connection")
     const result = await relayRpc(
       relay,
       "relay.update.status",
@@ -234,7 +240,9 @@ async function coLocatedRelay(
         const inspection = systemInspectionSchema.parse(
           await relayRpc(relay, "relay.system.inspect", { container }, 5_000)
         )
-        return inspection.component === "hearth" ? relay : null
+        return inspection.component === "hearth" && inspection.sameInstallation
+          ? relay
+          : null
       } catch {
         return null
       }

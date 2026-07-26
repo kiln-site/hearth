@@ -4,6 +4,7 @@ import { relayInstanceWebRoutesSchema } from "@workspace/contracts"
 import { loadConfig } from "./config.js"
 import {
   coreDnsHostnamePattern,
+  discoverExternalTraefikContainer,
   LifecycleDriver,
   recoveryRouteLabels,
   routeLabelsRequireRestart,
@@ -12,6 +13,78 @@ import {
   traefikStaticConfiguration,
   velocityForcedHosts,
 } from "./lifecycle.js"
+
+describe("external Traefik discovery", () => {
+  it.each(["none", "hearth", "traefik"] as const)(
+    "only inspects proxies attached to a namespaced edge in %s mode",
+    async (mode) => {
+      const calls: Array<Array<string>> = []
+      const discovered = await discoverExternalTraefikContainer(
+        {
+          edgeNetwork: "hearth-feature-a1b2c3-kiln-edge",
+          resourceNamespace: "hearth-feature-a1b2c3",
+          settings: {
+            acmeEmail: null,
+            mode,
+            traefikImage: "traefik:v3.6.6",
+          },
+        },
+        async (_executable, arguments_) => {
+          calls.push(arguments_)
+          if (arguments_[0] === "network") {
+            return {
+              stderr: "",
+              stdout: "hearth-feature-a1b2c3-kiln-aaaaaaaa\nmanual-traefik\n",
+            }
+          }
+          const name = arguments_.at(-1)
+          return {
+            stderr: "",
+            stdout:
+              name === "manual-traefik"
+                ? "true traefik:v3.6.6\n"
+                : "true ghcr.io/kiln-site/ember:latest\n",
+          }
+        }
+      )
+
+      expect(discovered).toBe("manual-traefik")
+      expect(calls.some((arguments_) => arguments_[0] === "ps")).toBe(false)
+    }
+  )
+
+  it("preserves host proxy discovery for unscoped Relays", async () => {
+    const calls: Array<Array<string>> = []
+    const discovered = await discoverExternalTraefikContainer(
+      {
+        edgeNetwork: "kiln-edge",
+        resourceNamespace: null,
+        settings: {
+          acmeEmail: null,
+          mode: "none",
+          traefikImage: "traefik:v3.6.6",
+        },
+      },
+      async (_executable, arguments_) => {
+        calls.push(arguments_)
+        if (arguments_[0] === "ps") {
+          return {
+            stderr: "",
+            stdout: arguments_.includes("publish=443") ? "host-traefik\n" : "",
+          }
+        }
+        return {
+          stderr: "",
+          stdout:
+            arguments_.at(-1) === "host-traefik" ? "true traefik:v3.6.6\n" : "",
+        }
+      }
+    )
+
+    expect(discovered).toBe("host-traefik")
+    expect(calls.some((arguments_) => arguments_[0] === "network")).toBe(false)
+  })
+})
 
 describe("CoreDNS Brick hostnames", () => {
   it("matches only deployed hostnames and implementation aliases", () => {
@@ -118,6 +191,23 @@ describe("Traefik web routes", () => {
     expect(dynamicConfiguration).toContain("http://kiln-aaaaaaaa:8080")
     expect(dynamicConfiguration).not.toContain("rootCAs:")
     expect(dynamicConfiguration).toContain("stripPrefix:")
+  })
+
+  it("uses namespaced Ember targets for an isolated Relay", () => {
+    const dynamicConfiguration = traefikDynamicConfiguration(
+      loadConfig({
+        KILN_RELAY_HOST: "relay.example.com",
+        KILN_RELAY_PROXY: "traefik",
+        KILN_RELAY_RESOURCE_NAMESPACE: "hearth-feature-a1b2c3",
+        NODE_ENV: "development",
+      }),
+      [route],
+      settings
+    )
+
+    expect(dynamicConfiguration).toContain(
+      "http://hearth-feature-a1b2c3-kiln-aaaaaaaa:8080"
+    )
   })
 
   it("builds direct Ember labels for a Coolify Traefik edge", () => {

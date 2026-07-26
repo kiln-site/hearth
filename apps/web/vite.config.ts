@@ -30,8 +30,7 @@ const config = defineConfig(({ command }) => {
     Boolean(sentryAuthToken) || sentrySourceMaps === "prepare"
 
   return {
-    build:
-      sentrySourceMaps === "prepare" ? { sourcemap: "hidden" } : undefined,
+    build: sentrySourceMaps === "prepare" ? { sourcemap: "hidden" } : undefined,
     run: {
       tasks: {
         build: {
@@ -106,7 +105,7 @@ const config = defineConfig(({ command }) => {
     // Browser errors remain available in devtools and the collaborative preview.
     // Forwarding them back through Vite can recursively re-forward its own output.
     server: {
-      allowedHosts: ["localhost", "hearth.hearth.orb.local"],
+      allowedHosts: developmentHosts(),
       forwardConsole: false,
       host: "0.0.0.0",
     },
@@ -179,4 +178,16 @@ function resolveBuildCommit(): string {
   } catch {
     return ""
   }
+}
+
+function developmentHosts(): Array<string> {
+  const hosts = new Set(["localhost", "hearth.hearth.orb.local"])
+  const configured = process.env.KILN_URL?.trim()
+  if (!configured) return [...hosts]
+  try {
+    hosts.add(new URL(configured).hostname)
+  } catch {
+    // Application startup reports the invalid KILN_URL with more context.
+  }
+  return [...hosts]
 }

@@ -45,6 +45,7 @@ export interface RelayConfig {
   dockerSocket: string
   dataDirectory: string
   host: string
+  installationId: string | null
   managedLabel: string
   mclogsApiUrl: string
   serverIdLabel: string
@@ -55,6 +56,7 @@ export interface RelayConfig {
   projectDirectory: string
   projectName: string
   proxyMode: RelayProxyMode
+  resourceNamespace: string | null
   rootDirectory: string
   sftpDevAuthentication: boolean
   sftpPort: number
@@ -98,6 +100,14 @@ export function loadConfig(
         : 443
       : directPublicPort
   const tlsMode = relayTlsMode(environment)
+  const installationId = optionalDockerIdentifier(
+    environment,
+    "KILN_INSTALLATION_ID"
+  )
+  const resourceNamespace = optionalDockerIdentifier(
+    environment,
+    "KILN_RELAY_RESOURCE_NAMESPACE"
+  )
   const directBrowserOrigin = relayBrowserOrigin(
     tlsMode,
     advertisedHost,
@@ -130,6 +140,7 @@ export function loadConfig(
     dockerSocket: "/var/run/docker.sock",
     dataDirectory,
     host: environment.KILN_RELAY_BIND_HOST?.trim() || "0.0.0.0",
+    installationId,
     managedLabel: "kiln.relay.managed=true",
     mclogsApiUrl:
       environment.MCLOGS_API_URL?.trim() || "https://api.mclo.gs/1/log",
@@ -138,8 +149,11 @@ export function loadConfig(
     port,
     publicPort,
     projectDirectory: `${dataDirectory}/instances`,
-    projectName: "mc-servers",
+    projectName: resourceNamespace
+      ? `${resourceNamespace}-mc-servers`
+      : "mc-servers",
     proxyMode,
+    resourceNamespace,
     rootDirectory: `${dataDirectory}/instances`,
     serverIdLabel: "kiln.server.id",
     sftpDevAuthentication: sftpDevAuthentication(environment),
@@ -150,6 +164,20 @@ export function loadConfig(
     traefikAcmeEmail: environment.KILN_RELAY_ACME_EMAIL?.trim() || null,
     traefikImage: traefikImage(environment),
   }
+}
+
+function optionalDockerIdentifier(
+  environment: NodeJS.ProcessEnv,
+  name: string
+): string | null {
+  const value = environment[name]?.trim()
+  if (!value) return null
+  if (!/^[a-z0-9][a-z0-9_.-]{0,47}$/u.test(value)) {
+    throw new Error(
+      `${name} must be at most 48 lowercase letters, numbers, dots, underscores, or hyphens`
+    )
+  }
+  return value
 }
 
 function relayProxyMode(environment: NodeJS.ProcessEnv): RelayProxyMode {

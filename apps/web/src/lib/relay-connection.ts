@@ -18,15 +18,15 @@ import type {
   RelayControlRequest,
 } from "@workspace/contracts"
 
+import {
+  relayControlEndpoint,
+  type RelayEndpoint,
+} from "@/lib/relay-control-endpoint"
 import type { RelayCredentials } from "@/lib/relay-registry"
 import { resolveSftpAuthorization } from "@/lib/sftp-authorization"
 
-export interface RelayEndpoint {
-  hostname: string
-  id: string
-  port: number
-  useTls: boolean
-}
+export { relayControlEndpoint }
+export type { RelayEndpoint }
 
 const MAX_BACKOFF_MS = 30_000
 
@@ -76,42 +76,6 @@ export async function relayRpc(
     connections.set(relay.id, connection)
   }
   return connection.request(operation, payload, timeoutMs)
-}
-
-export function relayControlEndpoint(relay: RelayEndpoint): RelayEndpoint {
-  const configured = process.env.KILN_RELAY_CONTROL_URL?.trim()
-  const initializedHostname = process.env.KILN_RELAY_HOST?.trim()
-  if (
-    !configured ||
-    !initializedHostname ||
-    relay.hostname !== initializedHostname
-  ) {
-    return relay
-  }
-  const url = new URL(configured)
-  if (
-    (url.protocol !== "ws:" && url.protocol !== "wss:") ||
-    (url.pathname !== "/" && url.pathname !== "/v1/socket") ||
-    url.search ||
-    url.hash ||
-    url.username ||
-    url.password
-  ) {
-    throw new Error(
-      "KILN_RELAY_CONTROL_URL must be a WS/WSS origin or /v1/socket URL without credentials, query, or fragment"
-    )
-  }
-  return {
-    ...relay,
-    hostname: url.hostname,
-    port: effectiveWebSocketPort(url),
-    useTls: url.protocol === "wss:",
-  }
-}
-
-function effectiveWebSocketPort(url: URL): number {
-  if (url.port) return Number(url.port)
-  return url.protocol === "wss:" ? 443 : 80
 }
 
 export function relayConnectionState(relayId: string): RelayConnectionState {
@@ -452,10 +416,7 @@ class RelayConnection {
       )
       // The database lookup cannot be cancelled, so observe failures after timeout wins.
       void authorizationRequest.catch(() => undefined)
-      const authorization = await Promise.race([
-        authorizationRequest,
-        timeout,
-      ])
+      const authorization = await Promise.race([authorizationRequest, timeout])
       socket.send(
         JSON.stringify({
           id: randomUUID(),

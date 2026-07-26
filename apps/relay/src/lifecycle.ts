@@ -31,6 +31,12 @@ import {
 import type { BrickCatalog } from "./bricks.js"
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
 import type { DockerDriver } from "./docker.js"
+import {
+  relayOwnerLabel,
+  relayOwnsLabels,
+  relayResourceNames,
+  type RelayResourceNames,
+} from "./relay-resources.js"
 import type { RelayStoredWebRoute } from "./effect/state.js"
 import {
   WEB_ROUTE_LABEL_PREFIX,
@@ -38,12 +44,7 @@ import {
   webRouteRecoveryLabels,
 } from "./web-route-labels.js"
 
-const GAME_NETWORK_NAME = "kiln-minecraft"
-const EDGE_NETWORK_NAME = "kiln-edge"
-const RELAY_EDGE_NETWORK_NAME = "kiln-relay-edge"
-const RELAY_EDGE_ALIAS = "kiln-relay"
 const OWNED_LABEL = "kiln.relay.owned=true"
-const TRAEFIK_CONTAINER = "kiln-traefik"
 
 function dockerMemoryBytes(value: string): number {
   const match = value.match(/^(\d+)([bkmgt])$/iu)
@@ -85,6 +86,7 @@ export class LifecycleDriver {
   readonly #bricks: BrickCatalog
   readonly #config: RelayConfig
   readonly #docker: DockerDriver
+  readonly #resources: RelayResourceNames
   #edgeMutation: Promise<void> = Promise.resolve()
   #edgeReconciliationPending = false
   #edgeReconciliationTimer: NodeJS.Timeout | null = null
@@ -96,6 +98,7 @@ export class LifecycleDriver {
     this.#bricks = bricks
     this.#config = config
     this.#docker = docker
+    this.#resources = relayResourceNames(config)
   }
 
   async networking(): Promise<RelayNetworking | null> {
@@ -279,7 +282,7 @@ export class LifecycleDriver {
           .map((value) => value.trim())
           .filter(Boolean)
         const conflictingOwner = owners.find(
-          (owner) => owner !== TRAEFIK_CONTAINER
+          (owner) => owner !== this.#resources.traefikContainer
         )
         return {
           available: !conflictingOwner,
@@ -292,7 +295,7 @@ export class LifecycleDriver {
       "inspect",
       "--format",
       "{{.State.Running}}",
-      TRAEFIK_CONTAINER,
+      this.#resources.traefikContainer,
     ])
       .then((result) => result.stdout.trim() === "true")
       .catch(() => false)
@@ -328,7 +331,7 @@ export class LifecycleDriver {
     }
     if (settings.mode === "none") {
       warnings.push(
-        `Manual edge mode does not modify an external proxy. Attach it to ${EDGE_NETWORK_NAME} before publishing Ember routes.`
+        `Manual edge mode does not modify an external proxy. Attach it to ${this.#resources.edgeNetwork} before publishing Ember routes.`
       )
     }
     let coolifyReady = false
@@ -338,10 +341,10 @@ export class LifecycleDriver {
           "Coolify mode could not find a running coolify-proxy container. Confirm this Relay is on a Coolify host using its Traefik proxy."
         )
       } else if (
-        !(await containerUsesNetwork(coolifyProxy, EDGE_NETWORK_NAME))
+        !(await containerUsesNetwork(coolifyProxy, this.#resources.edgeNetwork))
       ) {
         warnings.push(
-          `Coolify Traefik is not attached to ${EDGE_NETWORK_NAME}. Relay will keep retrying the private edge attachment.`
+          `Coolify Traefik is not attached to ${this.#resources.edgeNetwork}. Relay will keep retrying the private edge attachment.`
         )
       } else {
         coolifyReady = true
@@ -395,7 +398,9 @@ export class LifecycleDriver {
       )
     } else {
       await this.#removeExternalTraefikRoutes()
-      await this.#serializeEdgeMutation(() => this.#disableExternalEdge())
+      await this.#serializeEdgeMutation(() =>
+        this.#disableExternalEdge(settings)
+      )
     }
   }
 
@@ -432,7 +437,11 @@ export class LifecycleDriver {
     const instance = await this.#docker.findInstance(instanceId)
     if (!instance) throw new Error("Instance not found")
     const profile = this.#externalTraefikProfile(settings)
-    const desiredLabels = traefikRouteLabels(routes, profile)
+    const desiredLabels = traefikRouteLabels(
+      routes,
+      profile,
+      this.#resources.edgeNetwork
+    )
     const labels = await containerLabels(instance.service)
     const requiresRestart = routeLabelsRequireRestart(
       labels,
@@ -441,11 +450,11 @@ export class LifecycleDriver {
     )
     const edgeConnected = await containerUsesNetwork(
       instance.service,
-      EDGE_NETWORK_NAME
+      this.#resources.edgeNetwork
     )
     const proxy = await this.#externalTraefikContainer(settings)
     const proxyConnected = Boolean(
-      proxy && (await containerUsesNetwork(proxy, EDGE_NETWORK_NAME))
+      proxy && (await containerUsesNetwork(proxy, this.#resources.edgeNetwork))
     )
 
     if (requiresRestart) {
@@ -465,10 +474,10 @@ export class LifecycleDriver {
       return {
         edgeConnected,
         message: proxy
-          ? `Relay found ${proxy}, but the ${EDGE_NETWORK_NAME} attachment is not ready yet.`
+          ? `Relay found ${proxy}, but the ${this.#resources.edgeNetwork} attachment is not ready yet.`
           : settings.mode === "coolify"
             ? "Relay could not find Coolify's running coolify-proxy container."
-            : `Attach your Traefik container to ${EDGE_NETWORK_NAME} to activate this route.`,
+            : `Attach your Traefik container to ${this.#resources.edgeNetwork} to activate this route.`,
         proxyConnected,
         requiresRestart: false,
         routes: [...routes],
@@ -519,7 +528,9 @@ export class LifecycleDriver {
         return this.#docker.recreateOwnedInstance(
           instance,
           desiredLabels,
-          usesExternalEdge && routes.length > 0 ? EDGE_NETWORK_NAME : null
+          usesExternalEdge && routes.length > 0
+            ? this.#resources.edgeNetwork
+            : null
         )
       }
     }
@@ -652,8 +663,8 @@ export class LifecycleDriver {
     }
 
     const id = input.id
-    const shortId = id.slice(0, 8)
-    const containerName = `kiln-${shortId}`
+    const defaultInstanceName = `kiln-${id.slice(0, 8)}`
+    const containerName = this.#resources.instanceContainer(id)
     const version = Object.hasOwn(resolved.values, "version")
       ? String(resolved.values.version)
       : "custom"
@@ -729,7 +740,7 @@ export class LifecycleDriver {
       "--hostname",
       containerName,
       "--network",
-      GAME_NETWORK_NAME,
+      this.#resources.gameNetwork,
       "--network-alias",
       containerName,
       "--interactive",
@@ -774,7 +785,7 @@ export class LifecycleDriver {
       "--label",
       `kiln.traefik.service.port=${primaryPort.container}`,
       "--label",
-      `kiln.instance.name=${containerName}`,
+      `kiln.instance.name=${defaultInstanceName}`,
       "--label",
       `kiln.instance.version=${version}`,
       "--label",
@@ -794,6 +805,8 @@ export class LifecycleDriver {
       "--volume",
       `${hostDirectory}:${definition.runtime.storage.mount}`,
     ]
+    const ownerLabel = relayOwnerLabel(this.#config)
+    if (ownerLabel) arguments_.push("--label", ownerLabel)
     for (const [label, value] of Object.entries(routeLabels)) {
       arguments_.push("--label", `${label}=${value}`)
     }
@@ -839,7 +852,7 @@ export class LifecycleDriver {
           "connect",
           "--alias",
           containerName,
-          EDGE_NETWORK_NAME,
+          this.#resources.edgeNetwork,
           containerName,
         ])
       }
@@ -939,11 +952,7 @@ export class LifecycleDriver {
   }
 
   async #ensureNetwork(): Promise<void> {
-    try {
-      await command("docker", ["network", "inspect", GAME_NETWORK_NAME])
-    } catch {
-      await command("docker", ["network", "create", GAME_NETWORK_NAME])
-    }
+    await this.#ensureOwnedNetwork(this.#resources.gameNetwork, "game")
   }
 
   async #ensureInfrastructure(
@@ -975,9 +984,9 @@ export class LifecycleDriver {
       `bind = "0.0.0.0:25565"\nwelcome_message = "<aqua>Starting your Kiln instance…</aqua>"\naction_bar = "<gray>The requested backend is not ready yet.</gray>"\ndefault_game_mode = "spectator"\nfetch_player_skins = false\n\n[forwarding]\nmethod = "NONE"\nsecret = "unused"\n\n[server_list]\nreply_to_status = true\nmax_players = 20\nmessage_of_the_day = "<aqua>Kiln standby</aqua>"\n`
     )
 
-    await this.#ensureContainer("kiln-coredns", replace, [
+    await this.#ensureContainer(this.#resources.coreDnsContainer, replace, [
       "--network",
-      GAME_NETWORK_NAME,
+      this.#resources.gameNetwork,
       "--network-alias",
       "coredns",
       "--restart",
@@ -994,9 +1003,9 @@ export class LifecycleDriver {
       "-conf",
       "/etc/coredns/Corefile",
     ])
-    await this.#ensureContainer("kiln-limbo", replace, [
+    await this.#ensureContainer(this.#resources.limboContainer, replace, [
       "--network",
-      GAME_NETWORK_NAME,
+      this.#resources.gameNetwork,
       "--network-alias",
       "limbo",
       "--restart",
@@ -1030,8 +1039,8 @@ export class LifecycleDriver {
     const relayContainer = requiredRelayContainerReference()
     await connectNetworkWithAlias(
       relayContainer,
-      RELAY_EDGE_NETWORK_NAME,
-      RELAY_EDGE_ALIAS
+      this.#resources.relayEdgeNetwork,
+      this.#resources.relayEdgeAlias
     )
     const infrastructure = join(
       this.#config.dataDirectory,
@@ -1069,7 +1078,7 @@ export class LifecycleDriver {
 
     const arguments_ = [
       "--network",
-      RELAY_EDGE_NETWORK_NAME,
+      this.#resources.relayEdgeNetwork,
       "--restart",
       "unless-stopped",
       "--label",
@@ -1087,9 +1096,19 @@ export class LifecycleDriver {
     ]
     arguments_.push(settings.traefikImage)
     try {
-      await this.#ensureContainer(TRAEFIK_CONTAINER, replace, arguments_)
-      await connectNetwork(TRAEFIK_CONTAINER, RELAY_EDGE_NETWORK_NAME)
-      await connectNetwork(TRAEFIK_CONTAINER, GAME_NETWORK_NAME)
+      await this.#ensureContainer(
+        this.#resources.traefikContainer,
+        replace,
+        arguments_
+      )
+      await connectNetwork(
+        this.#resources.traefikContainer,
+        this.#resources.relayEdgeNetwork
+      )
+      await connectNetwork(
+        this.#resources.traefikContainer,
+        this.#resources.gameNetwork
+      )
     } catch (cause) {
       if (isPortBindingFailure(cause)) {
         throw new Error(
@@ -1106,10 +1125,14 @@ export class LifecycleDriver {
     settings: RelayProxySettings
   ): Promise<void> {
     await this.#removeExternalTraefikRoutes()
+    if (routes.length === 0) {
+      await this.#disableExternalEdge(settings)
+      return
+    }
     await this.#ensureEdgeNetwork()
     if (settings.mode === "coolify") {
       const proxy = await this.#externalTraefikContainer(settings)
-      if (proxy) await connectNetwork(proxy, EDGE_NETWORK_NAME)
+      if (proxy) await connectNetwork(proxy, this.#resources.edgeNetwork)
     }
 
     const routedInstances = new Set(routes.map((route) => route.instanceId))
@@ -1119,98 +1142,40 @@ export class LifecycleDriver {
         .filter((instance) => instance.managedByRelay)
         .map((instance) =>
           routedInstances.has(instance.id)
-            ? connectNetwork(instance.service, EDGE_NETWORK_NAME)
-            : disconnectNetwork(instance.service, EDGE_NETWORK_NAME)
+            ? connectNetwork(instance.service, this.#resources.edgeNetwork)
+            : disconnectNetwork(instance.service, this.#resources.edgeNetwork)
         )
     )
   }
 
   async #removeBundledTraefik(): Promise<void> {
-    await command("docker", ["rm", "--force", TRAEFIK_CONTAINER]).catch(
-      () => undefined
-    )
+    await this.#removeOwnedContainer(this.#resources.traefikContainer)
     const relayContainer = process.env.HOSTNAME?.trim()
     if (relayContainer) {
-      await disconnectNetwork(relayContainer, RELAY_EDGE_NETWORK_NAME)
+      await disconnectNetwork(relayContainer, this.#resources.relayEdgeNetwork)
     }
-    await command("docker", ["network", "rm", RELAY_EDGE_NETWORK_NAME]).catch(
-      () => undefined
-    )
+    await this.#removeOwnedNetwork(this.#resources.relayEdgeNetwork)
   }
 
   async #ensureEdgeNetwork(): Promise<void> {
-    const inspected = await command("docker", [
-      "network",
-      "inspect",
-      "--format",
-      '{{index .Labels "kiln.relay.network"}}',
-      EDGE_NETWORK_NAME,
-    ]).catch(() => null)
-    if (inspected) {
-      if (inspected.stdout.trim() === "edge") return
-      throw new Error(
-        `Docker network ${EDGE_NETWORK_NAME} already exists but is not owned by this Relay. Rename or remove that network before enabling Ember web routes.`
-      )
-    }
-    await command("docker", [
-      "network",
-      "create",
-      "--label",
-      "kiln.relay.network=edge",
-      EDGE_NETWORK_NAME,
-    ])
+    await this.#ensureOwnedNetwork(this.#resources.edgeNetwork, "edge")
   }
 
   async #ensureRelayEdgeNetwork(): Promise<void> {
-    const inspected = await command("docker", [
-      "network",
-      "inspect",
-      "--format",
-      '{{index .Labels "kiln.relay.network"}}',
-      RELAY_EDGE_NETWORK_NAME,
-    ]).catch(() => null)
-    if (inspected) {
-      if (inspected.stdout.trim() === "relay-edge") return
-      throw new Error(
-        `Docker network ${RELAY_EDGE_NETWORK_NAME} already exists but is not owned by this Relay.`
-      )
-    }
-    await command("docker", [
-      "network",
-      "create",
-      "--label",
-      "kiln.relay.network=relay-edge",
-      RELAY_EDGE_NETWORK_NAME,
-    ])
+    await this.#ensureOwnedNetwork(
+      this.#resources.relayEdgeNetwork,
+      "relay-edge"
+    )
   }
 
   async #externalTraefikContainer(
-    settings?: RelayProxySettings
+    settings: RelayProxySettings
   ): Promise<string | null> {
-    if (settings?.mode === "coolify") {
-      return firstTraefikContainer(["coolify-proxy"])
-    }
-    const candidates = ["coolify-proxy"]
-    const ports = await Promise.all(
-      [80, 443].map((port) =>
-        command("docker", [
-          "ps",
-          "--filter",
-          `publish=${port}`,
-          "--format",
-          "{{.Names}}",
-        ]).catch(() => ({ stderr: "", stdout: "" }))
-      )
-    )
-    for (const result of ports) {
-      candidates.push(
-        ...result.stdout
-          .split("\n")
-          .map((value) => value.trim())
-          .filter(Boolean)
-      )
-    }
-    return firstTraefikContainer(Array.from(new Set(candidates)))
+    return discoverExternalTraefikContainer({
+      edgeNetwork: this.#resources.edgeNetwork,
+      resourceNamespace: this.#config.resourceNamespace,
+      settings,
+    })
   }
 
   #externalTraefikProfile(settings: RelayProxySettings): TraefikLabelProfile {
@@ -1232,7 +1197,11 @@ export class LifecycleDriver {
     settings: RelayProxySettings
   ): Record<string, string> {
     if (settings.mode === "none" || settings.mode === "coolify") {
-      return traefikRouteLabels(routes, this.#externalTraefikProfile(settings))
+      return traefikRouteLabels(
+        routes,
+        this.#externalTraefikProfile(settings),
+        this.#resources.edgeNetwork
+      )
     }
     return recoveryRouteLabels(routes)
   }
@@ -1268,20 +1237,18 @@ export class LifecycleDriver {
     return result
   }
 
-  async #disableExternalEdge(): Promise<void> {
+  async #disableExternalEdge(settings: RelayProxySettings): Promise<void> {
     const instances = await this.#docker.inspectInstances()
-    const proxy = await this.#externalTraefikContainer()
+    const proxy = await this.#externalTraefikContainer(settings)
     await Promise.all([
       ...instances
         .filter((instance) => instance.managedByRelay)
         .map((instance) =>
-          disconnectNetwork(instance.service, EDGE_NETWORK_NAME)
+          disconnectNetwork(instance.service, this.#resources.edgeNetwork)
         ),
-      ...(proxy ? [disconnectNetwork(proxy, EDGE_NETWORK_NAME)] : []),
+      ...(proxy ? [disconnectNetwork(proxy, this.#resources.edgeNetwork)] : []),
     ])
-    await command("docker", ["network", "rm", EDGE_NETWORK_NAME]).catch(
-      () => undefined
-    )
+    await this.#removeOwnedNetwork(this.#resources.edgeNetwork)
   }
 
   async #removeExternalTraefikRoutes(): Promise<void> {
@@ -1296,18 +1263,20 @@ export class LifecycleDriver {
     const names = result.stdout
       .split("\n")
       .map((name) => name.trim())
-      .filter((name) => name.startsWith("kiln-route-"))
-    await Promise.all(
-      names.map((name) =>
-        command("docker", ["rm", "--force", name]).catch(() => undefined)
+      .filter((name) =>
+        name.startsWith(
+          this.#config.resourceNamespace
+            ? `${this.#config.resourceNamespace}-kiln-route-`
+            : "kiln-route-"
+        )
       )
-    )
+    await Promise.all(names.map((name) => this.#removeOwnedContainer(name)))
   }
 
   async #removeInfrastructure(): Promise<void> {
     await Promise.all(
-      ["kiln-coredns", "kiln-limbo"].map((name) =>
-        command("docker", ["rm", "--force", name]).catch(() => undefined)
+      [this.#resources.coreDnsContainer, this.#resources.limboContainer].map(
+        (name) => this.#removeOwnedContainer(name)
       )
     )
   }
@@ -1323,7 +1292,9 @@ export class LifecycleDriver {
         this.#dnsHostnames(instances, networking)
       )
     )
-    await command("docker", ["restart", "kiln-coredns"], { timeout: 90_000 })
+    await command("docker", ["restart", this.#resources.coreDnsContainer], {
+      timeout: 90_000,
+    })
   }
 
   #dnsHostnames(
@@ -1343,10 +1314,13 @@ export class LifecycleDriver {
     name: string,
     arguments_: Array<string>
   ): Promise<void> {
-    await command("docker", ["rm", "--force", name]).catch(() => undefined)
+    await this.#removeOwnedContainer(name)
+    const ownedArguments = [...arguments_]
+    const ownerLabel = relayOwnerLabel(this.#config)
+    if (ownerLabel) ownedArguments.unshift("--label", ownerLabel)
     await command(
       "docker",
-      ["run", "--detach", "--name", name, ...arguments_],
+      ["run", "--detach", "--name", name, ...ownedArguments],
       {
         timeout: 180_000,
       }
@@ -1359,14 +1333,100 @@ export class LifecycleDriver {
     arguments_: Array<string>
   ): Promise<void> {
     if (!replace) {
-      try {
-        await command("docker", ["container", "inspect", name])
+      const inspected = await command("docker", [
+        "container",
+        "inspect",
+        "--format",
+        "{{json .Config.Labels}}",
+        name,
+      ]).catch(() => null)
+      if (inspected) {
+        if (
+          !relayOwnsLabels(
+            this.#config,
+            stringLabels(JSON.parse(inspected.stdout))
+          )
+        ) {
+          throw new Error(
+            `Docker container ${name} exists but is not owned by this Relay`
+          )
+        }
         return
-      } catch {
-        // The configured infrastructure container does not exist yet.
       }
     }
     await this.#replaceContainer(name, arguments_)
+  }
+
+  async #removeOwnedContainer(name: string): Promise<void> {
+    const inspected = await command("docker", [
+      "container",
+      "inspect",
+      "--format",
+      "{{json .Config.Labels}}",
+      name,
+    ]).catch(() => null)
+    if (!inspected) return
+    const labels = stringLabels(JSON.parse(inspected.stdout))
+    if (!relayOwnsLabels(this.#config, labels)) {
+      throw new Error(
+        `Docker container ${name} is not owned by this Relay and will not be removed`
+      )
+    }
+    await command("docker", ["rm", "--force", name])
+  }
+
+  async #ensureOwnedNetwork(name: string, kind: string): Promise<void> {
+    const inspected = await command("docker", [
+      "network",
+      "inspect",
+      "--format",
+      "{{json .Labels}}",
+      name,
+    ]).catch(() => null)
+    if (inspected) {
+      const labels = stringLabels(JSON.parse(inspected.stdout))
+      const legacyGameNetwork =
+        !this.#config.resourceNamespace &&
+        kind === "game" &&
+        labels["kiln.relay.network"] === undefined
+      if (
+        (!legacyGameNetwork && labels["kiln.relay.network"] !== kind) ||
+        !relayOwnsLabels(this.#config, labels)
+      ) {
+        throw new Error(
+          `Docker network ${name} already exists but is not owned by this Relay`
+        )
+      }
+      return
+    }
+    const arguments_ = [
+      "network",
+      "create",
+      "--label",
+      `kiln.relay.network=${kind}`,
+    ]
+    const ownerLabel = relayOwnerLabel(this.#config)
+    if (ownerLabel) arguments_.push("--label", ownerLabel)
+    arguments_.push(name)
+    await command("docker", arguments_)
+  }
+
+  async #removeOwnedNetwork(name: string): Promise<void> {
+    const inspected = await command("docker", [
+      "network",
+      "inspect",
+      "--format",
+      "{{json .Labels}}",
+      name,
+    ]).catch(() => null)
+    if (!inspected) return
+    const labels = stringLabels(JSON.parse(inspected.stdout))
+    if (!relayOwnsLabels(this.#config, labels)) {
+      throw new Error(
+        `Docker network ${name} is not owned by this Relay and will not be removed`
+      )
+    }
+    await command("docker", ["network", "rm", name]).catch(() => undefined)
   }
 
   async #hostDataDirectory(): Promise<string> {
@@ -1485,11 +1545,57 @@ async function ensureProtectedFile(path: string): Promise<void> {
   await chmod(path, 0o600)
 }
 
+type LifecycleCommand = (
+  executable: string,
+  arguments_: Array<string>
+) => Promise<{ stderr: string; stdout: string }>
+
+export async function discoverExternalTraefikContainer(
+  input: {
+    edgeNetwork: string
+    resourceNamespace: string | null
+    settings: RelayProxySettings
+  },
+  runCommand: LifecycleCommand = command
+): Promise<string | null> {
+  if (input.settings.mode === "coolify") {
+    return firstTraefikContainer(["coolify-proxy"], runCommand)
+  }
+  if (input.resourceNamespace) {
+    const attached = await runCommand("docker", [
+      "network",
+      "inspect",
+      "--format",
+      "{{range .Containers}}{{println .Name}}{{end}}",
+      input.edgeNetwork,
+    ]).catch(() => ({ stderr: "", stdout: "" }))
+    return firstTraefikContainer(containerNames(attached.stdout), runCommand)
+  }
+
+  const candidates = ["coolify-proxy"]
+  const ports = await Promise.all(
+    [80, 443].map((port) =>
+      runCommand("docker", [
+        "ps",
+        "--filter",
+        `publish=${port}`,
+        "--format",
+        "{{.Names}}",
+      ]).catch(() => ({ stderr: "", stdout: "" }))
+    )
+  )
+  for (const result of ports) {
+    candidates.push(...containerNames(result.stdout))
+  }
+  return firstTraefikContainer(Array.from(new Set(candidates)), runCommand)
+}
+
 async function firstTraefikContainer(
-  names: ReadonlyArray<string>
+  names: ReadonlyArray<string>,
+  runCommand: LifecycleCommand
 ): Promise<string | null> {
   for (const name of names) {
-    const inspected = await command("docker", [
+    const inspected = await runCommand("docker", [
       "inspect",
       "--format",
       "{{.State.Running}} {{.Config.Image}}",
@@ -1505,6 +1611,13 @@ async function firstTraefikContainer(
     }
   }
   return null
+}
+
+function containerNames(output: string): Array<string> {
+  return output
+    .split("\n")
+    .map((value) => value.trim())
+    .filter(Boolean)
 }
 
 async function containerUsesNetwork(
@@ -1533,17 +1646,17 @@ async function containerLabels(name: string): Promise<Record<string, string>> {
     "{{json .Config.Labels}}",
     name,
   ])
-    .then((result) => {
-      const labels = JSON.parse(result.stdout) as unknown
-      if (!labels || typeof labels !== "object" || Array.isArray(labels))
-        return {}
-      return Object.fromEntries(
-        Object.entries(labels).filter(
-          (entry): entry is [string, string] => typeof entry[1] === "string"
-        )
-      )
-    })
+    .then((result) => stringLabels(JSON.parse(result.stdout)))
     .catch(() => ({}))
+}
+
+function stringLabels(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string"
+    )
+  )
 }
 
 async function connectNetwork(name: string, network: string): Promise<void> {
@@ -1605,13 +1718,14 @@ export interface TraefikLabelProfile {
 
 export function traefikRouteLabels(
   routes: ReadonlyArray<RelayInstanceWebRoute>,
-  profile: TraefikLabelProfile
+  profile: TraefikLabelProfile,
+  edgeNetwork = "kiln-edge"
 ): Record<string, string> {
   const labels: Record<string, string> = {
     ...webRouteRecoveryLabels(routes),
     "traefik.enable": routes.length > 0 ? "true" : "false",
   }
-  if (routes.length > 0) labels["traefik.docker.network"] = EDGE_NETWORK_NAME
+  if (routes.length > 0) labels["traefik.docker.network"] = edgeNetwork
 
   for (const route of routes) {
     const name = traefikRouteName(route.id)
@@ -1750,6 +1864,7 @@ export function traefikDynamicConfiguration(
   routes: ReadonlyArray<RelayStoredWebRoute>,
   _settings: RelayProxySettings
 ): string {
+  const resources = relayResourceNames(config)
   const lines = ["http:", "  routers:"]
   if (isTraefikHostname(config.advertisedHost)) {
     lines.push(
@@ -1788,7 +1903,7 @@ export function traefikDynamicConfiguration(
       "    kiln-relay:",
       "      loadBalancer:",
       "        servers:",
-      `          - url: ${JSON.stringify(`http://${RELAY_EDGE_ALIAS}:${config.port}`)}`
+      `          - url: ${JSON.stringify(`http://${resources.relayEdgeAlias}:${config.port}`)}`
     )
   }
   for (const route of routes) {
@@ -1797,7 +1912,7 @@ export function traefikDynamicConfiguration(
       `    ${name}:`,
       "      loadBalancer:",
       "        servers:",
-      `          - url: ${JSON.stringify(`http://kiln-${route.instanceId.slice(0, 8)}:${route.targetPort}`)}`
+      `          - url: ${JSON.stringify(`http://${resources.instanceContainer(route.instanceId)}:${route.targetPort}`)}`
     )
   }
 

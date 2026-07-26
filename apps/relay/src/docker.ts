@@ -28,6 +28,11 @@ import {
 } from "@workspace/contracts"
 
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
+import {
+  relayOwnsLabels,
+  relayResourceNames,
+  type RelayResourceNames,
+} from "./relay-resources.js"
 import { WEB_ROUTE_LABEL_PREFIX } from "./web-route-labels.js"
 import type { RelayWebRouteLabelSnapshot } from "./web-route-labels.js"
 
@@ -215,6 +220,7 @@ export function initialDiskUsageCacheEntry(): DiskUsageCacheEntry {
 
 export class DockerDriver {
   readonly #config: RelayConfig
+  readonly #resources: RelayResourceNames
   #cachedDockerVersion: string | null | undefined
   readonly #consoleLocks = new Map<string, Promise<void>>()
   readonly #consoleSizeStarts = new Map<string, string>()
@@ -227,6 +233,7 @@ export class DockerDriver {
 
   constructor(config: RelayConfig) {
     this.#config = config
+    this.#resources = relayResourceNames(config)
   }
 
   async inspectInstances(): Promise<Array<RelayInstance>> {
@@ -367,9 +374,9 @@ export class DockerDriver {
 
     const primaryNetwork = Object.hasOwn(
       current.NetworkSettings?.Networks ?? {},
-      "kiln-minecraft"
+      this.#resources.gameNetwork
     )
-      ? "kiln-minecraft"
+      ? this.#resources.gameNetwork
       : current.HostConfig.NetworkMode
     if (!primaryNetwork || primaryNetwork === "default") {
       throw new Error(
@@ -1279,7 +1286,12 @@ export class DockerDriver {
     if (ids.length === 0) return []
 
     const inspectResult = await command("docker", ["inspect", ...ids])
-    const containers = JSON.parse(inspectResult.stdout) as Array<DockerInspect>
+    const containers = (
+      JSON.parse(inspectResult.stdout) as Array<DockerInspect>
+    ).filter((container) =>
+      relayOwnsLabels(this.#config, container.Config.Labels)
+    )
+    if (containers.length === 0) return []
     const diskLimitCandidates = containers.map((container) => ({
       configuredLimitBytes: optionalNonnegativeIntegerLabel(
         container.Config.Labels?.["kiln.instance.disk-bytes"]

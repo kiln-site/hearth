@@ -1,4 +1,5 @@
 export const KILN_IMAGE_SOURCE = "https://github.com/kiln-site/hearth"
+export const KILN_INSTALLATION_LABEL = "io.kiln.installation"
 
 export type KilnComponent = "hearth" | "relay"
 

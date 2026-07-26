@@ -52,6 +52,7 @@ services:
       dockerfile: apps/relay/Dockerfile
     restart: unless-stopped
     environment:
+      KILN_INSTALLATION_ID: ${KILN_INSTALLATION_ID:-}
       KILN_RELAY_BOOTSTRAP_TOKEN: ${KILN_RELAY_BOOTSTRAP_TOKEN:-}
       KILN_RELAY_BOOTSTRAP_TOKEN_FILE: ${KILN_RELAY_BOOTSTRAP_TOKEN_FILE:-}
       KILN_RELAY_HOST: ${KILN_RELAY_HOST:-relay.hearth.orb.local}
@@ -62,6 +63,7 @@ services:
       KILN_RELAY_PORT: ${KILN_RELAY_PORT:-4100}
       KILN_RELAY_PUBLIC_PORT: ${KILN_RELAY_PUBLIC_PORT:-}
       KILN_RELAY_PUBLIC_URL: ${KILN_RELAY_PUBLIC_URL:-}
+      KILN_RELAY_RESOURCE_NAMESPACE: ${KILN_RELAY_RESOURCE_NAMESPACE:-}
       KILN_RELAY_DISCOVER_PUBLIC_IP: ${KILN_RELAY_DISCOVER_PUBLIC_IP:-true}
       KILN_RELAY_SFTP_PORT: ${KILN_RELAY_SFTP_PORT:-2022}
       KILN_RELAY_TLS_MODE: ${KILN_RELAY_TLS_MODE:-managed}
@@ -79,6 +81,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - relay-data:/data
+    labels:
+      io.kiln.installation: ${KILN_INSTALLATION_ID:-}
 
   hearth:
     image: ghcr.io/kiln-site/hearth:latest
@@ -105,6 +109,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
       DB_TABLE_PREFIX: ${DB_TABLE_PREFIX:-}
       KILN_ENVIRONMENT: ${KILN_ENVIRONMENT:-prod}
+      KILN_INSTALLATION_ID: ${KILN_INSTALLATION_ID:-}
       CACHE_HOST: ${CACHE_HOST:-cache}
       CACHE_PORT: ${CACHE_PORT:-6379}
       CACHE_USERNAME: ${CACHE_USERNAME:-}
@@ -132,6 +137,8 @@ services:
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
     ports:
       - "3000:3000"
+    labels:
+      io.kiln.installation: ${KILN_INSTALLATION_ID:-}
 
 volumes:
   hearth-mysql:
