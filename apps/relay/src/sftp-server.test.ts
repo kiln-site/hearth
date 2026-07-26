@@ -5,9 +5,17 @@ import ssh2 from "ssh2"
 import { describe, expect, it, onTestFinished } from "vite-plus/test"
 
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
-import { attachSftpServer } from "./sftp-server.js"
+import { attachSftpServer, generateSftpHostKey } from "./sftp-server.js"
 
 const describeLinux = process.platform === "linux" ? describe : describe.skip
+const malformedLeadingZeroHostKey =
+  "-----BEGIN OPENSSH PRIVATE KEY-----\n" +
+  "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMgAAAAtz\n" +
+  "c2gtZWQyNTUxOQAAAB+jDciCPNYigCaepbLo4ALlS5noOsmjwBiR1J0bM1F3AAAA\n" +
+  "iDm+j7k5vo+5AAAAC3NzaC1lZDI1NTE5AAAAH6MNyII81iKAJp6lsujgAuVLmeg6\n" +
+  "yaPAGJHUnRszUXcAAAA/RAHNwV+KXisa0Z0KAzz7d5kSa8TvBf0b9jh2Pu3RpJmj\n" +
+  "DciCPNYigCaepbLo4ALlS5noOsmjwBiR1J0bM1F3AAAAAAECAwQFBgc=\n" +
+  "-----END OPENSSH PRIVATE KEY-----\n"
 const allowFileAccess = async () => [
   "instance.sftp.connect",
   "instance.files.list",
@@ -18,6 +26,20 @@ const allowFileAccess = async () => [
   "instance.files.rename",
   "instance.files.chmod",
 ]
+
+describe("Relay SFTP host key", () => {
+  it("retries when ssh2 generates a malformed leading-zero Ed25519 key", () => {
+    const validHostKey = generateSftpHostKey()
+    let attempts = 0
+    const generated = generateSftpHostKey(() => {
+      attempts += 1
+      return attempts === 1 ? malformedLeadingZeroHostKey : validHostKey
+    })
+
+    expect(attempts).toBe(2)
+    expect(generated).toEqual(validHostKey)
+  })
+})
 
 describeLinux("Relay SFTP server", () => {
   it("exposes authorized instances, transfers files, and rejects SSH commands", async () => {
@@ -236,6 +258,9 @@ describeLinux("Relay SFTP server", () => {
   it("persists a stable SSH host-key fingerprint", async () => {
     const dataDirectory = await temporaryDirectory()
     await mkdir(resolve(dataDirectory, "instances"), { recursive: true })
+    const hostKeyPath = resolve(dataDirectory, "network", "sftp", "host.key")
+    await mkdir(resolve(dataDirectory, "network", "sftp"), { recursive: true })
+    await writeFile(hostKeyPath, malformedLeadingZeroHostKey)
     const options = {
       clientActions: allowFileAccess,
       config: testConfig(dataDirectory),
@@ -249,6 +274,9 @@ describeLinux("Relay SFTP server", () => {
     try {
       expect(fingerprint).toMatch(/^SHA256:[A-Za-z0-9+/]+$/u)
       expect(second.hostKeyFingerprint).toBe(fingerprint)
+      expect(
+        ssh2.utils.parseKey(await readFile(hostKeyPath))
+      ).not.toBeInstanceOf(Error)
     } finally {
       await second.close()
     }

@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto"
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto"
 import {
   chmod,
   mkdir,
@@ -30,9 +30,12 @@ const MAX_OPEN_HANDLES = 128
 const DIRECTORY_BATCH_SIZE = 128
 const MAX_DIRECTORY_ENTRIES = 10_000
 const MAX_SFTP_CONNECTIONS = 64
+const HOST_KEY_GENERATION_ATTEMPTS = 8
 const DIRECTORY_MODE = fsConstants.S_IFDIR | 0o755
 const { Server, utils } = ssh2
 const { OPEN_MODE, STATUS_CODE } = utils.sftp
+
+type HostKeyGenerator = () => Buffer | string
 
 interface SftpGrant {
   actions: ReadonlyArray<string>
@@ -251,24 +254,81 @@ function fingerprintHostKey(hostKey: Buffer): string {
   return `SHA256:${digest}`
 }
 
+export function generateSftpHostKey(
+  generateCandidate: HostKeyGenerator = () =>
+    utils.generateKeyPairSync("ed25519").private
+): Buffer {
+  let lastError: Error | null = null
+  for (let attempt = 0; attempt < HOST_KEY_GENERATION_ATTEMPTS; attempt += 1) {
+    // ssh2 1.17 can serialize an Ed25519 public key as 31 bytes when its
+    // first byte is zero, so validate each candidate before it reaches disk.
+    const candidate = Buffer.from(generateCandidate())
+    lastError = hostKeyParseError(candidate)
+    if (!lastError) return candidate
+  }
+  throw new Error(
+    `Relay could not generate a valid SFTP host key after ${HOST_KEY_GENERATION_ATTEMPTS} attempts`,
+    { cause: lastError }
+  )
+}
+
 async function loadOrCreateHostKey(config: RelayConfig): Promise<Buffer> {
   const directory = resolve(config.dataDirectory, "network", "sftp")
   const path = resolve(directory, "host.key")
   await mkdir(directory, { mode: 0o700, recursive: true })
+  let existing: Buffer | null = null
   try {
-    return await readFile(path)
+    existing = await readFile(path)
   } catch (cause) {
     if (!isMissing(cause)) throw cause
   }
-  const generated = utils.generateKeyPairSync("ed25519").private
+  if (existing) {
+    const parseError = hostKeyParseError(existing)
+    if (!parseError) return existing
+    console.warn(
+      `Relay SFTP host key at ${path} is invalid and will be replaced: ${parseError.message}`
+    )
+    return replaceHostKey(path)
+  }
+
+  const generated = generateSftpHostKey()
   try {
     await writeFile(path, generated, { flag: "wx", mode: 0o600 })
   } catch (cause) {
-    if (errorCode(cause) === "EEXIST") return readFile(path)
+    if (errorCode(cause) === "EEXIST") {
+      const concurrent = await readFile(path)
+      const parseError = hostKeyParseError(concurrent)
+      if (!parseError) return concurrent
+      console.warn(
+        `Relay SFTP host key at ${path} is invalid and will be replaced: ${parseError.message}`
+      )
+      return replaceHostKey(path)
+    }
     throw cause
   }
   await chmod(path, 0o600)
-  return Buffer.from(generated)
+  return generated
+}
+
+async function replaceHostKey(path: string): Promise<Buffer> {
+  const generated = generateSftpHostKey()
+  const temporaryPath = `${path}.${randomUUID()}.tmp`
+  try {
+    await writeFile(temporaryPath, generated, { flag: "wx", mode: 0o600 })
+    await rename(temporaryPath, path)
+  } catch (cause) {
+    try {
+      await unlink(temporaryPath)
+    } catch {}
+    throw cause
+  }
+  await chmod(path, 0o600)
+  return generated
+}
+
+function hostKeyParseError(hostKey: Buffer): Error | null {
+  const parsed = utils.parseKey(hostKey)
+  return parsed instanceof Error ? parsed : null
 }
 
 async function authorizeUsername(
