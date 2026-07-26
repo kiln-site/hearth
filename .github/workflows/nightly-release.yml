@@ -18,42 +18,8 @@ jobs:
     name: Code checks
     uses: ./.github/workflows/ci.yml
 
-  version:
-    name: Calculate nightly version
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    outputs:
-      tag: ${{ steps.version.outputs.tag }}
-      version: ${{ steps.version.outputs.version }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
-
-      - name: Calculate the next version tag
-        id: version
-        env:
-          COMMIT_SHA: ${{ github.sha }}
-          RUN_NUMBER: ${{ github.run_number }}
-        run: |
-          git fetch origin main
-          release_line="$(git show origin/main:release.json | jq -er '.releaseLine')"
-          existing="$(git tag --points-at "$COMMIT_SHA" --list "v${release_line}-nightly.*" --sort=-v:refname | head -n 1)"
-          if test -n "$existing"; then
-            tag="$existing"
-          else
-            tag="v${release_line}-nightly.${RUN_NUMBER}"
-            if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
-              echo "$tag is already assigned to another workflow run" >&2
-              exit 1
-            fi
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
-
   hearth_arm:
     name: Hearth arm64 image
-    needs: version
     uses: ./.github/workflows/reusable-image.yml
     with:
       name: Hearth
@@ -61,20 +27,20 @@ jobs:
       dockerfile: apps/web/Dockerfile
       cache_scope: hearth
       architectures: '["arm64"]'
+      arm_runner: blacksmith-8vcpu-ubuntu-2404-arm
       build_args: |
         SOURCE_COMMIT=${{ github.sha }}
-        KILN_VERSION=${{ needs.version.outputs.version }}
         VITE_SENTRY_DSN=${{ vars.VITE_SENTRY_DSN }}
         VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE=${{ vars.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE || '0.1' }}
         VITE_SENTRY_TRACES_SAMPLE_RATE=${{ vars.VITE_SENTRY_TRACES_SAMPLE_RATE || '0.1' }}
       tags: |
-        type=raw,value=${{ needs.version.outputs.version }}
         type=sha,prefix=sha-
+      nightly_version: true
       publish_manifest: false
 
   hearth_amd:
     name: Hearth amd64 image
-    needs: [code, version]
+    needs: code
     uses: ./.github/workflows/reusable-image.yml
     with:
       name: Hearth
@@ -84,38 +50,36 @@ jobs:
       architectures: '["amd64"]'
       build_args: |
         SOURCE_COMMIT=${{ github.sha }}
-        KILN_VERSION=${{ needs.version.outputs.version }}
         VITE_SENTRY_DSN=${{ vars.VITE_SENTRY_DSN }}
         VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE=${{ vars.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE || '0.1' }}
         VITE_SENTRY_TRACES_SAMPLE_RATE=${{ vars.VITE_SENTRY_TRACES_SAMPLE_RATE || '0.1' }}
       tags: |
-        type=raw,value=${{ needs.version.outputs.version }}
         type=sha,prefix=sha-
       uses_sentry: true
+      nightly_version: true
       publish_manifest: false
     secrets:
       sentry_auth_token: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
   relay:
     name: Relay image
-    needs: version
     uses: ./.github/workflows/reusable-image.yml
     with:
       name: Relay
       image: ghcr.io/kiln-site/relay
       dockerfile: apps/relay/Dockerfile
       cache_scope: relay
+      arm_runner: blacksmith-8vcpu-ubuntu-2404-arm
       build_args: |
         SOURCE_COMMIT=${{ github.sha }}
-        KILN_VERSION=${{ needs.version.outputs.version }}
       tags: |
-        type=raw,value=${{ needs.version.outputs.version }}
         type=sha,prefix=sha-
+      nightly_version: true
       publish_manifest: false
 
   release:
     name: Publish nightly release
-    needs: [code, version, hearth_arm, hearth_amd, relay]
+    needs: [code, hearth_arm, hearth_amd, relay]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Check out repository
@@ -133,10 +97,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve nightly version
+        id: version
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          release_line="$(jq -er '.releaseLine' release.json)"
+          tag="v${release_line}-nightly.${RUN_NUMBER}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
       - name: Reserve version tag
         env:
           COMMIT_SHA: ${{ github.sha }}
-          TAG: ${{ needs.version.outputs.tag }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           git fetch --force --tags origin
           if git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
@@ -156,7 +130,7 @@ jobs:
         id: manifests
         env:
           COMMIT_SHA: ${{ github.sha }}
-          VERSION: ${{ needs.version.outputs.version }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           shopt -s nullglob
 
@@ -190,7 +164,7 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
           HEARTH_DIGEST: ${{ steps.manifests.outputs.hearth_digest }}
           RELAY_DIGEST: ${{ steps.manifests.outputs.relay_digest }}
-          VERSION: ${{ needs.version.outputs.version }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           jq -n \
             --arg version "$VERSION" \
@@ -214,7 +188,7 @@ jobs:
       - name: Publish prerelease
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.version.outputs.tag }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" release-manifest.json --clobber
@@ -230,7 +204,7 @@ jobs:
         id: newest
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.version.outputs.tag }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           newest="$(gh release list --limit 100 --json isPrerelease,tagName \
             --jq '.[] | select(.isPrerelease) | .tagName' \

@@ -49,6 +49,16 @@ on:
         required: false
         type: boolean
         default: true
+      nightly_version:
+        description: Derive KILN_VERSION and a version tag from release.json and the workflow run number
+        required: false
+        type: boolean
+        default: false
+      arm_runner:
+        description: Runner label used for arm64 builds
+        required: false
+        type: string
+        default: blacksmith-4vcpu-ubuntu-2404-arm
     secrets:
       sentry_auth_token:
         required: false
@@ -60,7 +70,7 @@ permissions:
 jobs:
   build:
     name: ${{ inputs.name }}${{ matrix.architecture == 'arm64' && ' · arm64' || '' }}
-    runs-on: ${{ matrix.architecture == 'arm64' && 'blacksmith-4vcpu-ubuntu-2404-arm' || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ matrix.architecture == 'arm64' && inputs.arm_runner || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -69,6 +79,15 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Resolve nightly version
+        if: inputs.nightly_version
+        id: nightly
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          release_line="$(jq -er '.releaseLine' release.json)"
+          echo "version=${release_line}-nightly.${RUN_NUMBER}" >> "$GITHUB_OUTPUT"
 
       - name: Set up cached Docker builder
         uses: useblacksmith/setup-docker-builder@33803e640bd9d674f2843a8c323aa2a7da478d23 # v2.0.0
@@ -89,7 +108,9 @@ jobs:
         with:
           images: ${{ inputs.image }}
           flavor: latest=false
-          tags: ${{ inputs.tags }}
+          tags: |
+            ${{ inputs.tags }}
+            ${{ inputs.nightly_version && format('type=raw,value={0}', steps.nightly.outputs.version) || '' }}
 
       - name: Build${{ github.event_name != 'pull_request' && ' and publish' || '' }} image
         id: build
@@ -99,7 +120,9 @@ jobs:
         with:
           context: .
           file: ${{ inputs.dockerfile }}
-          build-args: ${{ inputs.build_args }}
+          build-args: |
+            ${{ inputs.build_args }}
+            ${{ inputs.nightly_version && format('KILN_VERSION={0}', steps.nightly.outputs.version) || '' }}
           secrets: |
             SENTRY_AUTH_TOKEN=${{ inputs.uses_sentry && matrix.architecture == 'amd64' && secrets.sentry_auth_token || '' }}
           platforms: linux/${{ matrix.architecture }}
