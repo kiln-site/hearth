@@ -7,25 +7,27 @@ Releases is the release index and GHCR is the only image source.
 ## Versions and channels
 
 - The active release line lives in `release.json` and always uses `0.x.x`.
-- Every successful push to `main` reserves the next
-  `0.x.x-nightly.<increment>` version.
-- The first release line is `0.1.0`; its first nightly is
-  `0.1.0-nightly.1`.
+- Every successful push to `main` reserves a
+  `0.x.x-nightly.<YYYYMMDD>.<HHMMSS>` version from the source commit's UTC
+  timestamp.
+- GitHub release titles keep a shorter display alias such as
+  `v0.1.0 Nightly #12`. The alias is presentation-only; tags, manifests,
+  images, update comparisons, and links use the timestamp version.
 - Nightlies are GitHub prereleases. A stable release promotes a selected
   nightly without rebuilding its images.
 - Stable promotion closes that release line. The workflow advances
-  `release.json` to the operator-selected next `0.x.x` line before more
-  nightlies are published.
+  `release.json` to the operator-selected next `0.x.x` line and resets the
+  display alias to `Nightly #1` before more nightlies are published.
 
 Published image tags:
 
-| Tag               | Meaning                   |
-| ----------------- | ------------------------- |
-| `0.1.0-nightly.7` | Exact nightly             |
-| `latest-nightly`  | Newest nightly            |
-| `0.1.0`           | Exact stable release      |
-| `latest`          | Newest stable release     |
-| `sha-<commit>`    | Source-build traceability |
+| Tag                                  | Meaning                   |
+| ------------------------------------ | ------------------------- |
+| `0.1.0-nightly.20260726.155759`      | Exact nightly             |
+| `latest-nightly`                     | Newest nightly            |
+| `0.1.0`                              | Exact stable release      |
+| `latest`                             | Newest stable release     |
+| `sha-<commit>`                       | Source-build traceability |
 
 Before the first stable release, `latest` temporarily follows the newest
 nightly so a new installation has a usable default. Stable promotion takes
@@ -35,6 +37,10 @@ Each GitHub release includes `release-manifest.json`, which binds the release
 version and source commit to immutable Hearth and Relay image digests. Runtime
 release discovery and image pulls are anonymous. CI verifies that both GHCR
 images are publicly readable before it publishes a GitHub release.
+
+Migrated releases may also include `imageVersion`, which records the legacy
+version baked into an existing image. Hearth and Relay use that alias only to
+match the unchanged image to its canonical timestamp release.
 
 ## Update eligibility
 
@@ -93,8 +99,8 @@ requests.
 
 Nightly releases are automatic through `nightly-release.yml`. To publish a
 stable release, run `stable-release.yml` and supply the nightly version without
-the leading `v`, for example `0.1.0-nightly.18`, plus the next release line,
-for example `0.2.0`.
+the leading `v`, for example `0.1.0-nightly.20260726.155759`, plus the next
+release line, for example `0.2.0`.
 
 Stable promotion reuses the nightly's exact image digests, publishes `0.1.0`
 and `latest`, creates tag `v0.1.0` at the nightly commit, and publishes a normal

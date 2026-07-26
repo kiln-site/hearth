@@ -45,7 +45,7 @@ on:
         type: boolean
         default: true
       nightly_version:
-        description: Derive KILN_VERSION and a version tag from release.json and the workflow run number
+        description: Derive KILN_VERSION and a version tag from release.json and the source commit timestamp
         required: false
         type: boolean
         default: false
