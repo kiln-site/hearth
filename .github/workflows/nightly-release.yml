@@ -19,8 +19,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   version:
-    name: Reserve nightly version
-    needs: code
+    name: Calculate nightly version
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       tag: ${{ steps.version.outputs.tag }}
@@ -31,7 +30,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Reserve the next version tag
+      - name: Calculate the next version tag
         id: version
         env:
           COMMIT_SHA: ${{ github.sha }}
@@ -42,26 +41,10 @@ jobs:
           if test -n "$existing"; then
             tag="$existing"
           else
-            reserved=false
-            for attempt in $(seq 1 20); do
-              git fetch --force --tags origin
-              last="$(git tag --list "v${release_line}-nightly.*" --sort=-v:refname | head -n 1)"
-              increment="${last##*.}"
-              if test -z "$last"; then increment=0; fi
-              increment="$((increment + 1))"
-              tag="v${release_line}-nightly.${increment}"
-              git tag "$tag" "$COMMIT_SHA"
-              if git push origin "refs/tags/$tag"; then
-                reserved=true
-                break
-              fi
-              git tag --delete "$tag"
-              if ! git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-                echo "Could not reserve $tag" >&2
-                exit 1
-              fi
-            done
-            test "$reserved" = true
+            last="$(git tag --list "v${release_line}-nightly.*" --sort=-v:refname | head -n 1)"
+            increment="${last##*.}"
+            if test -z "$last"; then increment=0; fi
+            tag="v${release_line}-nightly.$((increment + 1))"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
@@ -85,6 +68,7 @@ jobs:
         type=raw,value=${{ needs.version.outputs.version }}
         type=sha,prefix=sha-
       uses_sentry: true
+      publish_manifest: false
     secrets:
       sentry_auth_token: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
@@ -103,31 +87,85 @@ jobs:
       tags: |
         type=raw,value=${{ needs.version.outputs.version }}
         type=sha,prefix=sha-
+      publish_manifest: false
 
   release:
     name: Publish nightly release
-    needs: [version, hearth, relay]
+    needs: [code, version, hearth, relay]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - name: Verify images are publicly readable
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Reserve version tag
         env:
-          HEARTH_DIGEST: ${{ needs.hearth.outputs.digest }}
-          RELAY_DIGEST: ${{ needs.relay.outputs.digest }}
+          COMMIT_SHA: ${{ github.sha }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
-          docker buildx imagetools inspect "ghcr.io/kiln-site/hearth@$HEARTH_DIGEST"
-          docker buildx imagetools inspect "ghcr.io/kiln-site/relay@$RELAY_DIGEST"
+          git fetch --force --tags origin
+          if git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
+            test "$(git rev-list -n 1 "$TAG")" = "$COMMIT_SHA"
+          else
+            git tag "$TAG" "$COMMIT_SHA"
+            git push origin "refs/tags/$TAG"
+          fi
+
+      - name: Download image digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: digests-*
+          path: /tmp/digests
+
+      - name: Publish and verify image manifests
+        id: manifests
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          shopt -s nullglob
+
+          publish_manifest() {
+            component="$1"
+            image="$2"
+            digest_files=(/tmp/digests/digests-"$component"-*/*)
+            test "${#digest_files[@]}" -eq 2
+
+            sources=()
+            for digest_file in "${digest_files[@]}"; do
+              sources+=("$image@sha256:$(basename "$digest_file")")
+            done
+
+            docker buildx imagetools create \
+              --tag "$image:$VERSION" \
+              --tag "$image:sha-${COMMIT_SHA:0:7}" \
+              "${sources[@]}"
+            docker buildx imagetools inspect "$image:$VERSION"
+
+            digest="sha256:$(docker buildx imagetools inspect "$image:$VERSION" --raw | sha256sum | awk '{print $1}')"
+            test "${#digest}" -eq 71
+            echo "${component}_digest=$digest" >> "$GITHUB_OUTPUT"
+          }
+
+          publish_manifest hearth ghcr.io/kiln-site/hearth
+          publish_manifest relay ghcr.io/kiln-site/relay
 
       - name: Create release manifest
         env:
           COMMIT_SHA: ${{ github.sha }}
-          HEARTH_DIGEST: ${{ needs.hearth.outputs.digest }}
-          RELAY_DIGEST: ${{ needs.relay.outputs.digest }}
+          HEARTH_DIGEST: ${{ steps.manifests.outputs.hearth_digest }}
+          RELAY_DIGEST: ${{ steps.manifests.outputs.relay_digest }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           jq -n \
@@ -181,19 +219,11 @@ jobs:
             echo "advance=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Log in to GitHub Container Registry
-        if: steps.newest.outputs.advance == 'true'
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Advance rolling tags
         if: steps.newest.outputs.advance == 'true'
         env:
-          HEARTH_DIGEST: ${{ needs.hearth.outputs.digest }}
-          RELAY_DIGEST: ${{ needs.relay.outputs.digest }}
+          HEARTH_DIGEST: ${{ steps.manifests.outputs.hearth_digest }}
+          RELAY_DIGEST: ${{ steps.manifests.outputs.relay_digest }}
         run: |
           docker buildx imagetools create \
             --tag ghcr.io/kiln-site/hearth:latest-nightly \

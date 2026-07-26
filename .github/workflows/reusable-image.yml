@@ -44,6 +44,11 @@ on:
         required: false
         type: boolean
         default: false
+      publish_manifest:
+        description: Whether this workflow should publish the multi-platform manifest
+        required: false
+        type: boolean
+        default: true
     secrets:
       sentry_auth_token:
         required: false
@@ -123,7 +128,7 @@ jobs:
 
   publish:
     name: Publish ${{ inputs.name }} manifest
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && inputs.publish_manifest
     needs: build
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
