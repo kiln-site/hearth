@@ -27,7 +27,7 @@ Before editing files for a substantial task:
 For user-visible or runtime work, use T3 Code's collaborative Preview tools
 against `https://hearth.hearth.orb.local`; Avoid using local IP (ie. 127.0...) for dev/testing.
 
-When preparing a PR you can commit breakpoints/checkpoints but limit pushes. Do not expect or wait for automatic CI or reviewer audits after pushing. The human initiates reviewer audits manually and will provide any findings to address. Use your judgment when evaluating those findings. Never merge the PR as the human will be the final reviewer.
+When making changes, you should make sure you're on a fresh worktree and not on main. You can push the PR (no need to make it a draft) but never merge the PR.
 
 After a successful merge: leave the existing `pnpm dev:docker` session running, switch to
 `main`, pull with `--ff-only`, delete the merged local branch, run
