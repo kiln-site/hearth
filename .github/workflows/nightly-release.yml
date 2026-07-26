@@ -17,6 +17,8 @@ jobs:
   code:
     name: Code checks
     uses: ./.github/workflows/ci.yml
+    with:
+      single_job: true
 
   hearth_arm:
     name: Hearth arm64 image
@@ -221,6 +223,7 @@ jobs:
           else
             gh release create "$TAG" release-manifest.json \
               --prerelease \
+              --latest=false \
               --verify-tag \
               --generate-notes \
               --title "$TAG"

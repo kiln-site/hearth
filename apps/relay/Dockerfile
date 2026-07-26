@@ -2,6 +2,15 @@
 
 ARG VITE_PLUS_VERSION=0.2.5
 
+FROM ghcr.io/voidzero-dev/vite-plus:${VITE_PLUS_VERSION} AS runtime-deps
+
+WORKDIR /runtime
+
+COPY --chown=vp:vp .node-version ./
+COPY --chown=vp:vp apps/relay/package.runtime.json ./package.json
+RUN --mount=type=cache,target=/home/vp/.local/share/pnpm/store,uid=1000,gid=1000,sharing=locked \
+  vp install --prod --no-lockfile --no-optional --ignore-scripts
+
 FROM ghcr.io/voidzero-dev/vite-plus:${VITE_PLUS_VERSION} AS build
 
 WORKDIR /source
@@ -21,9 +30,7 @@ ARG SOURCE_COMMIT
 ARG KILN_VERSION
 ENV SOURCE_COMMIT=$SOURCE_COMMIT
 ENV KILN_VERSION=$KILN_VERSION
-RUN vp run relay#build && \
-  npm_config_ignore_scripts=true corepack pnpm --config.allowUnusedPatches=true \
-    --filter relay deploy --prod --no-optional --legacy /source/runtime
+RUN vp run relay#build
 
 FROM docker:29.6.2-cli AS docker-cli
 
@@ -41,7 +48,10 @@ LABEL org.opencontainers.image.source="https://github.com/kiln-site/hearth" \
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
-COPY --from=build /source/runtime ./
+COPY --from=runtime-deps /runtime/node_modules ./node_modules
+COPY apps/relay/package.runtime.json ./package.json
+RUN ["/nodejs/bin/node", "--input-type=module", "-e", "await import('reflect-metadata'); const manifest = await import('./package.json', { with: { type: 'json' } }); await Promise.all(Object.keys(manifest.default.dependencies).map((name) => import(name)))"]
+COPY --from=build /source/apps/relay/dist ./dist
 COPY --chmod=755 apps/relay/bin/kiln-relay.mjs /usr/local/bin/kiln-relay
 
 EXPOSE 4100 2022

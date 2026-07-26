@@ -17,9 +17,10 @@ export default defineConfig({
       "import.meta.env.KILN_VERSION": JSON.stringify(buildVersion),
     },
     deps: {
-      // Relay ships its locked production dependency tree. Keeping packages
-      // external avoids rebundling CommonJS, native, and instrumented modules.
-      skipNodeModulesBundle: true,
+      // Bundle the workspace contract while production dependencies stay in
+      // the separately cached runtime layer.
+      alwaysBundle: ["@workspace/contracts"],
+      onlyBundle: ["zod"],
     },
     entry: ["src/index.ts", "src/updater.ts", "instrument.mjs"],
     format: "esm",
