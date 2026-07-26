@@ -909,7 +909,8 @@ const UpdateTargetRow = React.memo(function UpdateTargetRow({
   )
   const updating = isTargetUpdating(active, target)
   const updateAvailable = targetHasUpdate(target, releases)
-  const status = targetStatus(target, comparison)
+  const currentRelease = findKilnRelease(releases, target.currentVersion)
+  const status = targetStatus(target, comparison, updating)
   const Icon = target.component === "hearth" ? ServerCog : RadioTower
 
   React.useEffect(() => {
@@ -938,6 +939,21 @@ const UpdateTargetRow = React.memo(function UpdateTargetRow({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="truncate text-sm font-semibold">{target.name}</h3>
+            {currentRelease ? (
+              <>
+                <span
+                  aria-hidden="true"
+                  className="text-xs text-muted-foreground"
+                >
+                  ·
+                </span>
+                <GitHubVersionLink href={currentRelease.url}>
+                  <span className="block truncate text-sm font-semibold text-foreground">
+                    {currentRelease.name}
+                  </span>
+                </GitHubVersionLink>
+              </>
+            ) : null}
             <UpdateStatusCallout status={status} />
           </div>
           <div className="mt-1.5">
@@ -1005,10 +1021,7 @@ const OverviewVersionLink = React.memo(function OverviewVersionLink({
   if (currentRelease) {
     return (
       <GitHubVersionLink href={currentRelease.url}>
-        <span className="block text-[11px] font-semibold text-foreground">
-          {currentRelease.name}
-        </span>
-        <span className="mt-0.5 block font-mono text-[9px] text-muted-foreground">
+        <span className="block font-mono text-[9px] text-muted-foreground">
           {currentRelease.tag}
         </span>
       </GitHubVersionLink>
@@ -1951,8 +1964,27 @@ function releaseDates(
 
 function targetStatus(
   target: UpdateTarget,
-  comparison: -1 | 0 | 1 | null
+  comparison: -1 | 0 | 1 | null,
+  updating: boolean
 ): UpdateTargetStatus {
+  if (updating) {
+    return {
+      label: "Updating",
+      tone: "border-primary/35 bg-primary/10 text-primary",
+    }
+  }
+  if (comparison === 0) {
+    return {
+      label: "Latest",
+      tone: "border-emerald-300/35 bg-emerald-300/10 text-emerald-200",
+    }
+  }
+  if (comparison === -1) {
+    return {
+      label: "Ahead",
+      tone: "border-sky-300/25 bg-sky-300/[0.07] text-sky-200",
+    }
+  }
   if (!target.eligible) {
     return {
       label: "Managed elsewhere",
@@ -1977,14 +2009,8 @@ function targetStatus(
       tone: "border-amber-300/35 bg-amber-300/10 text-amber-200",
     }
   }
-  if (comparison === 0) {
-    return {
-      label: "Latest",
-      tone: "border-emerald-300/35 bg-emerald-300/10 text-emerald-200",
-    }
-  }
   return {
-    label: "Ahead",
+    label: "Custom",
     tone: "border-sky-300/25 bg-sky-300/[0.07] text-sky-200",
   }
 }

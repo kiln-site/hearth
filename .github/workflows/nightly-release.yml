@@ -86,19 +86,35 @@ jobs:
           name: nightly-sentry-source-maps
           path: apps/web/dist
 
-      - name: Publish source maps
+      - name: Download Sentry CLI
+        id: sentry_cli
         continue-on-error: true
-        uses: getsentry/action-release@5657c9e888b4e2cc85f4d29143ea4131fde4a73a # v3.6.0
+        env:
+          SENTRY_CLI_SHA256: 3a4bbf2c0d06378d4e59b337647483751a0a2b1603db5fd4991847d0cfd6478c
+          SENTRY_CLI_VERSION: 3.6.2
+        run: |
+          curl --fail --location --retry 3 --silent --show-error \
+            --output /tmp/sentry-cli \
+            "https://github.com/getsentry/sentry-cli/releases/download/${SENTRY_CLI_VERSION}/sentry-cli-Linux-x86_64"
+          echo "${SENTRY_CLI_SHA256}  /tmp/sentry-cli" | sha256sum --check
+          chmod +x /tmp/sentry-cli
+
+      - name: Publish source maps
+        if: steps.sentry_cli.outcome == 'success'
+        continue-on-error: true
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: quartzdev
           SENTRY_PROJECT: kiln
-        with:
-          release: ${{ github.sha }}
-          set_commits: skip
-          sourcemaps: apps/web/dist
-          inject: false
-          disable_telemetry: true
+        run: |
+          /tmp/sentry-cli releases new \
+            --project "$SENTRY_PROJECT" \
+            "$GITHUB_SHA"
+          /tmp/sentry-cli sourcemaps upload \
+            --project "$SENTRY_PROJECT" \
+            --release "$GITHUB_SHA" \
+            apps/web/dist
+          /tmp/sentry-cli releases finalize "$GITHUB_SHA"
 
   release:
     name: Publish nightly release

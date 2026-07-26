@@ -102,8 +102,10 @@ const minimumRelaySyncFeedbackMs = 500
 const pendingRelayResumes = new Map<string, Promise<void>>()
 const noOutdatedRelays: ReadonlySet<string> = new Set()
 const noPublicReleases: ReadonlyArray<PublicKilnRelease> = []
+const noReportedRelayVersions: ReadonlyMap<string, string | null> = new Map()
 const noRelayUpdateSummary = {
   outdatedRelayIds: noOutdatedRelays,
+  reportedVersions: noReportedRelayVersions,
   releases: noPublicReleases,
 }
 
@@ -431,6 +433,7 @@ const FilteredRelayTable = React.memo(function FilteredRelayTable({
   return (
     <RelayTable
       outdatedRelayIds={updateSummary.outdatedRelayIds}
+      reportedVersions={updateSummary.reportedVersions}
       releases={updateSummary.releases}
       relays={relays}
       searchStore={searchStore}
@@ -520,6 +523,7 @@ const RelaySyncButton = React.memo(function RelaySyncButton() {
 
 function RelayTable({
   outdatedRelayIds,
+  reportedVersions,
   releases,
   relays,
   searchStore,
@@ -528,6 +532,7 @@ function RelayTable({
   onOpenUpdates,
 }: {
   outdatedRelayIds: ReadonlySet<string>
+  reportedVersions: ReadonlyMap<string, string | null>
   releases: ReadonlyArray<PublicKilnRelease>
   relays: Array<RelayTableItem>
   searchStore: WorkspaceTableSearchStore
@@ -541,11 +546,12 @@ function RelayTable({
         outdated={outdatedRelayIds.has(relay.id)}
         releases={releases}
         relayId={relay.id}
+        version={reportedVersions.get(relay.id) ?? relay.nodeVersion}
         onEdit={onEdit}
         onOpenUpdates={onOpenUpdates}
       />
     ),
-    [onEdit, onOpenUpdates, outdatedRelayIds, releases]
+    [onEdit, onOpenUpdates, outdatedRelayIds, releases, reportedVersions]
   )
   const renderEmpty = React.useCallback(
     (searchActive: boolean) => (
@@ -602,12 +608,14 @@ const RelayTableRow = React.memo(function RelayTableRow({
   outdated,
   releases,
   relayId,
+  version,
   onEdit,
   onOpenUpdates,
 }: {
   outdated: boolean
   releases: ReadonlyArray<PublicKilnRelease>
   relayId: string
+  version: string | null
   onEdit: (relayId: string) => void
   onOpenUpdates: (relayId?: string) => void
 }) {
@@ -620,6 +628,7 @@ const RelayTableRow = React.memo(function RelayTableRow({
         outdated={outdated}
         releases={releases}
         relayId={relayId}
+        version={version}
         onOpenUpdates={onOpenUpdates}
       />
       <WorkspaceTableCell className="hidden font-mono text-[9px] whitespace-nowrap text-foreground sm:table-cell">
@@ -640,11 +649,13 @@ const RelayStaticCells = React.memo(function RelayStaticCells({
   outdated,
   releases,
   relayId,
+  version,
   onOpenUpdates,
 }: {
   outdated: boolean
   releases: ReadonlyArray<PublicKilnRelease>
   relayId: string
+  version: string | null
   onOpenUpdates: (relayId?: string) => void
 }) {
   const selectRelay = React.useCallback(
@@ -686,7 +697,7 @@ const RelayStaticCells = React.memo(function RelayStaticCells({
               outdated={outdated}
               releases={releases}
               relayId={relayId}
-              version={relay.nodeVersion}
+              version={version}
               onOpenUpdates={onOpenUpdates}
             />
           </div>
@@ -728,7 +739,7 @@ const RelayStaticCells = React.memo(function RelayStaticCells({
           outdated={outdated}
           releases={releases}
           relayId={relayId}
-          version={relay.nodeVersion}
+          version={version}
           onOpenUpdates={onOpenUpdates}
         />
       </WorkspaceTableCell>
@@ -1756,14 +1767,16 @@ function selectCanReviewUpdates(capabilities: {
 
 function selectRelayUpdateSummary(overview: UpdateOverview): {
   outdatedRelayIds: ReadonlySet<string>
+  reportedVersions: ReadonlyMap<string, string | null>
   releases: ReadonlyArray<PublicKilnRelease>
 } {
   const latestRelease = overview.releases[0]
-  if (!latestRelease) return noRelayUpdateSummary
-
   const outdatedRelayIds = new Set<string>()
+  const reportedVersions = new Map<string, string | null>()
   for (const relay of overview.relays) {
+    reportedVersions.set(relay.relayId, relay.currentVersion)
     if (
+      latestRelease &&
       isKilnReleaseVersion(relay.currentVersion) &&
       compareLatestReleaseVersion(relay.currentVersion, overview.releases) === 1
     ) {
@@ -1772,6 +1785,7 @@ function selectRelayUpdateSummary(overview: UpdateOverview): {
   }
   return {
     outdatedRelayIds,
+    reportedVersions,
     releases: overview.releases,
   }
 }
