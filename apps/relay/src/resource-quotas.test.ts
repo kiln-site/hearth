@@ -1,7 +1,9 @@
 import {
   DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
+  MINIMUM_INSTANCE_DISK_LIMIT_BYTES,
   relayCreateInstanceSchema,
   relayDiskAllocationAvailableBytes,
+  relayInstanceLimitsSchema,
 } from "@workspace/contracts"
 import { describe, expect, it } from "vite-plus/test"
 
@@ -58,6 +60,36 @@ describe("Relay disk quotas", () => {
       relayCreateInstanceSchema.safeParse({ ...input, diskLimitBytes: 0 })
         .success
     ).toBe(false)
+    expect(
+      relayCreateInstanceSchema.safeParse({
+        ...input,
+        diskLimitBytes: MINIMUM_INSTANCE_DISK_LIMIT_BYTES,
+      }).success
+    ).toBe(true)
+  })
+
+  it("treats a configured zero label as a missing legacy quota", () => {
+    const assignments = legacyDiskLimitAssignments(
+      [{ configuredLimitBytes: 0, id: "legacy" }],
+      10 * GIBIBYTE
+    )
+
+    expect(assignments.get("legacy")).toBe(DEFAULT_INSTANCE_DISK_LIMIT_BYTES)
+    expect(
+      relayInstanceLimitsSchema.parse({
+        diskBytes: 0,
+        memoryBytes: 0,
+      }).diskBytes
+    ).toBe(DEFAULT_INSTANCE_DISK_LIMIT_BYTES)
+  })
+
+  it("uses the default instead of assigning below the positive quota floor", () => {
+    const assignments = legacyDiskLimitAssignments(
+      [{ configuredLimitBytes: null, id: "legacy" }],
+      10 * GIBIBYTE + MINIMUM_INSTANCE_DISK_LIMIT_BYTES - 1
+    )
+
+    expect(assignments.get("legacy")).toBe(DEFAULT_INSTANCE_DISK_LIMIT_BYTES)
   })
 
   it("grandfathers an unchanged quota on an oversubscribed node", () => {

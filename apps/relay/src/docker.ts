@@ -23,6 +23,7 @@ import type {
 import {
   brickVariableValuesSchema,
   DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
+  MINIMUM_INSTANCE_DISK_LIMIT_BYTES,
   relayDiskAllocationAvailableBytes,
 } from "@workspace/contracts"
 
@@ -161,7 +162,9 @@ export function legacyDiskLimitAssignments(
 ): ReadonlyMap<string, number> {
   const assignments = new Map(
     instances.flatMap(({ configuredLimitBytes, id }) =>
-      configuredLimitBytes === null ? [] : [[id, configuredLimitBytes] as const]
+      configuredLimitBytes === null || configuredLimitBytes === 0
+        ? []
+        : [[id, configuredLimitBytes] as const]
     )
   )
   const configuredBytes = [...assignments.values()].reduce(
@@ -173,16 +176,23 @@ export function legacyDiskLimitAssignments(
     configuredBytes
   )
   const legacyInstances = instances
-    .filter(({ configuredLimitBytes }) => configuredLimitBytes === null)
+    .filter(
+      ({ configuredLimitBytes }) =>
+        configuredLimitBytes === null || configuredLimitBytes === 0
+    )
     .sort((left, right) => left.id.localeCompare(right.id))
 
   for (const { id } of legacyInstances) {
-    const limitBytes = Math.min(
+    const remainingLimitBytes = Math.min(
       DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
       remainingBytes
     )
+    const limitBytes =
+      remainingLimitBytes >= MINIMUM_INSTANCE_DISK_LIMIT_BYTES
+        ? remainingLimitBytes
+        : DEFAULT_INSTANCE_DISK_LIMIT_BYTES
     assignments.set(id, limitBytes)
-    remainingBytes -= limitBytes
+    remainingBytes = Math.max(remainingBytes - limitBytes, 0)
   }
   return assignments
 }
@@ -937,7 +947,6 @@ export class DockerDriver {
       this.#resourceCache.set(key, cached)
       void this.#sampleResources(instance, cached.value)
         .then((resources) => {
-          if (!resources) return
           cached.value = resources
           this.#recordResourceHistory(instance.config.id, resources)
         })
@@ -960,7 +969,7 @@ export class DockerDriver {
   async #sampleResources(
     instance: DiscoveredInstance,
     previous: RelayInstanceResources | null
-  ): Promise<RelayInstanceResources | null> {
+  ): Promise<RelayInstanceResources> {
     const directory = resolve(
       this.#config.rootDirectory,
       instance.config.directory
@@ -970,7 +979,6 @@ export class DockerDriver {
       statfs(directory),
     ])
     const instanceStorageUsed = this.#directoryUsageFor(instance)
-    if (instanceStorageUsed === null) return null
     const cpuCurrent = stats.cpu_stats?.cpu_usage?.total_usage ?? 0
     const cpuPrevious = stats.precpu_stats?.cpu_usage?.total_usage ?? 0
     const systemCurrent = stats.cpu_stats?.system_cpu_usage ?? 0
@@ -1046,7 +1054,10 @@ export class DockerDriver {
       storage: {
         totalBytes: storageLimit,
         usedBytes: instanceStorageUsed,
-        percent: roundPercent(percentOf(instanceStorageUsed, storageLimit)),
+        percent:
+          instanceStorageUsed === null
+            ? null
+            : roundPercent(percentOf(instanceStorageUsed, storageLimit)),
         nodeTotalBytes: nodeStorageTotal,
         nodeUsedBytes: nodeStorageUsed,
         nodePercent: roundPercent(percentOf(nodeStorageUsed, nodeStorageTotal)),
@@ -1278,7 +1289,8 @@ export class DockerDriver {
         container.Id,
     }))
     const hasLegacyDiskLimit = diskLimitCandidates.some(
-      ({ configuredLimitBytes }) => configuredLimitBytes === null
+      ({ configuredLimitBytes }) =>
+        configuredLimitBytes === null || configuredLimitBytes === 0
     )
     const filesystem = hasLegacyDiskLimit
       ? await statfs(this.#config.rootDirectory)

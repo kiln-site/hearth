@@ -114,6 +114,19 @@ export function ResourceHistoryChart({
   replayToken: number
   formatValue: (value: number) => string
 }) {
+  const chartSourceData = React.useMemo(() => {
+    if (resourceId !== "storage") return data
+    const firstKnownInstanceUsage = data.findIndex(
+      (sample) => sample.value !== null
+    )
+    return firstKnownInstanceUsage < 0
+      ? data
+      : data.slice(firstKnownInstanceUsage)
+  }, [data, resourceId])
+  const hasPrimaryValues = React.useMemo(
+    () => chartSourceData.some((sample) => sample.value !== null),
+    [chartSourceData]
+  )
   const chartConfig = React.useMemo<ChartConfig>(() => {
     if (resourceId === "network") {
       const config: ChartConfig = {
@@ -137,11 +150,13 @@ export function ResourceHistoryChart({
           color: NODE_STORAGE_SEED,
           tooltipDataKey: "secondary",
         },
-        valueVisual: {
+      }
+      if (hasPrimaryValues) {
+        config.valueVisual = {
           label: "Instance quota",
           color: seedFromCssColor(color),
           tooltipDataKey: "value",
-        },
+        }
       }
       return config
     }
@@ -153,18 +168,18 @@ export function ResourceHistoryChart({
       },
     }
     return config
-  }, [color, label, resourceId])
+  }, [color, hasPrimaryValues, label, resourceId])
 
   const values = React.useMemo(
     () =>
-      data.map((sample) => ({
+      chartSourceData.map((sample) => ({
         timestamp: sample.timestamp,
         value: numericOrZero(sample.value),
         secondary: numericOrZero(sample.secondary),
         received: numericOrZero(sample.received),
         sent: numericOrZero(sample.sent),
       })),
-    [data]
+    [chartSourceData]
   )
 
   const networkMaximum = React.useMemo(
@@ -274,7 +289,9 @@ export function ResourceHistoryChart({
             <Area dataKey="secondaryVisual" variant="gradient" />
           ) : null}
           {/* Instance is painted last so it stays in front of node usage. */}
-          <Area dataKey="valueVisual" variant="gradient" />
+          {hasPrimaryValues ? (
+            <Area dataKey="valueVisual" variant="gradient" />
+          ) : null}
         </AreaChart>
       )}
     </div>

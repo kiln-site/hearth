@@ -6,7 +6,10 @@ import {
   useSuspenseQuery,
 } from "@tanstack/react-query"
 import { useRouterState } from "@tanstack/react-router"
-import type { RelayObservedState } from "@workspace/contracts"
+import type {
+  RelayInstanceResources,
+  RelayObservedState,
+} from "@workspace/contracts"
 import {
   Check,
   CircleStop,
@@ -82,6 +85,20 @@ const localTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   timeStyle: "long",
 })
 const RESOURCE_VISUAL_FLOOR_PERCENT = 6
+
+function hasKnownStorageUsage(
+  storage: RelayInstanceResources["storage"] | undefined
+): storage is RelayInstanceResources["storage"] & {
+  percent: number
+  usedBytes: number
+} {
+  return (
+    storage !== undefined &&
+    storage.totalBytes > 0 &&
+    storage.usedBytes !== null &&
+    storage.percent !== null
+  )
+}
 
 function clampResourcePercent(value: number | null | undefined): number {
   return value === null || value === undefined
@@ -1139,41 +1156,29 @@ function resourceItem(instance: InstanceRuntime, id: ResourceId): ResourceItem {
     }
   }
   if (id === "storage") {
+    const storage = resources?.storage
+    const usageKnown = hasKnownStorageUsage(storage)
     return {
       id: "storage",
       label: "DISK",
-      value:
-        resources && resources.storage.totalBytes > 0
-          ? resources.storage.percent
-          : null,
-      barValue:
-        resources && resources.storage.totalBytes > 0
-          ? resources.storage.percent
-          : null,
-      displayValue:
-        resources && resources.storage.totalBytes > 0
-          ? formatPercent(resources.storage.percent)
+      value: usageKnown ? storage.percent : null,
+      barValue: usageKnown ? storage.percent : null,
+      displayValue: usageKnown ? formatPercent(storage.percent) : "—",
+      historyDisplayValue: usageKnown
+        ? formatResourceBytePair(storage.usedBytes, storage.totalBytes)
+        : storage
+          ? "Scanning"
           : "—",
-      historyDisplayValue:
-        resources && resources.storage.totalBytes > 0
-          ? formatResourceBytePair(
-              resources.storage.usedBytes,
-              resources.storage.totalBytes
-            )
-          : "—",
-      historySecondaryDisplayValue: resources
-        ? formatResourceBytePair(
-            resources.storage.nodeUsedBytes,
-            resources.storage.nodeTotalBytes
-          )
+      historySecondaryDisplayValue: storage
+        ? formatResourceBytePair(storage.nodeUsedBytes, storage.nodeTotalBytes)
         : "—",
-      detail: resources
-        ? resources.storage.totalBytes > 0
-          ? `${formatBytes(resources.storage.usedBytes)} of ${formatBytes(resources.storage.totalBytes)} quota`
-          : `${formatBytes(resources.storage.usedBytes)} · No disk quota set`
-        : unavailable,
-      historyDetail: resources
-        ? `Node ${formatBytes(resources.storage.nodeUsedBytes)} of ${formatBytes(resources.storage.nodeTotalBytes)}`
+      detail: usageKnown
+        ? `${formatBytes(storage.usedBytes)} of ${formatBytes(storage.totalBytes)} quota`
+        : storage
+          ? `Scanning folder usage · ${formatBytes(storage.totalBytes)} quota`
+          : unavailable,
+      historyDetail: storage
+        ? `Node ${formatBytes(storage.nodeUsedBytes)} of ${formatBytes(storage.nodeTotalBytes)}`
         : unavailable,
       indicatorClassName: RESOURCE_STYLES.storage.indicator,
       valueClassName: RESOURCE_STYLES.storage.value,
