@@ -11,6 +11,7 @@ import { Tooltip } from "@/components/dither-kit/tooltip"
 const NETWORK_SENT_SEED = seedFromOklch(0.73, 0.15, 65)
 const NETWORK_RECEIVED_SEED = seedFromOklch(0.78, 0.11, 205)
 const NODE_STORAGE_SEED = seedFromOklch(0.58, 0.035, 210)
+const RESOURCE_VISUAL_FLOOR_RATIO = 0.06
 
 function clamp01(value: number) {
   return Math.min(1, Math.max(0, value))
@@ -115,25 +116,45 @@ export function ResourceHistoryChart({
   const chartConfig = React.useMemo<ChartConfig>(() => {
     if (resourceId === "network") {
       const config: ChartConfig = {
-        received: { label: "Download", color: NETWORK_RECEIVED_SEED },
-        sent: { label: "Upload", color: NETWORK_SENT_SEED },
+        receivedVisual: {
+          label: "Download",
+          color: NETWORK_RECEIVED_SEED,
+          tooltipDataKey: "received",
+        },
+        sentVisual: {
+          label: "Upload",
+          color: NETWORK_SENT_SEED,
+          tooltipDataKey: "sent",
+        },
       }
       return config
     }
     if (resourceId === "storage") {
       const config: ChartConfig = {
-        secondary: { label: "Node volume", color: NODE_STORAGE_SEED },
-        value: { label: "Instance quota", color: seedFromCssColor(color) },
+        secondaryVisual: {
+          label: "Node volume",
+          color: NODE_STORAGE_SEED,
+          tooltipDataKey: "secondary",
+        },
+        valueVisual: {
+          label: "Instance quota",
+          color: seedFromCssColor(color),
+          tooltipDataKey: "value",
+        },
       }
       return config
     }
     const config: ChartConfig = {
-      value: { label, color: seedFromCssColor(color) },
+      valueVisual: {
+        label,
+        color: seedFromCssColor(color),
+        tooltipDataKey: "value",
+      },
     }
     return config
   }, [color, label, resourceId])
 
-  const chartData = React.useMemo(
+  const values = React.useMemo(
     () =>
       data.map((sample) => ({
         timestamp: sample.timestamp,
@@ -145,16 +166,38 @@ export function ResourceHistoryChart({
     [data]
   )
 
+  const networkMaximum = React.useMemo(
+    () =>
+      values.reduce(
+        (maximum, sample) => Math.max(maximum, sample.received + sample.sent),
+        1
+      ),
+    [values]
+  )
+
   const yDomain = React.useMemo((): [number, number] | undefined => {
-    if (resourceId === "network") return undefined
+    if (resourceId === "network") {
+      return [0, networkMaximum * (1 + RESOURCE_VISUAL_FLOOR_RATIO / 2)]
+    }
     if (resourceId === "memory" || resourceId === "storage") return [0, 100]
     if (resourceId === "cpu" && maxValue) return [0, maxValue]
-    const peak = chartData.reduce(
-      (max, sample) => Math.max(max, sample.value),
-      0
-    )
+    const peak = values.reduce((max, sample) => Math.max(max, sample.value), 0)
     return [0, Math.max(10, Math.ceil(peak * 1.15))]
-  }, [chartData, maxValue, resourceId])
+  }, [maxValue, networkMaximum, resourceId, values])
+
+  const chartData = React.useMemo(() => {
+    const maximum = yDomain?.[1] ?? 1
+    const floor = maximum * RESOURCE_VISUAL_FLOOR_RATIO
+    const networkFloor = networkMaximum * (RESOURCE_VISUAL_FLOOR_RATIO / 2)
+
+    return values.map((sample) => ({
+      ...sample,
+      valueVisual: Math.max(sample.value, floor),
+      secondaryVisual: Math.max(sample.secondary, floor),
+      receivedVisual: Math.max(sample.received, networkFloor),
+      sentVisual: Math.max(sample.sent, networkFloor),
+    }))
+  }, [networkMaximum, values, yDomain])
 
   const margins = {
     top: resourceId === "network" || resourceId === "storage" ? 18 : 7,
@@ -198,11 +241,11 @@ export function ResourceHistoryChart({
           <HistoryXAxis />
           <Tooltip
             valueFormatter={(value, name) =>
-              `${name === "received" ? "↓" : "↑"} ${formatValue(value)}`
+              `${name === "receivedVisual" ? "↓" : "↑"} ${formatValue(value)}`
             }
           />
-          <Area dataKey="received" variant="gradient" />
-          <Area dataKey="sent" variant="gradient" />
+          <Area dataKey="receivedVisual" variant="gradient" />
+          <Area dataKey="sentVisual" variant="gradient" />
         </AreaChart>
       ) : (
         <AreaChart
@@ -221,9 +264,9 @@ export function ResourceHistoryChart({
           <HistoryXAxis />
           <Tooltip valueFormatter={(value) => formatValue(value)} />
           {resourceId === "storage" ? (
-            <Area dataKey="secondary" variant="gradient" />
+            <Area dataKey="secondaryVisual" variant="gradient" />
           ) : null}
-          <Area dataKey="value" variant="gradient" />
+          <Area dataKey="valueVisual" variant="gradient" />
         </AreaChart>
       )}
     </div>

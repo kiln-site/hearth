@@ -18,7 +18,10 @@ import type { Dimensions } from "./use-chart-dimensions"
 /** Which chart root a part is composed under — drives the boundary guards. */
 export type ChartType = "area" | "bar" | "line" | "pie" | "radar"
 
-export type ChartConfig = Record<string, { label?: string; color: SeriesColor }>
+export type ChartConfig = Record<
+  string,
+  { label?: string; color: SeriesColor; tooltipDataKey?: string }
+>
 
 export type Margins = {
   top: number
@@ -391,7 +394,7 @@ export function useChartController({
       labelKey ? String(data[i]?.[labelKey] ?? "") : null,
     itemsAt: (i) =>
       configKeys.map((name) => {
-        const raw = data[i]?.[name]
+        const raw = data[i]?.[config[name]?.tooltipDataKey ?? name]
         return {
           name,
           label: config[name]?.label ?? name,

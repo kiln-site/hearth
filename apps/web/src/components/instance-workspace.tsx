@@ -80,11 +80,12 @@ const localTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "long",
 })
+const RESOURCE_VISUAL_FLOOR_PERCENT = 6
 
 function clampResourcePercent(value: number | null | undefined): number {
   return value === null || value === undefined
     ? 0
-    : Math.max(1, Math.min(value, 100))
+    : Math.max(RESOURCE_VISUAL_FLOOR_PERCENT, Math.min(value, 100))
 }
 
 export function InstanceWorkspace({
@@ -1039,6 +1040,7 @@ interface ResourceItem {
   barValue: number | null
   chartMax?: number
   displayValue: string
+  historyDisplayValue?: string
   receivedDisplayValue?: string
   sentDisplayValue?: string
   receivedValue?: number | null
@@ -1120,6 +1122,9 @@ function resourceItem(instance: InstanceRuntime, id: ResourceId): ResourceItem {
       value: resources?.memory.percent ?? null,
       barValue: resources?.memory.percent ?? null,
       displayValue: formatPercent(resources?.memory.percent),
+      historyDisplayValue: resources
+        ? `${formatCompactResourceBytes(resources.memory.usedBytes)} / ${formatCompactResourceBytes(resources.memory.totalBytes)}`
+        : "—",
       detail: resources
         ? `${formatBytes(resources.memory.usedBytes)} of ${formatBytes(resources.memory.totalBytes)}`
         : unavailable,
@@ -1143,6 +1148,10 @@ function resourceItem(instance: InstanceRuntime, id: ResourceId): ResourceItem {
       displayValue:
         resources && resources.storage.totalBytes > 0
           ? formatPercent(resources.storage.percent)
+          : "—",
+      historyDisplayValue:
+        resources && resources.storage.totalBytes > 0
+          ? `${formatCompactResourceBytes(resources.storage.usedBytes)} / ${formatCompactResourceBytes(resources.storage.totalBytes)}`
           : "—",
       detail: resources
         ? resources.storage.totalBytes > 0
@@ -1416,9 +1425,9 @@ function ResourceHistoryHeader({
         <div className="grid h-9 grid-cols-[1fr_4.5rem_4.5rem] divide-x divide-border/55">
           <div className="flex min-w-0 items-center gap-2 px-3">
             <span
-              className={`truncate font-mono text-xl font-semibold tracking-[-0.04em] tabular-nums ${resource.valueClassName}`}
+              className={`truncate font-mono font-semibold tracking-[-0.04em] tabular-nums ${resource.id === "memory" || resource.id === "storage" ? "text-[13px]" : "text-xl"} ${resource.valueClassName}`}
             >
-              {resource.displayValue}
+              {resource.historyDisplayValue ?? resource.displayValue}
             </span>
             <span className="font-mono text-[9px] tracking-[0.06em] text-muted-foreground/60 uppercase">
               Now
@@ -1523,6 +1532,17 @@ function formatBytes(bytes: number): string {
   )
   const value = bytes / 1024 ** exponent
   return `${value.toFixed(value >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`
+}
+
+function formatCompactResourceBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0b"
+  const units = ["b", "kb", "mb", "gb", "tb", "pb"]
+  const exponent = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1
+  )
+  const value = bytes / 1024 ** exponent
+  return `${Number(value.toPrecision(3))}${units[exponent]}`
 }
 
 function formatBytesPerSecond(bytes: number): string {
