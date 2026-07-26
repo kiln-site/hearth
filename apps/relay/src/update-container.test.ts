@@ -9,6 +9,7 @@ import {
   type ImageInspect,
 } from "./update-container.js"
 
+const currentContainerId = "a".repeat(64)
 const currentContainer: ContainerInspect = {
   Config: {
     Cmd: ["old-command"],
@@ -18,6 +19,7 @@ const currentContainer: ContainerInspect = {
       Interval: 10_000_000_000,
       Test: ["CMD", "old-healthcheck"],
     },
+    Hostname: currentContainerId.slice(0, 12),
     Image: "ghcr.io/kiln-site/hearth:latest-nightly",
     Labels: {
       "coolify.managed": "true",
@@ -31,6 +33,7 @@ const currentContainer: ContainerInspect = {
     NetworkMode: "kiln",
     RestartPolicy: { Name: "unless-stopped" },
   },
+  Id: currentContainerId,
   Image: "sha256:old-image",
   Name: "/hearth",
   NetworkSettings: {
@@ -64,6 +67,8 @@ class FakeDocker implements ContainerUpdateDocker {
   createdConfiguration: unknown = null
   failHealthCheck = false
 
+  constructor(readonly current: ContainerInspect = currentContainer) {}
+
   async command(
     arguments_: Array<string>
   ): Promise<{ stderr: string; stdout: string }> {
@@ -76,7 +81,7 @@ class FakeDocker implements ContainerUpdateDocker {
   }
 
   async inspectContainer(): Promise<ContainerInspect> {
-    return currentContainer
+    return this.current
   }
 
   async inspectImage(): Promise<ImageInspect> {
@@ -114,7 +119,7 @@ describe("managed update channels", () => {
 })
 
 describe("container replacement", () => {
-  it("keeps the channel reference and refreshes image metadata", async () => {
+  it("refreshes image metadata and Docker's generated hostname", async () => {
     const docker = new FakeDocker()
 
     await replaceContainer(
@@ -146,6 +151,7 @@ describe("container replacement", () => {
     )
     expect(docker.createdConfiguration).not.toHaveProperty("Cmd")
     expect(docker.createdConfiguration).not.toHaveProperty("Entrypoint")
+    expect(docker.createdConfiguration).not.toHaveProperty("Hostname")
     expect(docker.commands[0]).toEqual([
       "image",
       "tag",
@@ -163,6 +169,31 @@ describe("container replacement", () => {
       "hearth",
     ])
     expect(docker.commands.at(-1)).toEqual(["rm", "--force", "hearth-backup"])
+  })
+
+  it("preserves an explicitly configured hostname", async () => {
+    const docker = new FakeDocker({
+      ...currentContainer,
+      Config: {
+        ...currentContainer.Config,
+        Hostname: "hearth.internal",
+      },
+    })
+
+    await replaceContainer(
+      {
+        backupName: "hearth-backup",
+        targetContainer: "hearth",
+        targetImage: `ghcr.io/kiln-site/hearth@sha256:${"c".repeat(64)}`,
+        targetReference: "ghcr.io/kiln-site/hearth:latest-nightly",
+        targetVersion: "0.1.0-nightly.2",
+      },
+      docker
+    )
+
+    expect(docker.createdConfiguration).toEqual(
+      expect.objectContaining({ Hostname: "hearth.internal" })
+    )
   })
 
   it("records the stable release version for a promoted nightly image", async () => {

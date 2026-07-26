@@ -7,12 +7,14 @@ export interface ContainerInspect {
     Cmd?: unknown
     Entrypoint?: unknown
     Healthcheck?: unknown
+    Hostname?: string
     Image?: string
     Labels?: Record<string, string> | null
   }
   HostConfig: Record<string, unknown> & {
     NetworkMode?: string
   }
+  Id: string
   Image: string
   Name: string
   NetworkSettings?: {
@@ -98,6 +100,11 @@ export async function replaceContainer(
     delete preservedConfig.Cmd
     delete preservedConfig.Entrypoint
     delete preservedConfig.Healthcheck
+    // Docker's default hostname is the old container ID. Let Docker regenerate
+    // it so the replacement can still identify itself after its backup is gone.
+    if (isDockerGeneratedHostname(current.Config.Hostname, current.Id)) {
+      delete preservedConfig.Hostname
+    }
     const targetHealthcheck = target.Config?.Healthcheck
     await docker.createContainer(input.targetContainer, {
       ...preservedConfig,
@@ -162,6 +169,13 @@ export async function replaceContainer(
       .catch(() => undefined)
     throw cause
   }
+}
+
+function isDockerGeneratedHostname(
+  hostname: string | undefined,
+  containerId: string
+): boolean {
+  return hostname === containerId.slice(0, 12) || hostname === containerId
 }
 
 function networkAliases(
