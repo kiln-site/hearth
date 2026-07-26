@@ -132,6 +132,16 @@ export const brickRecipeSchema = z
 
 export const brickSourceSchema = z.string().trim().url().max(2_048)
 export const relayInstanceNameSchema = z.string().trim().min(1).max(120)
+export const DEFAULT_INSTANCE_DISK_LIMIT_BYTES = 25 * 1024 ** 3
+
+const relayDiskLimitBytesSchema = z
+  .number()
+  .int()
+  .nonnegative()
+  .transform((bytes) =>
+    bytes === 0 ? DEFAULT_INSTANCE_DISK_LIMIT_BYTES : bytes
+  )
+  .default(DEFAULT_INSTANCE_DISK_LIMIT_BYTES)
 
 export const brickSchema = brickRecipeSchema.extend({
   source: brickSourceSchema,
@@ -143,7 +153,7 @@ export const brickVariableValuesSchema = z.record(
 )
 
 export const relayCreateInstanceSchema = z.object({
-  diskLimitBytes: z.number().int().nonnegative().default(0),
+  diskLimitBytes: relayDiskLimitBytesSchema,
   name: relayInstanceNameSchema.optional(),
   recipe: brickSourceSchema,
   variables: brickVariableValuesSchema,
@@ -151,7 +161,7 @@ export const relayCreateInstanceSchema = z.object({
 })
 
 export const relayUpdateInstanceStartupSchema = z.object({
-  diskLimitBytes: z.number().int().nonnegative().optional(),
+  diskLimitBytes: relayDiskLimitBytesSchema.optional(),
   recipe: brickSourceSchema.optional(),
   variables: brickVariableValuesSchema,
   start: z.boolean().default(true),
@@ -354,7 +364,7 @@ export const relayInstanceResourcesSchema = z.object({
 
 export const relayInstanceLimitsSchema = z
   .object({
-    diskBytes: z.number().int().nonnegative(),
+    diskBytes: relayDiskLimitBytesSchema,
     memoryBytes: z.number().int().nonnegative(),
   })
   .strict()
@@ -384,7 +394,10 @@ export const relayInstanceSchema = z.object({
   brickSource: brickSourceSchema.optional(),
   variables: brickVariableValuesSchema.optional(),
   managedByRelay: z.boolean().default(false),
-  limits: relayInstanceLimitsSchema.default({ diskBytes: 0, memoryBytes: 0 }),
+  limits: relayInstanceLimitsSchema.default({
+    diskBytes: DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
+    memoryBytes: 0,
+  }),
   resources: relayInstanceResourcesSchema.nullable().default(null),
 })
 

@@ -70,7 +70,7 @@ export const ResourceAllocationCard = React.memo(
               <Input
                 aria-label="Disk quota in GiB"
                 type="number"
-                min={0}
+                min={0.1}
                 max={bytesToGiB(allocation.storage.availableBytes)}
                 step={0.1}
                 value={diskLimitGiB}
@@ -87,8 +87,7 @@ export const ResourceAllocationCard = React.memo(
               totalBytes={allocation.storage.nodeTotalBytes}
             />
             <p className="mt-2 text-[8px] leading-3 text-muted-foreground/65">
-              0 leaves disk unlimited. Folder usage is cached and reconciled by
-              Relay.
+              25 GiB by default. Folder usage is cached and reconciled by Relay.
             </p>
           </div>
         </div>

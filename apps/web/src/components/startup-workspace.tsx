@@ -477,7 +477,7 @@ function dockerMemoryBytes(value: string): number | null {
 
 function gibibytesToBytes(value: string): number | null {
   const gibibytes = Number(value)
-  if (!Number.isFinite(gibibytes) || gibibytes < 0) return null
+  if (!Number.isFinite(gibibytes) || gibibytes <= 0) return null
   const bytes = Math.round(gibibytes * 1024 ** 3)
   return Number.isSafeInteger(bytes) ? bytes : null
 }

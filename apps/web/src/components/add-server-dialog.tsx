@@ -1,8 +1,11 @@
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { CircleAlert, LoaderCircle, Rocket } from "lucide-react"
-import type { Brick } from "@workspace/contracts"
+import { CircleAlert, HardDrive, LoaderCircle, Rocket } from "lucide-react"
+import {
+  DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
+  type Brick,
+} from "@workspace/contracts"
 
 import { Button } from "@workspace/ui/components/button"
 import {
@@ -42,6 +45,7 @@ export interface AddServerDialogStore {
 }
 
 const closedState: AddServerDialogState = { kind: "closed" }
+const GIBIBYTE_BYTES = 1024 ** 3
 
 export function createAddServerDialogStore(): AddServerDialogStore {
   let state = closedState
@@ -277,13 +281,25 @@ const AddServerConfiguration = React.memo(function AddServerConfiguration({
       })
       return
     }
-    const submittedName = new FormData(event.currentTarget).get("name")
+    const formData = new FormData(event.currentTarget)
+    const submittedName = formData.get("name")
     const name = typeof submittedName === "string" ? submittedName.trim() : ""
+    const diskLimitBytes = diskLimitBytesFromFormValue(
+      formData.get("diskLimitGiB")
+    )
+    if (diskLimitBytes === null) {
+      setFailure({
+        selectionIdentity,
+        message: "Enter a disk quota greater than 0 GiB",
+      })
+      return
+    }
 
     submittingRef.current = true
     try {
       await onProvision({
         data: {
+          diskLimitBytes,
           name: name.trim() || "New server",
           recipe,
           relayId,
@@ -329,6 +345,33 @@ const AddServerConfiguration = React.memo(function AddServerConfiguration({
           disabled={pending}
           required
         />
+      </label>
+      <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
+        <span className="flex items-center justify-between gap-3">
+          <span>Disk quota</span>
+          <span className="font-mono text-[9px] font-normal tracking-[0.06em] text-muted-foreground/60 uppercase">
+            25 GiB default
+          </span>
+        </span>
+        <span className="relative block">
+          <HardDrive className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-emerald-300/75" />
+          <Input
+            name="diskLimitGiB"
+            type="number"
+            min={0.1}
+            step={0.1}
+            defaultValue={DEFAULT_INSTANCE_DISK_LIMIT_BYTES / GIBIBYTE_BYTES}
+            disabled={pending}
+            className="pr-11 pl-8 font-mono tabular-nums"
+            required
+          />
+          <span className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 font-mono text-[9px] text-muted-foreground/65">
+            GiB
+          </span>
+        </span>
+        <span className="block text-[9px] leading-relaxed font-normal text-muted-foreground/65">
+          Counts server files only; backups remain outside this allocation.
+        </span>
       </label>
       <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
         <span>Relay</span>
@@ -402,6 +445,16 @@ const AddServerConfiguration = React.memo(function AddServerConfiguration({
     </form>
   )
 })
+
+function diskLimitBytesFromFormValue(
+  value: FormDataEntryValue | null
+): number | null {
+  if (typeof value !== "string") return null
+  const gibibytes = Number(value)
+  if (!Number.isFinite(gibibytes) || gibibytes <= 0) return null
+  const bytes = Math.round(gibibytes * GIBIBYTE_BYTES)
+  return Number.isSafeInteger(bytes) ? bytes : null
+}
 
 function relayDisplayHost(relay: PersistedRelay): string {
   try {

@@ -20,7 +20,10 @@ import type {
   RelayInstanceResources,
   RelayObservedState,
 } from "@workspace/contracts"
-import { brickVariableValuesSchema } from "@workspace/contracts"
+import {
+  brickVariableValuesSchema,
+  DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
+} from "@workspace/contracts"
 
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
 import { WEB_ROUTE_LABEL_PREFIX } from "./web-route-labels.js"
@@ -1334,7 +1337,9 @@ export class DockerDriver {
       service,
       variables: parseBrickVariablesLabel(labels["kiln.brick.variables"]),
       limits: {
-        diskBytes: nonnegativeIntegerLabel(labels["kiln.instance.disk-bytes"]),
+        diskBytes:
+          nonnegativeIntegerLabel(labels["kiln.instance.disk-bytes"]) ||
+          DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
         memoryBytes: Math.max(
           nonnegativeIntegerLabel(labels["kiln.instance.memory-bytes"]),
           container.HostConfig?.Memory ?? 0
