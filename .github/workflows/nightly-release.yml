@@ -105,7 +105,7 @@ jobs:
         type=sha,prefix=sha-
 
   release:
-    name: Publish GitHub prerelease
+    name: Publish nightly release
     needs: [version, hearth, relay]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
@@ -164,17 +164,6 @@ jobs:
               --title "$TAG"
           fi
 
-  rolling-tags:
-    name: Advance nightly channel tags
-    needs: [version, hearth, relay, release]
-    concurrency:
-      group: kiln-nightly-rolling-tags
-      cancel-in-progress: false
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
       - name: Check whether this is the newest published nightly
         id: newest
         env:
@@ -191,10 +180,6 @@ jobs:
           else
             echo "advance=false" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Set up Docker Buildx
-        if: steps.newest.outputs.advance == 'true'
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to GitHub Container Registry
         if: steps.newest.outputs.advance == 'true'
