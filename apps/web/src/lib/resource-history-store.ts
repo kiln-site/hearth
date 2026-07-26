@@ -21,6 +21,7 @@ export interface ResourceHistoryStore {
 }
 
 const stores = new Map<string, ResourceHistoryStore>()
+export const RESOURCE_HISTORY_WINDOW_MS = 6 * 60_000
 
 export function resourceHistoryStore(
   relayId: string,
@@ -42,7 +43,7 @@ export function resourceHistoryStore(
         const point = historyPoint(resources)
         if (point) byTimestamp.set(point.timestamp, point)
       }
-      const cutoff = Date.now() - 60_000
+      const cutoff = Date.now() - RESOURCE_HISTORY_WINDOW_MS
       const next = [...byTimestamp.values()]
         .filter((point) => point.timestamp >= cutoff)
         .sort((left, right) => left.timestamp - right.timestamp)

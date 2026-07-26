@@ -50,6 +50,7 @@ import { WorkspaceFrame } from "@/components/workspace-frame"
 import { roleHasPermission } from "@/lib/permissions"
 import { openRelayResourceStream } from "@/lib/relay-resource-stream"
 import {
+  RESOURCE_HISTORY_WINDOW_MS,
   resourceHistoryStore,
   type ResourceHistoryStore,
 } from "@/lib/resource-history-store"
@@ -1041,6 +1042,7 @@ interface ResourceItem {
   chartMax?: number
   displayValue: string
   historyDisplayValue?: string
+  historySecondaryDisplayValue?: string
   receivedDisplayValue?: string
   sentDisplayValue?: string
   receivedValue?: number | null
@@ -1153,6 +1155,9 @@ function resourceItem(instance: InstanceRuntime, id: ResourceId): ResourceItem {
         resources && resources.storage.totalBytes > 0
           ? `${formatCompactResourceBytes(resources.storage.usedBytes)} / ${formatCompactResourceBytes(resources.storage.totalBytes)}`
           : "—",
+      historySecondaryDisplayValue: resources
+        ? `${formatCompactResourceBytes(resources.storage.nodeUsedBytes)} / ${formatCompactResourceBytes(resources.storage.nodeTotalBytes)}`
+        : "—",
       detail: resources
         ? resources.storage.totalBytes > 0
           ? `${formatBytes(resources.storage.usedBytes)} of ${formatBytes(resources.storage.totalBytes)} quota`
@@ -1315,7 +1320,7 @@ function ResourceHistoryCard({
     historyStore.getSnapshot
   )
   const now = Date.now()
-  const domainStart = now - 60_000
+  const domainStart = now - RESOURCE_HISTORY_WINDOW_MS
   const visibleHistory = history.filter(
     (sample) => sample.timestamp >= domainStart
   )
@@ -1402,7 +1407,7 @@ function ResourceHistoryHeader({
           {resource.label}
         </span>
         <span className="font-mono text-[9px] tracking-[0.08em] text-muted-foreground/70">
-          60s window
+          6m window
         </span>
       </div>
 
@@ -1421,11 +1426,24 @@ function ResourceHistoryHeader({
             peak={sentStats.peak}
           />
         </div>
+      ) : resource.id === "storage" ? (
+        <div className="grid h-9 grid-cols-2 divide-x divide-border/55">
+          <DiskHistoryValue
+            label="Server"
+            value={resource.historyDisplayValue ?? "—"}
+            valueClassName={resource.valueClassName}
+          />
+          <DiskHistoryValue
+            label="Node"
+            value={resource.historySecondaryDisplayValue ?? "—"}
+            valueClassName="text-foreground/80"
+          />
+        </div>
       ) : (
         <div className="grid h-9 grid-cols-[1fr_4.5rem_4.5rem] divide-x divide-border/55">
           <div className="flex min-w-0 items-center gap-2 px-3">
             <span
-              className={`truncate font-mono font-semibold tracking-[-0.04em] tabular-nums ${resource.id === "memory" || resource.id === "storage" ? "text-[13px]" : "text-xl"} ${resource.valueClassName}`}
+              className={`truncate font-mono font-semibold tracking-[-0.04em] tabular-nums ${resource.id === "memory" ? "text-[13px]" : "text-xl"} ${resource.valueClassName}`}
             >
               {resource.historyDisplayValue ?? resource.displayValue}
             </span>
@@ -1445,6 +1463,29 @@ function ResourceHistoryHeader({
           />
         </div>
       )}
+    </div>
+  )
+}
+
+function DiskHistoryValue({
+  label,
+  value,
+  valueClassName,
+}: {
+  label: string
+  value: string
+  valueClassName: string
+}) {
+  return (
+    <div className="flex min-w-0 flex-col justify-center px-3">
+      <span className="font-mono text-[8px] leading-none tracking-[0.08em] text-muted-foreground/65 uppercase">
+        {label}
+      </span>
+      <span
+        className={`mt-1 truncate font-mono text-[12px] leading-none font-semibold tracking-[-0.035em] tabular-nums ${valueClassName}`}
+      >
+        {value}
+      </span>
     </div>
   )
 }

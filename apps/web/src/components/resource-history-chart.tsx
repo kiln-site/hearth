@@ -65,8 +65,8 @@ function HistoryXAxis() {
   return (
     <g className="fill-current font-mono text-[10px] text-muted-foreground">
       {[
-        { index: 0, label: "-1m" },
-        { index: mid, label: "-30s" },
+        { index: 0, label: "-6m" },
+        { index: mid, label: "-3m" },
         { index: last, label: "Now" },
       ].map(({ index, label }) => (
         <text
