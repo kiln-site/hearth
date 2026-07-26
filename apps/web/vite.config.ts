@@ -25,8 +25,13 @@ const config = defineConfig(({ command }) => {
   const sourceCommit = resolveBuildCommit()
   const buildCommit = command === "serve" ? "" : sourceCommit
   const sentryAuthToken = process.env.SENTRY_AUTH_TOKEN
+  const sentrySourceMaps = process.env.SENTRY_SOURCEMAPS
+  const configureSentry =
+    Boolean(sentryAuthToken) || sentrySourceMaps === "prepare"
 
   return {
+    build:
+      sentrySourceMaps === "prepare" ? { sourcemap: "hidden" } : undefined,
     run: {
       tasks: {
         build: {
@@ -42,6 +47,7 @@ const config = defineConfig(({ command }) => {
             "KILN_BUILD_SHA",
             "KILN_VERSION",
             "SENTRY_AUTH_TOKEN",
+            "SENTRY_SOURCEMAPS",
             "SOURCE_COMMIT",
           ],
         },
@@ -108,12 +114,17 @@ const config = defineConfig(({ command }) => {
       devtools(),
       tailwindcss(),
       tanstackStart(),
-      ...(sentryAuthToken
+      ...(configureSentry
         ? [
             sentryTanstackStart({
               org: "quartzdev",
-              project: "javascript-tanstackstart-react",
+              project: "kiln",
               authToken: sentryAuthToken,
+              sourcemaps:
+                sentrySourceMaps === "prepare"
+                  ? { disable: "disable-upload" }
+                  : undefined,
+              silent: !sentryAuthToken,
               telemetry: false,
             }),
           ]

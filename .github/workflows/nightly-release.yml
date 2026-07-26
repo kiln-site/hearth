@@ -27,7 +27,6 @@ jobs:
       dockerfile: apps/web/Dockerfile
       cache_scope: hearth
       architectures: '["arm64"]'
-      arm_runner: blacksmith-8vcpu-ubuntu-2404-arm
       build_args: |
         SOURCE_COMMIT=${{ github.sha }}
         VITE_SENTRY_DSN=${{ vars.VITE_SENTRY_DSN }}
@@ -40,7 +39,6 @@ jobs:
 
   hearth_amd:
     name: Hearth amd64 image
-    needs: code
     uses: ./.github/workflows/reusable-image.yml
     with:
       name: Hearth
@@ -50,16 +48,15 @@ jobs:
       architectures: '["amd64"]'
       build_args: |
         SOURCE_COMMIT=${{ github.sha }}
+        SENTRY_SOURCEMAPS=prepare
         VITE_SENTRY_DSN=${{ vars.VITE_SENTRY_DSN }}
         VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE=${{ vars.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE || '0.1' }}
         VITE_SENTRY_TRACES_SAMPLE_RATE=${{ vars.VITE_SENTRY_TRACES_SAMPLE_RATE || '0.1' }}
       tags: |
         type=sha,prefix=sha-
-      uses_sentry: true
       nightly_version: true
       publish_manifest: false
-    secrets:
-      sentry_auth_token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      prepare_sentry_source_maps: true
 
   relay:
     name: Relay image
@@ -69,13 +66,37 @@ jobs:
       image: ghcr.io/kiln-site/relay
       dockerfile: apps/relay/Dockerfile
       cache_scope: relay
-      arm_runner: blacksmith-8vcpu-ubuntu-2404-arm
       build_args: |
         SOURCE_COMMIT=${{ github.sha }}
       tags: |
         type=sha,prefix=sha-
       nightly_version: true
       publish_manifest: false
+
+  sentry:
+    name: Publish Sentry source maps
+    needs: [code, hearth_amd]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - name: Download prepared source maps
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nightly-sentry-source-maps
+          path: apps/web/dist
+
+      - name: Publish source maps
+        continue-on-error: true
+        uses: getsentry/action-release@5657c9e888b4e2cc85f4d29143ea4131fde4a73a # v3.6.0
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: quartzdev
+          SENTRY_PROJECT: kiln
+        with:
+          release: ${{ github.sha }}
+          set_commits: skip
+          sourcemaps: apps/web/dist
+          inject: false
+          disable_telemetry: true
 
   release:
     name: Publish nightly release
@@ -86,9 +107,6 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
@@ -149,15 +167,23 @@ jobs:
               --tag "$image:$VERSION" \
               --tag "$image:sha-${COMMIT_SHA:0:7}" \
               "${sources[@]}"
-            docker buildx imagetools inspect "$image:$VERSION"
 
-            digest="sha256:$(docker buildx imagetools inspect "$image:$VERSION" --raw | sha256sum | awk '{print $1}')"
+            raw_manifest="$(mktemp)"
+            docker buildx imagetools inspect "$image:$VERSION" --raw > "$raw_manifest"
+            digest="sha256:$(sha256sum "$raw_manifest" | awk '{print $1}')"
             test "${#digest}" -eq 71
-            echo "${component}_digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "$digest" > "/tmp/${component}-manifest-digest"
           }
 
-          publish_manifest hearth ghcr.io/kiln-site/hearth
-          publish_manifest relay ghcr.io/kiln-site/relay
+          publish_manifest hearth ghcr.io/kiln-site/hearth &
+          hearth_pid="$!"
+          publish_manifest relay ghcr.io/kiln-site/relay &
+          relay_pid="$!"
+          wait "$hearth_pid"
+          wait "$relay_pid"
+
+          echo "hearth_digest=$(< /tmp/hearth-manifest-digest)" >> "$GITHUB_OUTPUT"
+          echo "relay_digest=$(< /tmp/relay-manifest-digest)" >> "$GITHUB_OUTPUT"
 
       - name: Create release manifest
         env:
@@ -223,19 +249,29 @@ jobs:
           HEARTH_DIGEST: ${{ steps.manifests.outputs.hearth_digest }}
           RELAY_DIGEST: ${{ steps.manifests.outputs.relay_digest }}
         run: |
+          pids=()
+
           docker buildx imagetools create \
             --tag ghcr.io/kiln-site/hearth:latest-nightly \
-            "ghcr.io/kiln-site/hearth@$HEARTH_DIGEST"
+            "ghcr.io/kiln-site/hearth@$HEARTH_DIGEST" &
+          pids+=("$!")
           docker buildx imagetools create \
             --tag ghcr.io/kiln-site/relay:latest-nightly \
-            "ghcr.io/kiln-site/relay@$RELAY_DIGEST"
+            "ghcr.io/kiln-site/relay@$RELAY_DIGEST" &
+          pids+=("$!")
 
           release_line="$(jq -er '.releaseLine' release.json)"
           if ! git ls-remote --exit-code --tags origin "refs/tags/v$release_line" >/dev/null 2>&1; then
             docker buildx imagetools create \
               --tag ghcr.io/kiln-site/hearth:latest \
-              "ghcr.io/kiln-site/hearth@$HEARTH_DIGEST"
+              "ghcr.io/kiln-site/hearth@$HEARTH_DIGEST" &
+            pids+=("$!")
             docker buildx imagetools create \
               --tag ghcr.io/kiln-site/relay:latest \
-              "ghcr.io/kiln-site/relay@$RELAY_DIGEST"
+              "ghcr.io/kiln-site/relay@$RELAY_DIGEST" &
+            pids+=("$!")
           fi
+
+          for pid in "${pids[@]}"; do
+            wait "$pid"
+          done

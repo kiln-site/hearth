@@ -39,11 +39,6 @@ on:
         type: string
         default: |
           type=sha,prefix=sha-
-      uses_sentry:
-        description: Whether the image build uploads Sentry artifacts
-        required: false
-        type: boolean
-        default: false
       publish_manifest:
         description: Whether this workflow should publish the multi-platform manifest
         required: false
@@ -54,15 +49,16 @@ on:
         required: false
         type: boolean
         default: false
+      prepare_sentry_source_maps:
+        description: Export source maps from the exact amd64 image build
+        required: false
+        type: boolean
+        default: false
       arm_runner:
         description: Runner label used for arm64 builds
         required: false
         type: string
         default: blacksmith-4vcpu-ubuntu-2404-arm
-    secrets:
-      sentry_auth_token:
-        required: false
-
 permissions:
   contents: read
   packages: write
@@ -112,6 +108,23 @@ jobs:
             ${{ inputs.tags }}
             ${{ inputs.nightly_version && format('type=raw,value={0}', steps.nightly.outputs.version) || '' }}
 
+      - name: Prepare Sentry source maps
+        if: github.event_name != 'pull_request' && inputs.prepare_sentry_source_maps && matrix.architecture == 'amd64'
+        uses: useblacksmith/build-push-action@fb9e3e6a9299c78462bfadd0d93352c316adc9b8 # v2.2.0
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
+        with:
+          context: .
+          file: ${{ inputs.dockerfile }}
+          target: sentry-source-maps
+          build-args: |
+            ${{ inputs.build_args }}
+            ${{ inputs.nightly_version && format('KILN_VERSION={0}', steps.nightly.outputs.version) || '' }}
+          platforms: linux/${{ matrix.architecture }}
+          outputs: type=local,dest=/tmp/sentry-source-maps
+          provenance: false
+          sbom: false
+
       - name: Build${{ github.event_name != 'pull_request' && ' and publish' || '' }} image
         id: build
         uses: useblacksmith/build-push-action@fb9e3e6a9299c78462bfadd0d93352c316adc9b8 # v2.2.0
@@ -123,8 +136,6 @@ jobs:
           build-args: |
             ${{ inputs.build_args }}
             ${{ inputs.nightly_version && format('KILN_VERSION={0}', steps.nightly.outputs.version) || '' }}
-          secrets: |
-            SENTRY_AUTH_TOKEN=${{ inputs.uses_sentry && matrix.architecture == 'amd64' && secrets.sentry_auth_token || '' }}
           platforms: linux/${{ matrix.architecture }}
           outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', inputs.image) || '' }}
           labels: ${{ steps.metadata.outputs.labels }}
@@ -149,6 +160,19 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Upload prepared Sentry source maps
+        if: github.event_name != 'pull_request' && inputs.prepare_sentry_source_maps && matrix.architecture == 'amd64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-sentry-source-maps
+          path: |
+            /tmp/sentry-source-maps/**/*.js
+            /tmp/sentry-source-maps/**/*.mjs
+            /tmp/sentry-source-maps/**/*.map
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 1
+
   publish:
     name: Publish ${{ inputs.name }} manifest
     if: github.event_name != 'pull_request' && inputs.publish_manifest
@@ -158,9 +182,6 @@ jobs:
     outputs:
       digest: ${{ steps.manifest.outputs.digest }}
     steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:

@@ -33,7 +33,6 @@ jobs:
               VITE_SENTRY_DSN=${{ vars.VITE_SENTRY_DSN }}
               VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE=${{ vars.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE || '0.1' }}
               VITE_SENTRY_TRACES_SAMPLE_RATE=${{ vars.VITE_SENTRY_TRACES_SAMPLE_RATE || '0.1' }}
-            uses_sentry: true
           - name: Relay
             image: ghcr.io/kiln-site/relay
             dockerfile: apps/relay/Dockerfile
@@ -41,7 +40,6 @@ jobs:
             build_args: |
               SOURCE_COMMIT=${{ github.sha }}
               KILN_VERSION=0.1.0-pr.${{ github.event.pull_request.number || github.run_number }}
-            uses_sentry: false
     uses: ./.github/workflows/reusable-image.yml
     with:
       name: ${{ matrix.name }}
@@ -51,6 +49,3 @@ jobs:
       build_args: ${{ matrix.build_args }}
       tags: |
         type=sha,prefix=sha-
-      uses_sentry: ${{ matrix.uses_sentry }}
-    secrets:
-      sentry_auth_token: ${{ secrets.SENTRY_AUTH_TOKEN }}
