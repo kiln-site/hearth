@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect"
 
 import { ExternalServiceError } from "@/effect/errors"
+import { isKilnReleaseVersion, orderKilnReleases } from "@/lib/release-version"
 
 const repositoryApi = "https://api.github.com/repos/kiln-site/hearth/releases"
 const headers = {
@@ -63,27 +64,29 @@ export const listKilnReleasesEffect = Effect.fn("github.releases.list")(
       `${repositoryApi}?per_page=100`,
       Schema.Array(GitHubReleaseSchema)
     )
-    return releases.flatMap((release): Array<PublicKilnRelease> => {
-      if (release.draft || !release.tag_name.startsWith("v")) return []
-      const version = release.tag_name.slice(1)
-      if (!/^0\.\d+\.\d+(?:-nightly\.\d+)?$/u.test(version)) return []
-      const manifest = release.assets.find(
-        (asset) => asset.name === "release-manifest.json"
-      )
-      if (!manifest) return []
-      return [
-        {
-          channel: release.prerelease ? "nightly" : "stable",
-          manifestUrl: manifest.browser_download_url,
-          name: release.name?.trim() || release.tag_name,
-          notes: release.body?.trim() || null,
-          publishedAt: release.published_at,
-          tag: release.tag_name,
-          url: release.html_url,
-          version,
-        },
-      ]
-    })
+    return orderKilnReleases(
+      releases.flatMap((release): Array<PublicKilnRelease> => {
+        if (release.draft || !release.tag_name.startsWith("v")) return []
+        const version = release.tag_name.slice(1)
+        if (!isKilnReleaseVersion(version)) return []
+        const manifest = release.assets.find(
+          (asset) => asset.name === "release-manifest.json"
+        )
+        if (!manifest) return []
+        return [
+          {
+            channel: release.prerelease ? "nightly" : "stable",
+            manifestUrl: manifest.browser_download_url,
+            name: release.name?.trim() || release.tag_name,
+            notes: release.body?.trim() || null,
+            publishedAt: release.published_at,
+            tag: release.tag_name,
+            url: release.html_url,
+            version,
+          },
+        ]
+      })
+    )
   }
 )
 

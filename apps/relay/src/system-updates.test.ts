@@ -37,6 +37,7 @@ const relayContainer = {
 
 class FakeCommand {
   readonly calls: Array<Array<string>> = []
+  currentVersion = "0.1.0-nightly.1"
   helperRunning = true
   holdPull = false
   pullStarted: Promise<void>
@@ -82,7 +83,18 @@ class FakeCommand {
         identifier === relayContainer.Id ||
         arguments_.includes(relayContainer.Id)
       ) {
-        return jsonResult([relayContainer])
+        return jsonResult([
+          {
+            ...relayContainer,
+            Config: {
+              ...relayContainer.Config,
+              Labels: {
+                ...relayContainer.Config.Labels,
+                "org.opencontainers.image.version": this.currentVersion,
+              },
+            },
+          },
+        ])
       }
       throw new Error("No such container")
     }
@@ -122,6 +134,31 @@ describe("release image versions", () => {
       const run = docker.calls.find((arguments_) => arguments_[0] === "run")
       expect(run).toContain("KILN_UPDATE_VERSION=0.1.0")
       expect(run).toContain(relayContainer.Id)
+    } finally {
+      await removeTemporaryDirectory(dataDirectory)
+    }
+  })
+
+  it("refuses to downgrade a managed container", async () => {
+    const dataDirectory = await temporaryDataDirectory()
+    try {
+      const docker = new FakeCommand()
+      docker.currentVersion = "0.1.0-nightly.12"
+      const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
+
+      await expect(
+        manager.start({
+          helperImage: targetImage,
+          targetContainer: "kiln-relay",
+          targetImage,
+          version: "0.1.0-nightly.8",
+        })
+      ).rejects.toThrow(
+        "Refusing to downgrade 0.1.0-nightly.12 to 0.1.0-nightly.8"
+      )
+      expect(docker.calls.some((arguments_) => arguments_[0] === "pull")).toBe(
+        false
+      )
     } finally {
       await removeTemporaryDirectory(dataDirectory)
     }
