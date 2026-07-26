@@ -446,8 +446,14 @@ class RelayConnection {
         )
         timer.unref()
       })
+      const authorizationRequest = resolveSftpAuthorization(
+        this.#relay.id,
+        username
+      )
+      // The database lookup cannot be cancelled, so observe failures after timeout wins.
+      void authorizationRequest.catch(() => undefined)
       const authorization = await Promise.race([
-        resolveSftpAuthorization(this.#relay.id, username),
+        authorizationRequest,
         timeout,
       ])
       socket.send(
