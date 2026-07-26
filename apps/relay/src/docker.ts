@@ -23,6 +23,7 @@ import type {
 import {
   brickVariableValuesSchema,
   DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
+  relayDiskAllocationAvailableBytes,
 } from "@workspace/contracts"
 
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
@@ -119,7 +120,7 @@ interface ResourceCacheEntry {
 interface DiskUsageCacheEntry {
   lastAttempt: number
   pending: boolean
-  usedBytes: number
+  usedBytes: number | null
 }
 
 // Docker TTY logs contain ANSI/control bytes. Cursor-editing frames are removed,
@@ -150,6 +151,57 @@ const MAX_SHARED_CONSOLE_BYTES = 10 * 1024 * 1024
 const RESOURCE_HISTORY_WINDOW_MS = 6 * 60_000
 const DISK_USAGE_REFRESH_MS = 60_000
 /* eslint-enable no-control-regex */
+
+export function legacyDiskLimitAssignments(
+  instances: ReadonlyArray<{
+    configuredLimitBytes: number | null
+    id: string
+  }>,
+  nodeTotalBytes: number
+): ReadonlyMap<string, number> {
+  const assignments = new Map(
+    instances.flatMap(({ configuredLimitBytes, id }) =>
+      configuredLimitBytes === null ? [] : [[id, configuredLimitBytes] as const]
+    )
+  )
+  const configuredBytes = [...assignments.values()].reduce(
+    (total, limitBytes) => total + limitBytes,
+    0
+  )
+  let remainingBytes = relayDiskAllocationAvailableBytes(
+    nodeTotalBytes,
+    configuredBytes
+  )
+  const legacyInstances = instances
+    .filter(({ configuredLimitBytes }) => configuredLimitBytes === null)
+    .sort((left, right) => left.id.localeCompare(right.id))
+
+  for (const { id } of legacyInstances) {
+    const limitBytes = Math.min(
+      DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
+      remainingBytes
+    )
+    assignments.set(id, limitBytes)
+    remainingBytes -= limitBytes
+  }
+  return assignments
+}
+
+export function diskQuotaExceeded(
+  usedBytes: number,
+  limitBytes: number,
+  running: boolean
+): boolean {
+  return running && usedBytes > limitBytes
+}
+
+export function initialDiskUsageCacheEntry(): DiskUsageCacheEntry {
+  return {
+    lastAttempt: 0,
+    pending: false,
+    usedBytes: null,
+  }
+}
 
 export class DockerDriver {
   readonly #config: RelayConfig
@@ -885,6 +937,7 @@ export class DockerDriver {
       this.#resourceCache.set(key, cached)
       void this.#sampleResources(instance, cached.value)
         .then((resources) => {
+          if (!resources) return
           cached.value = resources
           this.#recordResourceHistory(instance.config.id, resources)
         })
@@ -907,7 +960,7 @@ export class DockerDriver {
   async #sampleResources(
     instance: DiscoveredInstance,
     previous: RelayInstanceResources | null
-  ): Promise<RelayInstanceResources> {
+  ): Promise<RelayInstanceResources | null> {
     const directory = resolve(
       this.#config.rootDirectory,
       instance.config.directory
@@ -917,6 +970,7 @@ export class DockerDriver {
       statfs(directory),
     ])
     const instanceStorageUsed = this.#directoryUsageFor(instance)
+    if (instanceStorageUsed === null) return null
     const cpuCurrent = stats.cpu_stats?.cpu_usage?.total_usage ?? 0
     const cpuPrevious = stats.precpu_stats?.cpu_usage?.total_usage ?? 0
     const systemCurrent = stats.cpu_stats?.system_cpu_usage ?? 0
@@ -1005,13 +1059,11 @@ export class DockerDriver {
     }
   }
 
-  #directoryUsageFor(instance: DiscoveredInstance): number {
+  #directoryUsageFor(instance: DiscoveredInstance): number | null {
     const now = Date.now()
-    const cached = this.#diskUsageCache.get(instance.config.id) ?? {
-      lastAttempt: 0,
-      pending: false,
-      usedBytes: 0,
-    }
+    const cached =
+      this.#diskUsageCache.get(instance.config.id) ??
+      initialDiskUsageCacheEntry()
     if (!cached.pending && now - cached.lastAttempt >= DISK_USAGE_REFRESH_MS) {
       cached.lastAttempt = now
       cached.pending = true
@@ -1022,18 +1074,25 @@ export class DockerDriver {
       )
       this.#diskUsageQueue = this.#diskUsageQueue.then(async () => {
         try {
-          cached.usedBytes = await directoryApparentSize(directory)
+          const usedBytes = await directoryApparentSize(directory)
+          cached.usedBytes = usedBytes
+          const current = await this.#findDiscovered(instance.config.id).catch(
+            () => null
+          )
           if (
-            instance.container.State.Running &&
-            instance.config.limits.diskBytes > 0 &&
-            cached.usedBytes > instance.config.limits.diskBytes
+            current &&
+            diskQuotaExceeded(
+              usedBytes,
+              current.config.limits.diskBytes,
+              current.container.State.Running
+            )
           ) {
             console.warn(
-              `Stopping ${instance.config.name}: disk usage exceeded its configured quota`
+              `Stopping ${current.config.name}: disk usage exceeded its configured quota`
             )
             await command(
               "docker",
-              ["stop", "--time", "30", instance.config.service],
+              ["stop", "--time", "30", current.config.service],
               { timeout: 45_000 }
             )
           }
@@ -1210,9 +1269,36 @@ export class DockerDriver {
 
     const inspectResult = await command("docker", ["inspect", ...ids])
     const containers = JSON.parse(inspectResult.stdout) as Array<DockerInspect>
+    const diskLimitCandidates = containers.map((container) => ({
+      configuredLimitBytes: optionalNonnegativeIntegerLabel(
+        container.Config.Labels?.["kiln.instance.disk-bytes"]
+      ),
+      id:
+        container.Config.Labels?.[this.#config.serverIdLabel]?.toLowerCase() ??
+        container.Id,
+    }))
+    const hasLegacyDiskLimit = diskLimitCandidates.some(
+      ({ configuredLimitBytes }) => configuredLimitBytes === null
+    )
+    const filesystem = hasLegacyDiskLimit
+      ? await statfs(this.#config.rootDirectory)
+      : null
+    const diskLimits = legacyDiskLimitAssignments(
+      diskLimitCandidates,
+      filesystem
+        ? filesystem.blocks * filesystem.bsize
+        : Number.MAX_SAFE_INTEGER
+    )
     const discovered = containers.map((container) => ({
       container,
-      config: this.#instanceConfig(container),
+      config: this.#instanceConfig(
+        container,
+        diskLimits.get(
+          container.Config.Labels?.[
+            this.#config.serverIdLabel
+          ]?.toLowerCase() ?? container.Id
+        ) ?? DEFAULT_INSTANCE_DISK_LIMIT_BYTES
+      ),
     }))
     const fullIds = new Set<string>()
     const shortIds = new Set<string>()
@@ -1231,7 +1317,10 @@ export class DockerDriver {
     return discovered
   }
 
-  #instanceConfig(container: DockerInspect): RelayInstanceConfig {
+  #instanceConfig(
+    container: DockerInspect,
+    diskLimitBytes: number
+  ): RelayInstanceConfig {
     const labels = container.Config.Labels ?? {}
     const configuredMount = labels["kiln.instance.mount"]
     const serverMount = container.Mounts.find(
@@ -1337,9 +1426,7 @@ export class DockerDriver {
       service,
       variables: parseBrickVariablesLabel(labels["kiln.brick.variables"]),
       limits: {
-        diskBytes:
-          nonnegativeIntegerLabel(labels["kiln.instance.disk-bytes"]) ||
-          DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
+        diskBytes: diskLimitBytes,
         memoryBytes: Math.max(
           nonnegativeIntegerLabel(labels["kiln.instance.memory-bytes"]),
           container.HostConfig?.Memory ?? 0
@@ -1802,9 +1889,15 @@ function titleCase(value: string): string {
 }
 
 function nonnegativeIntegerLabel(value: string | undefined): number {
-  if (!value || !/^\d+$/u.test(value)) return 0
+  return optionalNonnegativeIntegerLabel(value) ?? 0
+}
+
+function optionalNonnegativeIntegerLabel(
+  value: string | undefined
+): number | null {
+  if (!value || !/^\d+$/u.test(value)) return null
   const parsed = Number(value)
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null
 }
 
 function inferStandaloneVersion(

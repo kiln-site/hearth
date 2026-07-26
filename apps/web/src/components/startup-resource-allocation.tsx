@@ -87,7 +87,7 @@ export const ResourceAllocationCard = React.memo(
               totalBytes={allocation.storage.nodeTotalBytes}
             />
             <p className="mt-2 text-[8px] leading-3 text-muted-foreground/65">
-              25 GiB by default. Folder usage is cached and reconciled by Relay.
+              25 GiB by default. Relay keeps 10 GiB free for node overhead.
             </p>
           </div>
         </div>

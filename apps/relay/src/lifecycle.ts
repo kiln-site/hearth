@@ -24,7 +24,10 @@ import type {
   RelayProxySettings,
   RelayUpdateInstanceStartup,
 } from "@workspace/contracts"
-import { relayProxySettingsSchema } from "@workspace/contracts"
+import {
+  relayDiskAllocationAvailableBytes,
+  relayProxySettingsSchema,
+} from "@workspace/contracts"
 import type { BrickCatalog } from "./bricks.js"
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
 import type { DockerDriver } from "./docker.js"
@@ -490,10 +493,7 @@ export class LifecycleDriver {
     action: "start" | "stop" | "restart" | "kill",
     routes: ReadonlyArray<RelayInstanceWebRoute>
   ): Promise<RelayInstance> {
-    if (
-      instance.limits.diskBytes > 0 &&
-      (action === "start" || action === "restart")
-    ) {
+    if (action === "start" || action === "restart") {
       const usedBytes = await directoryApparentSize(
         join(this.#config.rootDirectory, instance.directory)
       )
@@ -539,6 +539,7 @@ export class LifecycleDriver {
     const id = randomBytes(32).toString("hex").slice(0, 40)
     return this.#provisionManagedInstance({
       diskLimitBytes: input.diskLimitBytes,
+      grandfatheredDiskLimitBytes: 0,
       id,
       prepareDirectory: true,
       recipe: input.recipe,
@@ -565,6 +566,7 @@ export class LifecycleDriver {
     const resolved = resolveBrick(definition, input.variables, recipe)
     await this.#assertAllocationAvailable({
       checkExistingUsage: true,
+      currentDiskLimitBytes: existing.limits.diskBytes,
       directory: join(this.#config.rootDirectory, existing.directory),
       diskLimitBytes,
       existing: (await this.#docker.inspectInstances()).filter(
@@ -583,6 +585,7 @@ export class LifecycleDriver {
     try {
       return await this.#provisionManagedInstance({
         diskLimitBytes,
+        grandfatheredDiskLimitBytes: existing.limits.diskBytes,
         id: existing.id,
         prepareDirectory: false,
         recipe,
@@ -599,6 +602,7 @@ export class LifecycleDriver {
 
   async #provisionManagedInstance(input: {
     diskLimitBytes: number
+    grandfatheredDiskLimitBytes: number
     id: string
     prepareDirectory: boolean
     recipe: string
@@ -611,6 +615,7 @@ export class LifecycleDriver {
     const memoryLimitBytes = dockerMemoryBytes(resolved.memory)
     await this.#assertAllocationAvailable({
       checkExistingUsage: !input.prepareDirectory,
+      currentDiskLimitBytes: input.grandfatheredDiskLimitBytes,
       directory: join(this.#config.rootDirectory, input.id),
       diskLimitBytes: input.diskLimitBytes,
       existing,
@@ -867,6 +872,7 @@ export class LifecycleDriver {
 
   async #assertAllocationAvailable(input: {
     checkExistingUsage: boolean
+    currentDiskLimitBytes: number
     directory: string
     diskLimitBytes: number
     existing: ReadonlyArray<RelayInstance>
@@ -888,15 +894,17 @@ export class LifecycleDriver {
         `Container memory exceeds the node's assignable capacity (${formatAllocationBytes(Math.max(totalmem() - allocatedMemoryBytes, 0))} available)`
       )
     }
-    if (
-      input.diskLimitBytes > 0 &&
-      allocatedDiskBytes + input.diskLimitBytes > nodeDiskBytes
-    ) {
+    const availableDiskBytes = relayDiskAllocationAvailableBytes(
+      nodeDiskBytes,
+      allocatedDiskBytes,
+      input.currentDiskLimitBytes
+    )
+    if (input.diskLimitBytes > availableDiskBytes) {
       throw new Error(
-        `Disk quota exceeds the node's assignable capacity (${formatAllocationBytes(Math.max(nodeDiskBytes - allocatedDiskBytes, 0))} available)`
+        `Disk quota exceeds the node's assignable capacity (${formatAllocationBytes(availableDiskBytes)} available after the 10 GiB node reserve)`
       )
     }
-    if (input.diskLimitBytes > 0 && input.checkExistingUsage) {
+    if (input.checkExistingUsage) {
       const usedBytes = await directoryApparentSize(input.directory)
       if (usedBytes > input.diskLimitBytes) {
         throw new Error(

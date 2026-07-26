@@ -133,15 +133,31 @@ export const brickRecipeSchema = z
 export const brickSourceSchema = z.string().trim().url().max(2_048)
 export const relayInstanceNameSchema = z.string().trim().min(1).max(120)
 export const DEFAULT_INSTANCE_DISK_LIMIT_BYTES = 25 * 1024 ** 3
+export const RELAY_NODE_DISK_RESERVE_BYTES = 10 * 1024 ** 3
 
 const relayDiskLimitBytesSchema = z
   .number()
   .int()
   .nonnegative()
-  .transform((bytes) =>
-    bytes === 0 ? DEFAULT_INSTANCE_DISK_LIMIT_BYTES : bytes
-  )
   .default(DEFAULT_INSTANCE_DISK_LIMIT_BYTES)
+const relayRequestedDiskLimitBytesSchema = z
+  .number()
+  .int()
+  .positive()
+  .default(DEFAULT_INSTANCE_DISK_LIMIT_BYTES)
+
+export function relayDiskAllocationAvailableBytes(
+  nodeTotalBytes: number,
+  otherAllocatedBytes: number,
+  currentLimitBytes = 0
+): number {
+  const assignableBytes = Math.max(
+    nodeTotalBytes - RELAY_NODE_DISK_RESERVE_BYTES,
+    0
+  )
+  const remainingBytes = Math.max(assignableBytes - otherAllocatedBytes, 0)
+  return Math.max(remainingBytes, currentLimitBytes)
+}
 
 export const brickSchema = brickRecipeSchema.extend({
   source: brickSourceSchema,
@@ -153,7 +169,7 @@ export const brickVariableValuesSchema = z.record(
 )
 
 export const relayCreateInstanceSchema = z.object({
-  diskLimitBytes: relayDiskLimitBytesSchema,
+  diskLimitBytes: relayRequestedDiskLimitBytesSchema,
   name: relayInstanceNameSchema.optional(),
   recipe: brickSourceSchema,
   variables: brickVariableValuesSchema,
@@ -161,7 +177,7 @@ export const relayCreateInstanceSchema = z.object({
 })
 
 export const relayUpdateInstanceStartupSchema = z.object({
-  diskLimitBytes: relayDiskLimitBytesSchema.optional(),
+  diskLimitBytes: relayRequestedDiskLimitBytesSchema.optional(),
   recipe: brickSourceSchema.optional(),
   variables: brickVariableValuesSchema,
   start: z.boolean().default(true),

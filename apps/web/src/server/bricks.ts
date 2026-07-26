@@ -11,6 +11,7 @@ import {
   relayNetworkingSchema,
   relaySnapshotSchema,
   relayUpdateInstanceStartupSchema,
+  relayDiskAllocationAvailableBytes,
 } from "@workspace/contracts"
 import { z } from "zod"
 
@@ -174,8 +175,9 @@ export const getInstanceStartup = createServerFn({ method: "GET" })
           nodeUsedBytes: snapshot.node.memory.usedBytes,
         },
         storage: {
-          availableBytes: Math.max(
-            snapshot.node.storage.totalBytes - otherDiskBytes,
+          availableBytes: relayDiskAllocationAvailableBytes(
+            snapshot.node.storage.totalBytes,
+            otherDiskBytes,
             instance.limits.diskBytes
           ),
           nodeTotalBytes: snapshot.node.storage.totalBytes,
