@@ -8,8 +8,10 @@ WORKDIR /runtime
 
 COPY --chown=vp:vp .node-version ./
 COPY --chown=vp:vp apps/relay/package.runtime.json ./package.json
+COPY --chown=vp:vp apps/relay/pnpm-lock.runtime.yaml ./pnpm-lock.yaml
+COPY --chown=vp:vp apps/relay/runtime.npmrc ./.npmrc
 RUN --mount=type=cache,target=/home/vp/.local/share/pnpm/store,uid=1000,gid=1000,sharing=locked \
-  vp install --prod --no-lockfile --no-optional --ignore-scripts
+  vp install --prod --frozen-lockfile --no-optional --ignore-scripts
 
 FROM ghcr.io/voidzero-dev/vite-plus:${VITE_PLUS_VERSION} AS build
 
@@ -36,15 +38,8 @@ FROM docker:29.6.2-cli AS docker-cli
 
 FROM gcr.io/distroless/nodejs24-debian12 AS runtime
 
-ARG KILN_VERSION
-ARG SOURCE_COMMIT
 ENV NODE_ENV=production
 WORKDIR /app
-
-LABEL org.opencontainers.image.source="https://github.com/kiln-site/hearth" \
-  org.opencontainers.image.version="${KILN_VERSION}" \
-  org.opencontainers.image.revision="${SOURCE_COMMIT}" \
-  io.kiln.component="relay"
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
@@ -53,6 +48,14 @@ COPY apps/relay/package.runtime.json ./package.json
 RUN ["/nodejs/bin/node", "--input-type=module", "-e", "await import('reflect-metadata'); const manifest = await import('./package.json', { with: { type: 'json' } }); await Promise.all(Object.keys(manifest.default.dependencies).map((name) => import(name)))"]
 COPY --from=build /source/apps/relay/dist ./dist
 COPY --chmod=755 apps/relay/bin/kiln-relay.mjs /usr/local/bin/kiln-relay
+
+ARG KILN_VERSION
+ARG SOURCE_COMMIT
+
+LABEL org.opencontainers.image.source="https://github.com/kiln-site/hearth" \
+  org.opencontainers.image.version="${KILN_VERSION}" \
+  org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+  io.kiln.component="relay"
 
 EXPOSE 4100 2022
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \

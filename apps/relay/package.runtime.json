@@ -14,5 +14,15 @@
     "ssh2": "1.17.0",
     "ws": "8.21.1",
     "yaml": "2.8.1"
+  },
+  "pnpm": {
+    "overrides": {
+      "@apm-js-collab/code-transformer": "0.18.0",
+      "@opentelemetry/core": "2.9.0",
+      "@opentelemetry/resources": "2.9.0",
+      "@opentelemetry/sdk-trace": "2.9.0",
+      "@opentelemetry/sdk-trace-base": "2.9.0",
+      "import-in-the-middle": "3.3.1"
+    }
   }
 }

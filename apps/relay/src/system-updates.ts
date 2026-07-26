@@ -13,7 +13,9 @@ import { join } from "node:path"
 
 import {
   compareKilnReleaseVersions,
+  isKilnNightlyVersion,
   isKilnReleaseVersion,
+  kilnReleaseVersionCore,
 } from "@workspace/contracts"
 
 import { command } from "./command.js"
@@ -125,8 +127,7 @@ export class SystemUpdateManager {
     }
     if (
       isKilnReleaseVersion(eligibility.currentVersion) &&
-      compareKilnReleaseVersions(input.version, eligibility.currentVersion) ===
-        -1
+      isDefiniteReleaseDowngrade(input.version, eligibility.currentVersion)
     ) {
       throw new Error(
         `Refusing to downgrade ${eligibility.currentVersion} to ${input.version}`
@@ -304,6 +305,25 @@ export class SystemUpdateManager {
       throw cause
     }
   }
+}
+
+function isDefiniteReleaseDowngrade(
+  requestedVersion: string,
+  currentVersion: string
+): boolean {
+  if (
+    kilnReleaseVersionCore(requestedVersion) ===
+      kilnReleaseVersionCore(currentVersion) &&
+    isKilnNightlyVersion(requestedVersion) !==
+      isKilnNightlyVersion(currentVersion)
+  ) {
+    // Same-line stable/nightly ordering depends on release publication time,
+    // which Hearth validates before asking Relay to apply the update.
+    return false
+  }
+  return (
+    compareKilnReleaseVersions(requestedVersion, currentVersion) === -1
+  )
 }
 
 export function imageVersionMatchesRelease(

@@ -163,6 +163,29 @@ describe("release image versions", () => {
       await removeTemporaryDirectory(dataDirectory)
     }
   })
+
+  it("allows a newer nightly on the same stable release line", async () => {
+    const dataDirectory = await temporaryDataDirectory()
+    try {
+      const docker = new FakeCommand()
+      docker.currentVersion = "0.1.0"
+      const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
+
+      const operation = await manager.start({
+        helperImage: targetImage,
+        targetContainer: "kiln-relay",
+        targetImage,
+        version: "0.1.0-nightly.18",
+      })
+
+      expect(operation.status).toBe("running")
+      expect(docker.calls.some((arguments_) => arguments_[0] === "pull")).toBe(
+        true
+      )
+    } finally {
+      await removeTemporaryDirectory(dataDirectory)
+    }
+  })
 })
 
 describe("update operation lifecycle", () => {
