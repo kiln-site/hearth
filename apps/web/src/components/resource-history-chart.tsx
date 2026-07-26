@@ -93,6 +93,7 @@ export function ResourceHistoryChart({
   label,
   color,
   maxValue,
+  replayToken,
   formatValue,
 }: {
   data: Array<{
@@ -108,6 +109,7 @@ export function ResourceHistoryChart({
   domainStart: number
   domainEnd: number
   maxValue?: number
+  replayToken: number
   formatValue: (value: number) => string
 }) {
   const chartConfig = React.useMemo<ChartConfig>(() => {
@@ -187,6 +189,8 @@ export function ResourceHistoryChart({
           hovered
           margins={margins}
           stackType="stacked"
+          replayOnDataChange={false}
+          replayToken={replayToken}
           className={chartClassName}
           yDomain={yDomain}
         >
@@ -208,6 +212,8 @@ export function ResourceHistoryChart({
           bloom="off"
           hovered
           margins={margins}
+          replayOnDataChange={false}
+          replayToken={replayToken}
           className={chartClassName}
           yDomain={yDomain}
         >

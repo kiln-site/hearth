@@ -1263,8 +1263,16 @@ function ResourceHistoryPopover({
   historyStore: ResourceHistoryStore
   children: React.ReactElement
 }) {
+  const [replayToken, setReplayToken] = React.useState(0)
+
   return (
-    <HoverCard openDelay={160} closeDelay={100}>
+    <HoverCard
+      openDelay={160}
+      closeDelay={100}
+      onOpenChange={(open) => {
+        if (open) setReplayToken((current) => current + 1)
+      }}
+    >
       <HoverCardTrigger asChild>{children}</HoverCardTrigger>
       <HoverCardContent
         align="center"
@@ -1273,7 +1281,11 @@ function ResourceHistoryPopover({
         collisionPadding={12}
         className="w-[min(20rem,calc(100vw-1.5rem))] border-border/90 bg-popover p-0 shadow-2xl"
       >
-        <ResourceHistoryCard resource={resource} historyStore={historyStore} />
+        <ResourceHistoryCard
+          resource={resource}
+          historyStore={historyStore}
+          replayToken={replayToken}
+        />
       </HoverCardContent>
     </HoverCard>
   )
@@ -1282,9 +1294,11 @@ function ResourceHistoryPopover({
 function ResourceHistoryCard({
   resource,
   historyStore,
+  replayToken,
 }: {
   resource: ResourceItem
   historyStore: ResourceHistoryStore
+  replayToken: number
 }) {
   const history = React.useSyncExternalStore(
     historyStore.subscribe,
@@ -1346,6 +1360,7 @@ function ResourceHistoryCard({
             domainStart={domainStart}
             domainEnd={now}
             maxValue={resource.chartMax}
+            replayToken={replayToken}
             formatValue={(value) => formatHistoryValue(resource.id, value)}
           />
         </React.Suspense>
