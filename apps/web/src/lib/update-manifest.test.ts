@@ -31,6 +31,34 @@ describe("update manifest validation", () => {
     ).not.toThrow()
   })
 
+  it("accepts a legacy baked image version on the same release line", () => {
+    expect(() =>
+      validateUpdateManifest(
+        {
+          ...manifest,
+          imageVersion: "0.1.0-nightly.2",
+          version: "0.1.0-nightly.20260725.162524",
+        },
+        "0.1.0-nightly.20260725.162524",
+        "relay"
+      )
+    ).not.toThrow()
+  })
+
+  it("rejects a baked image version from another release line", () => {
+    expect(() =>
+      validateUpdateManifest(
+        {
+          ...manifest,
+          imageVersion: "0.1.1-nightly.2",
+          version: "0.1.0-nightly.20260725.162524",
+        },
+        "0.1.0-nightly.20260725.162524",
+        "relay"
+      )
+    ).toThrow("image version is invalid")
+  })
+
   it("rejects an incompatible Relay protocol", () => {
     expect(() =>
       validateUpdateManifest(

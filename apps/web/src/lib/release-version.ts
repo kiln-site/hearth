@@ -8,6 +8,7 @@ import {
 export { isKilnReleaseVersion }
 
 type ReleaseVersionMetadata = {
+  aliases?: ReadonlyArray<string>
   publishedAt: string | null
   version: string
 }
@@ -56,14 +57,16 @@ export function compareLatestReleaseVersion(
   const orderedReleases = orderKilnReleases(releases)
   const latestRelease = orderedReleases[0]
   if (!latestRelease || !isKilnReleaseVersion(currentVersion)) return null
-  if (latestRelease.version === currentVersion) return 0
+  const currentRelease = findKilnRelease(releases, currentVersion)
+  const canonicalCurrentVersion = currentRelease?.version ?? currentVersion
+  if (latestRelease.version === canonicalCurrentVersion) return 0
 
   const publishedAtByVersion = new Map(
     orderedReleases.map((release) => [release.version, release.publishedAt])
   )
   const comparison = compareReleaseVersions(
     latestRelease.version,
-    currentVersion,
+    canonicalCurrentVersion,
     publishedAtByVersion
   )
 
@@ -73,11 +76,24 @@ export function compareLatestReleaseVersion(
   if (
     comparison === -1 &&
     kilnReleaseVersionCore(latestRelease.version) ===
-      kilnReleaseVersionCore(currentVersion)
+      kilnReleaseVersionCore(canonicalCurrentVersion)
   ) {
     return 1
   }
   return comparison
+}
+
+export function findKilnRelease<TRelease extends ReleaseVersionMetadata>(
+  releases: ReadonlyArray<TRelease>,
+  version: string | null
+): TRelease | null {
+  if (!version) return null
+  return (
+    releases.find(
+      (release) =>
+        release.version === version || release.aliases?.includes(version)
+    ) ?? null
+  )
 }
 
 function comparePublishedAt(

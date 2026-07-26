@@ -69,8 +69,10 @@ import {
 } from "@/lib/query-options"
 import {
   compareLatestReleaseVersion,
+  findKilnRelease,
   isKilnReleaseVersion,
 } from "@/lib/release-version"
+import type { PublicKilnRelease } from "@/effect/github-releases"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import {
   addRelay,
@@ -99,6 +101,11 @@ const invitationTimeFormatter = new Intl.DateTimeFormat("en-US", {
 const minimumRelaySyncFeedbackMs = 500
 const pendingRelayResumes = new Map<string, Promise<void>>()
 const noOutdatedRelays: ReadonlySet<string> = new Set()
+const noPublicReleases: ReadonlyArray<PublicKilnRelease> = []
+const noRelayUpdateSummary = {
+  outdatedRelayIds: noOutdatedRelays,
+  releases: noPublicReleases,
+}
 
 function relayProxyQueryOptions(relayId: string) {
   return queryOptions({
@@ -414,16 +421,17 @@ const FilteredRelayTable = React.memo(function FilteredRelayTable({
     ...relaysQueryOptions(),
     select: selectRelayTableItems,
   })
-  const { data: outdatedRelayIds = noOutdatedRelays } = useQuery({
+  const { data: updateSummary = noRelayUpdateSummary } = useQuery({
     ...updateOverviewQueryOptions(),
     enabled: canReviewUpdates,
     retry: false,
-    select: selectOutdatedRelayIds,
+    select: selectRelayUpdateSummary,
   })
 
   return (
     <RelayTable
-      outdatedRelayIds={outdatedRelayIds}
+      outdatedRelayIds={updateSummary.outdatedRelayIds}
+      releases={updateSummary.releases}
       relays={relays}
       searchStore={searchStore}
       onAdd={onAdd}
@@ -512,6 +520,7 @@ const RelaySyncButton = React.memo(function RelaySyncButton() {
 
 function RelayTable({
   outdatedRelayIds,
+  releases,
   relays,
   searchStore,
   onAdd,
@@ -519,6 +528,7 @@ function RelayTable({
   onOpenUpdates,
 }: {
   outdatedRelayIds: ReadonlySet<string>
+  releases: ReadonlyArray<PublicKilnRelease>
   relays: Array<RelayTableItem>
   searchStore: WorkspaceTableSearchStore
   onAdd: () => void
@@ -529,12 +539,13 @@ function RelayTable({
     (relay: RelayTableItem) => (
       <RelayTableRow
         outdated={outdatedRelayIds.has(relay.id)}
+        releases={releases}
         relayId={relay.id}
         onEdit={onEdit}
         onOpenUpdates={onOpenUpdates}
       />
     ),
-    [onEdit, onOpenUpdates, outdatedRelayIds]
+    [onEdit, onOpenUpdates, outdatedRelayIds, releases]
   )
   const renderEmpty = React.useCallback(
     (searchActive: boolean) => (
@@ -589,11 +600,13 @@ const RelayTableHead = React.memo(function RelayTableHead() {
 
 const RelayTableRow = React.memo(function RelayTableRow({
   outdated,
+  releases,
   relayId,
   onEdit,
   onOpenUpdates,
 }: {
   outdated: boolean
+  releases: ReadonlyArray<PublicKilnRelease>
   relayId: string
   onEdit: (relayId: string) => void
   onOpenUpdates: (relayId?: string) => void
@@ -605,6 +618,7 @@ const RelayTableRow = React.memo(function RelayTableRow({
       </WorkspaceTableCell>
       <RelayStaticCells
         outdated={outdated}
+        releases={releases}
         relayId={relayId}
         onOpenUpdates={onOpenUpdates}
       />
@@ -624,10 +638,12 @@ const RelayTableRow = React.memo(function RelayTableRow({
 
 const RelayStaticCells = React.memo(function RelayStaticCells({
   outdated,
+  releases,
   relayId,
   onOpenUpdates,
 }: {
   outdated: boolean
+  releases: ReadonlyArray<PublicKilnRelease>
   relayId: string
   onOpenUpdates: (relayId?: string) => void
 }) {
@@ -668,6 +684,7 @@ const RelayStaticCells = React.memo(function RelayStaticCells({
             <RelayVersion
               name={relay.name}
               outdated={outdated}
+              releases={releases}
               relayId={relayId}
               version={relay.nodeVersion}
               onOpenUpdates={onOpenUpdates}
@@ -709,6 +726,7 @@ const RelayStaticCells = React.memo(function RelayStaticCells({
         <RelayVersion
           name={relay.name}
           outdated={outdated}
+          releases={releases}
           relayId={relayId}
           version={relay.nodeVersion}
           onOpenUpdates={onOpenUpdates}
@@ -1736,9 +1754,12 @@ function selectCanReviewUpdates(capabilities: {
   return capabilities.isPlatformAdmin
 }
 
-function selectOutdatedRelayIds(overview: UpdateOverview): ReadonlySet<string> {
+function selectRelayUpdateSummary(overview: UpdateOverview): {
+  outdatedRelayIds: ReadonlySet<string>
+  releases: ReadonlyArray<PublicKilnRelease>
+} {
   const latestRelease = overview.releases[0]
-  if (!latestRelease) return noOutdatedRelays
+  if (!latestRelease) return noRelayUpdateSummary
 
   const outdatedRelayIds = new Set<string>()
   for (const relay of overview.relays) {
@@ -1749,7 +1770,10 @@ function selectOutdatedRelayIds(overview: UpdateOverview): ReadonlySet<string> {
       outdatedRelayIds.add(relay.relayId)
     }
   }
-  return outdatedRelayIds
+  return {
+    outdatedRelayIds,
+    releases: overview.releases,
+  }
 }
 
 function relaySearchText(relay: RelayTableItem): string {
@@ -1782,18 +1806,32 @@ function isGitCommitSha(value: string): boolean {
 function RelayVersion({
   name,
   outdated,
+  releases,
   relayId,
   version,
   onOpenUpdates,
 }: {
   name: string
   outdated: boolean
+  releases: ReadonlyArray<PublicKilnRelease>
   relayId: string
   version: string | null
   onOpenUpdates: (relayId?: string) => void
 }) {
+  const release = findKilnRelease(releases, version)
   const versionLabel = !version ? (
     <span className="truncate font-mono text-[9px] text-foreground">—</span>
+  ) : release ? (
+    <a
+      href={release.url}
+      target="_blank"
+      rel="noreferrer"
+      aria-label={`View ${release.name} on GitHub`}
+      title={`${release.name} (${release.tag})`}
+      className="truncate text-[10px] font-medium text-primary/90 transition-colors hover:text-primary focus-visible:text-primary focus-visible:outline-none"
+    >
+      {release.name}
+    </a>
   ) : isGitCommitSha(version) ? (
     <a
       href={`${hearthRepositoryUrl}/commit/${version}`}

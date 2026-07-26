@@ -1,4 +1,8 @@
-import { relayControlProtocolVersion } from "@workspace/contracts"
+import {
+  isKilnReleaseVersion,
+  kilnReleaseVersionCore,
+  relayControlProtocolVersion,
+} from "@workspace/contracts"
 
 import type { KilnReleaseManifest } from "@/effect/github-releases"
 
@@ -9,6 +13,14 @@ export function validateUpdateManifest(
 ): void {
   if (manifest.version !== version) {
     throw new Error("The release manifest version does not match its tag")
+  }
+  if (
+    manifest.imageVersion !== undefined &&
+    (!isKilnReleaseVersion(manifest.imageVersion) ||
+      kilnReleaseVersionCore(manifest.imageVersion) !==
+        kilnReleaseVersionCore(manifest.version))
+  ) {
+    throw new Error("The release manifest image version is invalid")
   }
   if (
     component === "relay" &&

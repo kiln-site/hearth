@@ -184,7 +184,7 @@ export const startSystemUpdate = createServerFn({ method: "POST" })
           helperImage: immutableImage(manifest.components.relay),
           targetContainer: inspection.container,
           targetImage: immutableImage(component),
-          version: manifest.version,
+          version: manifest.imageVersion ?? manifest.version,
         },
         15 * 60_000
       )

@@ -321,9 +321,7 @@ function isDefiniteReleaseDowngrade(
     // which Hearth validates before asking Relay to apply the update.
     return false
   }
-  return (
-    compareKilnReleaseVersions(requestedVersion, currentVersion) === -1
-  )
+  return compareKilnReleaseVersions(requestedVersion, currentVersion) === -1
 }
 
 export function imageVersionMatchesRelease(
@@ -331,11 +329,17 @@ export function imageVersionMatchesRelease(
   releaseVersion: string
 ): boolean {
   if (imageVersion === releaseVersion) return true
-  if (!/^0\.\d+\.\d+$/u.test(releaseVersion)) return false
-  return new RegExp(
-    `^${escapeRegularExpression(releaseVersion)}-nightly\\.\\d+$`,
-    "u"
-  ).test(imageVersion ?? "")
+  if (
+    isKilnNightlyVersion(releaseVersion) ||
+    !isKilnReleaseVersion(imageVersion) ||
+    !isKilnNightlyVersion(imageVersion)
+  ) {
+    return false
+  }
+  return (
+    kilnReleaseVersionCore(imageVersion) ===
+    kilnReleaseVersionCore(releaseVersion)
+  )
 }
 
 function updateEligibility(inspected: ContainerInspect): {
@@ -604,10 +608,6 @@ function errorCode(cause: unknown): string | null {
     return cause.code
   }
   return null
-}
-
-function escapeRegularExpression(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")
 }
 
 function decodeJsonArray<T>(

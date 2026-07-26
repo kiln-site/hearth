@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test"
 import {
   compareLatestReleaseVersion,
   compareReleaseVersions,
+  isKilnReleaseVersion,
   orderKilnReleases,
 } from "@/lib/release-version"
 
@@ -13,6 +14,12 @@ const publishedAt = new Map<string, string | null>([
 ])
 
 describe("release version ordering", () => {
+  it("accepts valid UTC timestamp nightlies", () => {
+    expect(isKilnReleaseVersion("0.1.0-nightly.20260726.171530")).toBe(true)
+    expect(isKilnReleaseVersion("0.1.0-nightly.20260230.171530")).toBe(false)
+    expect(isKilnReleaseVersion("0.1.0-nightly.20260726.246000")).toBe(false)
+  })
+
   it("orders same-line stable and nightly releases by publication", () => {
     expect(
       compareReleaseVersions("0.1.0-nightly.19", "0.1.0", publishedAt)
@@ -70,5 +77,33 @@ describe("release version ordering", () => {
 
     expect(compareLatestReleaseVersion("0.1.0-nightly.12", releases)).toBe(0)
     expect(compareLatestReleaseVersion("0.1.0-nightly.8", releases)).toBe(1)
+  })
+
+  it("orders timestamp nightlies without relying on publication metadata", () => {
+    const releases = [
+      "0.1.0-nightly.20260726.051833",
+      "0.1.0-nightly.20260726.155759",
+      "0.1.0-nightly.20260725.201552",
+    ].map((version) => ({ publishedAt: null, version }))
+
+    expect(
+      orderKilnReleases(releases).map((release) => release.version)
+    ).toEqual([
+      "0.1.0-nightly.20260726.155759",
+      "0.1.0-nightly.20260726.051833",
+      "0.1.0-nightly.20260725.201552",
+    ])
+  })
+
+  it("treats a migrated baked version as its timestamp release", () => {
+    const releases = [
+      {
+        aliases: ["0.1.0-nightly.12"],
+        publishedAt: "2026-07-26T15:57:59.000Z",
+        version: "0.1.0-nightly.20260726.155759",
+      },
+    ]
+
+    expect(compareLatestReleaseVersion("0.1.0-nightly.12", releases)).toBe(0)
   })
 })

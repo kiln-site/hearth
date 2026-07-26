@@ -123,9 +123,15 @@ jobs:
           RUN_NUMBER: ${{ github.run_number }}
         run: |
           release_line="$(jq -er '.releaseLine' release.json)"
-          tag="v${release_line}-nightly.${RUN_NUMBER}"
+          run_offset="$(jq -er '.nightlyRunOffset' release.json)"
+          nightly_number="$((RUN_NUMBER - run_offset))"
+          test "$nightly_number" -gt 0
+          commit_timestamp="$(git show -s --format=%cI "$GITHUB_SHA")"
+          timestamp="$(date -u -d "$commit_timestamp" +%Y%m%d.%H%M%S)"
+          tag="v${release_line}-nightly.${timestamp}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "display_name=v${release_line} Nightly #${nightly_number}" >> "$GITHUB_OUTPUT"
 
       - name: Reserve version tag
         env:
@@ -203,6 +209,7 @@ jobs:
             '{
               schemaVersion: 1,
               version: $version,
+              imageVersion: $version,
               channel: "nightly",
               commit: $commit,
               publishedAt: $publishedAt,
@@ -216,11 +223,16 @@ jobs:
       - name: Publish prerelease
         env:
           COMMIT_SHA: ${{ github.sha }}
+          DISPLAY_NAME: ${{ steps.version.outputs.display_name }}
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" release-manifest.json --clobber
+            gh release edit "$TAG" \
+              --prerelease \
+              --latest=false \
+              --title "$DISPLAY_NAME"
           else
             gh release create "$TAG" release-manifest.json \
               --prerelease \
@@ -228,7 +240,7 @@ jobs:
               --target "$COMMIT_SHA" \
               --verify-tag \
               --generate-notes \
-              --title "$TAG"
+              --title "$DISPLAY_NAME"
           fi
 
       - name: Check whether this is the newest published nightly
@@ -239,7 +251,7 @@ jobs:
         run: |
           newest="$(gh release list --limit 100 --json isPrerelease,tagName \
             --jq '.[] | select(.isPrerelease) | .tagName' \
-            | grep -E '^v0\.[0-9]+\.[0-9]+-nightly\.[0-9]+$' \
+            | grep -E '^v0\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}\.[0-9]{6}$' \
             | sort -V \
             | tail -n 1)"
           if test "$newest" = "$TAG"; then

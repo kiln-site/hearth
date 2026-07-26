@@ -79,11 +79,11 @@ jobs:
       - name: Resolve nightly version
         if: inputs.nightly_version
         id: nightly
-        env:
-          RUN_NUMBER: ${{ github.run_number }}
         run: |
           release_line="$(jq -er '.releaseLine' release.json)"
-          echo "version=${release_line}-nightly.${RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          commit_timestamp="$(git show -s --format=%cI "$GITHUB_SHA")"
+          timestamp="$(date -u -d "$commit_timestamp" +%Y%m%d.%H%M%S)"
+          echo "version=${release_line}-nightly.${timestamp}" >> "$GITHUB_OUTPUT"
 
       - name: Set up cached Docker builder
         uses: useblacksmith/setup-docker-builder@33803e640bd9d674f2843a8c323aa2a7da478d23 # v2.0.0

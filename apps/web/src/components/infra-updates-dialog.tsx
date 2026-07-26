@@ -39,6 +39,7 @@ import { queryKeys, updateOverviewQueryOptions } from "@/lib/query-options"
 import {
   compareLatestReleaseVersion,
   compareReleaseVersions,
+  findKilnRelease,
   isKilnReleaseVersion,
 } from "@/lib/release-version"
 import {
@@ -69,6 +70,7 @@ type ActiveUpdate = {
   operationId: string
   previousVersion: string | null
   relayId: string
+  targetVersion: string | null
   targetKey: string
 }
 
@@ -208,8 +210,13 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
   }, [])
 
   const updateMutation = useMutation({
-    mutationFn: (targets: ReadonlyArray<UpdateTarget>) =>
-      startUpdates(targets, registerStartedUpdate, markUpdateBatchFailed),
+    mutationFn: (update: PendingUpdate) =>
+      startUpdates(
+        update.targets,
+        update.latestVersion,
+        registerStartedUpdate,
+        markUpdateBatchFailed
+      ),
     onMutate: () => {
       if (activeRef.current.length === 0) {
         awayBatchHadFailure.current = false
@@ -337,13 +344,14 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
         clearSystemUpdateActive(completed)
       }
       resetUpdateFailureCount(completed.targetKey)
+      const completedVersion = completed.targetVersion ?? operation.version
       storeChangelogRange(
         completed.targetKey,
         completed.previousVersion,
-        operation.version
+        completedVersion
       )
       setChangelogRevision((revision) => revision + 1)
-      showUpdateSuccess(completed, operation.version)
+      showUpdateSuccess(completed, completedVersion)
       if (awayFromInfrastructure && activeRef.current.length > 0) {
         showUpdatesContinuingToast(activeRef.current, () => onRetryTarget(null))
       }
@@ -352,7 +360,7 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
         queryClient.invalidateQueries({ queryKey: queryKeys.relays }),
       ])
       if (operation.component === "hearth") {
-        storeCompletedUpdate(completed, operation.version)
+        storeCompletedUpdate(completed, completedVersion)
         window.setTimeout(() => window.location.reload(), 750)
       }
     }
@@ -408,7 +416,7 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
         targets={pending?.targets ?? []}
         onConfirm={() => {
           if (pending && !updateMutation.isPending) {
-            updateMutation.mutate(pending.targets)
+            updateMutation.mutate(pending)
           }
         }}
         onOpenChange={(nextOpen) => {
@@ -865,6 +873,25 @@ type UpdateTargetRowProps = {
   ) => void
 }
 
+type UpdateTargetStatus = {
+  label: string
+  tone: string
+}
+
+const UpdateStatusCallout = React.memo(function UpdateStatusCallout({
+  status,
+}: {
+  status: UpdateTargetStatus
+}) {
+  return (
+    <span
+      className={`inline-flex h-5 items-center rounded-[3px] border px-2 font-mono text-[8px] font-semibold tracking-[0.08em] uppercase ${status.tone}`}
+    >
+      {status.label}
+    </span>
+  )
+})
+
 const UpdateTargetRow = React.memo(function UpdateTargetRow({
   active,
   focused,
@@ -911,16 +938,15 @@ const UpdateTargetRow = React.memo(function UpdateTargetRow({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="truncate text-sm font-semibold">{target.name}</h3>
-            <span className={`text-[10px] font-medium ${status.tone}`}>
-              {status.label}
-            </span>
+            <UpdateStatusCallout status={status} />
           </div>
-          <p className="mt-1 font-mono text-[10px] text-muted-foreground">
+          <div className="mt-1.5">
             <OverviewVersionLink
               currentVersion={target.currentVersion}
               latestVersion={latestVersion}
+              releases={releases}
             />
-          </p>
+          </div>
           {!target.eligible && target.reason ? (
             <p className="mt-1.5 flex max-w-2xl gap-1.5 text-[10px] leading-4 text-muted-foreground">
               <WifiOff className="mt-px size-3 shrink-0" />
@@ -969,35 +995,48 @@ const UpdateTargetRow = React.memo(function UpdateTargetRow({
 const OverviewVersionLink = React.memo(function OverviewVersionLink({
   currentVersion,
   latestVersion,
+  releases,
 }: {
   currentVersion: string | null
   latestVersion: string
+  releases: ReadonlyArray<PublicKilnRelease>
 }) {
-  if (currentVersion === latestVersion) {
+  const currentRelease = findKilnRelease(releases, currentVersion)
+  if (currentRelease) {
     return (
-      <GitHubVersionLink href={githubReleaseUrl(latestVersion)}>
-        v{latestVersion}
+      <GitHubVersionLink href={currentRelease.url}>
+        <span className="block text-[11px] font-semibold text-foreground">
+          {currentRelease.name}
+        </span>
+        <span className="mt-0.5 block font-mono text-[9px] text-muted-foreground">
+          {currentRelease.tag}
+        </span>
       </GitHubVersionLink>
     )
   }
 
   if (isKilnReleaseVersion(currentVersion)) {
     return (
-      <GitHubVersionLink href={githubCompareUrl(currentVersion, latestVersion)}>
-        v{currentVersion}
-        <span className="mx-2 text-border">→</span>v{latestVersion}
+      <GitHubVersionLink href={githubReleaseUrl(currentVersion)}>
+        <span className="block font-mono text-[9px] text-muted-foreground">
+          v{currentVersion}
+        </span>
       </GitHubVersionLink>
     )
   }
 
+  const latestRelease = findKilnRelease(releases, latestVersion)
   return (
-    <>
-      {displayVersion(currentVersion)}
-      <span className="mx-2 text-border">→</span>
-      <GitHubVersionLink href={githubReleaseUrl(latestVersion)}>
-        v{latestVersion}
+    <div className="text-[10px] text-muted-foreground">
+      <span className="block">{displayVersion(currentVersion)}</span>
+      <GitHubVersionLink
+        href={latestRelease?.url ?? githubReleaseUrl(latestVersion)}
+      >
+        <span className="mt-0.5 block font-mono text-[9px]">
+          Latest: v{latestVersion}
+        </span>
       </GitHubVersionLink>
-    </>
+    </div>
   )
 })
 
@@ -1010,7 +1049,7 @@ const GitHubVersionLink = React.memo(function GitHubVersionLink({
 }) {
   return (
     <a
-      className="rounded-sm transition-colors hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+      className="inline-block rounded-sm transition-colors hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
       href={href}
       rel="noreferrer"
       target="_blank"
@@ -1146,7 +1185,7 @@ const ChangelogSelectionHeader = React.memo(function ChangelogSelectionHeader({
   )
   const selectedTarget = findSelectedTarget(targets, selectedKey)
   const selection = selectedTarget
-    ? changelogSelection(selectedTarget, latestVersion)
+    ? changelogSelection(selectedTarget, latestVersion, overview.releases)
     : { alreadyLatest: false, fromVersion: null }
   const releaseCount = selectedTarget
     ? selection.alreadyLatest
@@ -1205,7 +1244,11 @@ const ChangelogTimeline = React.memo(function ChangelogTimeline({
   const selectedTarget = findSelectedTarget(targets, selectedKey)
   const selectedVersion = selectedTarget?.currentVersion ?? null
   const selection = selectedTarget
-    ? changelogSelection(selectedTarget, availableReleases[0]?.version ?? null)
+    ? changelogSelection(
+        selectedTarget,
+        availableReleases[0]?.version ?? null,
+        availableReleases
+      )
     : { alreadyLatest: false, fromVersion: null }
   const releases = React.useMemo(
     () =>
@@ -1438,6 +1481,7 @@ type UpdateStartAttempt =
 
 async function startUpdates(
   targets: ReadonlyArray<UpdateTarget>,
+  latestVersion: string,
   onStarted: (update: ActiveUpdate) => void,
   onFailure: () => void
 ): Promise<{
@@ -1446,10 +1490,12 @@ async function startUpdates(
   const relayTargets = targets.filter((target) => target.component === "relay")
   const hearthTarget = targets.find((target) => target.component === "hearth")
   const relayAttempts = await Promise.all(
-    relayTargets.map((target) => startUpdate(target, onStarted, onFailure))
+    relayTargets.map((target) =>
+      startUpdate(target, latestVersion, onStarted, onFailure)
+    )
   )
   const hearthAttempt = hearthTarget
-    ? await startUpdate(hearthTarget, onStarted, onFailure)
+    ? await startUpdate(hearthTarget, latestVersion, onStarted, onFailure)
     : null
   const attempts = hearthAttempt
     ? [...relayAttempts, hearthAttempt]
@@ -1465,6 +1511,7 @@ async function startUpdates(
 
 async function startUpdate(
   target: UpdateTarget,
+  latestVersion: string,
   onStarted: (update: ActiveUpdate) => void,
   onFailure: () => void
 ): Promise<UpdateStartAttempt> {
@@ -1493,6 +1540,7 @@ async function startUpdate(
     operationId: started.operation.id,
     previousVersion: target.currentVersion,
     relayId: started.relayId,
+    targetVersion: latestVersion,
     targetKey: target.key,
   } satisfies ActiveUpdate
   onStarted(active)
@@ -1874,9 +1922,10 @@ function changelogReleases(
   fromVersion: string | null
 ): Array<PublicKilnRelease> {
   if (!isKilnReleaseVersion(fromVersion)) return releases.slice(0, 1)
-  const currentReleaseIndex = releases.findIndex(
-    (release) => release.version === fromVersion
-  )
+  const currentRelease = findKilnRelease(releases, fromVersion)
+  const currentReleaseIndex = currentRelease
+    ? releases.indexOf(currentRelease)
+    : -1
   if (currentReleaseIndex >= 0) {
     return releases.slice(0, currentReleaseIndex + 1)
   }
@@ -1903,23 +1952,41 @@ function releaseDates(
 function targetStatus(
   target: UpdateTarget,
   comparison: -1 | 0 | 1 | null
-): { label: string; tone: string } {
+): UpdateTargetStatus {
   if (!target.eligible) {
-    return { label: "Externally managed", tone: "text-muted-foreground" }
+    return {
+      label: "Managed elsewhere",
+      tone: "border-border bg-muted/35 text-muted-foreground",
+    }
   }
   if (target.currentVersion === null) {
-    return { label: "Version unknown", tone: "text-amber-300" }
+    return {
+      label: "Unknown",
+      tone: "border-amber-300/25 bg-amber-300/[0.07] text-amber-200",
+    }
   }
   if (comparison === null) {
-    return { label: "Custom build", tone: "text-sky-300" }
+    return {
+      label: "Custom",
+      tone: "border-sky-300/25 bg-sky-300/[0.07] text-sky-200",
+    }
   }
   if (comparison === 1) {
-    return { label: "Update available", tone: "text-amber-300" }
+    return {
+      label: "Outdated",
+      tone: "border-amber-300/35 bg-amber-300/10 text-amber-200",
+    }
   }
   if (comparison === 0) {
-    return { label: "Up to date", tone: "text-emerald-300" }
+    return {
+      label: "Latest",
+      tone: "border-emerald-300/35 bg-emerald-300/10 text-emerald-200",
+    }
   }
-  return { label: "Ahead of latest", tone: "text-sky-300" }
+  return {
+    label: "Ahead",
+    tone: "border-sky-300/25 bg-sky-300/[0.07] text-sky-200",
+  }
 }
 
 function parseActiveUpdates(value: unknown): Array<ActiveUpdate> {
@@ -1961,6 +2028,12 @@ function parseActiveUpdate(value: unknown): ActiveUpdate | null {
           ? value.previousVersion
           : null,
       relayId,
+      targetVersion:
+        "targetVersion" in value &&
+        (typeof value.targetVersion === "string" ||
+          value.targetVersion === null)
+          ? value.targetVersion
+          : null,
       targetKey:
         "targetKey" in value && typeof value.targetKey === "string"
           ? value.targetKey
@@ -1990,19 +2063,26 @@ type ChangelogRange = {
 
 function changelogSelection(
   target: UpdateTarget,
-  latestVersion: string | null
+  latestVersion: string | null,
+  releases: ReadonlyArray<PublicKilnRelease>
 ): { alreadyLatest: boolean; fromVersion: string | null } {
+  const canonicalCurrentVersion =
+    findKilnRelease(releases, target.currentVersion)?.version ??
+    target.currentVersion
   const ranges = readStorageRecord<ChangelogRange>(changelogRangeStorageKey)
   const range = ranges[target.key]
+  const canonicalRangeVersion =
+    findKilnRelease(releases, range?.toVersion ?? null)?.version ??
+    range?.toVersion
   const recentRange =
-    range?.toVersion === target.currentVersion &&
-    target.currentVersion === latestVersion
+    canonicalRangeVersion === canonicalCurrentVersion &&
+    canonicalCurrentVersion === latestVersion
       ? range
       : null
   return {
     alreadyLatest:
-      target.currentVersion === latestVersion && recentRange === null,
-    fromVersion: recentRange?.fromVersion ?? target.currentVersion,
+      canonicalCurrentVersion === latestVersion && recentRange === null,
+    fromVersion: recentRange?.fromVersion ?? canonicalCurrentVersion,
   }
 }
 
@@ -2076,12 +2156,6 @@ function formatReleaseDate(publishedAt: string | null): string {
 
 function githubReleaseUrl(version: string): string {
   return `${githubReleasesUrl}/tag/${encodeURIComponent(`v${version}`)}`
-}
-
-function githubCompareUrl(fromVersion: string, toVersion: string): string {
-  const fromTag = encodeURIComponent(`v${fromVersion}`)
-  const toTag = encodeURIComponent(`v${toVersion}`)
-  return `${githubRepositoryUrl}/compare/${fromTag}...${toTag}`
 }
 
 function markdownTextLines(
