@@ -1,7 +1,7 @@
 import * as React from "react"
 
-import { Area } from "@/components/dither-kit/area"
-import { AreaChart } from "@/components/dither-kit/area-chart"
+import { Area, Line } from "@/components/dither-kit/area"
+import { AreaChart, LineChart } from "@/components/dither-kit/area-chart"
 import { useChartPart } from "@/components/dither-kit/chart-context"
 import type { ChartConfig } from "@/components/dither-kit/chart-context"
 import { Grid } from "@/components/dither-kit/grid"
@@ -201,9 +201,9 @@ export function ResourceHistoryChart({
 
   const margins = {
     top: resourceId === "network" || resourceId === "storage" ? 18 : 7,
-    right: 16,
+    right: 6,
     bottom: 22,
-    left: 16,
+    left: 6,
   }
 
   const chartClassName = "h-32 w-full"
@@ -224,14 +224,13 @@ export function ResourceHistoryChart({
       ) : null}
 
       {resourceId === "network" ? (
-        <AreaChart
+        <LineChart
           data={chartData}
           config={chartConfig}
           animate
           bloom="off"
           hovered
           margins={margins}
-          stackType="stacked"
           replayOnDataChange={false}
           replayToken={replayToken}
           className={chartClassName}
@@ -244,9 +243,9 @@ export function ResourceHistoryChart({
               `${name === "receivedVisual" ? "↓" : "↑"} ${formatValue(value)}`
             }
           />
-          <Area dataKey="receivedVisual" variant="gradient" />
-          <Area dataKey="sentVisual" variant="gradient" />
-        </AreaChart>
+          <Line dataKey="receivedVisual" />
+          <Line dataKey="sentVisual" />
+        </LineChart>
       ) : (
         <AreaChart
           data={chartData}

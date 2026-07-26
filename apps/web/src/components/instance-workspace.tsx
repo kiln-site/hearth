@@ -1125,7 +1125,10 @@ function resourceItem(instance: InstanceRuntime, id: ResourceId): ResourceItem {
       barValue: resources?.memory.percent ?? null,
       displayValue: formatPercent(resources?.memory.percent),
       historyDisplayValue: resources
-        ? `${formatCompactResourceBytes(resources.memory.usedBytes)} / ${formatCompactResourceBytes(resources.memory.totalBytes)}`
+        ? formatResourceBytePair(
+            resources.memory.usedBytes,
+            resources.memory.totalBytes
+          )
         : "—",
       detail: resources
         ? `${formatBytes(resources.memory.usedBytes)} of ${formatBytes(resources.memory.totalBytes)}`
@@ -1153,10 +1156,16 @@ function resourceItem(instance: InstanceRuntime, id: ResourceId): ResourceItem {
           : "—",
       historyDisplayValue:
         resources && resources.storage.totalBytes > 0
-          ? `${formatCompactResourceBytes(resources.storage.usedBytes)} / ${formatCompactResourceBytes(resources.storage.totalBytes)}`
+          ? formatResourceBytePair(
+              resources.storage.usedBytes,
+              resources.storage.totalBytes
+            )
           : "—",
       historySecondaryDisplayValue: resources
-        ? `${formatCompactResourceBytes(resources.storage.nodeUsedBytes)} / ${formatCompactResourceBytes(resources.storage.nodeTotalBytes)}`
+        ? formatResourceBytePair(
+            resources.storage.nodeUsedBytes,
+            resources.storage.nodeTotalBytes
+          )
         : "—",
       detail: resources
         ? resources.storage.totalBytes > 0
@@ -1358,7 +1367,7 @@ function ResourceHistoryCard({
         sentStats={sentStats}
       />
 
-      <div className="px-2.5 pt-2.5">
+      <div className="px-1.5 pt-2.5">
         <React.Suspense
           fallback={
             <div className="grid h-32 place-items-center border-y border-border/40 font-mono text-[9px] tracking-[0.08em] text-muted-foreground uppercase">
@@ -1575,15 +1584,26 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(value >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`
 }
 
-function formatCompactResourceBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0b"
-  const units = ["b", "kb", "mb", "gb", "tb", "pb"]
+function resourceByteValue(bytes: number): { value: string; unit: string } {
+  if (!Number.isFinite(bytes) || bytes <= 0) return { value: "0", unit: "B" }
+  const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
   const exponent = Math.min(
     Math.floor(Math.log(bytes) / Math.log(1024)),
     units.length - 1
   )
   const value = bytes / 1024 ** exponent
-  return `${Number(value.toPrecision(3))}${units[exponent]}`
+  return {
+    value: String(Number(value.toPrecision(3))),
+    unit: units[exponent] ?? "B",
+  }
+}
+
+function formatResourceBytePair(usedBytes: number, totalBytes: number): string {
+  const used = resourceByteValue(usedBytes)
+  const total = resourceByteValue(totalBytes)
+  return used.unit === total.unit
+    ? `${used.value} / ${total.value} ${total.unit}`
+    : `${used.value} ${used.unit} / ${total.value} ${total.unit}`
 }
 
 function formatBytesPerSecond(bytes: number): string {

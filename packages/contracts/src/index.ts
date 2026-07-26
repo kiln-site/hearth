@@ -553,16 +553,23 @@ export const relayConsoleStreamEventSchema = z.discriminatedUnion("type", [
   }),
 ])
 
+export const relayResourceHistoryMaxSamples = 256
+
 export const relayResourceStreamEventSchema = z.object({
   type: z.literal("resource"),
   instance: relayInstanceSchema,
-  history: z.array(relayInstanceResourcesSchema).max(64).default([]),
+  history: z
+    .array(relayInstanceResourcesSchema)
+    .max(relayResourceHistoryMaxSamples)
+    .default([]),
   sequence: z.number().int().nonnegative(),
 })
 
 export const relayInstanceResourceSnapshotSchema = z.object({
   instance: relayInstanceSchema,
-  history: z.array(relayInstanceResourcesSchema).max(64),
+  history: z
+    .array(relayInstanceResourcesSchema)
+    .max(relayResourceHistoryMaxSamples),
 })
 
 export const relayConsoleCommandSchema = z.object({
