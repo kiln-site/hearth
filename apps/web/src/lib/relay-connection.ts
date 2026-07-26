@@ -30,6 +30,10 @@ export interface RelayEndpoint {
 
 const MAX_BACKOFF_MS = 30_000
 
+class RelayRequestTimeoutError extends Error {
+  override readonly name = "RelayRequestTimeoutError"
+}
+
 export type RelayConnectionStatus =
   | "authenticated"
   | "connecting"
@@ -437,7 +441,7 @@ class RelayConnection {
       }
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(
-          () => reject(new Error("Relay request timed out")),
+          () => reject(new RelayRequestTimeoutError("Relay request timed out")),
           duration
         )
         timer.unref()
@@ -457,15 +461,18 @@ class RelayConnection {
       )
     } catch (cause) {
       const error = asError(cause)
-      Sentry.captureException(error, {
-        tags: {
-          "kiln.operation": request.operation,
-          "kiln.relay_id": this.#relay.id,
-        },
-      })
+      const timedOut = error instanceof RelayRequestTimeoutError
+      if (!timedOut) {
+        Sentry.captureException(error, {
+          tags: {
+            "kiln.operation": request.operation,
+            "kiln.relay_id": this.#relay.id,
+          },
+        })
+      }
       socket.send(
         JSON.stringify({
-          code: "hearth_operation_failed",
+          code: timedOut ? "request_cancelled" : "hearth_operation_failed",
           id: randomUUID(),
           message: error.message,
           replyTo: request.id,

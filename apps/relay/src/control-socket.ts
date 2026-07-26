@@ -386,7 +386,6 @@ function authenticateSocket(
         currentClient,
         controller.signal
       )
-      if (controller.signal.aborted) throw new Error("Request timed out")
       if (isAuditedMutation(request.operation)) {
         void options
           .runEffect(

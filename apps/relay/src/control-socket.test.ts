@@ -119,12 +119,17 @@ describe("Relay control socket", () => {
     let pushSnapshot: ((snapshot: unknown) => void) | undefined
     const control = attachControlSocket({
       execute: async (request, _client, signal) => {
-        if (request.payload === "wait-for-timeout") {
+        if (
+          request.payload === "finish-at-timeout" ||
+          request.payload === "wait-for-timeout"
+        ) {
           await new Promise<void>((resolve) => {
             if (signal.aborted) resolve()
             else
               signal.addEventListener("abort", () => resolve(), { once: true })
           })
+        }
+        if (request.payload === "wait-for-timeout") {
           throw new Error("Request aborted")
         }
         return { ok: true }
@@ -275,6 +280,23 @@ describe("Relay control socket", () => {
       expect(timedOut.type).toBe("error")
       if (timedOut.type === "error") {
         expect(timedOut.code).toBe("request_cancelled")
+      }
+
+      socket.send(
+        JSON.stringify({
+          deadline: Date.now() + 5_000,
+          id: randomBytes(12).toString("hex"),
+          operation: "relay.snapshot",
+          payload: "finish-at-timeout",
+          timeoutMs: 10,
+          type: "request",
+          v: 1,
+        })
+      )
+      const completedAtTimeout = await inbox.next()
+      expect(completedAtTimeout.type).toBe("response")
+      if (completedAtTimeout.type === "response") {
+        expect(completedAtTimeout.payload).toEqual({ ok: true })
       }
 
       socket.send(
