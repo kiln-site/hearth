@@ -10,7 +10,8 @@ import { Tooltip } from "@/components/dither-kit/tooltip"
 
 const NETWORK_SENT_SEED = seedFromOklch(0.73, 0.15, 65)
 const NETWORK_RECEIVED_SEED = seedFromOklch(0.78, 0.11, 205)
-const NODE_STORAGE_SEED = seedFromOklch(0.58, 0.035, 210)
+const NODE_STORAGE_COLOR = "oklch(0.72 0.13 75)"
+const NODE_STORAGE_SEED = seedFromCssColor(NODE_STORAGE_COLOR)
 const RESOURCE_VISUAL_FLOOR_RATIO = 0.06
 
 function clamp01(value: number) {
@@ -213,7 +214,14 @@ export function ResourceHistoryChart({
       {resourceId === "network" || resourceId === "storage" ? (
         <div className="pointer-events-none absolute top-0 right-3 z-10 flex items-center gap-3 font-mono text-[8px] tracking-[0.07em] text-muted-foreground">
           <span className="flex items-center gap-1.5">
-            <span className="h-1.5 w-3 bg-current opacity-70" />
+            <span
+              className={`h-1.5 w-3 ${resourceId === "network" ? "bg-current opacity-70" : ""}`}
+              style={
+                resourceId === "storage"
+                  ? { backgroundColor: NODE_STORAGE_COLOR }
+                  : undefined
+              }
+            />
             {resourceId === "network" ? "↓ DOWN" : "NODE"}
           </span>
           <span className="flex items-center gap-1.5">
@@ -265,6 +273,7 @@ export function ResourceHistoryChart({
           {resourceId === "storage" ? (
             <Area dataKey="secondaryVisual" variant="gradient" />
           ) : null}
+          {/* Instance is painted last so it stays in front of node usage. */}
           <Area dataKey="valueVisual" variant="gradient" />
         </AreaChart>
       )}
