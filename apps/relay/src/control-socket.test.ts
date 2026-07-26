@@ -8,10 +8,13 @@ import { describe, expect, it } from "vite-plus/test"
 import {
   relayAuthChallengeTranscript,
   relayAuthResponseTranscript,
+  relayControlDeadlineMs,
+  relayControlRequestTimeoutMs,
   relayControlProtocol,
 } from "@workspace/contracts"
 import type {
   RelayAuthChallenge,
+  RelayControlRequest,
   RelayControlServerMessage,
 } from "@workspace/contracts"
 
@@ -19,6 +22,40 @@ import { attachControlSocket } from "./control-socket.js"
 import { fingerprint } from "./effect/identity.js"
 import { RelayStateStore } from "./effect/state.js"
 import type { RelayClientRecord } from "./effect/state.js"
+
+describe("Relay control timeouts", () => {
+  it("prefers relative timeouts and clamps them to the operation maximum", () => {
+    const request: RelayControlRequest = {
+      deadline: 1,
+      id: "request",
+      operation: "relay.update.apply",
+      payload: {},
+      timeoutMs: relayControlDeadlineMs("relay.update.apply") + 60_000,
+      type: "request",
+      v: 1,
+    }
+
+    expect(relayControlRequestTimeoutMs(request, 10_000_000)).toBe(
+      relayControlDeadlineMs("relay.update.apply")
+    )
+    expect(
+      relayControlRequestTimeoutMs({ ...request, timeoutMs: 0 }, 10_000_000)
+    ).toBeNull()
+    expect(
+      relayControlRequestTimeoutMs(
+        {
+          deadline: 15_000,
+          id: "legacy-request",
+          operation: "relay.snapshot",
+          payload: {},
+          type: "request",
+          v: 1,
+        },
+        10_000
+      )
+    ).toBe(5_000)
+  })
+})
 
 describe("Relay control socket", () => {
   it("authenticates a paired Hearth and executes an authorized request", async () => {
@@ -81,7 +118,17 @@ describe("Relay control socket", () => {
     const server = createServer()
     let pushSnapshot: ((snapshot: unknown) => void) | undefined
     const control = attachControlSocket({
-      execute: async () => ({ ok: true }),
+      execute: async (request, _client, signal) => {
+        if (request.payload === "wait-for-timeout") {
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) resolve()
+            else
+              signal.addEventListener("abort", () => resolve(), { once: true })
+          })
+          throw new Error("Request aborted")
+        }
+        return { ok: true }
+      },
       identity: {
         fingerprint: fingerprint(relayKeys.publicKey),
         name: "Test Relay",
@@ -135,6 +182,29 @@ describe("Relay control socket", () => {
       expect((await inbox.next()).type).toBe("auth.ready")
       expect((await inbox.next()).type).toBe("event")
 
+      const reverseResult = control.requestClients(
+        "sftp.authorization.resolve",
+        { username: "owner.server" },
+        5_000
+      )
+      const reverseRequest = await inbox.next()
+      expect(reverseRequest.type).toBe("request")
+      if (reverseRequest.type === "request") {
+        expect(reverseRequest.timeoutMs).toBe(5_000)
+        socket.send(
+          JSON.stringify({
+            id: randomBytes(12).toString("hex"),
+            payload: { allowed: true },
+            replyTo: reverseRequest.id,
+            type: "response",
+            v: 1,
+          })
+        )
+      }
+      await expect(reverseResult).resolves.toEqual([
+        { clientId: client.id, payload: { allowed: true } },
+      ])
+
       blockClientLookup = true
       const request = {
         deadline: Date.now() + 5_000,
@@ -159,6 +229,53 @@ describe("Relay control socket", () => {
         expect(response.payload).toEqual({ ok: true })
       }
       blockClientLookup = false
+
+      socket.send(
+        JSON.stringify({
+          deadline: 1,
+          id: randomBytes(12).toString("hex"),
+          operation: "relay.snapshot",
+          payload: {},
+          timeoutMs: 5_000,
+          type: "request",
+          v: 1,
+        })
+      )
+      expect((await inbox.next()).type).toBe("response")
+
+      socket.send(
+        JSON.stringify({
+          deadline: Date.now() + 5_000,
+          id: randomBytes(12).toString("hex"),
+          operation: "relay.snapshot",
+          payload: {},
+          timeoutMs: 0,
+          type: "request",
+          v: 1,
+        })
+      )
+      const invalidTimeout = await inbox.next()
+      expect(invalidTimeout.type).toBe("error")
+      if (invalidTimeout.type === "error") {
+        expect(invalidTimeout.code).toBe("invalid_timeout")
+      }
+
+      socket.send(
+        JSON.stringify({
+          deadline: Date.now() + 5_000,
+          id: randomBytes(12).toString("hex"),
+          operation: "relay.snapshot",
+          payload: "wait-for-timeout",
+          timeoutMs: 10,
+          type: "request",
+          v: 1,
+        })
+      )
+      const timedOut = await inbox.next()
+      expect(timedOut.type).toBe("error")
+      if (timedOut.type === "error") {
+        expect(timedOut.code).toBe("request_cancelled")
+      }
 
       socket.send(
         JSON.stringify({

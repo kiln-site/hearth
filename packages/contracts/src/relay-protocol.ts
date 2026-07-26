@@ -10,6 +10,7 @@ export const relayBrowserConsoleProtocols = [
 ] as const
 export const relayBrowserMaxFrameBytes = 256 * 1024
 export const relayPairingProtocol = "kiln-relay-pair.v1" as const
+export const relayAuthenticationWindowMs = 10_000
 
 export const relayControlOperations = [
   "relay.snapshot",
@@ -97,10 +98,13 @@ export const RelayAuthReadySchema = Schema.Struct({
 })
 
 export const RelayControlRequestSchema = Schema.Struct({
+  // Retain the absolute deadline while v1 peers are still in the fleet. New
+  // peers use timeoutMs so request enforcement does not depend on host clocks.
   deadline: Schema.Number,
   id: Schema.String,
   operation: RelayControlOperationSchema,
   payload: Schema.Unknown,
+  timeoutMs: Schema.optionalKey(Schema.Number),
   type: Schema.Literal("request"),
   v: Schema.Literal(1),
 })
@@ -168,6 +172,15 @@ export type RelayControlClientMessage =
   typeof RelayControlClientMessageSchema.Type
 export type RelayControlServerMessage =
   typeof RelayControlServerMessageSchema.Type
+
+export function relayControlRequestTimeoutMs(
+  request: RelayControlRequest,
+  receivedAt: number
+): number | null {
+  const requested = request.timeoutMs ?? request.deadline - receivedAt
+  if (!Number.isFinite(requested) || requested <= 0) return null
+  return Math.min(requested, relayControlDeadlineMs(request.operation))
+}
 
 export function relayAuthChallengeTranscript(
   challenge: Omit<RelayAuthChallenge, "signature">

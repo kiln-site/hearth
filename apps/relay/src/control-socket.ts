@@ -12,9 +12,11 @@ import * as Sentry from "@sentry/node"
 
 import {
   RelayControlClientMessageSchema,
+  relayAuthenticationWindowMs,
   relayAuthChallengeTranscript,
   relayAuthResponseTranscript,
   relayControlDeadlineMs,
+  relayControlRequestTimeoutMs,
   relayControlProtocol,
 } from "@workspace/contracts"
 import type {
@@ -35,7 +37,6 @@ import type { RelayIdentity } from "./effect/identity.js"
 import type { RelayClientGrant, RelayStateStore } from "./effect/state.js"
 import type { Server } from "node:http"
 
-const AUTHENTICATION_WINDOW_MS = 10_000
 const HEARTBEAT_INTERVAL_MS = 15_000
 const MAX_BUFFERED_BYTES = 4 * 1024 * 1024
 const MAX_IN_FLIGHT_REQUESTS = 32
@@ -202,7 +203,7 @@ function authenticateSocket(
   peerAddress: string | undefined
 ): void {
   const unsignedChallenge = {
-    expiresAt: Date.now() + AUTHENTICATION_WINDOW_MS,
+    expiresAt: Date.now() + relayAuthenticationWindowMs,
     nonce: randomBytes(32).toString("base64url"),
     relayId: options.identity.fingerprint,
     sessionId: randomUUID(),
@@ -233,7 +234,7 @@ function authenticateSocket(
   >()
   const authenticationTimeout = setTimeout(() => {
     if (!authenticatedClient) socket.close(4401, "Authentication timed out")
-  }, AUTHENTICATION_WINDOW_MS)
+  }, relayAuthenticationWindowMs)
   authenticationTimeout.unref()
 
   socket.on("pong", () => {
@@ -354,22 +355,22 @@ function authenticateSocket(
   ): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | null = null
     try {
-      const now = Date.now()
-      if (
-        request.deadline <= now ||
-        request.deadline > now + relayControlDeadlineMs(request.operation)
-      ) {
+      const duration = relayControlRequestTimeoutMs(request, Date.now())
+      if (duration === null) {
         sendError(
           socket,
           request.id,
-          "invalid_deadline",
-          "Request deadline is invalid"
+          "invalid_timeout",
+          "Request timeout is invalid"
         )
         return
       }
+      timer = setTimeout(() => controller.abort(), duration)
+      timer.unref()
       const currentClient = await options.runEffect(
         options.state.findClientById(sessionClient.id)
       )
+      if (controller.signal.aborted) throw new Error("Request timed out")
       if (!currentClient) {
         socket.close(4403, "Hearth client was revoked")
         return
@@ -380,23 +381,12 @@ function authenticateSocket(
         sendError(socket, request.id, "forbidden", "Relay permission denied")
         return
       }
-      const remaining = request.deadline - Date.now()
-      if (remaining <= 0) {
-        sendError(
-          socket,
-          request.id,
-          "request_cancelled",
-          "Request deadline elapsed"
-        )
-        return
-      }
-      timer = setTimeout(() => controller.abort(), remaining)
-      timer.unref()
       const payload = await options.execute(
         request,
         currentClient,
         controller.signal
       )
+      if (controller.signal.aborted) throw new Error("Request timed out")
       if (isAuditedMutation(request.operation)) {
         void options
           .runEffect(
@@ -510,6 +500,7 @@ function authenticateSocket(
       id,
       operation,
       payload,
+      timeoutMs: duration,
       type: "request",
       v: 1,
     }
