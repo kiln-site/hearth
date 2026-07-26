@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vite-plus/test"
 
 import type { KilnReleaseManifest } from "@/effect/github-releases"
-import { validateUpdateManifest } from "@/lib/update-manifest"
+import {
+  updateTargetVersion,
+  validateUpdateManifest,
+} from "@/lib/update-manifest"
 
 const manifest: KilnReleaseManifest = {
   channel: "nightly",
@@ -25,6 +28,27 @@ const manifest: KilnReleaseManifest = {
 }
 
 describe("update manifest validation", () => {
+  it("uses the baked alias when applying a migrated nightly", () => {
+    expect(
+      updateTargetVersion({
+        ...manifest,
+        imageVersion: "0.1.0-nightly.2",
+        version: "0.1.0-nightly.20260725.162524",
+      })
+    ).toBe("0.1.0-nightly.2")
+  })
+
+  it("keeps the stable version when applying a promoted nightly image", () => {
+    expect(
+      updateTargetVersion({
+        ...manifest,
+        channel: "stable",
+        imageVersion: "0.1.0-nightly.20260725.162524",
+        version: "0.1.0",
+      })
+    ).toBe("0.1.0")
+  })
+
   it("accepts the current Relay protocol", () => {
     expect(() =>
       validateUpdateManifest(manifest, "0.1.0-nightly.2", "relay")

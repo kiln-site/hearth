@@ -9,7 +9,10 @@ import { runAppEffect } from "@/effect/runtime"
 import { isPlatformAdmin } from "@/lib/access-control"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import { listPersistedRelays } from "@/lib/relay-registry"
-import { validateUpdateManifest } from "@/lib/update-manifest"
+import {
+  updateTargetVersion,
+  validateUpdateManifest,
+} from "@/lib/update-manifest"
 import { requireAuthenticatedUser } from "@/server/auth"
 
 const componentSchema = z.enum(["hearth", "relay"])
@@ -184,7 +187,7 @@ export const startSystemUpdate = createServerFn({ method: "POST" })
           helperImage: immutableImage(manifest.components.relay),
           targetContainer: inspection.container,
           targetImage: immutableImage(component),
-          version: manifest.imageVersion ?? manifest.version,
+          version: updateTargetVersion(manifest),
         },
         15 * 60_000
       )

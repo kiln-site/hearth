@@ -228,11 +228,9 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
+            # A manual dispatch can revisit the same commit-derived tag with a
+            # newer run number. Keep its published display alias immutable.
             gh release upload "$TAG" release-manifest.json --clobber
-            gh release edit "$TAG" \
-              --prerelease \
-              --latest=false \
-              --title "$DISPLAY_NAME"
           else
             gh release create "$TAG" release-manifest.json \
               --prerelease \

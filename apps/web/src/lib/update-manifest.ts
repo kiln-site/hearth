@@ -6,6 +6,14 @@ import {
 
 import type { KilnReleaseManifest } from "@/effect/github-releases"
 
+export function updateTargetVersion(
+  manifest: KilnReleaseManifest
+): string {
+  return manifest.channel === "nightly"
+    ? (manifest.imageVersion ?? manifest.version)
+    : manifest.version
+}
+
 export function validateUpdateManifest(
   manifest: KilnReleaseManifest,
   version: string,
