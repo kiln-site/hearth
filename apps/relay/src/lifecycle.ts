@@ -3,6 +3,7 @@ import {
   chmod,
   chown,
   mkdir,
+  readdir,
   readFile,
   rm,
   statfs,
@@ -25,13 +26,21 @@ import type {
   RelayProxySettings,
   RelayTailscaleOverview,
   RelayTailscaleSettings,
+  RelayTailscaleStack,
+  RelayTailscaleStackApply,
+  RelayTailscaleStackConfig,
+  RelayTailscaleStackDns,
   RelayUpdateInstanceStartup,
 } from "@workspace/contracts"
 import {
+  builtinTailscaleBrickId,
+  builtinTailscaleBrickSource,
   relayDiskAllocationAvailableBytes,
   relayProxySettingsSchema,
   relayTailscaleOverviewSchema,
   relayTailscaleSettingsSchema,
+  relayTailscaleStackConfigSchema,
+  relayTailscaleStackSchema,
 } from "@workspace/contracts"
 import type { BrickCatalog } from "./bricks.js"
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
@@ -51,6 +60,9 @@ import {
 
 const OWNED_LABEL = "kiln.relay.owned=true"
 const TAILSCALE_IMAGE = "tailscale/tailscale:stable"
+const COREDNS_IMAGE = "coredns/coredns:1.14.2"
+const TAILSCALE_STACK_DISK_BYTES = 128 * 1024 * 1024
+const TAILSCALE_STACK_MEMORY_BYTES = 64 * 1024 * 1024
 
 function dockerMemoryBytes(value: string): number {
   const match = value.match(/^(\d+)([bkmgt])$/iu)
@@ -331,6 +343,191 @@ export class LifecycleDriver {
           : "unknown error"
       throw new Error(`Could not install Tailscale: ${message}`)
     }
+  }
+
+  async tailscaleStacks(): Promise<Array<RelayTailscaleStack>> {
+    const entries = await readdir(this.#config.rootDirectory, {
+      encoding: "utf8",
+      withFileTypes: true,
+    }).catch((cause: unknown) => {
+      if (hasErrorCode(cause, "ENOENT")) return []
+      throw cause
+    })
+    const stacks = await Promise.all(
+      entries
+        .filter(
+          (entry) =>
+            entry.isDirectory() && /^[a-f0-9]{40}$/u.test(entry.name)
+        )
+        .map(async (entry) => {
+          const config = await this.#readTailscaleStackConfig(entry.name)
+          return config ? this.#tailscaleStack(config) : null
+        })
+    )
+    return stacks
+      .filter((stack): stack is RelayTailscaleStack => stack !== null)
+      .sort((left, right) => left.name.localeCompare(right.name))
+  }
+
+  async applyTailscaleStack(
+    rawInput: RelayTailscaleStackApply
+  ): Promise<RelayTailscaleStack> {
+    const input = rawInput
+    const existing = await this.#readTailscaleStackConfig(input.id)
+    const instances = await this.#docker.inspectInstances()
+    for (const binding of input.bindings) {
+      const instance = instances.find(
+        (candidate) => candidate.id === binding.instanceId
+      )
+      if (!instance || !instance.managedByRelay) {
+        throw new Error(`Server ${binding.instanceId.slice(0, 8)} was not found`)
+      }
+      if (instance.brickId === builtinTailscaleBrickId) {
+        throw new Error("A Tailscale deployment cannot attach to itself")
+      }
+    }
+
+    const duplicateHostname = input.bindings.find(
+      (binding, index, bindings) =>
+        bindings.findIndex(
+          (candidate) => candidate.hostname === binding.hostname
+        ) !== index
+    )
+    if (duplicateHostname) {
+      throw new Error(
+        `Hostname ${duplicateHostname.hostname}.${input.domain} is selected more than once`
+      )
+    }
+
+    const subnet = existing?.subnet ?? tailscaleStackSubnet(input.id, this.#config.nodeId)
+    const previousByInstance = new Map(
+      existing?.bindings.map((binding) => [binding.instanceId, binding]) ?? []
+    )
+    const reserved = new Set(
+      (existing?.bindings ?? []).map((binding) => binding.address)
+    )
+    const bindings = input.bindings.map((binding) => {
+      const previous = previousByInstance.get(binding.instanceId)
+      return {
+        ...binding,
+        address:
+          previous?.address ?? allocateTailscaleBindingAddress(subnet, reserved),
+      }
+    })
+    const config = relayTailscaleStackConfigSchema.parse({
+      bindings,
+      domain: input.domain,
+      hostname: input.hostname,
+      id: input.id,
+      name: input.name,
+      subnet,
+    })
+
+    const containerName = this.#resources.tailscaleStackContainer(input.id)
+    const containerExists = await this.#containerExists(containerName)
+    if (!containerExists && !input.authKey) {
+      throw new Error("An auth key is required to install Tailscale on this node")
+    }
+
+    try {
+      await this.#ensureTailscaleStackNetwork(config)
+      await this.#writeTailscaleStackConfig(config)
+      if (!containerExists) {
+        await this.#installTailscaleStack(config, input.authKey!)
+      } else if (
+        existing &&
+        (existing.domain !== config.domain ||
+          existing.hostname !== config.hostname ||
+          existing.name !== config.name)
+      ) {
+        await this.#restartTailscaleStack(config)
+      }
+      // Docker can attach and detach a running game container from this
+      // private bridge without recreating or restarting it.
+      await this.#reconcileTailscaleStackBindings(
+        config.id,
+        existing?.bindings ?? [],
+        config.bindings
+      )
+      await this.#configureTailscaleStackRouting(config)
+      await this.#ensureTailscaleStackDns(
+        config,
+        config.bindings.map(({ address, hostname }) => ({ address, hostname }))
+      )
+      return this.#tailscaleStack(config)
+    } catch (cause) {
+      await this.#rollbackTailscaleStackApply(config, existing).catch(
+        () => undefined
+      )
+      const message =
+        cause instanceof Error
+          ? input.authKey
+            ? cause.message.replaceAll(input.authKey, "[REDACTED]")
+            : cause.message
+          : "unknown error"
+      throw new Error(`Could not apply Tailscale stack: ${message}`)
+    }
+  }
+
+  async syncTailscaleStackDns(
+    input: RelayTailscaleStackDns
+  ): Promise<RelayTailscaleStack> {
+    const config = await this.#readTailscaleStackConfig(input.id)
+    if (!config) throw new Error("Tailscale stack not found")
+    const duplicateHostname = input.records.find(
+      (record, index, records) =>
+        records.findIndex(
+          (candidate) => candidate.hostname === record.hostname
+        ) !== index
+    )
+    if (duplicateHostname) {
+      throw new Error(`Duplicate private hostname ${duplicateHostname.hostname}`)
+    }
+    await this.#ensureTailscaleStackDns(config, input.records)
+    return this.#tailscaleStack(config)
+  }
+
+  async removeTailscaleStack(id: string): Promise<void> {
+    const config = await this.#readTailscaleStackConfig(id)
+    if (!config) return
+    const network = this.#resources.tailscaleStackNetwork(id)
+    for (const binding of config.bindings) {
+      const instance = await this.#docker.findInstance(binding.instanceId)
+      if (instance) {
+        await command("docker", [
+          "network",
+          "disconnect",
+          "--force",
+          network,
+          instance.service,
+        ]).catch(() => undefined)
+      }
+    }
+    const container = this.#resources.tailscaleStackContainer(id)
+    await command("docker", [
+      "exec",
+      container,
+      "tailscale",
+      "logout",
+    ]).catch(() => undefined)
+    await this.#removeOwnedContainer(
+      this.#resources.tailscaleStackDnsContainer(id)
+    )
+    await this.#removeOwnedContainer(container)
+    await this.#removeOwnedNetwork(network)
+    await rm(join(this.#config.rootDirectory, id), {
+      force: true,
+      recursive: true,
+    })
+    await rm(
+      join(
+        this.#config.dataDirectory,
+        "infrastructure",
+        "tailscale-stacks",
+        id
+      ),
+      { force: true, recursive: true }
+    )
   }
 
   async proxySettings(): Promise<RelayProxySettings> {
@@ -707,6 +904,29 @@ export class LifecycleDriver {
     action: "start" | "stop" | "restart" | "kill",
     routes: ReadonlyArray<RelayInstanceWebRoute>
   ): Promise<RelayInstance> {
+    if (instance.brickId === builtinTailscaleBrickId) {
+      const coreDns = this.#resources.tailscaleStackDnsContainer(instance.id)
+      if (action === "stop" || action === "kill") {
+        await command("docker", [action, coreDns]).catch(() => undefined)
+        return this.#docker.runAction(instance, action)
+      }
+      const updated = await this.#docker.runAction(instance, action)
+      const config = await this.#readTailscaleStackConfig(instance.id)
+      if (
+        config &&
+        !(await this.#waitForTailscaleStackConnection(instance.id, 45_000))
+      ) {
+        throw new Error(
+          "Tailscale did not reconnect with its persisted identity"
+        )
+      }
+      if (config) await this.#configureTailscaleStackRouting(config)
+      await command("docker", [
+        action === "restart" ? "restart" : "start",
+        coreDns,
+      ]).catch(() => undefined)
+      return updated
+    }
     if (action === "start" || action === "restart") {
       const usedBytes = await directoryApparentSize(
         join(this.#config.rootDirectory, instance.directory)
@@ -752,6 +972,11 @@ export class LifecycleDriver {
   }
 
   async createInstance(input: RelayCreateInstance): Promise<RelayInstance> {
+    if (input.recipe === builtinTailscaleBrickSource) {
+      throw new Error(
+        "Create Tailscale from the Tailscale page so Hearth can place its node deployments"
+      )
+    }
     const id = randomBytes(32).toString("hex").slice(0, 40)
     return this.#provisionManagedInstance({
       diskLimitBytes: input.diskLimitBytes,
@@ -773,6 +998,11 @@ export class LifecycleDriver {
     if (!existing) throw new Error("Instance not found")
     if (!existing.managedByRelay) {
       throw new Error("Relay can only reconfigure containers it created")
+    }
+    if (existing.brickId === builtinTailscaleBrickId) {
+      throw new Error(
+        "Configure this Tailscale network from Infrastructure → Tailscale"
+      )
     }
     const recipe = input.recipe ?? existing.brickSource
     if (!recipe) {
@@ -1197,6 +1427,11 @@ export class LifecycleDriver {
     if (!instance) throw new Error("Instance not found")
     if (!instance.managedByRelay) {
       throw new Error("Relay can only delete containers it created")
+    }
+    if (instance.brickId === builtinTailscaleBrickId) {
+      throw new Error(
+        "Remove this logical network from Infrastructure → Tailscale so every node is cleaned up"
+      )
     }
     await command("docker", ["stop", "--time", "30", instance.service], {
       timeout: 45_000,
@@ -1676,6 +1911,535 @@ export class LifecycleDriver {
       overview.status.dnsAddress,
       true
     )
+  }
+
+  async #readTailscaleStackConfig(
+    id: string
+  ): Promise<RelayTailscaleStackConfig | null> {
+    try {
+      return relayTailscaleStackConfigSchema.parse(
+        JSON.parse(
+          await readFile(
+            join(this.#config.rootDirectory, id, "stack.json"),
+            "utf8"
+          )
+        )
+      )
+    } catch (cause) {
+      if (hasErrorCode(cause, "ENOENT")) return null
+      throw cause
+    }
+  }
+
+  async #writeTailscaleStackConfig(
+    config: RelayTailscaleStackConfig
+  ): Promise<void> {
+    const directory = join(this.#config.rootDirectory, config.id)
+    await mkdir(directory, { recursive: true, mode: 0o700 })
+    await writeFile(
+      join(directory, "stack.json"),
+      `${JSON.stringify(config, null, 2)}\n`,
+      { mode: 0o600 }
+    )
+  }
+
+  async #ensureTailscaleStackNetwork(
+    config: RelayTailscaleStackConfig
+  ): Promise<void> {
+    const name = this.#resources.tailscaleStackNetwork(config.id)
+    const inspected = await command("docker", [
+      "network",
+      "inspect",
+      "--format",
+      "{{json .Labels}}",
+      name,
+    ]).catch(() => null)
+    if (inspected) {
+      const labels = stringLabels(JSON.parse(inspected.stdout))
+      if (
+        labels["kiln.relay.network"] !== `tailscale:${config.id}` ||
+        !relayOwnsLabels(this.#config, labels)
+      ) {
+        throw new Error(
+          `Docker network ${name} exists but is not owned by this Tailscale stack`
+        )
+      }
+      return
+    }
+    const arguments_ = [
+      "network",
+      "create",
+      "--driver",
+      "bridge",
+      "--subnet",
+      config.subnet,
+      "--label",
+      `kiln.relay.network=tailscale:${config.id}`,
+    ]
+    const ownerLabel = relayOwnerLabel(this.#config)
+    if (ownerLabel) arguments_.push("--label", ownerLabel)
+    arguments_.push(name)
+    await command("docker", arguments_)
+  }
+
+  async #reconcileTailscaleStackBindings(
+    stackId: string,
+    previous: ReadonlyArray<RelayTailscaleStackConfig["bindings"][number]>,
+    desired: ReadonlyArray<RelayTailscaleStackConfig["bindings"][number]>
+  ): Promise<void> {
+    const network = this.#resources.tailscaleStackNetwork(stackId)
+    const previousById = new Map(
+      previous.map((binding) => [binding.instanceId, binding])
+    )
+    const desiredById = new Map(
+      desired.map((binding) => [binding.instanceId, binding])
+    )
+    for (const binding of previous) {
+      const replacement = desiredById.get(binding.instanceId)
+      if (replacement?.address === binding.address) continue
+      const instance = await this.#docker.findInstance(binding.instanceId)
+      if (!instance) continue
+      await command("docker", [
+        "network",
+        "disconnect",
+        "--force",
+        network,
+        instance.service,
+      ]).catch(() => undefined)
+    }
+    for (const binding of desired) {
+      const prior = previousById.get(binding.instanceId)
+      const instance = await this.#docker.findInstance(binding.instanceId)
+      if (!instance) continue
+      if (
+        prior?.address === binding.address &&
+        (await containerUsesNetwork(instance.service, network))
+      ) {
+        continue
+      }
+      if (await containerUsesNetwork(instance.service, network)) {
+        await command("docker", [
+          "network",
+          "disconnect",
+          "--force",
+          network,
+          instance.service,
+        ])
+      }
+      await command("docker", [
+        "network",
+        "connect",
+        "--ip",
+        binding.address,
+        network,
+        instance.service,
+      ])
+    }
+  }
+
+  async #installTailscaleStack(
+    config: RelayTailscaleStackConfig,
+    authKey: string
+  ): Promise<void> {
+    const stateDirectory = join(
+      this.#config.dataDirectory,
+      "infrastructure",
+      "tailscale-stacks",
+      config.id,
+      "state"
+    )
+    await mkdir(stateDirectory, { recursive: true, mode: 0o700 })
+    for (const image of [TAILSCALE_IMAGE, COREDNS_IMAGE]) {
+      await command("docker", ["image", "inspect", image]).catch(() =>
+        command("docker", ["pull", image], { timeout: 300_000 })
+      )
+    }
+    const name = this.#resources.tailscaleStackContainer(config.id)
+    try {
+      await this.#replaceContainer(
+        name,
+        await this.#tailscaleStackContainerArguments(config, true),
+        { ...process.env, TS_AUTHKEY: authKey }
+      )
+      if (!(await this.#waitForTailscaleStackConnection(config.id, 90_000))) {
+        throw new Error("Tailscale did not connect in time")
+      }
+      // Remove the one-time key from Docker metadata after the persisted
+      // machine identity has authenticated.
+      await this.#replaceContainer(
+        name,
+        await this.#tailscaleStackContainerArguments(config, false)
+      )
+      if (!(await this.#waitForTailscaleStackConnection(config.id, 45_000))) {
+        throw new Error(
+          "Tailscale did not reconnect with its persisted identity"
+        )
+      }
+    } catch (cause) {
+      await this.#removeOwnedContainer(name).catch(() => undefined)
+      const message =
+        cause instanceof Error
+          ? cause.message.replaceAll(authKey, "[REDACTED]")
+          : "unknown error"
+      throw new Error(message)
+    }
+  }
+
+  async #tailscaleStackContainerArguments(
+    config: RelayTailscaleStackConfig,
+    includeAuthKey: boolean
+  ): Promise<Array<string>> {
+    const hostRoot = await this.#hostDataDirectory()
+    const arguments_ = [
+      "--hostname",
+      config.hostname,
+      "--network",
+      this.#resources.tailscaleStackNetwork(config.id),
+      "--ip",
+      tailscaleStackServiceAddress(config.subnet),
+      "--restart",
+      "unless-stopped",
+      "--cap-add",
+      "NET_ADMIN",
+      "--cap-add",
+      "NET_RAW",
+      "--device",
+      "/dev/net/tun:/dev/net/tun",
+      "--sysctl",
+      "net.ipv4.ip_forward=1",
+      "--sysctl",
+      "net.ipv6.conf.all.forwarding=1",
+      "--pids-limit",
+      "128",
+      "--memory-reservation",
+      "16m",
+      "--memory",
+      "64m",
+      "--memory-swap",
+      "64m",
+      "--label",
+      "kiln.relay.managed=true",
+      "--label",
+      OWNED_LABEL,
+      "--label",
+      `kiln.server.id=${config.id}`,
+      "--label",
+      `kiln.brick.id=${builtinTailscaleBrickId}`,
+      "--label",
+      "kiln.brick.format=kiln.brick/v1",
+      "--label",
+      `kiln.brick.source=${builtinTailscaleBrickSource}`,
+      "--label",
+      "kiln.brick.variables={}",
+      "--label",
+      "kiln.brick.network-mode=direct",
+      "--label",
+      "kiln.brick.primary-port=53",
+      "--label",
+      `kiln.instance.name=${config.name}`,
+      "--label",
+      "kiln.instance.version=stable",
+      "--label",
+      "kiln.instance.java=Tailscale + CoreDNS",
+      "--label",
+      "kiln.instance.game=Networking",
+      "--label",
+      `kiln.instance.hostname=${config.hostname}.${config.domain}`,
+      "--label",
+      `kiln.instance.directory=${config.id}`,
+      "--label",
+      `kiln.instance.memory-bytes=${TAILSCALE_STACK_MEMORY_BYTES}`,
+      "--label",
+      `kiln.instance.disk-bytes=${TAILSCALE_STACK_DISK_BYTES}`,
+      "--label",
+      "kiln.instance.mount=/config",
+      "--volume",
+      `${join(hostRoot, "instances", config.id)}:/config`,
+      "--volume",
+      `${join(hostRoot, "infrastructure", "tailscale-stacks", config.id, "state")}:/var/lib/tailscale`,
+      "--env",
+      "TS_STATE_DIR=/var/lib/tailscale",
+      "--env",
+      "TS_USERSPACE=false",
+      "--env",
+      "TS_ACCEPT_DNS=false",
+      "--env",
+      "TS_AUTH_ONCE=true",
+      "--env",
+      `TS_HOSTNAME=${config.hostname}`,
+      "--env",
+      "TS_EXTRA_ARGS=--accept-dns=false",
+    ]
+    if (includeAuthKey) {
+      arguments_.push("--env", "TS_AUTHKEY")
+    }
+    arguments_.push(TAILSCALE_IMAGE)
+    return arguments_
+  }
+
+  async #restartTailscaleStack(
+    config: RelayTailscaleStackConfig
+  ): Promise<void> {
+    await this.#removeOwnedContainer(
+      this.#resources.tailscaleStackDnsContainer(config.id)
+    )
+    await this.#replaceContainer(
+      this.#resources.tailscaleStackContainer(config.id),
+      await this.#tailscaleStackContainerArguments(config, false)
+    )
+    if (!(await this.#waitForTailscaleStackConnection(config.id, 45_000))) {
+      throw new Error(
+        "Tailscale did not reconnect with its persisted identity"
+      )
+    }
+  }
+
+  async #configureTailscaleStackRouting(
+    config: RelayTailscaleStackConfig
+  ): Promise<void> {
+    const container = this.#resources.tailscaleStackContainer(config.id)
+    const chain = "KILN-TAILSCALE"
+    await command("docker", [
+      "exec",
+      container,
+      "iptables",
+      "-N",
+      chain,
+    ]).catch(() => undefined)
+    const hook = await command("docker", [
+      "exec",
+      container,
+      "iptables",
+      "-C",
+      "FORWARD",
+      "-i",
+      "tailscale0",
+      "-j",
+      chain,
+    ]).catch(() => null)
+    if (!hook) {
+      await command("docker", [
+        "exec",
+        container,
+        "iptables",
+        "-I",
+        "FORWARD",
+        "1",
+        "-i",
+        "tailscale0",
+        "-j",
+        chain,
+      ])
+    }
+    await command("docker", [
+      "exec",
+      container,
+      "iptables",
+      "-F",
+      chain,
+    ])
+    for (const binding of config.bindings) {
+      await command("docker", [
+        "exec",
+        container,
+        "iptables",
+        "-A",
+        chain,
+        "-d",
+        `${binding.address}/32`,
+        "-j",
+        "ACCEPT",
+      ])
+    }
+    await command("docker", [
+      "exec",
+      container,
+      "iptables",
+      "-A",
+      chain,
+      "-j",
+      "DROP",
+    ])
+    await command(
+      "docker",
+      [
+        "exec",
+        container,
+        "tailscale",
+        "set",
+        `--hostname=${config.hostname}`,
+        `--advertise-routes=${config.subnet}`,
+      ],
+      { timeout: 30_000 }
+    )
+  }
+
+  async #rollbackTailscaleStackApply(
+    attempted: RelayTailscaleStackConfig,
+    existing: RelayTailscaleStackConfig | null
+  ): Promise<void> {
+    if (existing) {
+      await this.#writeTailscaleStackConfig(existing)
+      await this.#restartTailscaleStack(existing)
+      await this.#reconcileTailscaleStackBindings(
+        existing.id,
+        attempted.bindings,
+        existing.bindings
+      )
+      await this.#configureTailscaleStackRouting(existing)
+      await this.#ensureTailscaleStackDns(
+        existing,
+        existing.bindings.map(({ address, hostname }) => ({
+          address,
+          hostname,
+        }))
+      )
+      return
+    }
+
+    await this.#reconcileTailscaleStackBindings(
+      attempted.id,
+      attempted.bindings,
+      []
+    )
+    await this.#removeOwnedContainer(
+      this.#resources.tailscaleStackDnsContainer(attempted.id)
+    )
+    await this.#removeOwnedContainer(
+      this.#resources.tailscaleStackContainer(attempted.id)
+    )
+    await this.#removeOwnedNetwork(
+      this.#resources.tailscaleStackNetwork(attempted.id)
+    )
+    await rm(join(this.#config.rootDirectory, attempted.id), {
+      force: true,
+      recursive: true,
+    })
+    await rm(
+      join(
+        this.#config.dataDirectory,
+        "infrastructure",
+        "tailscale-stacks",
+        attempted.id
+      ),
+      { force: true, recursive: true }
+    )
+  }
+
+  async #ensureTailscaleStackDns(
+    config: RelayTailscaleStackConfig,
+    records: ReadonlyArray<{ address: string; hostname: string }>
+  ): Promise<void> {
+    const path = join(this.#config.rootDirectory, config.id, "Corefile")
+    await writeFile(
+      path,
+      tailscaleStackCoreDnsConfiguration(config.domain, records),
+      { mode: 0o644 }
+    )
+    await chmod(path, 0o644)
+    const hostPath = join(
+      await this.#hostDataDirectory(),
+      "instances",
+      config.id,
+      "Corefile"
+    )
+    await this.#replaceContainer(
+      this.#resources.tailscaleStackDnsContainer(config.id),
+      [
+        "--network",
+        `container:${this.#resources.tailscaleStackContainer(config.id)}`,
+        "--restart",
+        "unless-stopped",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--cap-add",
+        "NET_BIND_SERVICE",
+        "--security-opt",
+        "no-new-privileges:true",
+        "--pids-limit",
+        "64",
+        "--memory",
+        "32m",
+        "--volume",
+        `${hostPath}:/etc/coredns/Corefile:ro`,
+        COREDNS_IMAGE,
+        "-conf",
+        "/etc/coredns/Corefile",
+      ]
+    )
+  }
+
+  async #waitForTailscaleStackConnection(
+    id: string,
+    timeoutMs: number
+  ): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const status = await this.#tailscaleStackAddresses(id)
+      if (status.ipv4Address || status.ipv6Address) return true
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_000))
+    }
+    return false
+  }
+
+  async #tailscaleStackAddresses(id: string): Promise<{
+    ipv4Address: string | null
+    ipv6Address: string | null
+  }> {
+    const name = this.#resources.tailscaleStackContainer(id)
+    const [ipv4, ipv6] = await Promise.all([
+      command("docker", ["exec", name, "tailscale", "ip", "-4"], {
+        timeout: 10_000,
+      }).catch(() => null),
+      command("docker", ["exec", name, "tailscale", "ip", "-6"], {
+        timeout: 10_000,
+      }).catch(() => null),
+    ])
+    return {
+      ipv4Address: ipv4?.stdout.trim().split("\n")[0] || null,
+      ipv6Address: ipv6?.stdout.trim().split("\n")[0] || null,
+    }
+  }
+
+  async #tailscaleStack(
+    config: RelayTailscaleStackConfig
+  ): Promise<RelayTailscaleStack> {
+    const instance = (await this.#docker.inspectInstances()).find(
+      (candidate) => candidate.id === config.id
+    )
+    if (!instance) {
+      throw new Error(
+        `Tailscale stack ${config.name} is configured but its container is missing`
+      )
+    }
+    const [addresses, tailscaleRunning, coreDnsRunning] = await Promise.all([
+      this.#tailscaleStackAddresses(config.id),
+      this.#containerRunning(
+        this.#resources.tailscaleStackContainer(config.id)
+      ),
+      this.#containerRunning(
+        this.#resources.tailscaleStackDnsContainer(config.id)
+      ),
+    ])
+    const connected = Boolean(
+      addresses.ipv4Address || addresses.ipv6Address
+    )
+    return relayTailscaleStackSchema.parse({
+      ...config,
+      components: { coreDnsRunning, tailscaleRunning },
+      instance,
+      status: {
+        connected,
+        ipv4Address: addresses.ipv4Address,
+        ipv6Address: addresses.ipv6Address,
+        message: connected
+          ? null
+          : tailscaleRunning
+            ? "Waiting for Tailscale"
+            : "Tailscale is stopped",
+      },
+    })
   }
 
   async #containerExists(name: string): Promise<boolean> {
@@ -2407,4 +3171,49 @@ export function tailscaleCoreDnsConfiguration(
 ): string {
   const pattern = coreDnsHostnamePattern(settings.domain, hostnames)
   return `${settings.domain}:${settings.dnsPort} {\n    bind ${address}\n    errors\n    template IN A {\n        match "${pattern}"\n        answer "{{ .Name }} 60 IN A ${address}"\n    }\n    template IN AAAA {\n        match "${pattern}"\n        rcode NOERROR\n    }\n}\n`
+}
+
+export function tailscaleStackSubnet(
+  stackId: string,
+  nodeId: string
+): string {
+  const digest = createHash("sha256")
+    .update(`${stackId}:${nodeId}`)
+    .digest()
+  return `10.${128 + ((digest[0] ?? 0) % 64)}.${digest[1] ?? 0}.0/24`
+}
+
+export function tailscaleStackServiceAddress(subnet: string): string {
+  const prefix = subnet.replace(/\.0\/24$/u, "")
+  if (prefix === subnet) throw new Error(`Invalid Tailscale subnet ${subnet}`)
+  return `${prefix}.2`
+}
+
+export function allocateTailscaleBindingAddress(
+  subnet: string,
+  reserved: Set<string>
+): string {
+  const prefix = subnet.replace(/\.0\/24$/u, "")
+  if (prefix === subnet) throw new Error(`Invalid Tailscale subnet ${subnet}`)
+  for (let host = 10; host <= 254; host += 1) {
+    const address = `${prefix}.${host}`
+    if (reserved.has(address)) continue
+    reserved.add(address)
+    return address
+  }
+  throw new Error(`Tailscale subnet ${subnet} has no available server addresses`)
+}
+
+export function tailscaleStackCoreDnsConfiguration(
+  domain: string,
+  records: ReadonlyArray<{ address: string; hostname: string }>
+): string {
+  const entries = [...records]
+    .sort((left, right) => left.hostname.localeCompare(right.hostname))
+    .map(
+      ({ address, hostname }) =>
+        `        ${address} ${hostname.replace(/\.$/u, "")}.${domain}`
+    )
+    .join("\n")
+  return `${domain}:53 {\n    errors\n    cache 30\n    hosts {\n${entries}${entries ? "\n" : ""}        ttl 60\n    }\n}\n`
 }

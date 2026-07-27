@@ -3,6 +3,7 @@ import {
   relayInstanceTailscaleSchema,
   relayInstanceWebRoutesSchema,
   relayTailscaleDomainSchema,
+  relayTailscaleStackApplySchema,
 } from "@workspace/contracts"
 
 import { loadConfig } from "./config.js"
@@ -12,6 +13,10 @@ import {
   LifecycleDriver,
   recoveryRouteLabels,
   routeLabelsRequireRestart,
+  allocateTailscaleBindingAddress,
+  tailscaleStackCoreDnsConfiguration,
+  tailscaleStackServiceAddress,
+  tailscaleStackSubnet,
   tailscaleCoreDnsConfiguration,
   traefikDynamicConfiguration,
   traefikRouteLabels,
@@ -152,6 +157,60 @@ describe("Tailscale contracts", () => {
     expect(relayInstanceTailscaleSchema.parse({ enabled: false })).toEqual({
       enabled: false,
     })
+  })
+
+  it("normalizes a logical stack before it is placed on a node", () => {
+    const stack = relayTailscaleStackApplySchema.parse({
+      authKey: "tskey-auth-example",
+      bindings: [
+        {
+          hostname: " Paper ",
+          instanceId: "b".repeat(40),
+        },
+      ],
+      domain: " .TEST. ",
+      hostname: " Private-Network ",
+      id: "a".repeat(40),
+      name: "Private Network",
+    })
+
+    expect(stack.domain).toBe("test")
+    expect(stack.hostname).toBe("private-network")
+    expect(stack.bindings[0]?.hostname).toBe("paper")
+  })
+})
+
+describe("Tailscale Brick networking", () => {
+  it("assigns stable node-specific subnets and reserves service addresses", () => {
+    const stackId = "a".repeat(40)
+    const first = tailscaleStackSubnet(stackId, "node-a")
+    const second = tailscaleStackSubnet(stackId, "node-b")
+
+    expect(first).toMatch(/^10\.(?:12[89]|1[3-8]\d|19[01])\.\d{1,3}\.0\/24$/u)
+    expect(second).not.toBe(first)
+    expect(tailscaleStackServiceAddress(first)).toMatch(/\.2$/u)
+  })
+
+  it("keeps existing server addresses reserved while allocating new ones", () => {
+    const reserved = new Set(["10.165.55.10", "10.165.55.11"])
+
+    expect(
+      allocateTailscaleBindingAddress("10.165.55.0/24", reserved)
+    ).toBe("10.165.55.12")
+  })
+
+  it("renders deterministic cross-node DNS records", () => {
+    const configuration = tailscaleStackCoreDnsConfiguration("test", [
+      { address: "10.140.2.10", hostname: "survival" },
+      { address: "10.165.55.10", hostname: "paper" },
+    ])
+
+    expect(configuration).toContain("test:53 {")
+    expect(configuration).toContain("10.165.55.10 paper.test")
+    expect(configuration).toContain("10.140.2.10 survival.test")
+    expect(configuration.indexOf("paper.test")).toBeLessThan(
+      configuration.indexOf("survival.test")
+    )
   })
 })
 

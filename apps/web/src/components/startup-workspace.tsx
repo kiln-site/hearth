@@ -4,7 +4,6 @@ import {
   ArrowLeftRight,
   CircleAlert,
   LoaderCircle,
-  Network,
   Play,
   Rocket,
   Save,
@@ -12,14 +11,11 @@ import {
 import type {
   Brick,
   BrickVariableValue,
-  RelayInstanceTailscale,
   RelayInstanceLimits,
-  RelayTailscaleOverview,
 } from "@workspace/contracts"
 
 import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
-import { Input } from "@workspace/ui/components/input"
 
 import {
   BrickSelectDialog,
@@ -113,12 +109,10 @@ export function StartupWorkspace() {
       canEdit={permissions.settings && relayConnected}
       allocation={startupQuery.data.allocation}
       initialLimits={startupQuery.data.instance.limits}
-      initialTailscale={startupQuery.data.instance.tailscale}
       initialVariables={startupQuery.data.variables}
       instanceId={instance.id}
       observedState={startupQuery.data.instance.observedState}
       relayId={instance.relayId}
-      tailscale={startupQuery.data.tailscale}
     />
   )
 }
@@ -129,24 +123,20 @@ const StartupForm = React.memo(function StartupForm({
   canEdit,
   allocation,
   initialLimits,
-  initialTailscale,
   initialVariables,
   instanceId,
   observedState,
   relayId,
-  tailscale,
 }: {
   brick: Brick
   brickSource: string
   canEdit: boolean
   allocation: StartupResourceAllocation
   initialLimits: RelayInstanceLimits
-  initialTailscale: RelayInstanceTailscale
   initialVariables: Record<string, BrickVariableValue>
   instanceId: string
   observedState: string
   relayId: string
-  tailscale: RelayTailscaleOverview
 }) {
   const queryClient = useQueryClient()
   const [view, setView] = React.useState(() =>
@@ -159,18 +149,6 @@ const StartupForm = React.memo(function StartupForm({
   )
   const [startAfterSave, setStartAfterSave] = React.useState(
     () => observedState !== "running"
-  )
-  const [tailscaleEnabled, setTailscaleEnabled] = React.useState(
-    () => initialTailscale.enabled
-  )
-  const [tailscaleSubdomain, setTailscaleSubdomain] = React.useState(
-    () =>
-      initialTailscale.subdomain ??
-      suggestedTailscaleSubdomain(
-        initialBrick,
-        initialVariables,
-        tailscale.settings?.hostname
-      )
   )
   const [swapOpen, setSwapOpen] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -259,10 +237,6 @@ const StartupForm = React.memo(function StartupForm({
       )
       return
     }
-    if (tailscaleEnabled && !tailscaleSubdomain.trim()) {
-      setError("Enter a Tailscale server subdomain.")
-      return
-    }
     submittingRef.current = true
     try {
       await saveMutation.mutateAsync({
@@ -272,10 +246,6 @@ const StartupForm = React.memo(function StartupForm({
           recipe: view.source,
           relayId,
           start: startAfterSave,
-          tailscale: {
-            enabled: tailscaleEnabled,
-            subdomain: tailscaleSubdomain,
-          },
           variables,
         },
       })
@@ -335,16 +305,11 @@ const StartupForm = React.memo(function StartupForm({
           pending={pending}
           saved={saved}
           startAfterSave={startAfterSave}
-          tailscale={tailscale}
-          tailscaleEnabled={tailscaleEnabled}
-          tailscaleSubdomain={tailscaleSubdomain}
           variableDefinitions={view.variables}
           variables={variables}
           onDiskLimitChange={setDiskLimitGiB}
           onStartAfterSaveChange={setStartAfterSave}
           onSubmit={onSubmit}
-          onTailscaleEnabledChange={setTailscaleEnabled}
-          onTailscaleSubdomainChange={setTailscaleSubdomain}
           onVariableChange={(name, value) => {
             if (!canEdit) return
             setVariables((current) => updateBrickVariable(current, name, value))
@@ -376,16 +341,11 @@ function StartupSettingsForm({
   pending,
   saved,
   startAfterSave,
-  tailscale,
-  tailscaleEnabled,
-  tailscaleSubdomain,
   variableDefinitions,
   variables,
   onDiskLimitChange,
   onStartAfterSaveChange,
   onSubmit,
-  onTailscaleEnabledChange,
-  onTailscaleSubdomainChange,
   onVariableChange,
 }: {
   allocation: StartupResourceAllocation
@@ -396,16 +356,11 @@ function StartupSettingsForm({
   pending: boolean
   saved: boolean
   startAfterSave: boolean
-  tailscale: RelayTailscaleOverview
-  tailscaleEnabled: boolean
-  tailscaleSubdomain: string
   variableDefinitions: Brick["variables"]
   variables: Record<string, BrickVariableValue>
   onDiskLimitChange: (value: string) => void
   onStartAfterSaveChange: (value: boolean) => void
   onSubmit: React.FormEventHandler<HTMLFormElement>
-  onTailscaleEnabledChange: (value: boolean) => void
-  onTailscaleSubdomainChange: (value: string) => void
   onVariableChange: (
     name: string,
     value: BrickVariableValue | undefined
@@ -420,16 +375,6 @@ function StartupSettingsForm({
         diskLimitGiB={diskLimitGiB}
         disabled={!canEdit || pending}
         onDiskLimitChange={onDiskLimitChange}
-      />
-
-      <TailscaleStartupCard
-        canEdit={canEdit}
-        enabled={tailscaleEnabled}
-        overview={tailscale}
-        pending={pending}
-        subdomain={tailscaleSubdomain}
-        onEnabledChange={onTailscaleEnabledChange}
-        onSubdomainChange={onTailscaleSubdomainChange}
       />
 
       {entries.length === 0 ? (
@@ -502,82 +447,6 @@ function StartupSettingsForm({
     </form>
   )
 }
-
-const TailscaleStartupCard = React.memo(function TailscaleStartupCard({
-  canEdit,
-  enabled,
-  overview,
-  pending,
-  subdomain,
-  onEnabledChange,
-  onSubdomainChange,
-}: {
-  canEdit: boolean
-  enabled: boolean
-  overview: RelayTailscaleOverview
-  pending: boolean
-  subdomain: string
-  onEnabledChange: (enabled: boolean) => void
-  onSubdomainChange: (subdomain: string) => void
-}) {
-  const settings = overview.settings
-  const canEnable = overview.status.connected && Boolean(settings)
-
-  return (
-    <div className="overflow-hidden rounded-xl border border-border/75 bg-background/45">
-      <label className="flex cursor-pointer items-center justify-between gap-4 border-b px-4 py-3 text-xs">
-        <span className="flex min-w-0 items-start gap-3">
-          <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg border bg-background/70">
-            <Network className="size-3.5 text-primary" />
-          </span>
-          <span>
-            <span className="block font-medium">Connect through Tailscale</span>
-            <span className="mt-0.5 block text-[9px] leading-4 text-muted-foreground">
-              Publish this server through the node&apos;s private CoreDNS zone.
-            </span>
-          </span>
-        </span>
-        <input
-          type="checkbox"
-          checked={enabled}
-          disabled={!canEdit || pending || (!enabled && !canEnable)}
-          onChange={(event) => onEnabledChange(event.target.checked)}
-          className="accent-primary"
-        />
-      </label>
-
-      {enabled ? (
-        <div className="p-4">
-          <label htmlFor="tailscale-server-subdomain" className="text-[10px]">
-            Server address
-          </label>
-          <div className="mt-2 flex">
-            <Input
-              id="tailscale-server-subdomain"
-              value={subdomain}
-              onChange={(event) => onSubdomainChange(event.target.value)}
-              disabled={!canEdit || pending}
-              placeholder="1.21.11.paper"
-              className="rounded-r-none font-mono"
-            />
-            <span className="grid h-9 max-w-[45%] shrink-0 place-items-center truncate rounded-r-md border border-l-0 bg-muted/35 px-3 font-mono text-xs text-muted-foreground">
-              .{settings?.domain ?? "not-configured"}
-            </span>
-          </div>
-          <p className="mt-1.5 text-[9px] leading-4 text-muted-foreground">
-            Saving rebuilds the container, then CoreDNS begins answering this
-            exact name on the tailnet.
-          </p>
-        </div>
-      ) : !canEnable ? (
-        <div className="px-4 py-3 text-[9px] leading-4 text-muted-foreground">
-          A platform administrator must configure and connect Tailscale for this
-          node before servers can opt in.
-        </div>
-      ) : null}
-    </div>
-  )
-})
 
 function BrickSummary({
   view,
@@ -667,22 +536,6 @@ function gibibytesToBytes(value: string): number | null {
 
 function bytesToGiBInput(bytes: number): string {
   return String(Number((bytes / 1024 ** 3).toFixed(2)))
-}
-
-function suggestedTailscaleSubdomain(
-  brick: Brick,
-  variables: Readonly<Record<string, BrickVariableValue>>,
-  relayHostname?: string
-): string {
-  const version =
-    typeof variables.version === "string"
-      ? variables.version
-          .trim()
-          .toLowerCase()
-          .replace(/[^a-z0-9.-]+/gu, "-")
-          .replace(/^[.-]+|[.-]+$/gu, "")
-      : ""
-  return [relayHostname, version, brick.metadata.id].filter(Boolean).join(".")
 }
 
 const StartupBrickSwapDialog = React.memo(function StartupBrickSwapDialog({

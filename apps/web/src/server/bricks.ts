@@ -7,11 +7,9 @@ import {
   relayCreateInstanceSchema,
   relayInstanceNameSchema,
   relayInstanceSchema,
-  relayInstanceTailscaleSchema,
   relayIdSchema,
   relayNetworkingSchema,
   relaySnapshotSchema,
-  relayTailscaleOverviewSchema,
   relayUpdateInstanceStartupSchema,
   relayDiskAllocationAvailableBytes,
 } from "@workspace/contracts"
@@ -43,9 +41,6 @@ const instanceInputSchema = relayInputSchema.extend({
   instanceId: z.string().regex(/^[a-f0-9]{40}$/u),
 })
 const startupInputSchema = relayUpdateInstanceStartupSchema.extend(
-  instanceInputSchema.shape
-)
-const tailscaleInstanceInputSchema = relayInstanceTailscaleSchema.safeExtend(
   instanceInputSchema.shape
 )
 
@@ -126,14 +121,9 @@ export const getInstanceStartup = createServerFn({ method: "GET" })
       permission: "instance.settings",
       instanceId: data.instanceId,
     })
-    const [snapshot, tailscale] = await Promise.all([
-      requestRelay(relay, "/v1/snapshot").then((value) =>
-        relaySnapshotSchema.parse(value)
-      ),
-      requestRelay(relay, "/v1/tailscale").then((value) =>
-        relayTailscaleOverviewSchema.parse(value)
-      ),
-    ])
+    const snapshot = relaySnapshotSchema.parse(
+      await requestRelay(relay, "/v1/snapshot")
+    )
     const instance = snapshot.instances.find(
       (candidate) => candidate.id === data.instanceId
     )
@@ -197,7 +187,6 @@ export const getInstanceStartup = createServerFn({ method: "GET" })
       brick,
       brickSource,
       instance: relayInstanceSchema.parse(instance),
-      tailscale,
       variables: brickVariableValuesSchema.parse(variables),
     }
   })
@@ -230,50 +219,6 @@ export const updateInstanceStartup = createServerFn({ method: "POST" })
       invalidateRelayCache(relayCachePolicy.snapshot(relay.id))
     )
     return instance
-  })
-
-export const updateInstanceTailscale = createServerFn({ method: "POST" })
-  .validator(tailscaleInstanceInputSchema)
-  .handler(async ({ data }) => {
-    const user = await requireAuthenticatedUser()
-    if (!isPlatformAdmin(user)) {
-      throw new Error("Platform administrator access required")
-    }
-    const relay = await requiredRelay(data.relayId)
-    const snapshot = relaySnapshotSchema.parse(
-      await requestRelay(relay, "/v1/snapshot")
-    )
-    const instance = snapshot.instances.find(
-      (candidate) => candidate.id === data.instanceId
-    )
-    if (!instance) throw new Error("Instance not found")
-    if (!instance.managedByRelay) {
-      throw new Error("Only Relay-managed servers can use Tailscale")
-    }
-    const input = relayUpdateInstanceStartupSchema.parse({
-      start: instance.desiredState === "running",
-      tailscale: {
-        enabled: data.enabled,
-        subdomain: data.subdomain,
-      },
-      variables: instance.variables ?? {},
-    })
-    const updated = relayInstanceSchema.parse(
-      await requestRelay(
-        relay,
-        `/v1/instances/${encodeURIComponent(instance.id)}/startup`,
-        {
-          method: "PUT",
-          body: JSON.stringify(input),
-        },
-        360_000
-      )
-    )
-    await runAppEffect(
-      "relay.snapshot.invalidate",
-      invalidateRelayCache(relayCachePolicy.snapshot(relay.id))
-    )
-    return updated
   })
 
 export const loadBrickRecipe = createServerFn({ method: "POST" })

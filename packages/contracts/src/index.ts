@@ -168,6 +168,52 @@ export const brickSchema = brickRecipeSchema.extend({
   source: brickSourceSchema,
 })
 
+export const builtinTailscaleBrickId = "tailscale"
+export const builtinTailscaleBrickSource =
+  "https://kiln.site/bricks/builtin/tailscale"
+export const builtinTailscaleBrick = brickSchema.parse({
+  format: "kiln.brick/v1",
+  metadata: {
+    id: builtinTailscaleBrickId,
+    name: "Tailscale",
+    description: "Private tailnet access for servers managed by Kiln.",
+    game: "Networking",
+    author: "Kiln",
+    tags: ["networking", "private"],
+  },
+  variables: {
+    domain: {
+      type: "string",
+      label: "Private domain",
+      description: "Domain used for private server names.",
+      required: true,
+      sensitive: false,
+      default: "test",
+    },
+  },
+  runtime: {
+    image: "tailscale/tailscale:stable",
+    name: "Tailscale",
+    environment: {},
+    resources: {
+      memory: "64m",
+      memoryReservation: "16m",
+      pids: 128,
+    },
+    storage: { mount: "/config" },
+  },
+  network: {
+    mode: "direct",
+    primaryPort: "dns-tcp",
+    ports: [
+      { name: "dns-tcp", container: 53, protocol: "tcp" },
+      { name: "dns-udp", container: 53, protocol: "udp" },
+    ],
+  },
+  constraints: { singleton: false },
+  source: builtinTailscaleBrickSource,
+})
+
 export const brickVariableValuesSchema = z.record(
   z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u),
   brickVariableValueSchema
@@ -258,6 +304,48 @@ export const relayTailscaleInstallSchema = z
       .min(16)
       .max(512)
       .regex(/^tskey-[A-Za-z0-9?=_-]+$/u, "Enter a Tailscale auth key"),
+  })
+  .strict()
+
+export const relayTailscaleStackIdSchema = z
+  .string()
+  .regex(/^[a-f0-9]{40}$/u)
+
+export const relayTailscaleStackBindingInputSchema = z
+  .object({
+    hostname: relayTailscaleSubdomainSchema,
+    instanceId: z.string().regex(/^[a-f0-9]{40}$/u),
+  })
+  .strict()
+
+export const relayTailscaleStackApplySchema = z
+  .object({
+    authKey: relayTailscaleInstallSchema.shape.authKey.optional(),
+    bindings: z.array(relayTailscaleStackBindingInputSchema).max(245),
+    domain: relayTailscaleDomainSchema,
+    hostname: relayTailscaleHostnameSchema,
+    id: relayTailscaleStackIdSchema,
+    name: relayInstanceNameSchema,
+  })
+  .strict()
+
+export const relayTailscaleStackDnsRecordSchema = z
+  .object({
+    address: z.ipv4(),
+    hostname: relayTailscaleSubdomainSchema,
+  })
+  .strict()
+
+export const relayTailscaleStackDnsSchema = z
+  .object({
+    id: relayTailscaleStackIdSchema,
+    records: z.array(relayTailscaleStackDnsRecordSchema).max(4_096),
+  })
+  .strict()
+
+export const relayTailscaleStackRemoveSchema = z
+  .object({
+    id: relayTailscaleStackIdSchema,
   })
   .strict()
 
@@ -521,6 +609,50 @@ export const relayInstanceSchema = z.object({
   }),
   resources: relayInstanceResourcesSchema.nullable().default(null),
 })
+
+export const relayTailscaleStackBindingSchema =
+  relayTailscaleStackBindingInputSchema.extend({
+    address: z.ipv4(),
+  })
+
+export const relayTailscaleStackConfigSchema = z
+  .object({
+    bindings: z.array(relayTailscaleStackBindingSchema).max(245),
+    domain: relayTailscaleDomainSchema,
+    hostname: relayTailscaleHostnameSchema,
+    id: relayTailscaleStackIdSchema,
+    name: relayInstanceNameSchema,
+    subnet: z.string().regex(/^10\.(?:\d{1,3}\.){2}0\/24$/u),
+  })
+  .strict()
+
+export const relayTailscaleStackSchema = z
+  .object({
+    bindings: z.array(relayTailscaleStackBindingSchema),
+    components: z
+      .object({
+        coreDnsRunning: z.boolean(),
+        tailscaleRunning: z.boolean(),
+      })
+      .strict(),
+    domain: relayTailscaleDomainSchema,
+    hostname: relayTailscaleHostnameSchema,
+    id: relayTailscaleStackIdSchema,
+    instance: relayInstanceSchema,
+    name: relayInstanceNameSchema,
+    status: z
+      .object({
+        connected: z.boolean(),
+        ipv4Address: z.ipv4().nullable(),
+        ipv6Address: z.ipv6().nullable(),
+        message: z.string().nullable(),
+      })
+      .strict(),
+    subnet: z.string().regex(/^10\.(?:\d{1,3}\.){2}0\/24$/u),
+  })
+  .strict()
+
+export const relayTailscaleStacksSchema = z.array(relayTailscaleStackSchema)
 
 export const relayNodeSchema = z.object({
   id: z.string().min(1),
@@ -792,6 +924,19 @@ export type RelayTailscaleOverview = z.infer<
 >
 export type RelayTailscaleSettings = z.infer<
   typeof relayTailscaleSettingsSchema
+>
+export type RelayTailscaleStack = z.infer<typeof relayTailscaleStackSchema>
+export type RelayTailscaleStackApply = z.infer<
+  typeof relayTailscaleStackApplySchema
+>
+export type RelayTailscaleStackBinding = z.infer<
+  typeof relayTailscaleStackBindingSchema
+>
+export type RelayTailscaleStackConfig = z.infer<
+  typeof relayTailscaleStackConfigSchema
+>
+export type RelayTailscaleStackDns = z.infer<
+  typeof relayTailscaleStackDnsSchema
 >
 export type RelayTailscaleStatus = z.infer<typeof relayTailscaleStatusSchema>
 export type RelayProxyMode = z.infer<typeof relayProxyModeSchema>

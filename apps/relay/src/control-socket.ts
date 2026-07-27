@@ -525,6 +525,9 @@ function isAuditedMutation(operation: RelayControlOperation): boolean {
     operation === "relay.clients.revoke" ||
     operation === "relay.networking.write" ||
     operation === "relay.tailscale.install" ||
+    operation === "relay.tailscale.stack.apply" ||
+    operation === "relay.tailscale.stack.dns" ||
+    operation === "relay.tailscale.stack.remove" ||
     operation === "relay.tailscale.write" ||
     operation === "relay.proxy.write" ||
     operation === "instance.create" ||
@@ -584,10 +587,17 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
     case "relay.networking.write":
       return "relay.configure"
     case "relay.tailscale.read":
+    case "relay.tailscale.stack.list":
       return "instance.network.read"
     case "relay.tailscale.install":
     case "relay.tailscale.write":
       return "relay.configure"
+    case "relay.tailscale.stack.apply":
+      return "instance.create"
+    case "relay.tailscale.stack.dns":
+      return "instance.network.write"
+    case "relay.tailscale.stack.remove":
+      return "instance.delete"
     case "relay.proxy.read":
       return "relay.read"
     case "relay.proxy.write":

@@ -144,7 +144,9 @@ function ConsoleWorkspaceSession({
 
       <ConsoleCommandBar
         active={active}
-        canWrite={canWrite}
+        canWrite={
+          canWrite && instance.implementation.toLowerCase() !== "tailscale"
+        }
         instance={instance}
       />
     </section>

@@ -17,6 +17,7 @@ import {
   getRelayTree,
 } from "@/server/relay"
 import { getRelays, getRelayTailscale } from "@/server/relays"
+import { getTailscaleStacks } from "@/server/tailscale"
 import { getAuthState } from "@/server/auth"
 import { getUpdateOverview } from "@/server/updates"
 import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
@@ -64,6 +65,7 @@ export const queryKeys = {
   },
   relays: ["relays"] as const,
   tailscale: (relayId: string) => ["relays", relayId, "tailscale"] as const,
+  tailscaleStacks: ["tailscale", "stacks"] as const,
   updates: ["updates", "overview"] as const,
   uiPreferences: ["ui", "preferences"] as const,
 }
@@ -172,6 +174,15 @@ export function relayTailscaleQueryOptions(relayId: string) {
     queryFn: () => getRelayTailscale({ data: { id: relayId } }),
     retry: false,
     staleTime: 5_000,
+  })
+}
+
+export function tailscaleStacksQueryOptions() {
+  return queryOptions({
+    queryKey: queryKeys.tailscaleStacks,
+    queryFn: () => getTailscaleStacks(),
+    retry: false,
+    staleTime: 10_000,
   })
 }
 

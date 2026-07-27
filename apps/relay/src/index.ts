@@ -19,6 +19,9 @@ import {
   relaySaveFileInputSchema,
   relayTailscaleInstallSchema,
   relayTailscaleSettingsSchema,
+  relayTailscaleStackApplySchema,
+  relayTailscaleStackDnsSchema,
+  relayTailscaleStackRemoveSchema,
   relayUpdateInstanceStartupSchema,
   relayBootstrapDiscoveryTranscript,
 } from "@workspace/contracts"
@@ -654,6 +657,34 @@ async function executeControlRequest(
       return lifecycle.installTailscale(
         relayTailscaleInstallSchema.parse(request.payload).authKey
       )
+    case "relay.tailscale.stack.list":
+      return lifecycle.tailscaleStacks()
+    case "relay.tailscale.stack.apply": {
+      const input = relayTailscaleStackApplySchema.parse(request.payload)
+      const stack = await serializeInstanceMutation(input.id, () =>
+        lifecycle.applyTailscaleStack(input)
+      )
+      await snapshotHub.refresh()
+      return stack
+    }
+    case "relay.tailscale.stack.dns": {
+      const input = relayTailscaleStackDnsSchema.parse(request.payload)
+      return serializeInstanceMutation(input.id, () =>
+        lifecycle.syncTailscaleStackDns(input)
+      )
+    }
+    case "relay.tailscale.stack.remove": {
+      const { id } = relayTailscaleStackRemoveSchema.parse(request.payload)
+      await serializeInstanceMutation(id, () =>
+        lifecycle.removeTailscaleStack(id)
+      )
+      await runRelayEffect(
+        "relay.tailscale.stack.deleteName",
+        startup.state.deleteInstanceName(id)
+      )
+      await snapshotHub.refresh()
+      return { removed: true }
+    }
     case "relay.proxy.read": {
       const settings = await lifecycle.proxySettings()
       return {

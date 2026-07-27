@@ -204,6 +204,36 @@ function relayControlRequest(path: string, init?: RequestInit) {
   if (url.pathname === "/v1/tailscale/install" && method === "POST") {
     return { operation: "relay.tailscale.install" as const, payload: body }
   }
+  if (url.pathname === "/v1/tailscale/stacks" && method === "GET") {
+    return {
+      operation: "relay.tailscale.stack.list" as const,
+      payload: {},
+    }
+  }
+  const tailscaleStackMatch = url.pathname.match(
+    /^\/v1\/tailscale\/stacks\/([^/]+)(?:\/dns)?$/u
+  )
+  if (tailscaleStackMatch) {
+    const id = decodeURIComponent(tailscaleStackMatch[1])
+    if (url.pathname.endsWith("/dns") && method === "PUT") {
+      return {
+        operation: "relay.tailscale.stack.dns" as const,
+        payload: { ...body, id },
+      }
+    }
+    if (method === "PUT") {
+      return {
+        operation: "relay.tailscale.stack.apply" as const,
+        payload: { ...body, id },
+      }
+    }
+    if (method === "DELETE") {
+      return {
+        operation: "relay.tailscale.stack.remove" as const,
+        payload: { id },
+      }
+    }
+  }
   if (url.pathname === "/v1/proxy") {
     if (method === "GET") {
       return { operation: "relay.proxy.read" as const, payload: {} }

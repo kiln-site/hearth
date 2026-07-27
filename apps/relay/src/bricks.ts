@@ -9,6 +9,8 @@ import { parseDocument } from "yaml"
 import {
   brickCatalogDocumentSchema,
   brickRecipeSchema,
+  builtinTailscaleBrick,
+  builtinTailscaleBrickSource,
   relayCatalogSchema,
 } from "@workspace/contracts"
 
@@ -162,6 +164,10 @@ export class BrickCatalog {
   }
 
   async recipe(source: string): Promise<BrickRecipe> {
+    if (source === builtinTailscaleBrickSource) {
+      const { source: _source, ...recipe } = builtinTailscaleBrick
+      return recipe
+    }
     const url = parseUrl(source, "recipe source")
     const official = (await this.catalog()).bricks.find(
       (brick) => brick.source === url.href

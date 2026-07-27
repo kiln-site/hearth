@@ -373,6 +373,7 @@ const InstanceNavigation = React.memo(function InstanceNavigation({
             navigateToTab={navigateToTab}
           />
           <InstanceTabNavigation
+            isTailscale={instance?.implementation.toLowerCase() === "tailscale"}
             instanceRouteId={instanceRouteId}
             unresolvedServerId={unresolvedServerId}
           />
@@ -544,13 +545,23 @@ const ServerSelectorItem = React.memo(function ServerSelectorItem({
 })
 
 const InstanceTabNavigation = React.memo(function InstanceTabNavigation({
+  isTailscale,
   instanceRouteId,
   unresolvedServerId,
 }: {
+  isTailscale: boolean
   instanceRouteId: string | null
   unresolvedServerId: string | undefined
 }) {
-  return instanceItems.map((item) => (
+  const items = isTailscale
+    ? instanceItems.filter(
+        (item) =>
+          item.value !== "startup" &&
+          item.value !== "network" &&
+          item.value !== "info"
+      )
+    : instanceItems
+  return items.map((item) => (
     <InstanceTabNavigationItem
       key={item.value}
       item={item}

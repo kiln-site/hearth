@@ -24,6 +24,10 @@ export const relayControlOperations = [
   "relay.tailscale.install",
   "relay.tailscale.read",
   "relay.tailscale.write",
+  "relay.tailscale.stack.apply",
+  "relay.tailscale.stack.dns",
+  "relay.tailscale.stack.list",
+  "relay.tailscale.stack.remove",
   "relay.proxy.read",
   "relay.proxy.write",
   "relay.pairing.create",
@@ -60,6 +64,8 @@ export function relayControlDeadlineMs(
 ): number {
   if (operation === "relay.update.apply") return 15 * 60_000
   if (operation === "relay.tailscale.install") return 240_000
+  if (operation === "relay.tailscale.stack.apply") return 240_000
+  if (operation === "relay.tailscale.stack.remove") return 120_000
   if (operation === "instance.logs.share") return 60_000
   if (
     operation === "instance.create" ||
