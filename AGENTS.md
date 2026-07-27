@@ -47,8 +47,10 @@ For every change:
 2. In T3 Code, create a branch and worktree from `main`; never work directly on
    `main`.
 3. In the new worktree, run `pnpm dev:docker`.
-4. Develop and validate with the printed OrbStack URL in T3 Preview.
-5. Commit, push, and open a ready-for-review PR. Never merge the PR yourself.
+4. Immediately open the printed OrbStack URL in T3 Preview, leave it available
+   for the user, and confirm Hearth loads before making any changes.
+5. Develop and validate using that T3 Preview.
+6. Commit, push, and open a ready-for-review PR. Never merge the PR yourself.
 
 Before deleting any worktree, run `pnpm dev:docker:destroy` inside it to remove
 its isolated stack and data. Use `pnpm dev:docker:down` only to stop a stack
