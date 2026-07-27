@@ -7,7 +7,7 @@ export function HearthMark({ className }: { className?: string }) {
     <div
       aria-hidden="true"
       className={cn(
-        "relative grid size-8 shrink-0 place-items-center overflow-hidden bg-primary text-primary-foreground shadow-[inset_0_0_0_1px_oklch(1_0_0/0.14),0_5px_14px_oklch(0.35_0.08_45/0.2)]",
+        "relative grid size-8 shrink-0 place-items-center overflow-hidden bg-primary text-primary-foreground shadow-[inset_0_0_0_1px_hsl(var(--accent-hue)_100%_96%/0.14),var(--brand-shadow)]",
         className
       )}
     >

@@ -756,7 +756,7 @@ function ConsoleLogViewport({
   }
 
   return (
-    <div className="relative min-h-0 flex-1 bg-[oklch(0.135_0.008_48)]">
+    <div className="relative min-h-0 flex-1 bg-background">
       <div
         ref={parentRef}
         className={`absolute inset-0 overscroll-contain font-mono text-[11px] selection:bg-primary/25 sm:text-[12px] ${wrapLines ? "overflow-x-hidden overflow-y-auto" : "overflow-auto"}`}

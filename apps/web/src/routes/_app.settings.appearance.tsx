@@ -1,7 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router"
-import { Palette } from "lucide-react"
 
-import { SettingsPlaceholderPage } from "@/components/settings-placeholder-page"
+import { AppearanceSettingsPage } from "@/components/appearance-settings-page"
 import { pageTitle } from "@/lib/page-title"
 
 export const Route = createFileRoute("/_app/settings/appearance")({
@@ -10,11 +9,5 @@ export const Route = createFileRoute("/_app/settings/appearance")({
 })
 
 function AppearanceSettingsRoute() {
-  return (
-    <SettingsPlaceholderPage
-      title="Appearance"
-      description="Theme and display controls will live here."
-      icon={Palette}
-    />
-  )
+  return <AppearanceSettingsPage />
 }

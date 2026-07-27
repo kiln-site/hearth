@@ -49,7 +49,7 @@ const defaultIndentUnit = "  "
 const indentationScanLimit = 64 * 1024
 const indentationLineLimit = 256
 const editorContentInlineEndPadding = "24px"
-const activeLineBackground = "oklch(0.24 0.015 52 / 0.32)"
+const activeLineBackground = "hsl(var(--accent-hue) 14% 16% / 0.32)"
 
 function greatestCommonDivisor(left: number, right: number) {
   while (right !== 0) {
@@ -108,8 +108,8 @@ function indentationFor(value: string): Extension {
 }
 
 const kilnHighlightStyle = HighlightStyle.define([
-  { tag: tags.comment, color: "oklch(0.59 0.018 72)", fontStyle: "italic" },
-  { tag: [tags.keyword, tags.modifier], color: "oklch(0.73 0.13 50)" },
+  { tag: tags.comment, color: "var(--muted-foreground)", fontStyle: "italic" },
+  { tag: [tags.keyword, tags.modifier], color: "var(--primary)" },
   { tag: [tags.bool, tags.null, tags.atom], color: "oklch(0.73 0.09 292)" },
   {
     tag: [tags.string, tags.special(tags.string)],
@@ -121,15 +121,18 @@ const kilnHighlightStyle = HighlightStyle.define([
     tag: [tags.propertyName, tags.attributeName],
     color: "oklch(0.74 0.08 225)",
   },
-  { tag: [tags.variableName, tags.name], color: "oklch(0.87 0.018 70)" },
+  { tag: [tags.variableName, tags.name], color: "var(--foreground)" },
   {
     tag: tags.definition(tags.variableName),
     color: "oklch(0.74 0.08 225)",
   },
   { tag: [tags.typeName, tags.className], color: "oklch(0.78 0.08 185)" },
-  { tag: [tags.operator, tags.punctuation], color: "oklch(0.61 0.025 65)" },
-  { tag: [tags.meta, tags.labelName], color: "oklch(0.66 0.055 60)" },
-  { tag: tags.heading, color: "oklch(0.76 0.11 55)", fontWeight: "600" },
+  { tag: [tags.operator, tags.punctuation], color: "var(--muted-foreground)" },
+  {
+    tag: [tags.meta, tags.labelName],
+    color: "hsl(var(--accent-hue) 42% 62%)",
+  },
+  { tag: tags.heading, color: "var(--primary)", fontWeight: "600" },
   { tag: tags.link, color: "oklch(0.73 0.1 225)", textDecoration: "none" },
   { tag: tags.invalid, color: "oklch(0.71 0.15 27)" },
 ])
@@ -142,11 +145,11 @@ const kilnEditorTheme = EditorView.theme(
       minWidth: "0",
       maxWidth: "100%",
       backgroundColor: "transparent",
-      color: "oklch(0.87 0.018 70)",
+      color: "var(--foreground)",
     },
     "&.cm-focused": { outline: "none" },
     "&.cm-editor.cm-focused .cm-cursor": {
-      borderLeftColor: "oklch(0.72 0.14 50)",
+      borderLeftColor: "var(--primary)",
     },
     ".cm-scroller": {
       fontFamily: "'JetBrains Mono Variable', 'JetBrains Mono', monospace",
@@ -157,12 +160,13 @@ const kilnEditorTheme = EditorView.theme(
     ".cm-content": {
       minHeight: "100%",
       padding: `16px ${editorContentInlineEndPadding} 16px 0`,
-      caretColor: "oklch(0.72 0.14 50)",
+      caretColor: "var(--primary)",
     },
     ".cm-line": { paddingLeft: "16px" },
     ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection":
       {
-        backgroundColor: "oklch(0.67 0.16 47 / 0.2) !important",
+        backgroundColor:
+          "hsl(var(--accent-hue) var(--accent-saturation) 58% / 0.2) !important",
       },
     ".cm-activeLine": { backgroundColor: "transparent" },
     "&.cm-focused .cm-activeLine": {
@@ -171,9 +175,9 @@ const kilnEditorTheme = EditorView.theme(
     },
     ".cm-gutters": {
       minHeight: "100%",
-      backgroundColor: "oklch(0.2 0.008 20 / 0.6)",
-      color: "oklch(0.58 0.015 65 / 0.55)",
-      borderRight: "1px solid oklch(0.285 0.016 22)",
+      backgroundColor: "hsl(var(--accent-hue) 9% 9% / 0.6)",
+      color: "color-mix(in hsl, var(--muted-foreground) 55%, transparent)",
+      borderRight: "1px solid var(--border)",
     },
     ".cm-lineNumbers .cm-gutterElement": {
       minWidth: "44px",
@@ -184,34 +188,41 @@ const kilnEditorTheme = EditorView.theme(
       color: "inherit",
     },
     "&.cm-focused .cm-activeLineGutter": {
-      backgroundColor: "oklch(0.25 0.018 50 / 0.65)",
-      color: "oklch(0.69 0.055 58)",
+      backgroundColor: "hsl(var(--accent-hue) 34% 17% / 0.65)",
+      color: "hsl(var(--accent-hue) 42% 66%)",
     },
     ".cm-matchingBracket": {
-      backgroundColor: "oklch(0.67 0.16 47 / 0.16)",
-      color: "oklch(0.84 0.1 65)",
-      outline: "1px solid oklch(0.67 0.16 47 / 0.3)",
+      backgroundColor:
+        "hsl(var(--accent-hue) var(--accent-saturation) 58% / 0.16)",
+      color: "hsl(var(--accent-hue) 35% 84%)",
+      outline:
+        "1px solid hsl(var(--accent-hue) var(--accent-saturation) 58% / 0.3)",
     },
     ".cm-foldPlaceholder": {
       backgroundColor: "transparent",
       border: "none",
-      color: "oklch(0.58 0.02 65)",
+      color: "var(--muted-foreground)",
     },
     ".cm-redacted-ip": {
-      color: "oklch(0.62 0.018 65)",
+      color: "var(--muted-foreground)",
       cursor: "help",
     },
     ".cm-search-bridge": { display: "none" },
     ".cm-searchMatch": {
-      backgroundColor: "oklch(0.76 0.14 70 / 0.38)",
-      outline: "1px solid oklch(0.8 0.15 72 / 0.68)",
-      boxShadow: "0 0 0 1px oklch(0.16 0.01 35 / 0.3)",
+      backgroundColor:
+        "hsl(var(--accent-hue) var(--accent-saturation) 68% / 0.38)",
+      outline:
+        "1px solid hsl(var(--accent-hue) var(--accent-saturation) 74% / 0.68)",
+      boxShadow: "0 0 0 1px hsl(var(--accent-hue) 12% 8% / 0.3)",
     },
     ".cm-searchMatch-selected": {
-      backgroundColor: "oklch(0.72 0.17 55 / 0.72)",
-      color: "oklch(0.16 0.02 45)",
-      outlineColor: "oklch(0.86 0.16 76 / 0.95)",
-      boxShadow: "0 0 0 2px oklch(0.72 0.15 55 / 0.24)",
+      backgroundColor:
+        "hsl(var(--accent-hue) var(--accent-saturation) 58% / 0.72)",
+      color: "var(--primary-foreground)",
+      outlineColor:
+        "hsl(var(--accent-hue) var(--accent-saturation) 78% / 0.95)",
+      boxShadow:
+        "0 0 0 2px hsl(var(--accent-hue) var(--accent-saturation) 58% / 0.24)",
     },
     "&.cm-merge-b .cm-changedLine, .cm-inlineChangedLine": {
       backgroundColor: "oklch(0.66 0.09 175 / 0.09)",
@@ -243,7 +254,7 @@ const kilnEditorTheme = EditorView.theme(
     ".cm-changeGutter": {
       width: "3px",
       paddingLeft: "0",
-      backgroundColor: "oklch(0.2 0.008 20 / 0.6)",
+      backgroundColor: "hsl(var(--accent-hue) 9% 9% / 0.6)",
     },
     "&.cm-merge-b .cm-changedLineGutter, .cm-inlineChangedLineGutter": {
       backgroundColor: "oklch(0.7 0.1 175 / 0.72)",

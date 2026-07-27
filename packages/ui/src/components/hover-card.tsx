@@ -37,13 +37,13 @@ function HoverCardContent({
         className={cn(
           floatingSurfaceClassName,
           floatingMotionClassName,
-          "z-50 w-64 origin-(--radix-hover-card-content-transform-origin) rounded-lg p-2.5 text-sm ring-1 ring-ember/22 outline-hidden",
+          "z-50 w-64 origin-(--radix-hover-card-content-transform-origin) rounded-lg p-2.5 text-sm ring-1 ring-accent-border/22 outline-hidden",
           className
         )}
         {...props}
       >
         {children}
-        <HoverCardPrimitive.Arrow className="z-50 fill-popover stroke-ember/30 [&>polygon]:[stroke-dasharray:0_30_36.1_0]" />
+        <HoverCardPrimitive.Arrow className="z-50 fill-popover stroke-accent-border/30 [&>polygon]:[stroke-dasharray:0_30_36.1_0]" />
       </HoverCardPrimitive.Content>
     </HoverCardPrimitive.Portal>
   )

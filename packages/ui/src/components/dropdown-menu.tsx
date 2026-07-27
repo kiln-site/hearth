@@ -48,7 +48,7 @@ function DropdownMenuContent({
         className={cn(
           floatingSurfaceClassName,
           floatingMotionClassName,
-          "z-50 max-h-(--radix-dropdown-menu-content-available-height) w-(--radix-dropdown-menu-trigger-width) min-w-32 origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-lg p-1 ring-1 ring-ember/22 data-[state=closed]:overflow-hidden",
+          "z-50 max-h-(--radix-dropdown-menu-content-available-height) w-(--radix-dropdown-menu-trigger-width) min-w-32 origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-lg p-1 ring-1 ring-accent-border/22 data-[state=closed]:overflow-hidden",
           className
         )}
         {...props}
@@ -252,7 +252,7 @@ function DropdownMenuSubContent({
       className={cn(
         floatingSurfaceClassName,
         floatingMotionClassName,
-        "z-50 min-w-[96px] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-lg p-1 ring-1 ring-ember/22",
+        "z-50 min-w-[96px] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-lg p-1 ring-1 ring-accent-border/22",
         className
       )}
       {...props}

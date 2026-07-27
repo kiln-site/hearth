@@ -34,8 +34,8 @@ export function TwoFactorPage() {
 
   return (
     <main className="relative grid min-h-dvh place-items-center overflow-hidden bg-background px-5 py-10">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_-10%,oklch(0.68_0.17_47/0.12),transparent_34rem)]" />
-      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,oklch(0.55_0.03_55/0.04)_1px,transparent_1px),linear-gradient(to_bottom,oklch(0.55_0.03_55/0.03)_1px,transparent_1px)] bg-[size:56px_56px]" />
+      <div className="pointer-events-none absolute inset-0 bg-[image:var(--ambient-spotlight)]" />
+      <div className="pointer-events-none absolute inset-0 bg-[image:var(--ambient-grid)] bg-[size:56px_56px]" />
 
       <section className="relative w-full max-w-sm rounded-2xl border bg-card/80 p-6 shadow-2xl shadow-black/30 backdrop-blur-xl sm:p-8">
         <div className="flex items-center justify-between">

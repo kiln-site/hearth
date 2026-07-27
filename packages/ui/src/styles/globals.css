@@ -11,7 +11,8 @@
 
 @theme inline {
   --font-heading: var(--font-sans);
-  --color-ember: var(--ember);
+  --color-accent-border: var(--accent-border);
+  --color-surface-raised: var(--surface-raised);
   --color-popover-accent-foreground: var(--popover-accent-foreground);
   --color-popover-accent: var(--popover-accent);
   --color-sidebar-ring: var(--sidebar-ring);
@@ -59,41 +60,87 @@
 :root,
 .dark {
   color-scheme: dark;
-  --background: oklch(0.145 0.005 20);
-  --foreground: oklch(0.94 0.012 70);
-  --card: oklch(0.18 0.007 20);
-  --card-foreground: oklch(0.94 0.012 70);
-  --popover: oklch(0.18 0.005 20);
-  --popover-foreground: oklch(0.95 0.012 70);
-  --popover-accent: oklch(0.285 0.04 48);
-  --popover-accent-foreground: oklch(0.96 0.01 70);
-  --ember: oklch(0.64 0.2 24);
-  --primary: oklch(0.72 0.18 47);
-  --primary-foreground: oklch(0.14 0.015 45);
-  --secondary: oklch(0.245 0.025 22);
-  --secondary-foreground: oklch(0.93 0.012 70);
-  --muted: oklch(0.235 0.014 22);
-  --muted-foreground: oklch(0.7 0.022 62);
-  --accent: oklch(0.285 0.04 48);
-  --accent-foreground: oklch(0.96 0.014 70);
+  /*
+   * Hearth's appearance system follows one accent hue/saturation through
+   * fixed lightness steps. Neutral surfaces borrow only the hue with low,
+   * fixed saturation so they retain their hierarchy without becoming brown.
+   */
+  --accent-hue: 24.6;
+  --accent-saturation: 95%;
+  --surface-base: hsl(var(--accent-hue) 8% 6.5%);
+  --surface-low: hsl(var(--accent-hue) 8% 7.5%);
+  --surface: hsl(var(--accent-hue) 9% 9%);
+  --surface-raised: hsl(var(--accent-hue) 10% 12%);
+  --surface-overlay: hsl(var(--accent-hue) 9% 9.5%);
+  --surface-border: hsl(var(--accent-hue) 12% 17%);
+  --surface-input: hsl(var(--accent-hue) 14% 20%);
+  --text-strong: hsl(var(--accent-hue) 8% 92%);
+  --text-subtle: hsl(var(--accent-hue) 10% 64%);
+  --accent-border: hsl(var(--accent-hue) var(--accent-saturation) 56%);
+  --surface-gradient: linear-gradient(
+    180deg,
+    hsl(var(--accent-hue) 12% 12% / 0.72),
+    hsl(var(--accent-hue) 9% 9% / 0.94)
+  );
+  --ambient-gradient:
+    radial-gradient(
+      circle at 78% -18%,
+      hsl(var(--accent-hue) 72% 42% / 0.07),
+      transparent 32rem
+    ),
+    linear-gradient(hsl(var(--accent-hue) 12% 13% / 0.16), transparent 24rem);
+  --ambient-grid:
+    linear-gradient(
+      to right,
+      hsl(var(--accent-hue) 16% 50% / 0.04) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      hsl(var(--accent-hue) 16% 50% / 0.032) 1px,
+      transparent 1px
+    );
+  --ambient-spotlight: radial-gradient(
+    circle at 50% -10%,
+    hsl(var(--accent-hue) var(--accent-saturation) 58% / 0.12),
+    transparent 34rem
+  );
+  --brand-shadow: 0 5px 14px hsl(var(--accent-hue) 55% 28% / 0.22);
+  --background: var(--surface-base);
+  --foreground: var(--text-strong);
+  --card: var(--surface);
+  --card-foreground: var(--text-strong);
+  --popover: var(--surface-overlay);
+  --popover-foreground: hsl(var(--accent-hue) 8% 94%);
+  --popover-accent: hsl(var(--accent-hue) 38% 18%);
+  --popover-accent-foreground: hsl(var(--accent-hue) 10% 95%);
+  --primary: hsl(var(--accent-hue) var(--accent-saturation) 58%);
+  --primary-foreground: hsl(var(--accent-hue) 24% 8%);
+  --secondary: hsl(var(--accent-hue) 18% 14%);
+  --secondary-foreground: hsl(var(--accent-hue) 8% 91%);
+  --muted: hsl(var(--accent-hue) 13% 13.5%);
+  --muted-foreground: var(--text-subtle);
+  --accent: hsl(var(--accent-hue) 38% 18%);
+  --accent-foreground: hsl(var(--accent-hue) 10% 95%);
   --destructive: oklch(0.66 0.2 27);
-  --border: oklch(0.295 0.018 22);
-  --input: oklch(0.33 0.02 22);
-  --ring: oklch(0.75 0.17 50);
+  --border: var(--surface-border);
+  --input: var(--surface-input);
+  --ring: hsl(var(--accent-hue) var(--accent-saturation) 64%);
+  /* Status and chart colors are intentionally independent of appearance. */
   --chart-1: oklch(0.72 0.18 47);
   --chart-2: oklch(0.7 0.14 155);
   --chart-3: oklch(0.65 0.12 245);
   --chart-4: oklch(0.76 0.13 82);
   --chart-5: oklch(0.62 0.13 22);
   --radius: 0rem;
-  --sidebar: oklch(0.155 0.006 20);
-  --sidebar-foreground: oklch(0.91 0.014 70);
-  --sidebar-primary: oklch(0.72 0.18 47);
-  --sidebar-primary-foreground: oklch(0.14 0.015 45);
-  --sidebar-accent: oklch(0.255 0.035 48);
-  --sidebar-accent-foreground: oklch(0.96 0.014 70);
-  --sidebar-border: oklch(0.28 0.016 22);
-  --sidebar-ring: oklch(0.75 0.17 50);
+  --sidebar: var(--surface-low);
+  --sidebar-foreground: hsl(var(--accent-hue) 8% 89%);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: hsl(var(--accent-hue) 34% 16%);
+  --sidebar-accent-foreground: hsl(var(--accent-hue) 10% 95%);
+  --sidebar-border: hsl(var(--accent-hue) 12% 16%);
+  --sidebar-ring: var(--ring);
 }
 
 @layer base {
@@ -102,16 +149,10 @@
   }
   body {
     @apply bg-background text-foreground;
-    background-image:
-      radial-gradient(
-        circle at 78% -18%,
-        oklch(0.58 0.14 24 / 0.055),
-        transparent 32rem
-      ),
-      linear-gradient(oklch(0.2 0.01 22 / 0.12), transparent 24rem);
+    background-image: var(--ambient-gradient);
   }
   ::selection {
-    background: oklch(0.72 0.18 47 / 0.28);
+    background: hsl(var(--accent-hue) var(--accent-saturation) 58% / 0.28);
     color: var(--foreground);
   }
   button:not(:disabled),
@@ -126,7 +167,7 @@
       to right,
       transparent 0,
       transparent calc(100% - 1px),
-      oklch(0.55 0.025 22 / 0.055) calc(100% - 1px)
+      hsl(var(--accent-hue) 18% 52% / 0.055) calc(100% - 1px)
     );
     background-size: 80ch 100%;
   }
