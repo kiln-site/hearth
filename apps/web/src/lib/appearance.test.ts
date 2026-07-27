@@ -42,19 +42,48 @@ describe("appearance defaults", () => {
         accentColor: "#38BDF8",
         colorScheme: "light",
       })
-    ).toEqual({ accentColor: "#38bdf8", colorScheme: "light" })
+    ).toEqual({
+      accentColor: "#38bdf8",
+      colorScheme: "light",
+      customColors: [],
+    })
     expect(
       normalizeAppearanceOverride({
         accentColor: "orange",
         colorScheme: "system",
       })
-    ).toEqual({ accentColor: null, colorScheme: "system" })
+    ).toEqual({
+      accentColor: null,
+      colorScheme: "system",
+      customColors: [],
+    })
     expect(
       normalizeAppearancePreferences({
         accentColor: "#38bdf8",
         colorScheme: "unsupported",
       })
     ).toEqual({ accentColor: "#38bdf8", colorScheme: "system" })
+  })
+
+  it("normalizes and limits custom accent colors", () => {
+    expect(
+      normalizeAppearanceOverride({
+        accentColor: "#497DFF",
+        colorScheme: "dark",
+        customColors: [
+          "#497DFF",
+          "#497dff",
+          "invalid",
+          "#14B8A6",
+          "#D946EF",
+          "#FFF000",
+        ],
+      })
+    ).toEqual({
+      accentColor: "#497dff",
+      colorScheme: "dark",
+      customColors: ["#497dff", "#14b8a6", "#d946ef"],
+    })
   })
 
   it("uses the platform default until a user overrides it", () => {
@@ -66,7 +95,7 @@ describe("appearance defaults", () => {
     expect(resolveAppearance(null, platformDefault)).toEqual(platformDefault)
     expect(
       resolveAppearance(
-        { accentColor: null, colorScheme: "dark" },
+        { accentColor: null, colorScheme: "dark", customColors: [] },
         platformDefault
       )
     ).toEqual({ accentColor: "#38bdf8", colorScheme: "dark" })

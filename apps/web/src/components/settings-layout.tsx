@@ -33,7 +33,7 @@ const SettingsNavigation = React.memo(function SettingsNavigation() {
   return (
     <nav
       aria-label="Settings sections"
-      className="mb-6 flex gap-1 overflow-x-auto overflow-y-hidden border-b"
+      className="flex gap-1 overflow-x-auto overflow-y-hidden border-b"
     >
       {settingsTabs.map((tab) => (
         <Link

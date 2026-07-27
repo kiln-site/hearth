@@ -1,6 +1,7 @@
 export const appearanceCacheCookieName = "kiln_appearance"
 export const stableDefaultAccentColor = "#f97316"
 export const nightlyDefaultAccentColor = "#38bdf8"
+export const maximumCustomAccentColors = 3
 
 const appearanceCacheMaxAge = 60 * 60 * 24 * 365
 const hexColorPattern = /^#[\da-f]{6}$/i
@@ -16,6 +17,7 @@ export interface AppearancePreferences {
 export interface AppearanceOverride {
   accentColor: string | null
   colorScheme: ColorScheme
+  customColors: Array<string>
 }
 
 export type AccentHsl = {
@@ -103,7 +105,11 @@ export function normalizeAppearanceOverride(
   value: unknown
 ): AppearanceOverride {
   if (!value || typeof value !== "object") {
-    return { accentColor: null, colorScheme: defaultColorScheme }
+    return {
+      accentColor: null,
+      colorScheme: defaultColorScheme,
+      customColors: [],
+    }
   }
 
   const accentColor =
@@ -119,8 +125,26 @@ export function normalizeAppearanceOverride(
       value.colorScheme === "system")
       ? value.colorScheme
       : defaultColorScheme
+  const customColors: Array<string> = []
+  const customColorSet = new Set<string>()
+  if ("customColors" in value && Array.isArray(value.customColors)) {
+    for (const customColor of value.customColors) {
+      if (
+        typeof customColor !== "string" ||
+        !hexColorPattern.test(customColor)
+      ) {
+        continue
+      }
+      const normalizedColor = customColor.toLowerCase()
+      if (!customColorSet.has(normalizedColor)) {
+        customColorSet.add(normalizedColor)
+        customColors.push(normalizedColor)
+      }
+      if (customColors.length === maximumCustomAccentColors) break
+    }
+  }
 
-  return { accentColor, colorScheme }
+  return { accentColor, colorScheme, customColors }
 }
 
 export function resolveAppearance(

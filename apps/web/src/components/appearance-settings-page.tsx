@@ -1,17 +1,15 @@
 import * as React from "react"
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query"
-import { Check, Monitor, Moon, RotateCcw, Sun } from "lucide-react"
+import { Check, Monitor, Moon, Plus, Sun } from "lucide-react"
 
-import { Button } from "@workspace/ui/components/button"
-import { Input } from "@workspace/ui/components/input"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@workspace/ui/components/tooltip"
+import { ColorPicker } from "@workspace/ui/components/color-picker"
 import { cn } from "@workspace/ui/lib/utils"
 
-import { defaultAppearance, saveAppearanceCache } from "@/lib/appearance"
+import {
+  defaultAppearance,
+  maximumCustomAccentColors,
+  saveAppearanceCache,
+} from "@/lib/appearance"
 import type {
   AppearanceOverride,
   AppearancePreferences,
@@ -22,17 +20,17 @@ import { updateAppearancePreferences } from "@/server/preferences"
 
 const persistDelay = 300
 const presets = [
-  { color: "#ef4444", name: "Ember" },
   { color: "#f97316", name: "Orange" },
-  { color: "#eab308", name: "Gold" },
+  { color: "#ef4444", name: "Ember" },
+  { color: "#f4ff3b", name: "Yellow" },
   { color: "#38bdf8", name: "Blue" },
   { color: "#f5f5f4", name: "White" },
 ] as const
+const customColorSeeds = ["#497dff", "#14b8a6", "#d946ef"] as const
 
 type AppearanceUpdate = AppearanceOverride & {
   defaultForNewUsers?: boolean
 }
-type SaveState = "idle" | "saving" | "saved" | "error"
 
 export const AppearanceSettingsPage = React.memo(
   function AppearanceSettingsPage() {
@@ -46,31 +44,28 @@ export const AppearanceSettingsPage = React.memo(
     const [customAccentColor, setCustomAccentColor] = React.useState<
       string | null
     >(uiPreferences.customAccentColor)
+    const [customColors, setCustomColors] = React.useState<Array<string>>(
+      uiPreferences.customColors
+    )
+    const nextCustomColorId = React.useRef(uiPreferences.customColors.length)
+    const [customColorIds, setCustomColorIds] = React.useState<Array<string>>(
+      () =>
+        uiPreferences.customColors.map((_, index) => `custom-color-${index}`)
+    )
     const [defaultForNewUsers, setDefaultForNewUsers] = React.useState(
       uiPreferences.defaultForNewUsers
     )
-    const [appearanceDefault, setAppearanceDefault] =
-      React.useState<AppearancePreferences>(uiPreferences.appearanceDefault)
-    const [hexDraft, setHexDraft] = React.useState(appearance.accentColor)
-    const [saveState, setSaveState] = React.useState<SaveState>("idle")
+    const [activeCustomIndex, setActiveCustomIndex] = React.useState<
+      number | null
+    >(null)
     const persistTimeout = React.useRef<number | null>(null)
     const pendingUpdate = React.useRef<AppearanceUpdate | null>(null)
-    const savedTimeout = React.useRef<number | null>(null)
 
     const persist = React.useCallback(async (update: AppearanceUpdate) => {
-      setSaveState("saving")
       try {
         await updateAppearancePreferences({ data: update })
-        setSaveState("saved")
-        if (savedTimeout.current !== null) {
-          window.clearTimeout(savedTimeout.current)
-        }
-        savedTimeout.current = window.setTimeout(() => {
-          savedTimeout.current = null
-          setSaveState("idle")
-        }, 1_400)
       } catch {
-        setSaveState("error")
+        // The local preference remains applied; the next change retries persistence.
       }
     }, [])
 
@@ -92,9 +87,6 @@ export const AppearanceSettingsPage = React.memo(
 
     React.useEffect(() => {
       return () => {
-        if (savedTimeout.current !== null) {
-          window.clearTimeout(savedTimeout.current)
-        }
         if (persistTimeout.current !== null) {
           window.clearTimeout(persistTimeout.current)
           const pending = pendingUpdate.current
@@ -119,12 +111,15 @@ export const AppearanceSettingsPage = React.memo(
     )
 
     const updateAppearance = React.useCallback(
-      (next: AppearancePreferences, customColor: string | null) => {
+      (
+        next: AppearancePreferences,
+        customColor: string | null,
+        nextCustomColors = customColors
+      ) => {
         if (!saveAppearanceCache(next)) return
         setAppearance(next)
         setCustomAccentColor(customColor)
-        setHexDraft(next.accentColor)
-        if (defaultForNewUsers) setAppearanceDefault(next)
+        setCustomColors(nextCustomColors)
         queryClient.setQueryData<typeof uiPreferences>(
           queryKeys.uiPreferences,
           (current) =>
@@ -136,6 +131,7 @@ export const AppearanceSettingsPage = React.memo(
                     ? next
                     : current.appearanceDefault,
                   customAccentColor: customColor,
+                  customColors: nextCustomColors,
                 }
               : current
         )
@@ -143,37 +139,95 @@ export const AppearanceSettingsPage = React.memo(
           persistedUpdate({
             accentColor: customColor,
             colorScheme: next.colorScheme,
+            customColors: nextCustomColors,
           })
         )
       },
-      [defaultForNewUsers, persistedUpdate, queryClient, schedulePersist]
+      [
+        customColors,
+        defaultForNewUsers,
+        persistedUpdate,
+        queryClient,
+        schedulePersist,
+      ]
     )
 
     const updateAccent = React.useCallback(
-      (color: string) => {
+      (color: string, nextCustomColors = customColors) => {
         const normalizedColor = color.toLowerCase()
         updateAppearance(
           { ...appearance, accentColor: normalizedColor },
-          normalizedColor
+          normalizedColor,
+          nextCustomColors
         )
       },
-      [appearance, updateAppearance]
+      [appearance, customColors, updateAppearance]
     )
 
     const updateColorScheme = React.useCallback(
       (colorScheme: ColorScheme) => {
-        updateAppearance({ ...appearance, colorScheme }, customAccentColor)
+        updateAppearance(
+          { ...appearance, colorScheme },
+          customAccentColor,
+          customColors
+        )
       },
-      [appearance, customAccentColor, updateAppearance]
+      [appearance, customAccentColor, customColors, updateAppearance]
     )
 
-    const updateHexDraft = React.useCallback(
-      (event: React.ChangeEvent<HTMLInputElement>) => {
-        const color = event.target.value
-        setHexDraft(color)
-        if (/^#[\da-f]{6}$/i.test(color)) updateAccent(color)
+    const addCustomColor = React.useCallback(() => {
+      if (customColors.length >= maximumCustomAccentColors) return
+      const seed =
+        customColorSeeds.find((color) => !customColors.includes(color)) ??
+        customColorSeeds[0]
+      const nextCustomColors = [...customColors, seed]
+      const customColorId = `custom-color-${nextCustomColorId.current}`
+      nextCustomColorId.current += 1
+      setCustomColorIds((currentIds) => [...currentIds, customColorId])
+      setActiveCustomIndex(nextCustomColors.length - 1)
+      updateAccent(seed, nextCustomColors)
+    }, [customColors, updateAccent])
+
+    const updateCustomColor = React.useCallback(
+      (index: number, color: string) => {
+        const nextCustomColors = customColors.map((customColor, colorIndex) =>
+          colorIndex === index ? color.toLowerCase() : customColor
+        )
+        updateAccent(color, nextCustomColors)
       },
-      [updateAccent]
+      [customColors, updateAccent]
+    )
+
+    const removeCustomColor = React.useCallback(
+      (index: number) => {
+        const removedColor = customColors[index]
+        const nextCustomColors = customColors.filter(
+          (_, colorIndex) => colorIndex !== index
+        )
+        setCustomColorIds((currentIds) =>
+          currentIds.filter((_, colorIndex) => colorIndex !== index)
+        )
+        setActiveCustomIndex(null)
+        if (appearance.accentColor === removedColor) {
+          updateAppearance(
+            {
+              ...appearance,
+              accentColor: uiPreferences.appearanceDefault.accentColor,
+            },
+            null,
+            nextCustomColors
+          )
+          return
+        }
+        updateAppearance(appearance, customAccentColor, nextCustomColors)
+      },
+      [
+        appearance,
+        customAccentColor,
+        customColors,
+        uiPreferences.appearanceDefault.accentColor,
+        updateAppearance,
+      ]
     )
 
     const updateDefaultForNewUsers = React.useCallback(
@@ -187,11 +241,9 @@ export const AppearanceSettingsPage = React.memo(
             : appearance
         const nextAppearanceDefault = enabled ? appearance : defaultAppearance
         setDefaultForNewUsers(enabled)
-        setAppearanceDefault(nextAppearanceDefault)
         if (nextAppearance !== appearance) {
           saveAppearanceCache(nextAppearance)
           setAppearance(nextAppearance)
-          setHexDraft(nextAppearance.accentColor)
         }
         queryClient.setQueryData<typeof uiPreferences>(
           queryKeys.uiPreferences,
@@ -210,6 +262,7 @@ export const AppearanceSettingsPage = React.memo(
             {
               accentColor: customAccentColor,
               colorScheme: appearance.colorScheme,
+              customColors,
             },
             enabled
           )
@@ -218,6 +271,7 @@ export const AppearanceSettingsPage = React.memo(
       [
         appearance,
         customAccentColor,
+        customColors,
         persistedUpdate,
         queryClient,
         schedulePersist,
@@ -226,11 +280,7 @@ export const AppearanceSettingsPage = React.memo(
 
     return (
       <div className="w-full max-w-2xl px-5 pb-12">
-        <div className="flex h-5 items-center justify-end">
-          <SaveIndicator state={saveState} />
-        </div>
-
-        <section className="border-y">
+        <section className="border-b">
           <SettingRow label="Mode">
             <div className="grid max-w-md grid-cols-3 gap-1.5">
               <ModeButton
@@ -254,73 +304,17 @@ export const AppearanceSettingsPage = React.memo(
             </div>
           </SettingRow>
 
-          <SettingRow label="Accent color">
-            <div className="flex max-w-md items-center gap-2">
-              <input
-                aria-label="Choose accent color"
-                type="color"
-                value={
-                  /^#[\da-f]{6}$/i.test(hexDraft)
-                    ? hexDraft
-                    : appearance.accentColor
-                }
-                onChange={(event) => updateAccent(event.target.value)}
-                className="size-9 shrink-0 cursor-pointer border border-input bg-input/20 p-1 transition-[border-color,box-shadow] outline-none hover:border-primary/40 focus-visible:border-ring/75 focus-visible:ring-2 focus-visible:ring-ring/35 [&::-moz-color-swatch]:border-0 [&::-webkit-color-swatch]:border-0 [&::-webkit-color-swatch-wrapper]:p-0"
-              />
-              <Input
-                aria-label="Accent color hex value"
-                value={hexDraft}
-                onChange={updateHexDraft}
-                maxLength={7}
-                spellCheck={false}
-                className="h-9 min-w-0 font-mono uppercase"
-              />
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="icon-lg"
-                    onClick={() =>
-                      updateAppearance(
-                        {
-                          ...appearance,
-                          accentColor: appearanceDefault.accentColor,
-                        },
-                        null
-                      )
-                    }
-                    aria-label="Reset to Default"
-                  >
-                    <RotateCcw />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={6}>
-                  Reset to Default
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          </SettingRow>
-
-          <SettingRow label="Preset">
-            <div className="flex flex-wrap gap-2">
-              {presets.map((preset) => (
-                <button
-                  key={preset.name}
-                  type="button"
-                  aria-label={preset.name}
-                  aria-pressed={
-                    appearance.accentColor === preset.color.toLowerCase()
-                  }
-                  onClick={() => updateAccent(preset.color)}
-                  className="relative size-9 border border-black/10 transition-[border-color,box-shadow,transform] outline-none hover:scale-105 focus-visible:ring-2 focus-visible:ring-ring/45 aria-pressed:border-foreground/70 aria-pressed:ring-2 aria-pressed:ring-primary/35"
-                  style={{ backgroundColor: preset.color }}
-                >
-                  <span className="sr-only">{preset.name}</span>
-                </button>
-              ))}
-            </div>
-          </SettingRow>
+          <AccentColorControl
+            accentColor={appearance.accentColor}
+            activeCustomIndex={activeCustomIndex}
+            customColorIds={customColorIds}
+            customColors={customColors}
+            onAdd={addCustomColor}
+            onCustomChange={updateCustomColor}
+            onCustomOpenChange={setActiveCustomIndex}
+            onCustomRemove={removeCustomColor}
+            onSelect={updateAccent}
+          />
 
           {uiPreferences.canManageAppearanceDefault ? (
             <SettingRow label="Default for new users">
@@ -332,6 +326,116 @@ export const AppearanceSettingsPage = React.memo(
           ) : null}
         </section>
       </div>
+    )
+  }
+)
+
+function AccentColorControl({
+  accentColor,
+  activeCustomIndex,
+  customColorIds,
+  customColors,
+  onAdd,
+  onCustomChange,
+  onCustomOpenChange,
+  onCustomRemove,
+  onSelect,
+}: {
+  accentColor: string
+  activeCustomIndex: number | null
+  customColorIds: Array<string>
+  customColors: Array<string>
+  onAdd: () => void
+  onCustomChange: (index: number, color: string) => void
+  onCustomOpenChange: (index: number | null) => void
+  onCustomRemove: (index: number) => void
+  onSelect: (color: string) => void
+}) {
+  return (
+    <SettingRow label="Accent Color">
+      <div className="flex max-w-md flex-wrap items-center gap-2">
+        {presets.map((preset) => (
+          <ColorSwatch
+            key={preset.name}
+            color={preset.color}
+            label={preset.name}
+            selected={accentColor === preset.color}
+            onClick={() => onSelect(preset.color)}
+          />
+        ))}
+
+        <span
+          role="separator"
+          aria-orientation="vertical"
+          className="mx-1 h-7 w-px bg-border"
+        />
+
+        {customColors.map((color, index) => (
+          <ColorPicker
+            key={customColorIds[index]}
+            value={color}
+            onValueChange={(nextColor) => onCustomChange(index, nextColor)}
+            onRemove={() => onCustomRemove(index)}
+            open={activeCustomIndex === index}
+            onOpenChange={(open) => onCustomOpenChange(open ? index : null)}
+          >
+            <ColorSwatch
+              color={color}
+              label={`Custom color ${index + 1}`}
+              selected={accentColor === color}
+              onClick={() => onSelect(color)}
+            />
+          </ColorPicker>
+        ))}
+
+        {customColors.length < maximumCustomAccentColors ? (
+          <button
+            type="button"
+            aria-label="Add custom color"
+            onClick={onAdd}
+            className="grid size-9 place-items-center border border-dashed border-input bg-input/10 text-muted-foreground transition-[color,background-color,border-color,transform] outline-none hover:scale-105 hover:border-primary/50 hover:bg-primary/6 hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/45"
+          >
+            <Plus className="size-4" aria-hidden="true" />
+          </button>
+        ) : null}
+      </div>
+    </SettingRow>
+  )
+}
+
+type ColorSwatchProps = Omit<
+  React.ComponentPropsWithoutRef<"button">,
+  "color"
+> & {
+  color: string
+  label: string
+  selected: boolean
+}
+
+const ColorSwatch = React.forwardRef<HTMLButtonElement, ColorSwatchProps>(
+  function ColorSwatch(
+    { className, color, label, selected, style, ...props },
+    ref
+  ) {
+    return (
+      <button
+        ref={ref}
+        type="button"
+        {...props}
+        aria-label={label}
+        aria-pressed={selected}
+        className={cn(
+          "relative size-9 border border-black/15 transition-[border-color,box-shadow,transform] outline-none hover:scale-105 focus-visible:ring-2 focus-visible:ring-ring/45 aria-pressed:border-primary aria-pressed:ring-2 aria-pressed:ring-primary/50 aria-pressed:ring-offset-2 aria-pressed:ring-offset-background",
+          className
+        )}
+        style={{ ...style, backgroundColor: color }}
+      >
+        {selected ? (
+          <span className="absolute -top-1.5 -right-1.5 grid size-4 place-items-center border-2 border-background bg-primary text-primary-foreground shadow-sm">
+            <Check className="size-2.5" aria-hidden="true" />
+          </span>
+        ) : null}
+      </button>
     )
   }
 )
@@ -390,7 +494,7 @@ function Switch({
       aria-label="Default for new users"
       onClick={() => onCheckedChange(!checked)}
       className={cn(
-        "relative h-5 w-9 border transition-[background-color,border-color,box-shadow] outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+        "relative h-7 w-12 border transition-[background-color,border-color,box-shadow] outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
         checked
           ? "border-primary bg-primary"
           : "border-input bg-muted-foreground/20"
@@ -398,26 +502,10 @@ function Switch({
     >
       <span
         className={cn(
-          "absolute top-0.5 size-3.5 bg-background shadow-sm transition-transform",
-          checked ? "translate-x-[17px]" : "translate-x-0.5"
+          "absolute top-0.5 left-0.5 size-[22px] bg-background shadow-sm transition-transform",
+          checked ? "translate-x-5" : "translate-x-0"
         )}
       />
     </button>
-  )
-}
-
-function SaveIndicator({ state }: { state: SaveState }) {
-  if (state === "idle") return null
-  return (
-    <span
-      aria-live="polite"
-      className={cn(
-        "flex items-center gap-1 font-mono text-[9px] tracking-wide uppercase",
-        state === "error" ? "text-destructive" : "text-primary"
-      )}
-    >
-      {state === "saved" ? <Check className="size-3" /> : null}
-      {state === "saving" ? "Saving" : state === "saved" ? "Saved" : "Retry"}
-    </span>
   )
 }
