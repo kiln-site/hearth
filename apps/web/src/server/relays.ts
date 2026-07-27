@@ -5,6 +5,9 @@ import {
   relayNameSchema,
   relayProxyDiagnosticsSchema,
   relayProxySettingsSchema,
+  relayTailscaleInstallSchema,
+  relayTailscaleOverviewSchema,
+  relayTailscaleSettingsSchema,
 } from "@workspace/contracts"
 import { z } from "zod"
 
@@ -21,6 +24,12 @@ const relayProxyInputSchema = relayProxySettingsSchema.extend({
 const relayProxyResponseSchema = z.object({
   diagnostics: relayProxyDiagnosticsSchema,
   settings: relayProxySettingsSchema,
+})
+const relayTailscaleInputSchema = relayTailscaleSettingsSchema.extend({
+  relayId: relayFingerprintSchema,
+})
+const relayTailscaleInstallInputSchema = relayTailscaleInstallSchema.extend({
+  relayId: relayFingerprintSchema,
 })
 const relayRoleSchema = z.enum(["custom", "full_access", "read_only"])
 const createRelaySchema = z.object({
@@ -202,5 +211,63 @@ export const updateRelayProxy = createServerFn({ method: "POST" })
     })
     return relayProxyResponseSchema.parse(
       await relayRpc(relay, "relay.proxy.write", settings, 240_000)
+    )
+  })
+
+export const getRelayTailscale = createServerFn({ method: "GET" })
+  .validator(relayIdSchema)
+  .handler(async ({ data }) => {
+    await requireRelayAdministrator()
+    const [{ listPersistedRelays }, { relayRpc }] = await Promise.all([
+      import("@/lib/relay-registry"),
+      import("@/lib/relay-connection"),
+    ])
+    const relay = (await listPersistedRelays()).find(
+      (candidate) => candidate.enabled && candidate.id === data.id
+    )
+    if (!relay) throw new Error("Relay is not configured or is paused")
+    return relayTailscaleOverviewSchema.parse(
+      await relayRpc(relay, "relay.tailscale.read", {}, 15_000)
+    )
+  })
+
+export const updateRelayTailscale = createServerFn({ method: "POST" })
+  .validator(relayTailscaleInputSchema)
+  .handler(async ({ data }) => {
+    await requireRelayAdministrator()
+    const [{ listPersistedRelays }, { relayRpc }] = await Promise.all([
+      import("@/lib/relay-registry"),
+      import("@/lib/relay-connection"),
+    ])
+    const relay = (await listPersistedRelays()).find(
+      (candidate) => candidate.enabled && candidate.id === data.relayId
+    )
+    if (!relay) throw new Error("Relay is not configured or is paused")
+    const settings = relayTailscaleSettingsSchema.parse({
+      dnsPort: data.dnsPort,
+      domain: data.domain,
+      hostname: data.hostname,
+      proxyPort: data.proxyPort,
+    })
+    return relayTailscaleOverviewSchema.parse(
+      await relayRpc(relay, "relay.tailscale.write", settings, 90_000)
+    )
+  })
+
+export const installRelayTailscale = createServerFn({ method: "POST" })
+  .validator(relayTailscaleInstallInputSchema)
+  .handler(async ({ data }) => {
+    await requireRelayAdministrator()
+    const [{ listPersistedRelays }, { relayRpc }] = await Promise.all([
+      import("@/lib/relay-registry"),
+      import("@/lib/relay-connection"),
+    ])
+    const relay = (await listPersistedRelays()).find(
+      (candidate) => candidate.enabled && candidate.id === data.relayId
+    )
+    if (!relay) throw new Error("Relay is not configured or is paused")
+    const input = relayTailscaleInstallSchema.parse({ authKey: data.authKey })
+    return relayTailscaleOverviewSchema.parse(
+      await relayRpc(relay, "relay.tailscale.install", input, 240_000)
     )
   })

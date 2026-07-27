@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs"
 import { Resolver } from "node:dns/promises"
 import { hostname } from "node:os"
 
+import type { RelayInstanceTailscale } from "@workspace/contracts"
+
 export interface RelayInstanceConfig {
   brickFormat?: string
   brickId?: string
@@ -21,6 +23,7 @@ export interface RelayInstanceConfig {
   }
   name: string
   service: string
+  tailscale: RelayInstanceTailscale
   variables?: Record<string, boolean | number | string>
   version: string
   managedByRelay: boolean

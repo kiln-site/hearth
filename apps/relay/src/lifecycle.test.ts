@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vite-plus/test"
-import { relayInstanceWebRoutesSchema } from "@workspace/contracts"
+import {
+  relayInstanceTailscaleSchema,
+  relayInstanceWebRoutesSchema,
+  relayTailscaleDomainSchema,
+} from "@workspace/contracts"
 
 import { loadConfig } from "./config.js"
 import {
@@ -8,6 +12,7 @@ import {
   LifecycleDriver,
   recoveryRouteLabels,
   routeLabelsRequireRestart,
+  tailscaleCoreDnsConfiguration,
   traefikDynamicConfiguration,
   traefikRouteLabels,
   traefikStaticConfiguration,
@@ -108,6 +113,45 @@ describe("CoreDNS Brick hostnames", () => {
     const pattern = new RegExp(coreDnsHostnamePattern("kiln.test", []), "u")
     expect(pattern.test("kiln.test.")).toBe(false)
     expect(pattern.test("anything.kiln.test.")).toBe(false)
+  })
+
+  it("binds the private zone only to the node Tailscale address", () => {
+    const configuration = tailscaleCoreDnsConfiguration(
+      {
+        dnsPort: 53,
+        domain: "test",
+        hostname: "kiln-node",
+        proxyPort: 25_565,
+      },
+      "100.91.22.14",
+      ["1.21.11.paper.test"]
+    )
+
+    expect(configuration).toContain("test:53 {")
+    expect(configuration).toContain("bind 100.91.22.14")
+    expect(configuration).toContain('answer "{{ .Name }} 60 IN A 100.91.22.14"')
+    expect(configuration).toContain("1\\.21\\.11\\.paper\\.test")
+  })
+})
+
+describe("Tailscale contracts", () => {
+  it("normalizes dot-prefixed domains and server subdomains", () => {
+    expect(relayTailscaleDomainSchema.parse(" .TEST. ")).toBe("test")
+    expect(
+      relayInstanceTailscaleSchema.parse({
+        enabled: true,
+        subdomain: " 1.21.11.Paper. ",
+      })
+    ).toEqual({ enabled: true, subdomain: "1.21.11.paper" })
+  })
+
+  it("requires a subdomain when a server joins Tailscale", () => {
+    expect(
+      relayInstanceTailscaleSchema.safeParse({ enabled: true }).success
+    ).toBe(false)
+    expect(relayInstanceTailscaleSchema.parse({ enabled: false })).toEqual({
+      enabled: false,
+    })
   })
 })
 

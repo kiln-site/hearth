@@ -173,10 +173,62 @@ export const brickVariableValuesSchema = z.record(
   brickVariableValueSchema
 )
 
+const normalizedDnsNameSchema = (maximumLength: number) =>
+  z
+    .string()
+    .trim()
+    .transform((value) => value.replace(/^[.]+|[.]+$/gu, "").toLowerCase())
+    .pipe(
+      z
+        .string()
+        .min(1)
+        .max(maximumLength)
+        .regex(
+          /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/u,
+          "Use letters, numbers, hyphens, and dots"
+        )
+    )
+
+export const relayTailscaleDomainSchema = normalizedDnsNameSchema(120)
+export const relayTailscaleSubdomainSchema = normalizedDnsNameSchema(120)
+export const relayTailscaleHostnameSchema = z
+  .string()
+  .trim()
+  .transform((value) => value.toLowerCase())
+  .pipe(
+    z
+      .string()
+      .min(1)
+      .max(63)
+      .regex(
+        /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u,
+        "Use letters, numbers, and hyphens"
+      )
+  )
+
+export const relayInstanceTailscaleSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    subdomain: relayTailscaleSubdomainSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.enabled && !value.subdomain) {
+      context.addIssue({
+        code: "custom",
+        message: "Enter a Tailscale subdomain",
+        path: ["subdomain"],
+      })
+    }
+  })
+
 export const relayCreateInstanceSchema = z.object({
   diskLimitBytes: relayRequestedDiskLimitBytesSchema,
   name: relayInstanceNameSchema.optional(),
   recipe: brickSourceSchema,
+  tailscale: relayInstanceTailscaleSchema
+    .default({ enabled: false })
+    .optional(),
   variables: brickVariableValuesSchema,
   start: z.boolean().default(true),
 })
@@ -184,9 +236,56 @@ export const relayCreateInstanceSchema = z.object({
 export const relayUpdateInstanceStartupSchema = z.object({
   diskLimitBytes: relayRequestedDiskLimitBytesSchema.optional(),
   recipe: brickSourceSchema.optional(),
+  tailscale: relayInstanceTailscaleSchema.optional(),
   variables: brickVariableValuesSchema,
   start: z.boolean().default(true),
 })
+
+export const relayTailscaleSettingsSchema = z
+  .object({
+    dnsPort: z.number().int().min(1).max(65_535).default(53),
+    domain: relayTailscaleDomainSchema,
+    hostname: relayTailscaleHostnameSchema,
+    proxyPort: z.number().int().min(1).max(65_535).default(25_565),
+  })
+  .strict()
+
+export const relayTailscaleInstallSchema = z
+  .object({
+    authKey: z
+      .string()
+      .trim()
+      .min(16)
+      .max(512)
+      .regex(/^tskey-[A-Za-z0-9?=_-]+$/u, "Enter a Tailscale auth key"),
+  })
+  .strict()
+
+export const relayTailscaleStatusSchema = z
+  .object({
+    connected: z.boolean(),
+    coreDnsRunning: z.boolean(),
+    dnsAddress: z.string().nullable(),
+    installed: z.boolean(),
+    ipv4Address: z.ipv4().nullable(),
+    ipv6Address: z.ipv6().nullable(),
+    message: z.string().nullable(),
+    state: z.enum([
+      "not-installed",
+      "stopped",
+      "connecting",
+      "connected",
+      "error",
+    ]),
+  })
+  .strict()
+
+export const relayTailscaleOverviewSchema = z
+  .object({
+    settings: relayTailscaleSettingsSchema.nullable(),
+    status: relayTailscaleStatusSchema,
+  })
+  .strict()
 
 export const relayNetworkingSchema = z.object({
   enabled: z.boolean(),
@@ -413,6 +512,7 @@ export const relayInstanceSchema = z.object({
     .optional(),
   brickPrimaryPort: z.number().int().min(1).max(65_535).optional(),
   brickSource: brickSourceSchema.optional(),
+  tailscale: relayInstanceTailscaleSchema.default({ enabled: false }),
   variables: brickVariableValuesSchema.optional(),
   managedByRelay: z.boolean().default(false),
   limits: relayInstanceLimitsSchema.default({
@@ -683,6 +783,17 @@ export type RelayUpdateInstanceStartup = z.infer<
   typeof relayUpdateInstanceStartupSchema
 >
 export type RelayNetworking = z.infer<typeof relayNetworkingSchema>
+export type RelayInstanceTailscale = z.infer<
+  typeof relayInstanceTailscaleSchema
+>
+export type RelayTailscaleInstall = z.infer<typeof relayTailscaleInstallSchema>
+export type RelayTailscaleOverview = z.infer<
+  typeof relayTailscaleOverviewSchema
+>
+export type RelayTailscaleSettings = z.infer<
+  typeof relayTailscaleSettingsSchema
+>
+export type RelayTailscaleStatus = z.infer<typeof relayTailscaleStatusSchema>
 export type RelayProxyMode = z.infer<typeof relayProxyModeSchema>
 export type RelayProxySettings = z.infer<typeof relayProxySettingsSchema>
 export type RelayProxyDiagnostics = z.infer<typeof relayProxyDiagnosticsSchema>

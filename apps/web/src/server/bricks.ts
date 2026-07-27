@@ -10,6 +10,7 @@ import {
   relayIdSchema,
   relayNetworkingSchema,
   relaySnapshotSchema,
+  relayTailscaleOverviewSchema,
   relayUpdateInstanceStartupSchema,
   relayDiskAllocationAvailableBytes,
 } from "@workspace/contracts"
@@ -121,9 +122,14 @@ export const getInstanceStartup = createServerFn({ method: "GET" })
       permission: "instance.settings",
       instanceId: data.instanceId,
     })
-    const snapshot = relaySnapshotSchema.parse(
-      await requestRelay(relay, "/v1/snapshot")
-    )
+    const [snapshot, tailscale] = await Promise.all([
+      requestRelay(relay, "/v1/snapshot").then((value) =>
+        relaySnapshotSchema.parse(value)
+      ),
+      requestRelay(relay, "/v1/tailscale").then((value) =>
+        relayTailscaleOverviewSchema.parse(value)
+      ),
+    ])
     const instance = snapshot.instances.find(
       (candidate) => candidate.id === data.instanceId
     )
@@ -187,6 +193,7 @@ export const getInstanceStartup = createServerFn({ method: "GET" })
       brick,
       brickSource,
       instance: relayInstanceSchema.parse(instance),
+      tailscale,
       variables: brickVariableValuesSchema.parse(variables),
     }
   })

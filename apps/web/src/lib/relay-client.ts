@@ -193,6 +193,17 @@ function relayControlRequest(path: string, init?: RequestInit) {
       return { operation: "relay.networking.write" as const, payload: body }
     }
   }
+  if (url.pathname === "/v1/tailscale") {
+    if (method === "GET") {
+      return { operation: "relay.tailscale.read" as const, payload: {} }
+    }
+    if (method === "PUT") {
+      return { operation: "relay.tailscale.write" as const, payload: body }
+    }
+  }
+  if (url.pathname === "/v1/tailscale/install" && method === "POST") {
+    return { operation: "relay.tailscale.install" as const, payload: body }
+  }
   if (url.pathname === "/v1/proxy") {
     if (method === "GET") {
       return { operation: "relay.proxy.read" as const, payload: {} }

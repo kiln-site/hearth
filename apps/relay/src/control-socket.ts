@@ -524,6 +524,8 @@ function isAuditedMutation(operation: RelayControlOperation): boolean {
     operation === "relay.clients.update" ||
     operation === "relay.clients.revoke" ||
     operation === "relay.networking.write" ||
+    operation === "relay.tailscale.install" ||
+    operation === "relay.tailscale.write" ||
     operation === "relay.proxy.write" ||
     operation === "instance.create" ||
     operation === "instance.startup.write" ||
@@ -580,6 +582,11 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
     case "relay.networking.read":
       return "instance.network.read"
     case "relay.networking.write":
+      return "relay.configure"
+    case "relay.tailscale.read":
+      return "instance.network.read"
+    case "relay.tailscale.install":
+    case "relay.tailscale.write":
       return "relay.configure"
     case "relay.proxy.read":
       return "relay.read"

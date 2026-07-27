@@ -21,6 +21,9 @@ export const relayControlOperations = [
   "relay.audit.list",
   "relay.networking.read",
   "relay.networking.write",
+  "relay.tailscale.install",
+  "relay.tailscale.read",
+  "relay.tailscale.write",
   "relay.proxy.read",
   "relay.proxy.write",
   "relay.pairing.create",
@@ -56,6 +59,7 @@ export function relayControlDeadlineMs(
   operation: RelayControlOperation
 ): number {
   if (operation === "relay.update.apply") return 15 * 60_000
+  if (operation === "relay.tailscale.install") return 240_000
   if (operation === "instance.logs.share") return 60_000
   if (
     operation === "instance.create" ||

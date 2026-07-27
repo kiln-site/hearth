@@ -17,6 +17,8 @@ import {
   relayNetworkingSchema,
   relayProxySettingsSchema,
   relaySaveFileInputSchema,
+  relayTailscaleInstallSchema,
+  relayTailscaleSettingsSchema,
   relayUpdateInstanceStartupSchema,
   relayBootstrapDiscoveryTranscript,
 } from "@workspace/contracts"
@@ -641,6 +643,16 @@ async function executeControlRequest(
     case "relay.networking.write":
       return lifecycle.configureNetworking(
         relayNetworkingSchema.parse(request.payload)
+      )
+    case "relay.tailscale.read":
+      return lifecycle.tailscaleOverview()
+    case "relay.tailscale.write":
+      return lifecycle.configureTailscale(
+        relayTailscaleSettingsSchema.parse(request.payload)
+      )
+    case "relay.tailscale.install":
+      return lifecycle.installTailscale(
+        relayTailscaleInstallSchema.parse(request.payload).authKey
       )
     case "relay.proxy.read": {
       const settings = await lifecycle.proxySettings()

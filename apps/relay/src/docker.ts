@@ -25,6 +25,7 @@ import {
   DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
   MINIMUM_INSTANCE_DISK_LIMIT_BYTES,
   relayDiskAllocationAvailableBytes,
+  relayInstanceTailscaleSchema,
 } from "@workspace/contracts"
 
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
@@ -1448,6 +1449,10 @@ export class DockerDriver {
       name,
       shortId: id.slice(0, 8),
       service,
+      tailscale: relayInstanceTailscaleSchema.parse({
+        enabled: labels["kiln.instance.tailscale-enabled"] === "true",
+        subdomain: labels["kiln.instance.tailscale-subdomain"],
+      }),
       variables: parseBrickVariablesLabel(labels["kiln.brick.variables"]),
       limits: {
         diskBytes: diskLimitBytes,

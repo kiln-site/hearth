@@ -14,6 +14,7 @@ export interface CommandResult {
 
 export interface CommandOptions {
   cwd?: string
+  env?: NodeJS.ProcessEnv
   maxBuffer?: number
   signal?: AbortSignal
   timeout?: number
@@ -40,6 +41,7 @@ export const commandEffect = Effect.fn("command.execute")(function* (
       executeFile(executable, arguments_, {
         cwd: options.cwd,
         encoding: "utf8",
+        env: options.env,
         maxBuffer: options.maxBuffer ?? 4 * 1024 * 1024,
         signal: options.signal,
         timeout: options.timeout ?? 30_000,

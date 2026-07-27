@@ -6,6 +6,7 @@ import {
   Database,
   RadioTower,
   Server,
+  Waypoints,
   Wrench,
 } from "lucide-react"
 
@@ -22,6 +23,7 @@ import { accessCapabilitiesQueryOptions } from "@/lib/query-options"
 const infraTabs = [
   { label: "Setup", to: "/infra/setup", icon: Wrench },
   { label: "Relays", to: "/infra/relays", icon: RadioTower },
+  { label: "Tailscale", to: "/infra/tailscale", icon: Waypoints },
   { label: "Servers", to: "/infra/servers", icon: Server },
   { label: "Databases", to: "/infra/databases", icon: Database },
 ] as const
@@ -60,7 +62,8 @@ const InfraNavigation = React.memo(function InfraNavigation() {
         className="no-scrollbar flex min-w-0 flex-1 gap-1 overflow-x-auto overflow-y-hidden"
       >
         {infraTabs.map((tab) =>
-          tab.to === "/infra/relays" && !capabilities.isPlatformAdmin ? null : (
+          (tab.to === "/infra/relays" || tab.to === "/infra/tailscale") &&
+          !capabilities.isPlatformAdmin ? null : (
             <Link
               key={tab.to}
               to={tab.to}

@@ -81,6 +81,7 @@ function testInstance(): RelayInstanceConfig {
     name: "Test Instance",
     service: "test",
     shortId: "instance",
+    tailscale: { enabled: false },
     version: "1.21.11",
   }
 }

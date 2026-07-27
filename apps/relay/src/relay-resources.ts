@@ -10,6 +10,7 @@ export interface RelayResourceNames {
   limboContainer: string
   relayEdgeAlias: string
   relayEdgeNetwork: string
+  tailscaleContainer: string
   traefikContainer: string
 }
 
@@ -29,6 +30,7 @@ export function relayResourceNames(
     limboContainer: name("kiln-limbo"),
     relayEdgeAlias: "kiln-relay",
     relayEdgeNetwork: name("kiln-relay-edge"),
+    tailscaleContainer: name("kiln-tailscale"),
     traefikContainer: name("kiln-traefik"),
   }
 }
