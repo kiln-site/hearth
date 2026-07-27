@@ -52,6 +52,7 @@ import { HearthMark } from "@/components/hearth-mark"
 import { ServerTypeIcon } from "@/components/server-type-icon"
 import { authClient } from "@/lib/auth-client"
 import type { AuthenticatedUser } from "@/lib/auth-session"
+import { clearAppearanceCache } from "@/lib/appearance"
 import {
   accessCapabilitiesQueryOptions,
   relayConnectionQueryOptions,
@@ -814,6 +815,7 @@ function SettingsNavigationButton() {
 async function signOut(isDevelopmentBypass: boolean) {
   if (isDevelopmentBypass) await disableDevelopmentBypass()
   else await authClient.signOut()
+  clearAppearanceCache()
   window.location.assign("/")
 }
 

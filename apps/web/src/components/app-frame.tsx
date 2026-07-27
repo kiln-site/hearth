@@ -13,6 +13,7 @@ import { AppSidebar } from "@/components/app-sidebar"
 import { InfraUpdateDialogProvider } from "@/components/infra-update-dialog-provider"
 import { PanelFooter } from "@/components/panel-footer"
 import { RelayConnectionToastMonitor } from "@/components/relay-connection-toast"
+import { saveAppearanceCache } from "@/lib/appearance"
 import { uiPreferencesQueryOptions } from "@/lib/query-options"
 
 export const AppFrame = React.memo(function AppFrame({
@@ -24,6 +25,7 @@ export const AppFrame = React.memo(function AppFrame({
 
   return (
     <SidebarProvider defaultOpen={uiPreferences.sidebarOpen}>
+      <AppearanceHydrator appearance={uiPreferences.appearance} />
       <InfraUpdateDialogProvider>
         <RelayConnectionToastMonitor />
         <MobileSidebarNavigationDismiss />
@@ -42,6 +44,17 @@ export const AppFrame = React.memo(function AppFrame({
       </InfraUpdateDialogProvider>
     </SidebarProvider>
   )
+})
+
+const AppearanceHydrator = React.memo(function AppearanceHydrator({
+  appearance,
+}: {
+  appearance: { accentColor: string; colorScheme: "dark" | "light" }
+}) {
+  React.useEffect(() => {
+    saveAppearanceCache(appearance)
+  }, [appearance])
+  return null
 })
 
 function MobileSidebarNavigationDismiss() {

@@ -1,5 +1,11 @@
 import { createServerFn } from "@tanstack/react-start"
+import { z } from "zod"
 
+import {
+  appearanceCacheCookieName,
+  defaultAccentColor,
+  normalizeAppearanceOverride,
+} from "@/lib/appearance"
 import { selectedInstanceCookieName } from "@/lib/ui-preference-cookies"
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state"
@@ -16,7 +22,33 @@ function readCookie(cookies: string, name: string) {
 
 export const getUiPreferences = createServerFn({ method: "GET" }).handler(
   async () => {
-    const { getRequestHeaders } = await import("@tanstack/react-start/server")
+    const [
+      { loadAppearanceOverrideEffect },
+      { runAppEffect },
+      { requireAuthenticatedUser },
+      { getRequestHeaders, setCookie, setResponseHeader },
+    ] = await Promise.all([
+      import("@/effect/appearance-preferences"),
+      import("@/effect/runtime"),
+      import("@/server/auth"),
+      import("@tanstack/react-start/server"),
+    ])
+    const user = await requireAuthenticatedUser()
+    const appearanceOverride = await runAppEffect(
+      "appearancePreferences.load",
+      loadAppearanceOverrideEffect(user.id)
+    )
+    const appearance = {
+      accentColor: appearanceOverride.accentColor ?? defaultAccentColor,
+      colorScheme: appearanceOverride.colorScheme,
+    }
+    setCookie(appearanceCacheCookieName, JSON.stringify(appearance), {
+      maxAge: 60 * 60 * 24 * 365,
+      path: "/",
+      sameSite: "lax",
+    })
+    setResponseHeader("Cache-Control", "no-store")
+
     const cookies = getRequestHeaders().get("cookie") ?? ""
     const sidebarCookie = readCookie(cookies, SIDEBAR_COOKIE_NAME)
     const fileTreeCollapsedCookie = readCookie(
@@ -39,6 +71,53 @@ export const getUiPreferences = createServerFn({ method: "GET" }).handler(
       fileTreeWidth,
       selectedInstanceRouteId:
         readCookie(cookies, selectedInstanceCookieName) ?? null,
+      appearance,
+      customAccentColor: appearanceOverride.accentColor,
     }
   }
 )
+
+export const updateAppearancePreferences = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      accentColor: z
+        .string()
+        .regex(/^#[\da-f]{6}$/i)
+        .nullable(),
+      colorScheme: z.enum(["dark", "light"]),
+    })
+  )
+  .handler(async ({ data }) => {
+    const [
+      { saveAppearanceOverrideEffect },
+      { runAppEffect },
+      { requireAuthenticatedUser },
+      { setCookie, setResponseHeader },
+    ] = await Promise.all([
+      import("@/effect/appearance-preferences"),
+      import("@/effect/runtime"),
+      import("@/server/auth"),
+      import("@tanstack/react-start/server"),
+    ])
+    const user = await requireAuthenticatedUser()
+    const appearanceOverride = normalizeAppearanceOverride(data)
+    await runAppEffect(
+      "appearancePreferences.save",
+      saveAppearanceOverrideEffect(
+        crypto.randomUUID(),
+        user.id,
+        appearanceOverride
+      )
+    )
+    const appearance = {
+      accentColor: appearanceOverride.accentColor ?? defaultAccentColor,
+      colorScheme: appearanceOverride.colorScheme,
+    }
+    setCookie(appearanceCacheCookieName, JSON.stringify(appearance), {
+      maxAge: 60 * 60 * 24 * 365,
+      path: "/",
+      sameSite: "lax",
+    })
+    setResponseHeader("Cache-Control", "no-store")
+    return { appearance, customAccentColor: appearanceOverride.accentColor }
+  })

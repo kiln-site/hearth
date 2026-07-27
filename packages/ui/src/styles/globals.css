@@ -143,6 +143,77 @@
   --sidebar-ring: var(--ring);
 }
 
+.light {
+  color-scheme: light;
+  --surface-base: hsl(var(--accent-hue) 14% 96%);
+  --surface-low: hsl(var(--accent-hue) 16% 98%);
+  --surface: hsl(var(--accent-hue) 18% 99.2%);
+  --surface-raised: hsl(var(--accent-hue) 16% 94%);
+  --surface-overlay: hsl(var(--accent-hue) 18% 99.5%);
+  --surface-border: hsl(var(--accent-hue) 16% 82%);
+  --surface-input: hsl(var(--accent-hue) 18% 76%);
+  --text-strong: hsl(var(--accent-hue) 16% 12%);
+  --text-subtle: hsl(var(--accent-hue) 12% 38%);
+  --accent-border: hsl(var(--accent-hue) var(--accent-saturation) 42%);
+  --surface-gradient: linear-gradient(
+    180deg,
+    hsl(var(--accent-hue) 24% 100% / 0.92),
+    hsl(var(--accent-hue) 16% 96% / 0.94)
+  );
+  --ambient-gradient:
+    radial-gradient(
+      circle at 78% -18%,
+      hsl(var(--accent-hue) 72% 52% / 0.1),
+      transparent 32rem
+    ),
+    linear-gradient(hsl(var(--accent-hue) 32% 92% / 0.28), transparent 24rem);
+  --ambient-grid:
+    linear-gradient(
+      to right,
+      hsl(var(--accent-hue) 22% 32% / 0.055) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      hsl(var(--accent-hue) 22% 32% / 0.045) 1px,
+      transparent 1px
+    );
+  --ambient-spotlight: radial-gradient(
+    circle at 50% -10%,
+    hsl(var(--accent-hue) var(--accent-saturation) 58% / 0.14),
+    transparent 34rem
+  );
+  --brand-shadow: 0 5px 14px
+    hsl(var(--accent-hue) var(--accent-saturation) 38% / 0.18);
+  --background: var(--surface-base);
+  --foreground: var(--text-strong);
+  --card: var(--surface);
+  --card-foreground: var(--text-strong);
+  --popover: var(--surface-overlay);
+  --popover-foreground: hsl(var(--accent-hue) 16% 10%);
+  --popover-accent: hsl(var(--accent-hue) 38% 91%);
+  --popover-accent-foreground: hsl(var(--accent-hue) 18% 12%);
+  --primary: hsl(var(--accent-hue) var(--accent-saturation) 28%);
+  --primary-foreground: hsl(var(--accent-hue) 18% 98%);
+  --secondary: hsl(var(--accent-hue) 20% 91%);
+  --secondary-foreground: hsl(var(--accent-hue) 18% 14%);
+  --muted: hsl(var(--accent-hue) 16% 92%);
+  --muted-foreground: var(--text-subtle);
+  --accent: hsl(var(--accent-hue) 38% 90%);
+  --accent-foreground: hsl(var(--accent-hue) 18% 12%);
+  --border: var(--surface-border);
+  --input: var(--surface-input);
+  --ring: hsl(var(--accent-hue) var(--accent-saturation) 44%);
+  --sidebar: var(--surface-low);
+  --sidebar-foreground: hsl(var(--accent-hue) 16% 16%);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: hsl(var(--accent-hue) 34% 90%);
+  --sidebar-accent-foreground: hsl(var(--accent-hue) 18% 12%);
+  --sidebar-border: hsl(var(--accent-hue) 16% 84%);
+  --sidebar-ring: var(--ring);
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

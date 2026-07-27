@@ -1,13 +1,41 @@
-export const accentColorCookieName = "kiln_accent_color"
-export const defaultAccentColor = "#f97316"
+export const appearanceCacheCookieName = "kiln_appearance"
+export const stableDefaultAccentColor = "#f97316"
+export const nightlyDefaultAccentColor = "#38bdf8"
 
-const accentColorCookieMaxAge = 60 * 60 * 24 * 365
+const appearanceCacheMaxAge = 60 * 60 * 24 * 365
 const hexColorPattern = /^#[\da-f]{6}$/i
+
+export type ColorScheme = "dark" | "light"
+
+export interface AppearancePreferences {
+  accentColor: string
+  colorScheme: ColorScheme
+}
+
+export interface AppearanceOverride {
+  accentColor: string | null
+  colorScheme: ColorScheme
+}
 
 export type AccentHsl = {
   hue: number
   saturation: number
 }
+
+export function isNightlyVersion(version: string | undefined) {
+  return version?.includes("-nightly.") ?? false
+}
+
+export function buildDefaultAccentColor(version: string | undefined) {
+  return isNightlyVersion(version)
+    ? nightlyDefaultAccentColor
+    : stableDefaultAccentColor
+}
+
+export const defaultAccentColor = buildDefaultAccentColor(
+  import.meta.env.VITE_KILN_VERSION
+)
+export const defaultColorScheme: ColorScheme = "dark"
 
 export function parseAccentColor(color: string): AccentHsl | null {
   if (!hexColorPattern.test(color)) return null
@@ -37,47 +65,115 @@ export function parseAccentColor(color: string): AccentHsl | null {
   }
 }
 
-export function applyAccentColor(color: string) {
-  const accent = parseAccentColor(color)
+export function normalizeAppearancePreferences(
+  value: unknown,
+  fallbackAccentColor = defaultAccentColor
+): AppearancePreferences {
+  if (!value || typeof value !== "object") {
+    return {
+      accentColor: fallbackAccentColor,
+      colorScheme: defaultColorScheme,
+    }
+  }
+
+  const accentColor =
+    "accentColor" in value &&
+    typeof value.accentColor === "string" &&
+    hexColorPattern.test(value.accentColor)
+      ? value.accentColor.toLowerCase()
+      : fallbackAccentColor
+  const colorScheme =
+    "colorScheme" in value && value.colorScheme === "light" ? "light" : "dark"
+
+  return { accentColor, colorScheme }
+}
+
+export function normalizeAppearanceOverride(
+  value: unknown
+): AppearanceOverride {
+  if (!value || typeof value !== "object") {
+    return { accentColor: null, colorScheme: defaultColorScheme }
+  }
+
+  const accentColor =
+    "accentColor" in value &&
+    typeof value.accentColor === "string" &&
+    hexColorPattern.test(value.accentColor)
+      ? value.accentColor.toLowerCase()
+      : null
+  const colorScheme =
+    "colorScheme" in value && value.colorScheme === "light" ? "light" : "dark"
+
+  return { accentColor, colorScheme }
+}
+
+export function applyAppearance(preferences: AppearancePreferences) {
+  const accent = parseAccentColor(preferences.accentColor)
   if (!accent || typeof document === "undefined") return false
 
-  document.documentElement.style.setProperty("--accent-hue", String(accent.hue))
-  document.documentElement.style.setProperty(
-    "--accent-saturation",
-    `${accent.saturation}%`
-  )
+  const root = document.documentElement
+  root.style.setProperty("--accent-hue", String(accent.hue))
+  root.style.setProperty("--accent-saturation", `${accent.saturation}%`)
+  root.classList.toggle("dark", preferences.colorScheme === "dark")
+  root.classList.toggle("light", preferences.colorScheme === "light")
   return true
 }
 
-export function readAccentColor() {
-  if (typeof document === "undefined") return defaultAccentColor
+export function readAppearanceCache(): AppearancePreferences {
+  if (typeof document === "undefined") {
+    return {
+      accentColor: defaultAccentColor,
+      colorScheme: defaultColorScheme,
+    }
+  }
 
-  const encodedColor = document.cookie
+  const encodedPreferences = document.cookie
     .split(";")
     .map((cookie) => cookie.trim())
-    .find((cookie) => cookie.startsWith(`${accentColorCookieName}=`))
-    ?.slice(accentColorCookieName.length + 1)
+    .find((cookie) => cookie.startsWith(`${appearanceCacheCookieName}=`))
+    ?.slice(appearanceCacheCookieName.length + 1)
 
-  if (!encodedColor) return defaultAccentColor
+  if (!encodedPreferences) {
+    return {
+      accentColor: defaultAccentColor,
+      colorScheme: defaultColorScheme,
+    }
+  }
 
   try {
-    const color = decodeURIComponent(encodedColor)
-    return hexColorPattern.test(color)
-      ? color.toLowerCase()
-      : defaultAccentColor
+    return normalizeAppearancePreferences(
+      JSON.parse(decodeURIComponent(encodedPreferences))
+    )
   } catch {
-    return defaultAccentColor
+    return {
+      accentColor: defaultAccentColor,
+      colorScheme: defaultColorScheme,
+    }
   }
 }
 
-export function saveAccentColor(color: string) {
-  if (!applyAccentColor(color)) return false
+export function saveAppearanceCache(preferences: AppearancePreferences) {
+  const normalized = normalizeAppearancePreferences(preferences)
+  if (!applyAppearance(normalized)) return false
 
-  document.cookie = `${accentColorCookieName}=${encodeURIComponent(
-    color.toLowerCase()
-  )}; path=/; max-age=${accentColorCookieMaxAge}; SameSite=Lax`
+  document.cookie = `${appearanceCacheCookieName}=${encodeURIComponent(
+    JSON.stringify(normalized)
+  )}; path=/; max-age=${appearanceCacheMaxAge}; SameSite=Lax`
   return true
 }
 
-export const accentColorBootScript =
-  '(()=>{try{const e=document.cookie.split(";").map(e=>e.trim()).find(e=>e.startsWith("kiln_accent_color="));if(!e)return;const t=decodeURIComponent(e.slice(18));if(!/^#[\\da-f]{6}$/i.test(t))return;const c=parseInt(t.slice(1,3),16)/255,n=parseInt(t.slice(3,5),16)/255,o=parseInt(t.slice(5,7),16)/255,r=Math.max(c,n,o),a=Math.min(c,n,o),l=r-a,s=(r+a)/2;let i=0;l>0&&(r===c?i=(n-o)/l%6:r===n?i=(o-c)/l+2:i=(c-n)/l+4,i*=60,i<0&&(i+=360));const d=l===0?0:l/(1-Math.abs(2*s-1)),u=document.documentElement;u.style.setProperty("--accent-hue",String(Math.round(10*i)/10)),u.style.setProperty("--accent-saturation",`${Math.round(1e3*d)/10}%`)}catch{}})()'
+export function clearAppearanceCache() {
+  if (typeof document === "undefined") return
+  document.cookie = `${appearanceCacheCookieName}=; path=/; max-age=0; SameSite=Lax`
+  applyAppearance({
+    accentColor: defaultAccentColor,
+    colorScheme: defaultColorScheme,
+  })
+}
+
+const bootDefault = JSON.stringify({
+  accentColor: defaultAccentColor,
+  colorScheme: defaultColorScheme,
+})
+
+export const appearanceBootScript = `(()=>{try{const n="${appearanceCacheCookieName}=",e=document.cookie.split(";").map(e=>e.trim()).find(e=>e.startsWith(n));let t=${bootDefault};if(e)try{const n=JSON.parse(decodeURIComponent(e.slice(${appearanceCacheCookieName.length + 1})));if(n&&/^#[\\da-f]{6}$/i.test(n.accentColor)&&(n.colorScheme==="dark"||n.colorScheme==="light"))t=n}catch{}const c=t.accentColor,r=parseInt(c.slice(1,3),16)/255,o=parseInt(c.slice(3,5),16)/255,a=parseInt(c.slice(5,7),16)/255,s=Math.max(r,o,a),i=Math.min(r,o,a),l=s-i,d=(s+i)/2;let u=0;l>0&&(s===r?u=(o-a)/l%6:s===o?u=(a-r)/l+2:u=(r-o)/l+4,u*=60,u<0&&(u+=360));const m=l===0?0:l/(1-Math.abs(2*d-1)),p=document.documentElement;p.style.setProperty("--accent-hue",String(Math.round(10*u)/10)),p.style.setProperty("--accent-saturation",Math.round(1e3*m)/10+"%"),p.classList.toggle("dark",t.colorScheme==="dark"),p.classList.toggle("light",t.colorScheme==="light")}catch{}})()`

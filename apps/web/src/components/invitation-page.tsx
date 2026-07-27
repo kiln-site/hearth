@@ -14,6 +14,7 @@ import {
 import { Button } from "@workspace/ui/components/button"
 
 import { HearthMark } from "@/components/hearth-mark"
+import { clearAppearanceCache } from "@/lib/appearance"
 import { authClient } from "@/lib/auth-client"
 import type { AuthenticatedUser } from "@/lib/auth-session"
 import { queryKeys } from "@/lib/query-options"
@@ -65,6 +66,7 @@ export function InvitationPage({
   async function signOut() {
     if (user?.isDevelopmentBypass) await disableDevelopmentBypass()
     else await authClient.signOut()
+    clearAppearanceCache()
     window.location.assign(invitePath)
   }
 
