@@ -41,13 +41,31 @@ vp install --frozen-lockfile
 pnpm dev:setup
 ```
 
+Name branches as `<type>/<task>`, with a short lowercase kebab-case task:
+
+| Prefix      | Use for                                      |
+| ----------- | -------------------------------------------- |
+| `feat/`     | New capabilities                             |
+| `fix/`      | Bugs and regressions                         |
+| `refactor/` | Behavior-preserving code changes             |
+| `ui/`       | Visual and interaction changes               |
+| `perf/`     | Performance improvements                     |
+| `infra/`    | Docker, deployment, and runtime tooling      |
+| `docs/`     | Documentation only                           |
+| `test/`     | Test-only changes                            |
+| `chore/`    | Dependencies and repository maintenance      |
+| `ci/`       | CI and release automation                    |
+
+For example: `fix/worktree-env-mount`. Do not use personal or agent-name
+prefixes.
+
 For every change:
 
 1. Switch to `main` and run `git pull --ff-only`.
 2. Run `pnpm dev:docker:down` on `main` so its baseline stack is not left
    running.
-3. In T3 Code, create a branch and worktree from `main`; never work directly on
-   `main`.
+3. In T3 Code, create a correctly named branch and worktree from `main`; never
+   work directly on `main`.
 4. In the new worktree, run `pnpm dev:docker`.
 5. Immediately open the printed OrbStack URL in T3 Preview, leave it available
    for the user, and confirm Hearth loads before making any changes.
