@@ -22,31 +22,45 @@ Before editing files for a substantial task:
 ## Work
 
 - Use Vite+ (`vp`) and existing Effect patterns; never edit `.repos/effect`.
-- Keep only critical deterministic tests, and been hesitant or creating new tests. Prefer browser validation during development
-- This project uses Sentry.io for error/traces/session replays and more. SENTRY_TRACES_SAMPLE_RATE is set to 100% in local development. Review the sentry-cli skill when debugging
+- Add only critical deterministic tests; prefer browser validation during
+  development.
+- This project uses Sentry.io for errors, traces, session replays, and more.
+  `SENTRY_TRACES_SAMPLE_RATE` is set to 100% in local development. Review the
+  `sentry-cli` skill when debugging.
 - Avoid patching framework/library internals unless explicitly given permission.
-
-For user-visible or runtime work, use T3 Code's collaborative Preview tools
-against the OrbStack URL printed by `pnpm dev:docker`; avoid using local IP
-(ie. 127.0...) for dev/testing.
-
-When making changes, you should make sure you're on a fresh worktree and not on main. You can push the PR (no need to make it a draft) but never merge the PR.
-
-After a successful merge: switch to `main`, pull with `--ff-only`, delete the
-merged worktree and local branch, run
-`pnpm dev:docker:refresh`, and verify the OrbStack URL in T3 Preview. Reserve
-`pnpm dev:docker:down` for changes that require rebuilding the Compose network or volumes.
+- For user-visible or runtime work, use T3 Code's collaborative Preview against
+  the OrbStack URL printed by `pnpm dev:docker`; never use a local IP for
+  development or validation.
 
 ## Setup
 
-Run the shared development setup once per clone, then start the current
-worktree's isolated stack:
+Run once per clone from `main`:
 
 ```sh
 vp install --frozen-lockfile
 pnpm dev:setup
-pnpm dev:docker
 ```
+
+For every change:
+
+1. Switch to `main` and run `git pull --ff-only`.
+2. In T3 Code, create a branch and worktree from `main`; never work directly on
+   `main`.
+3. In the new worktree, run `pnpm dev:docker`.
+4. Develop and validate with the printed OrbStack URL in T3 Preview.
+5. Commit, push, and open a ready-for-review PR. Never merge the PR yourself.
+
+Before deleting any worktree, run `pnpm dev:docker:destroy` inside it to remove
+its isolated stack and data. Use `pnpm dev:docker:down` only to stop a stack
+temporarily while retaining its data.
+
+After a PR is merged:
+
+1. Run `pnpm dev:docker:destroy` in the merged worktree.
+2. Switch to `main` and run `git pull --ff-only`.
+3. Delete the merged worktree and local branch.
+4. Run `pnpm dev:docker:refresh` on `main`.
+5. Verify the printed OrbStack URL in T3 Preview.
 
 # Reference Repos
 
