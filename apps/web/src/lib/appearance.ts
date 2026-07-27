@@ -38,7 +38,7 @@ export function buildDefaultAccentColor(version: string | undefined) {
 export const defaultAccentColor = buildDefaultAccentColor(
   import.meta.env.VITE_KILN_VERSION
 )
-export const defaultColorScheme: ColorScheme = "system"
+export const defaultColorScheme: ColorScheme = "dark"
 
 export const defaultAppearance: AppearancePreferences = {
   accentColor: defaultAccentColor,

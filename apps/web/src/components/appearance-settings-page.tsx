@@ -284,12 +284,6 @@ export const AppearanceSettingsPage = React.memo(
           <SettingRow label="Mode">
             <div className="grid max-w-md grid-cols-3 gap-1.5">
               <ModeButton
-                active={appearance.colorScheme === "system"}
-                icon={Monitor}
-                label="System"
-                onClick={() => updateColorScheme("system")}
-              />
-              <ModeButton
                 active={appearance.colorScheme === "dark"}
                 icon={Moon}
                 label="Dark"
@@ -300,6 +294,12 @@ export const AppearanceSettingsPage = React.memo(
                 icon={Sun}
                 label="Light"
                 onClick={() => updateColorScheme("light")}
+              />
+              <ModeButton
+                active={appearance.colorScheme === "system"}
+                icon={Monitor}
+                label="System"
+                onClick={() => updateColorScheme("system")}
               />
             </div>
           </SettingRow>

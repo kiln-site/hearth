@@ -34,6 +34,7 @@ describe("appearance defaults", () => {
     )
     expect(buildDefaultAccentColor("0.2.0")).toBe(stableDefaultAccentColor)
     expect(buildDefaultAccentColor(undefined)).toBe(stableDefaultAccentColor)
+    expect(defaultAppearance.colorScheme).toBe("dark")
   })
 
   it("accepts only persisted appearance values from the supported contract", () => {
@@ -62,7 +63,7 @@ describe("appearance defaults", () => {
         accentColor: "#38bdf8",
         colorScheme: "unsupported",
       })
-    ).toEqual({ accentColor: "#38bdf8", colorScheme: "system" })
+    ).toEqual({ accentColor: "#38bdf8", colorScheme: "dark" })
   })
 
   it("normalizes and limits custom accent colors", () => {
