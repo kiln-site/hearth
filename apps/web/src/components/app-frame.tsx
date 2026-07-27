@@ -13,7 +13,8 @@ import { AppSidebar } from "@/components/app-sidebar"
 import { InfraUpdateDialogProvider } from "@/components/infra-update-dialog-provider"
 import { PanelFooter } from "@/components/panel-footer"
 import { RelayConnectionToastMonitor } from "@/components/relay-connection-toast"
-import { saveAppearanceCache } from "@/lib/appearance"
+import { applyAppearance, saveAppearanceCache } from "@/lib/appearance"
+import type { AppearancePreferences } from "@/lib/appearance"
 import { uiPreferencesQueryOptions } from "@/lib/query-options"
 
 export const AppFrame = React.memo(function AppFrame({
@@ -49,10 +50,17 @@ export const AppFrame = React.memo(function AppFrame({
 const AppearanceHydrator = React.memo(function AppearanceHydrator({
   appearance,
 }: {
-  appearance: { accentColor: string; colorScheme: "dark" | "light" }
+  appearance: AppearancePreferences
 }) {
   React.useEffect(() => {
     saveAppearanceCache(appearance)
+    if (appearance.colorScheme !== "system") return
+
+    const colorScheme = window.matchMedia("(prefers-color-scheme: dark)")
+    const applySystemAppearance = () => applyAppearance(appearance)
+    colorScheme.addEventListener("change", applySystemAppearance)
+    return () =>
+      colorScheme.removeEventListener("change", applySystemAppearance)
   }, [appearance])
   return null
 })

@@ -3,8 +3,9 @@ import { z } from "zod"
 
 import {
   appearanceCacheCookieName,
-  defaultAccentColor,
+  defaultAppearance,
   normalizeAppearanceOverride,
+  resolveAppearance,
 } from "@/lib/appearance"
 import { selectedInstanceCookieName } from "@/lib/ui-preference-cookies"
 
@@ -23,25 +24,30 @@ function readCookie(cookies: string, name: string) {
 export const getUiPreferences = createServerFn({ method: "GET" }).handler(
   async () => {
     const [
-      { loadAppearanceOverrideEffect },
+      { loadAppearanceOverrideEffect, loadPlatformAppearanceDefaultEffect },
       { runAppEffect },
       { requireAuthenticatedUser },
+      { hasPlatformPermission },
       { getRequestHeaders, setCookie, setResponseHeader },
     ] = await Promise.all([
       import("@/effect/appearance-preferences"),
       import("@/effect/runtime"),
       import("@/server/auth"),
+      import("@/lib/access-control"),
       import("@tanstack/react-start/server"),
     ])
     const user = await requireAuthenticatedUser()
-    const appearanceOverride = await runAppEffect(
-      "appearancePreferences.load",
-      loadAppearanceOverrideEffect(user.id)
-    )
-    const appearance = {
-      accentColor: appearanceOverride.accentColor ?? defaultAccentColor,
-      colorScheme: appearanceOverride.colorScheme,
-    }
+    const [appearanceOverride, platformDefault] = await Promise.all([
+      runAppEffect(
+        "appearancePreferences.load",
+        loadAppearanceOverrideEffect(user.id)
+      ),
+      runAppEffect(
+        "appearancePreferences.loadPlatformDefault",
+        loadPlatformAppearanceDefaultEffect()
+      ),
+    ])
+    const appearance = resolveAppearance(appearanceOverride, platformDefault)
     setCookie(appearanceCacheCookieName, JSON.stringify(appearance), {
       maxAge: 60 * 60 * 24 * 365,
       path: "/",
@@ -72,7 +78,13 @@ export const getUiPreferences = createServerFn({ method: "GET" }).handler(
       selectedInstanceRouteId:
         readCookie(cookies, selectedInstanceCookieName) ?? null,
       appearance,
-      customAccentColor: appearanceOverride.accentColor,
+      appearanceDefault: platformDefault ?? defaultAppearance,
+      canManageAppearanceDefault: hasPlatformPermission(
+        user,
+        "platform.appearance.manage-default"
+      ),
+      customAccentColor: appearanceOverride?.accentColor ?? null,
+      defaultForNewUsers: platformDefault !== null,
     }
   }
 )
@@ -84,23 +96,47 @@ export const updateAppearancePreferences = createServerFn({ method: "POST" })
         .string()
         .regex(/^#[\da-f]{6}$/i)
         .nullable(),
-      colorScheme: z.enum(["dark", "light"]),
+      colorScheme: z.enum(["dark", "light", "system"]),
+      defaultForNewUsers: z.boolean().optional(),
     })
   )
   .handler(async ({ data }) => {
     const [
-      { saveAppearanceOverrideEffect },
+      {
+        loadPlatformAppearanceDefaultEffect,
+        saveAppearanceOverrideEffect,
+        savePlatformAppearanceDefaultEffect,
+      },
       { runAppEffect },
       { requireAuthenticatedUser },
+      { hasPlatformPermission },
       { setCookie, setResponseHeader },
     ] = await Promise.all([
       import("@/effect/appearance-preferences"),
       import("@/effect/runtime"),
       import("@/server/auth"),
+      import("@/lib/access-control"),
       import("@tanstack/react-start/server"),
     ])
     const user = await requireAuthenticatedUser()
+    const canManageAppearanceDefault = hasPlatformPermission(
+      user,
+      "platform.appearance.manage-default"
+    )
+    if (data.defaultForNewUsers !== undefined && !canManageAppearanceDefault) {
+      throw new Error(
+        "The platform.appearance.manage-default permission is required"
+      )
+    }
     const appearanceOverride = normalizeAppearanceOverride(data)
+    const platformDefault = await runAppEffect(
+      "appearancePreferences.loadPlatformDefault",
+      loadPlatformAppearanceDefaultEffect()
+    )
+    const appearance = resolveAppearance(
+      appearanceOverride,
+      data.defaultForNewUsers === false ? null : platformDefault
+    )
     await runAppEffect(
       "appearancePreferences.save",
       saveAppearanceOverrideEffect(
@@ -109,9 +145,13 @@ export const updateAppearancePreferences = createServerFn({ method: "POST" })
         appearanceOverride
       )
     )
-    const appearance = {
-      accentColor: appearanceOverride.accentColor ?? defaultAccentColor,
-      colorScheme: appearanceOverride.colorScheme,
+    if (data.defaultForNewUsers !== undefined) {
+      await runAppEffect(
+        "appearancePreferences.savePlatformDefault",
+        savePlatformAppearanceDefaultEffect(
+          data.defaultForNewUsers ? appearance : null
+        )
+      )
     }
     setCookie(appearanceCacheCookieName, JSON.stringify(appearance), {
       maxAge: 60 * 60 * 24 * 365,
@@ -119,5 +159,9 @@ export const updateAppearancePreferences = createServerFn({ method: "POST" })
       sameSite: "lax",
     })
     setResponseHeader("Cache-Control", "no-store")
-    return { appearance, customAccentColor: appearanceOverride.accentColor }
+    return {
+      appearance,
+      customAccentColor: appearanceOverride.accentColor,
+      defaultForNewUsers: data.defaultForNewUsers ?? platformDefault !== null,
+    }
   })

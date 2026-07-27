@@ -2,9 +2,13 @@ import { describe, expect, it } from "vite-plus/test"
 
 import {
   buildDefaultAccentColor,
+  defaultAppearance,
   nightlyDefaultAccentColor,
   normalizeAppearanceOverride,
+  normalizeAppearancePreferences,
   parseAccentColor,
+  resolveAppearance,
+  resolveColorScheme,
   stableDefaultAccentColor,
 } from "@/lib/appearance"
 
@@ -44,6 +48,35 @@ describe("appearance defaults", () => {
         accentColor: "orange",
         colorScheme: "system",
       })
-    ).toEqual({ accentColor: null, colorScheme: "dark" })
+    ).toEqual({ accentColor: null, colorScheme: "system" })
+    expect(
+      normalizeAppearancePreferences({
+        accentColor: "#38bdf8",
+        colorScheme: "unsupported",
+      })
+    ).toEqual({ accentColor: "#38bdf8", colorScheme: "system" })
+  })
+
+  it("uses the platform default until a user overrides it", () => {
+    const platformDefault = {
+      accentColor: "#38bdf8",
+      colorScheme: "light",
+    } as const
+
+    expect(resolveAppearance(null, platformDefault)).toEqual(platformDefault)
+    expect(
+      resolveAppearance(
+        { accentColor: null, colorScheme: "dark" },
+        platformDefault
+      )
+    ).toEqual({ accentColor: "#38bdf8", colorScheme: "dark" })
+    expect(resolveAppearance(null, null)).toEqual(defaultAppearance)
+  })
+
+  it("resolves system mode from the operating system preference", () => {
+    expect(resolveColorScheme("system", true)).toBe("dark")
+    expect(resolveColorScheme("system", false)).toBe("light")
+    expect(resolveColorScheme("dark", false)).toBe("dark")
+    expect(resolveColorScheme("light", true)).toBe("light")
   })
 })

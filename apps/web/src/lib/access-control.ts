@@ -6,8 +6,16 @@ import { databaseTable } from "@/lib/database-config"
 import { Database } from "@/effect/database"
 import { PermissionDeniedError } from "@/effect/errors"
 import { runAppEffect } from "@/effect/runtime"
-import type { AccessPermission, AccessRole } from "@/lib/permissions"
-import { isAccessRole, roleHasPermission } from "@/lib/permissions"
+import type {
+  AccessPermission,
+  AccessRole,
+  PlatformPermission,
+} from "@/lib/permissions"
+import {
+  isAccessRole,
+  platformRoleHasPermission,
+  roleHasPermission,
+} from "@/lib/permissions"
 
 interface GrantRow extends RowDataPacket {
   id: string
@@ -64,6 +72,15 @@ export const listUserGrantsEffect = Effect.fn("access.listUserGrants")(
 
 export function isPlatformAdmin(user: AuthenticatedUser): boolean {
   return user.isDevelopmentBypass || user.role === "admin"
+}
+
+export function hasPlatformPermission(
+  user: AuthenticatedUser,
+  permission: PlatformPermission
+): boolean {
+  return (
+    user.isDevelopmentBypass || platformRoleHasPermission(user.role, permission)
+  )
 }
 
 export async function hasRelayPermission(input: {

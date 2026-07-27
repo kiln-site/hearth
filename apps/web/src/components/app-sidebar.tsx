@@ -112,7 +112,6 @@ function persistSelectedInstance(routeId: string) {
 interface AppSidebarViewProps {
   user: AuthenticatedUser
   canManageAccess: boolean
-  isPlatformAdmin: boolean
   initialSelectedInstanceRouteId: string | null
   relayConfigured: boolean
 }
@@ -136,7 +135,6 @@ export const AppSidebar = React.memo(function AppSidebar({
   return (
     <AppSidebarView
       canManageAccess={capabilities.canManageAccess}
-      isPlatformAdmin={capabilities.isPlatformAdmin}
       initialSelectedInstanceRouteId={initialSelectedInstanceRouteId}
       relayConfigured={relayConfigured}
       user={capabilities.user}
@@ -147,7 +145,6 @@ export const AppSidebar = React.memo(function AppSidebar({
 const AppSidebarView = React.memo(function AppSidebarView({
   user,
   canManageAccess,
-  isPlatformAdmin,
   initialSelectedInstanceRouteId,
   relayConfigured,
 }: AppSidebarViewProps) {
@@ -179,11 +176,7 @@ const AppSidebarView = React.memo(function AppSidebarView({
         />
       </SidebarContent>
 
-      <AccountNavigation
-        canManageAccess={canManageAccess}
-        isPlatformAdmin={isPlatformAdmin}
-        user={user}
-      />
+      <AccountNavigation canManageAccess={canManageAccess} user={user} />
     </Sidebar>
   )
 })
@@ -656,11 +649,9 @@ const InstanceTabNavigationItem = React.memo(
 
 function AccountNavigation({
   canManageAccess,
-  isPlatformAdmin,
   user,
 }: {
   canManageAccess: boolean
-  isPlatformAdmin: boolean
   user: AuthenticatedUser
 }) {
   const { isMobile } = useSidebar()
@@ -694,11 +685,9 @@ function AccountNavigation({
         <SidebarMenuItem>
           {canManageAccess ? <AccessNavigationButton /> : null}
         </SidebarMenuItem>
-        {isPlatformAdmin ? (
-          <SidebarMenuItem>
-            <SettingsNavigationButton />
-          </SidebarMenuItem>
-        ) : null}
+        <SidebarMenuItem>
+          <SettingsNavigationButton />
+        </SidebarMenuItem>
         <SidebarMenuItem>
           <div className="flex h-11 items-center gap-2 px-2 group-data-[collapsible=icon]:px-0">
             <Avatar

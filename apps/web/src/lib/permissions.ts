@@ -1,6 +1,19 @@
 export const platformRoles = ["admin", "user"] as const
 export type PlatformRole = (typeof platformRoles)[number]
 
+export const platformPermissions = [
+  "platform.appearance.manage-default",
+] as const
+export type PlatformPermission = (typeof platformPermissions)[number]
+
+const platformRolePermissions: Record<
+  PlatformRole,
+  ReadonlySet<PlatformPermission>
+> = {
+  admin: new Set(platformPermissions),
+  user: new Set(),
+}
+
 export const accessRoles = ["owner", "admin", "operator", "viewer"] as const
 export type AccessRole = (typeof accessRoles)[number]
 
@@ -81,6 +94,13 @@ export function roleHasPermission(
   permission: AccessPermission
 ): boolean {
   return rolePermissions[role].has(permission)
+}
+
+export function platformRoleHasPermission(
+  role: PlatformRole,
+  permission: PlatformPermission
+): boolean {
+  return platformRolePermissions[role].has(permission)
 }
 
 export function isAccessRole(value: string): value is AccessRole {
