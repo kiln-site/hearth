@@ -49,7 +49,7 @@ const defaultIndentUnit = "  "
 const indentationScanLimit = 64 * 1024
 const indentationLineLimit = 256
 const editorContentInlineEndPadding = "24px"
-const activeLineBackground = "hsl(var(--accent-hue) 14% 16% / 0.32)"
+const activeLineBackground = "color-mix(in hsl, var(--accent) 36%, transparent)"
 
 function greatestCommonDivisor(left: number, right: number) {
   while (right !== 0) {
@@ -175,7 +175,7 @@ const kilnEditorTheme = EditorView.theme(
     },
     ".cm-gutters": {
       minHeight: "100%",
-      backgroundColor: "hsl(var(--accent-hue) 9% 9% / 0.6)",
+      backgroundColor: "color-mix(in hsl, var(--surface-low) 82%, transparent)",
       color: "color-mix(in hsl, var(--muted-foreground) 55%, transparent)",
       borderRight: "1px solid var(--border)",
     },
@@ -188,8 +188,8 @@ const kilnEditorTheme = EditorView.theme(
       color: "inherit",
     },
     "&.cm-focused .cm-activeLineGutter": {
-      backgroundColor: "hsl(var(--accent-hue) 34% 17% / 0.65)",
-      color: "hsl(var(--accent-hue) 42% 66%)",
+      backgroundColor: "var(--accent)",
+      color: "var(--accent-foreground)",
     },
     ".cm-matchingBracket": {
       backgroundColor:
@@ -254,7 +254,7 @@ const kilnEditorTheme = EditorView.theme(
     ".cm-changeGutter": {
       width: "3px",
       paddingLeft: "0",
-      backgroundColor: "hsl(var(--accent-hue) 9% 9% / 0.6)",
+      backgroundColor: "color-mix(in hsl, var(--surface-low) 82%, transparent)",
     },
     "&.cm-merge-b .cm-changedLineGutter, .cm-inlineChangedLineGutter": {
       backgroundColor: "oklch(0.7 0.1 175 / 0.72)",
@@ -263,7 +263,7 @@ const kilnEditorTheme = EditorView.theme(
       backgroundColor: "oklch(0.62 0.12 28 / 0.62)",
     },
   },
-  { dark: true }
+  { dark: false }
 )
 
 function createSearchBridgePanel(): Panel {

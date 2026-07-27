@@ -43,6 +43,17 @@ function ColorPicker({
   )
   const [hexDraft, setHexDraft] = React.useState<string | null>(null)
 
+  const changeOpen = React.useCallback(
+    (nextOpen: boolean) => {
+      if (nextOpen) {
+        setColor(hexToHsv(defaultValue))
+        setHexDraft(null)
+      }
+      onOpenChange?.(nextOpen)
+    },
+    [defaultValue, onOpenChange]
+  )
+
   const commitColor = React.useCallback(
     (nextColor: HsvColor) => {
       const nextHex = hsvToHex(nextColor)
@@ -77,7 +88,7 @@ function ColorPicker({
   )
 
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
+    <Popover open={open} onOpenChange={changeOpen}>
       <PopoverTrigger asChild>{children}</PopoverTrigger>
       <PopoverContent
         align="start"

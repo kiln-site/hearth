@@ -80,7 +80,7 @@ describe("appearance defaults", () => {
     })
   })
 
-  it("uses the platform default until a user overrides it", () => {
+  it("restores the platform accent when a personal accent is cleared", () => {
     const platformDefault = {
       accentColor: "#38bdf8",
       colorScheme: "light",

@@ -5,6 +5,7 @@ import { Check, Monitor, Moon, Pencil, Sun } from "lucide-react"
 import { ColorPicker } from "@workspace/ui/components/color-picker"
 import { cn } from "@workspace/ui/lib/utils"
 
+import { enqueueAppearancePersistence } from "@/lib/appearance-persistence"
 import { defaultAppearance, saveAppearanceCache } from "@/lib/appearance"
 import type {
   AppearanceOverride,
@@ -25,6 +26,7 @@ const presets = [
 ] as const
 const customColorSeeds = ["#497dff", "#14b8a6", "#d946ef"] as const
 const customColorSlotIndexes = [0, 1, 2]
+const emptyPersistQueue = Promise.resolve()
 
 type AppearanceUpdate = AppearanceOverride & {
   defaultForNewUsers?: boolean
@@ -77,15 +79,18 @@ function useAppearanceSettings() {
   const defaultForNewUsersRef = React.useRef(
     initialPreferences?.defaultForNewUsers ?? false
   )
+  const appearanceDefaultRef = React.useRef(
+    initialPreferences?.appearanceDefault ?? defaultAppearance
+  )
   const persistTimeout = React.useRef<number | null>(null)
   const pendingUpdate = React.useRef<AppearanceUpdate | null>(null)
+  const persistQueue = React.useRef(emptyPersistQueue)
 
-  const persist = React.useCallback(async (update: AppearanceUpdate) => {
-    try {
-      await updateAppearancePreferences({ data: update })
-    } catch {
-      // The local preference remains applied; the next change retries persistence.
-    }
+  const persist = React.useCallback((update: AppearanceUpdate) => {
+    persistQueue.current = enqueueAppearancePersistence(
+      persistQueue.current,
+      () => updateAppearancePreferences({ data: update })
+    )
   }, [])
 
   const schedulePersist = React.useCallback(
@@ -98,7 +103,7 @@ function useAppearanceSettings() {
         persistTimeout.current = null
         const pending = pendingUpdate.current
         pendingUpdate.current = null
-        if (pending) void persist(pending)
+        if (pending) persist(pending)
       }, persistDelay)
     },
     [persist]
@@ -110,11 +115,11 @@ function useAppearanceSettings() {
         window.clearTimeout(persistTimeout.current)
         const pending = pendingUpdate.current
         if (pending) {
-          void updateAppearancePreferences({ data: pending })
+          persist(pending)
         }
       }
     }
-  }, [])
+  }, [persist])
 
   const persistedUpdate = React.useCallback(
     (
@@ -151,6 +156,9 @@ function useAppearanceSettings() {
       appearanceRef.current = resolvedAppearance
       customAccentColorRef.current = customColor
       customColorsRef.current = nextCustomColors
+      if (defaultForNewUsersRef.current) {
+        appearanceDefaultRef.current = resolvedAppearance
+      }
       if (appearanceChanged) setAppearance(resolvedAppearance)
       if (customAccentChanged) setCustomAccentColor(customColor)
       if (customColorsChanged) setCustomColors(nextCustomColors)
@@ -234,7 +242,7 @@ function useAppearanceSettings() {
         updateAppearance(
           {
             ...currentAppearance,
-            accentColor: defaultAppearance.accentColor,
+            accentColor: appearanceDefaultRef.current.accentColor,
           },
           null,
           nextCustomColors
@@ -268,6 +276,7 @@ function useAppearanceSettings() {
         : defaultAppearance
 
       defaultForNewUsersRef.current = enabled
+      appearanceDefaultRef.current = nextAppearanceDefault
       if (shouldResetAccent && saveAppearanceCache(nextAppearance)) {
         appearanceRef.current = nextAppearance
         setAppearance(nextAppearance)
