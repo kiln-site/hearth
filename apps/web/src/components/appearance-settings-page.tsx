@@ -373,7 +373,7 @@ function AccentColorControl({
         {customColors.map((color, index) => (
           <ColorPicker
             key={customColorIds[index]}
-            value={color}
+            defaultValue={color}
             onValueChange={(nextColor) => onCustomChange(index, nextColor)}
             onRemove={() => onCustomRemove(index)}
             open={activeCustomIndex === index}

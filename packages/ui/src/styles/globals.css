@@ -193,7 +193,7 @@
   --popover-foreground: hsl(var(--accent-hue) 16% 10%);
   --popover-accent: hsl(var(--accent-hue) 38% 91%);
   --popover-accent-foreground: hsl(var(--accent-hue) 18% 12%);
-  --primary: hsl(var(--accent-hue) var(--accent-saturation) 28%);
+  --primary: hsl(var(--accent-hue) var(--accent-saturation) 22%);
   --primary-foreground: hsl(var(--accent-hue) 18% 98%);
   --secondary: hsl(var(--accent-hue) 20% 91%);
   --secondary-foreground: hsl(var(--accent-hue) 18% 14%);

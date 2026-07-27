@@ -21,43 +21,32 @@ type HsvColor = {
 type ColorPickerProps = {
   children: React.ReactNode
   className?: string
+  defaultValue: string
   onOpenChange?: (open: boolean) => void
   onRemove?: () => void
   onValueChange: (value: string) => void
   open?: boolean
-  value: string
 }
 
 function ColorPicker({
   children,
   className,
+  defaultValue,
   onOpenChange,
   onRemove,
   onValueChange,
   open,
-  value,
 }: ColorPickerProps) {
   const brightnessId = React.useId()
-  const [color, setColor] = React.useState<HsvColor>(() => hexToHsv(value))
-  const [hexDraft, setHexDraft] = React.useState(value.toUpperCase())
-
-  React.useEffect(() => {
-    const normalized = normalizeHex(value)
-    if (normalized) {
-      setColor((currentColor) =>
-        hsvToHex(currentColor) === normalized
-          ? currentColor
-          : hexToHsv(normalized)
-      )
-    }
-    setHexDraft(value.toUpperCase())
-  }, [value])
+  const [color, setColor] = React.useState<HsvColor>(() =>
+    hexToHsv(defaultValue)
+  )
+  const [hexDraft, setHexDraft] = React.useState<string | null>(null)
 
   const commitColor = React.useCallback(
     (nextColor: HsvColor) => {
       const nextHex = hsvToHex(nextColor)
       setColor(nextColor)
-      setHexDraft(nextHex.toUpperCase())
       onValueChange(nextHex)
     },
     [onValueChange]
@@ -135,10 +124,10 @@ function ColorPicker({
               updateFromPointer(event)
             }
           }}
-          className="relative aspect-square w-full cursor-crosshair touch-none overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-ring/45"
+          className="relative h-24 w-full cursor-crosshair touch-none overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-ring/45"
           style={{
             backgroundImage:
-              "linear-gradient(to bottom, transparent 0%, rgb(255 255 255 / 0.08) 55%, rgb(255 255 255 / 0.42) 82%, #fff 100%), linear-gradient(to right, #f00 0%, #ff0 16.667%, #0f0 33.333%, #0ff 50%, #00f 66.667%, #f0f 83.333%, #f00 100%)",
+              "linear-gradient(to bottom, transparent, rgb(255 255 255 / 0.32)), linear-gradient(to right, #f00 0%, #ff0 16.667%, #0f0 33.333%, #0ff 50%, #00f 66.667%, #f0f 83.333%, #f00 100%)",
           }}
         >
           <span
@@ -168,7 +157,7 @@ function ColorPicker({
               onChange={(event) =>
                 commitColor({ ...color, value: Number(event.target.value) })
               }
-              className="absolute top-1/2 h-3 w-full -translate-y-1/2 cursor-pointer appearance-none border border-white/15 outline-none focus-visible:ring-2 focus-visible:ring-ring/45 [&::-moz-range-thumb]:size-4 [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-transparent [&::-webkit-slider-thumb]:size-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:border-0 [&::-webkit-slider-thumb]:bg-transparent"
+              className="absolute top-1/2 h-3 w-full -translate-y-1/2 cursor-pointer appearance-none border-0 outline-none focus-visible:ring-2 focus-visible:ring-ring/45 [&::-moz-range-thumb]:size-4 [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-transparent [&::-webkit-slider-thumb]:size-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:border-0 [&::-webkit-slider-thumb]:bg-transparent"
               style={{ background: "linear-gradient(to right, #000, #fff)" }}
             />
             <span
@@ -184,9 +173,9 @@ function ColorPicker({
         <div className="mt-3 flex gap-2">
           <Input
             aria-label="Hex color"
-            value={hexDraft}
+            value={hexDraft ?? hsvToHex(color).toUpperCase()}
             onChange={updateHexDraft}
-            onBlur={() => setHexDraft(value.toUpperCase())}
+            onBlur={() => setHexDraft(null)}
             onKeyDown={(event) => {
               if (event.key === "Enter") event.currentTarget.blur()
             }}
@@ -278,11 +267,11 @@ function clamp(value: number) {
 }
 
 function saturationFromVertical(vertical: number) {
-  return (1 - vertical ** 3) * 100
+  return 100 - vertical * 35
 }
 
 function verticalFromSaturation(saturation: number) {
-  return Math.cbrt(1 - clamp(saturation / 100))
+  return clamp((100 - saturation) / 35)
 }
 
 export { ColorPicker }
