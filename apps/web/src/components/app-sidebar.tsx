@@ -214,11 +214,7 @@ function ServersNavigationItem({
 }) {
   return (
     <SidebarMenuItem>
-      <SidebarMenuButton
-        asChild
-        tooltip="Servers"
-        className="data-active:bg-primary/10 data-active:text-primary"
-      >
+      <SidebarMenuButton asChild tooltip="Servers">
         <Link
           to="/infra/servers"
           activeOptions={{ exact: true, includeSearch: false }}
@@ -590,11 +586,7 @@ const InstanceTabNavigationItem = React.memo(
 
     return (
       <SidebarMenuItem>
-        <SidebarMenuButton
-          asChild
-          tooltip={item.title}
-          className="data-active:bg-primary/10 data-active:text-primary"
-        >
+        <SidebarMenuButton asChild tooltip={item.title}>
           {!instanceRouteId ? (
             <Link
               to="/infra/servers"
