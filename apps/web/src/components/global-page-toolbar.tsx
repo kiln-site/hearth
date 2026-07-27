@@ -73,6 +73,7 @@ function sectionPageFromPathname(
   if (section === "infra") {
     if (pathname.startsWith("/infra/setup")) return "Setup"
     if (pathname.startsWith("/infra/relays")) return "Relays"
+    if (pathname.startsWith("/infra/tailscale")) return "Tailscale"
     if (pathname.startsWith("/infra/servers")) return "Servers"
     if (pathname.startsWith("/infra/databases")) return "Databases"
     return "Infrastructure"

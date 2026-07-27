@@ -166,7 +166,11 @@ const StartupForm = React.memo(function StartupForm({
   const [tailscaleSubdomain, setTailscaleSubdomain] = React.useState(
     () =>
       initialTailscale.subdomain ??
-      suggestedTailscaleSubdomain(initialBrick, initialVariables)
+      suggestedTailscaleSubdomain(
+        initialBrick,
+        initialVariables,
+        tailscale.settings?.hostname
+      )
   )
   const [swapOpen, setSwapOpen] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -667,7 +671,8 @@ function bytesToGiBInput(bytes: number): string {
 
 function suggestedTailscaleSubdomain(
   brick: Brick,
-  variables: Readonly<Record<string, BrickVariableValue>>
+  variables: Readonly<Record<string, BrickVariableValue>>,
+  relayHostname?: string
 ): string {
   const version =
     typeof variables.version === "string"
@@ -677,7 +682,7 @@ function suggestedTailscaleSubdomain(
           .replace(/[^a-z0-9.-]+/gu, "-")
           .replace(/^[.-]+|[.-]+$/gu, "")
       : ""
-  return [version, brick.metadata.id].filter(Boolean).join(".")
+  return [relayHostname, version, brick.metadata.id].filter(Boolean).join(".")
 }
 
 const StartupBrickSwapDialog = React.memo(function StartupBrickSwapDialog({

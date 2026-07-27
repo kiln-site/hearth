@@ -7,37 +7,45 @@ import {
 } from "@tanstack/react-query"
 import {
   Check,
+  ChevronRight,
   CircleAlert,
-  Copy,
   ExternalLink,
   KeyRound,
   LoaderCircle,
-  Network,
   Save,
   Server,
   ShieldCheck,
   Waypoints,
 } from "lucide-react"
-import type {
-  RelayTailscaleOverview,
-  RelayTailscaleSettings,
-} from "@workspace/contracts"
+import type { RelayTailscaleOverview } from "@workspace/contracts"
 
 import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
 
+import type {
+  FleetRelayInstance,
+  FleetRelayNode,
+  RelayFleetSnapshot,
+} from "@/lib/relay-fleet"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import {
   queryKeys,
   relaysQueryOptions,
+  relaySnapshotQueryOptions,
   relayTailscaleQueryOptions,
+  replaceRelaySnapshotInstance,
 } from "@/lib/query-options"
+import { updateInstanceTailscale } from "@/server/bricks"
 import { installRelayTailscale, updateRelayTailscale } from "@/server/relays"
 
 export const TailscalePage = React.memo(function TailscalePage() {
   const { data: relays } = useSuspenseQuery(relaysQueryOptions())
-  const availableRelays = relays.filter((relay) => relay.enabled)
+  const snapshotQuery = useQuery(relaySnapshotQueryOptions())
+  const availableRelays = React.useMemo(
+    () => relays.filter((relay) => relay.enabled),
+    [relays]
+  )
   const [selectedRelayId, setSelectedRelayId] = React.useState(
     () => availableRelays[0]?.id ?? ""
   )
@@ -47,7 +55,7 @@ export const TailscalePage = React.memo(function TailscalePage() {
 
   if (!selectedRelay) {
     return (
-      <main className="mx-auto w-full max-w-5xl px-3 pb-10 sm:px-5">
+      <main className="mx-auto w-full max-w-7xl px-3 pb-10 sm:px-5">
         <div className="rounded-xl border border-dashed bg-card/45 px-6 py-14 text-center">
           <Server className="mx-auto size-5 text-muted-foreground" />
           <h1 className="mt-3 font-heading text-lg font-semibold">
@@ -62,50 +70,43 @@ export const TailscalePage = React.memo(function TailscalePage() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-5xl px-3 pb-10 sm:px-5">
-      <header className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="font-mono text-[9px] tracking-[0.18em] text-primary uppercase">
-            Private infrastructure
-          </p>
-          <h1 className="mt-1 font-heading text-2xl font-semibold tracking-[-0.035em]">
-            Tailscale
-          </h1>
-          <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">
-            Join a node to your tailnet and publish intentional server names
-            through its managed CoreDNS resolver.
-          </p>
-        </div>
-
-        <label className="min-w-56">
-          <span className="mb-1.5 block font-mono text-[9px] tracking-wider text-muted-foreground uppercase">
-            Node
-          </span>
-          <select
-            value={selectedRelay.id}
-            onChange={(event) => setSelectedRelayId(event.target.value)}
-            className="h-9 w-full rounded-md border border-input bg-background px-3 text-xs shadow-xs transition-[color,box-shadow] outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
-          >
-            {availableRelays.map((relay) => (
-              <option key={relay.id} value={relay.id}>
-                {relay.name}
-              </option>
-            ))}
-          </select>
-        </label>
-      </header>
-
-      <TailscaleNodePanel key={selectedRelay.id} relay={selectedRelay} />
+    <main className="mx-auto w-full max-w-7xl px-3 pb-10 sm:px-5">
+      <TailscaleRelayWorkspace
+        key={selectedRelay.id}
+        relays={availableRelays}
+        selectedRelay={selectedRelay}
+        snapshot={snapshotQuery.data}
+        snapshotPending={snapshotQuery.isPending}
+        onSelectRelay={setSelectedRelayId}
+      />
     </main>
   )
 })
 
-const TailscaleNodePanel = React.memo(function TailscaleNodePanel({
-  relay,
+const TailscaleRelayWorkspace = React.memo(function TailscaleRelayWorkspace({
+  relays,
+  selectedRelay,
+  snapshot,
+  snapshotPending,
+  onSelectRelay,
 }: {
-  relay: PersistedRelay
+  relays: Array<PersistedRelay>
+  selectedRelay: PersistedRelay
+  snapshot: RelayFleetSnapshot | undefined
+  snapshotPending: boolean
+  onSelectRelay: (relayId: string) => void
 }) {
-  const overviewQuery = useQuery(relayTailscaleQueryOptions(relay.id))
+  const overviewQuery = useQuery(relayTailscaleQueryOptions(selectedRelay.id))
+  const selectedNode = snapshot?.nodes.find(
+    (node) => node.relayId === selectedRelay.id
+  )
+  const servers = React.useMemo(
+    () =>
+      snapshot?.instances.filter(
+        (instance) => instance.relayId === selectedRelay.id
+      ) ?? [],
+    [selectedRelay.id, snapshot?.instances]
+  )
 
   if (overviewQuery.isPending) {
     return (
@@ -139,16 +140,32 @@ const TailscaleNodePanel = React.memo(function TailscaleNodePanel({
     )
   }
 
+  const overview = overviewQuery.data
   return (
-    <TailscaleConfiguration
-      key={overviewQuery.dataUpdatedAt}
-      relay={relay}
-      overview={overviewQuery.data}
-    />
+    <div className="space-y-4">
+      <TailscaleSetupPanel relay={selectedRelay} overview={overview} />
+
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(220px,0.38fr)_minmax(0,0.62fr)]">
+        <RelayRail
+          relays={relays}
+          selectedRelay={selectedRelay}
+          selectedNode={selectedNode}
+          snapshot={snapshot}
+          overview={overview}
+          onSelectRelay={onSelectRelay}
+        />
+        <ServerDirectory
+          relay={selectedRelay}
+          servers={servers}
+          overview={overview}
+          pending={snapshotPending}
+        />
+      </div>
+    </div>
   )
 })
 
-const TailscaleConfiguration = React.memo(function TailscaleConfiguration({
+const TailscaleSetupPanel = React.memo(function TailscaleSetupPanel({
   relay,
   overview,
 }: {
@@ -174,21 +191,27 @@ const TailscaleConfiguration = React.memo(function TailscaleConfiguration({
   )
   const saveMutation = useMutation({
     mutationFn: updateRelayTailscale,
-    onSuccess: (next) => {
+    onSuccess: async (next) => {
       updateOverview(next)
       setConfigurationSaved(true)
       window.setTimeout(() => setConfigurationSaved(false), 2_000)
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.tailscale(relay.id),
+      })
     },
   })
   const installMutation = useMutation({
     mutationFn: installRelayTailscale,
-    onSuccess: (next) => {
+    onSuccess: async (next) => {
       setAuthKey("")
       updateOverview(next)
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.tailscale(relay.id),
+      })
     },
   })
 
-  const normalizedDomain = domain.trim().replace(/^[.]+|[.]+$/gu, "")
+  const normalizedDomain = normalizeDnsValue(domain)
   const normalizedHostname = hostname.trim().toLowerCase()
   const savedSettings = overview.settings
   const configurationChanged =
@@ -236,142 +259,137 @@ const TailscaleConfiguration = React.memo(function TailscaleConfiguration({
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[1.08fr_0.92fr]">
-      <div className="space-y-4">
-        <section className="overflow-hidden rounded-xl border bg-card/45">
-          <div className="flex items-center justify-between border-b bg-background/25 px-4 py-3">
-            <div className="flex items-center gap-2">
-              <Waypoints className="size-4 text-primary" />
-              <h2 className="text-sm font-semibold">Node configuration</h2>
-            </div>
-            <StatusBadge overview={overview} />
+    <section className="overflow-hidden rounded-xl border bg-card/50 shadow-sm">
+      <div className="flex flex-col gap-3 border-b bg-background/25 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3">
+          <span className="grid size-9 shrink-0 place-items-center rounded-lg border bg-primary/8">
+            <Waypoints className="size-4 text-primary" />
+          </span>
+          <div>
+            <h2 className="text-sm font-semibold">Set up Tailscale</h2>
+            <p className="mt-0.5 text-[10px] text-muted-foreground">
+              Global DNS suffix and identity for {relay.name}
+            </p>
           </div>
+        </div>
+        <StatusBadge overview={overview} />
+      </div>
 
-          <form className="space-y-4 p-4" onSubmit={saveConfiguration}>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <label>
-                <span className="text-[10px] font-medium">Global domain</span>
-                <span className="mt-0.5 block text-[9px] leading-4 text-muted-foreground">
-                  Shared suffix for Tailscale-enabled servers.
-                </span>
-                <div className="mt-2 flex">
-                  <span className="grid h-9 place-items-center rounded-l-md border border-r-0 bg-muted/35 px-3 font-mono text-xs text-muted-foreground">
-                    .
-                  </span>
-                  <Input
-                    aria-label="Global Tailscale domain"
-                    value={domain.replace(/^[.]+/u, "")}
-                    onChange={(event) => {
-                      setDomain(event.target.value)
-                      setConfigurationSaved(false)
-                      setError(null)
-                    }}
-                    disabled={pending}
-                    placeholder="test"
-                    className="rounded-l-none font-mono"
-                  />
-                </div>
-              </label>
-
-              <label>
-                <span className="text-[10px] font-medium">Node hostname</span>
-                <span className="mt-0.5 block text-[9px] leading-4 text-muted-foreground">
-                  Device name shown in the Tailscale admin console.
-                </span>
-                <Input
-                  aria-label="Tailscale node hostname"
-                  value={hostname}
-                  onChange={(event) => {
-                    setHostname(event.target.value)
-                    setConfigurationSaved(false)
-                    setError(null)
-                  }}
-                  disabled={pending}
-                  placeholder="kiln-node"
-                  className="mt-2 font-mono"
-                />
-              </label>
+      <div className="grid gap-px bg-border xl:grid-cols-[minmax(0,1.35fr)_minmax(300px,0.65fr)]">
+        <form
+          className="grid gap-4 bg-card p-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end"
+          onSubmit={saveConfiguration}
+        >
+          <label>
+            <span className="text-[10px] font-medium">Global domain</span>
+            <span className="mt-0.5 block text-[9px] text-muted-foreground">
+              Shared by every published server name.
+            </span>
+            <div className="mt-2 flex">
+              <span className="grid h-9 place-items-center rounded-l-md border border-r-0 bg-muted/35 px-3 font-mono text-xs text-muted-foreground">
+                .
+              </span>
+              <Input
+                aria-label="Global Tailscale domain"
+                value={domain.replace(/^[.]+/u, "")}
+                onChange={(event) => {
+                  setDomain(event.target.value)
+                  setConfigurationSaved(false)
+                  setError(null)
+                }}
+                disabled={pending}
+                placeholder="test"
+                className="rounded-l-none font-mono"
+              />
             </div>
+          </label>
 
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                type="submit"
-                disabled={
-                  pending ||
-                  !normalizedDomain ||
-                  !normalizedHostname ||
-                  !configurationChanged
-                }
+          <label>
+            <span className="text-[10px] font-medium">Relay hostname</span>
+            <span className="mt-0.5 block text-[9px] text-muted-foreground">
+              Prefills server addresses on this node.
+            </span>
+            <Input
+              aria-label="Tailscale Relay hostname"
+              value={hostname}
+              onChange={(event) => {
+                setHostname(event.target.value)
+                setConfigurationSaved(false)
+                setError(null)
+              }}
+              disabled={pending}
+              placeholder="kiln-node"
+              className="mt-2 font-mono"
+            />
+          </label>
+
+          <Button
+            type="submit"
+            className="sm:mb-px"
+            disabled={
+              pending ||
+              !normalizedDomain ||
+              !normalizedHostname ||
+              !configurationChanged
+            }
+          >
+            {saveMutation.isPending ? (
+              <LoaderCircle className="animate-spin" />
+            ) : configurationSaved ? (
+              <Check />
+            ) : (
+              <Save />
+            )}
+            {saveMutation.isPending
+              ? "Saving…"
+              : configurationSaved
+                ? "Saved"
+                : "Save"}
+          </Button>
+        </form>
+
+        {overview.status.connected && overview.settings ? (
+          <ConnectedSetupSummary overview={overview} />
+        ) : (
+          <form
+            className="flex flex-col justify-center bg-card p-4"
+            onSubmit={install}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <label
+                htmlFor="tailscale-auth-key"
+                className="text-[10px] font-medium"
               >
-                {saveMutation.isPending ? (
-                  <LoaderCircle className="animate-spin" />
-                ) : configurationSaved ? (
-                  <Check />
-                ) : (
-                  <Save />
-                )}
-                {saveMutation.isPending
-                  ? "Saving…"
-                  : configurationSaved
-                    ? "Saved"
-                    : "Save configuration"}
-              </Button>
-              {overview.status.connected && configurationChanged ? (
-                <p className="text-[10px] text-amber-300">
-                  Save to update CoreDNS and the tailnet hostname.
-                </p>
-              ) : null}
+                One-time auth key
+              </label>
+              <a
+                href="https://login.tailscale.com/admin/settings/keys"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-[9px] text-primary hover:underline"
+              >
+                Create key
+                <ExternalLink className="size-3" />
+              </a>
             </div>
-          </form>
-        </section>
-
-        {!overview.status.connected ? (
-          <section className="overflow-hidden rounded-xl border bg-card/45">
-            <div className="flex items-center gap-2 border-b bg-background/25 px-4 py-3">
-              <KeyRound className="size-4 text-primary" />
-              <h2 className="text-sm font-semibold">Install on node</h2>
-            </div>
-            <form className="space-y-3 p-4" onSubmit={install}>
-              <div>
-                <div className="flex items-center justify-between gap-3">
-                  <label
-                    htmlFor="tailscale-auth-key"
-                    className="text-[10px] font-medium"
-                  >
-                    One-time auth key
-                  </label>
-                  <a
-                    href="https://login.tailscale.com/admin/settings/keys"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-[9px] text-primary hover:underline"
-                  >
-                    Create key
-                    <ExternalLink className="size-3" />
-                  </a>
-                </div>
-                <Input
-                  id="tailscale-auth-key"
-                  type="password"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={authKey}
-                  onChange={(event) => {
-                    setAuthKey(event.target.value)
-                    setError(null)
-                  }}
-                  disabled={pending || !overview.settings}
-                  placeholder="tskey-auth-…"
-                  className="mt-2 font-mono"
-                />
-                <p className="mt-1.5 text-[9px] leading-4 text-muted-foreground">
-                  The key is used for initial authentication, then removed from
-                  the managed container. The node identity persists on disk.
-                </p>
-              </div>
-
+            <div className="mt-2 flex gap-2">
+              <Input
+                id="tailscale-auth-key"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                value={authKey}
+                onChange={(event) => {
+                  setAuthKey(event.target.value)
+                  setError(null)
+                }}
+                disabled={pending || !overview.settings}
+                placeholder="tskey-auth-…"
+                className="min-w-0 font-mono"
+              />
               <Button
                 type="submit"
+                variant="outline"
                 disabled={
                   pending ||
                   !overview.settings ||
@@ -382,57 +400,487 @@ const TailscaleConfiguration = React.memo(function TailscaleConfiguration({
                 {installMutation.isPending ? (
                   <LoaderCircle className="animate-spin" />
                 ) : (
-                  <Network />
+                  <KeyRound />
                 )}
-                {installMutation.isPending
-                  ? "Joining tailnet…"
-                  : overview.status.installed
-                    ? "Retry installation"
-                    : "Install Tailscale"}
+                {installMutation.isPending ? "Joining…" : "Install"}
               </Button>
-              {!overview.settings ? (
-                <p className="text-[10px] text-muted-foreground">
-                  Save the node configuration first.
-                </p>
-              ) : configurationChanged ? (
-                <p className="text-[10px] text-muted-foreground">
-                  Save configuration changes before installing.
-                </p>
-              ) : null}
-            </form>
-          </section>
-        ) : null}
-
-        {error ? (
-          <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/8 px-3 py-2 text-xs text-destructive">
-            <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
-            {error}
-          </div>
-        ) : null}
-      </div>
-
-      <div className="space-y-4">
-        <NodeStatusCard relay={relay} overview={overview} />
-        {overview.status.connected && overview.settings ? (
-          <DnsSetupCard overview={overview} settings={overview.settings} />
-        ) : (
-          <div className="rounded-xl border border-dashed bg-muted/10 p-5">
-            <ShieldCheck className="size-4 text-muted-foreground" />
-            <p className="mt-3 text-xs font-semibold">
-              Private server names stay dormant
+            </div>
+            <p className="mt-2 text-[9px] leading-4 text-muted-foreground">
+              Used once, then removed from the managed container.
             </p>
-            <p className="mt-1 text-[10px] leading-5 text-muted-foreground">
-              CoreDNS starts only after this node has a Tailscale address.
-              Servers can then opt in from their Startup page.
-            </p>
-          </div>
+          </form>
         )}
       </div>
-    </div>
+
+      {error ? (
+        <div className="flex items-start gap-2 border-t border-destructive/30 bg-destructive/8 px-4 py-2.5 text-xs text-destructive">
+          <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+          {error}
+        </div>
+      ) : null}
+    </section>
   )
 })
 
-function StatusBadge({ overview }: { overview: RelayTailscaleOverview }) {
+function ConnectedSetupSummary({
+  overview,
+}: {
+  overview: RelayTailscaleOverview
+}) {
+  const settings = overview.settings
+  if (!settings) return null
+  return (
+    <div className="flex items-center justify-between gap-4 bg-card p-4">
+      <div className="min-w-0">
+        <span className="flex items-center gap-2 text-[10px] font-medium">
+          <span className="size-1.5 rounded-full bg-emerald-400" />
+          Tailnet ready
+        </span>
+        <p className="mt-1 truncate font-mono text-xs">
+          {overview.status.dnsAddress}
+        </p>
+        <p className="mt-0.5 text-[9px] text-muted-foreground">
+          Restricted DNS zone: .{settings.domain}
+        </p>
+      </div>
+      <Button asChild variant="outline" size="sm">
+        <a
+          href="https://login.tailscale.com/admin/dns"
+          target="_blank"
+          rel="noreferrer"
+        >
+          DNS
+          <ExternalLink />
+        </a>
+      </Button>
+    </div>
+  )
+}
+
+const RelayRail = React.memo(function RelayRail({
+  relays,
+  selectedRelay,
+  selectedNode,
+  snapshot,
+  overview,
+  onSelectRelay,
+}: {
+  relays: Array<PersistedRelay>
+  selectedRelay: PersistedRelay
+  selectedNode: FleetRelayNode | undefined
+  snapshot: RelayFleetSnapshot | undefined
+  overview: RelayTailscaleOverview
+  onSelectRelay: (relayId: string) => void
+}) {
+  return (
+    <aside className="overflow-hidden rounded-xl border bg-card/45">
+      <div className="border-b bg-background/25 px-4 py-3">
+        <p className="font-mono text-[8px] tracking-[0.16em] text-muted-foreground uppercase">
+          Relay nodes
+        </p>
+        <p className="mt-1 text-xs font-medium">{relays.length} configured</p>
+      </div>
+
+      <div className="p-2">
+        {relays.map((relay) => {
+          const selected = relay.id === selectedRelay.id
+          const node = snapshot?.nodes.find(
+            (candidate) => candidate.relayId === relay.id
+          )
+          const serverCount =
+            snapshot?.instances.filter(
+              (instance) => instance.relayId === relay.id
+            ).length ?? 0
+          return (
+            <button
+              key={relay.id}
+              type="button"
+              aria-pressed={selected}
+              className={`group flex w-full items-center gap-3 rounded-lg border px-3 py-3 text-left transition-colors ${
+                selected
+                  ? "border-primary/30 bg-primary/8"
+                  : "border-transparent hover:border-border hover:bg-background/55"
+              }`}
+              onClick={() => onSelectRelay(relay.id)}
+            >
+              <span
+                className={`grid size-8 shrink-0 place-items-center rounded-md border ${
+                  selected ? "border-primary/25 bg-primary/10" : "bg-background"
+                }`}
+              >
+                <Server
+                  className={`size-3.5 ${
+                    selected ? "text-primary" : "text-muted-foreground"
+                  }`}
+                />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-xs font-medium">
+                  {relay.name}
+                </span>
+                <span className="mt-0.5 flex items-center gap-1.5 text-[9px] text-muted-foreground">
+                  <span
+                    className={`size-1.5 rounded-full ${
+                      node?.relayStatus === "connected"
+                        ? "bg-emerald-400"
+                        : "bg-muted-foreground/35"
+                    }`}
+                  />
+                  {serverCount} server{serverCount === 1 ? "" : "s"}
+                </span>
+              </span>
+              <ChevronRight
+                className={`size-3.5 ${
+                  selected
+                    ? "text-primary"
+                    : "text-muted-foreground/35 group-hover:text-muted-foreground"
+                }`}
+              />
+            </button>
+          )
+        })}
+      </div>
+
+      <div className="border-t bg-background/20 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[10px] font-medium">Selected node</p>
+          <StatusBadge overview={overview} compact />
+        </div>
+        <dl className="mt-3 space-y-2.5">
+          <NodeDetail
+            label="Relay hostname"
+            value={overview.settings?.hostname ?? "Not configured"}
+          />
+          <NodeDetail
+            label="Tailnet IP"
+            value={overview.status.dnsAddress ?? "Not connected"}
+          />
+          <NodeDetail
+            label="CoreDNS"
+            value={
+              overview.status.coreDnsRunning
+                ? `Listening on ${overview.status.dnsAddress}`
+                : "Stopped"
+            }
+          />
+          <NodeDetail
+            label="Relay"
+            value={
+              selectedNode?.relayStatus === "connected"
+                ? "Online"
+                : "Unreachable"
+            }
+          />
+        </dl>
+      </div>
+    </aside>
+  )
+})
+
+function NodeDetail({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <dt className="text-[9px] text-muted-foreground">{label}</dt>
+      <dd className="max-w-[65%] truncate text-right font-mono text-[9px] font-medium">
+        {value}
+      </dd>
+    </div>
+  )
+}
+
+const ServerDirectory = React.memo(function ServerDirectory({
+  relay,
+  servers,
+  overview,
+  pending,
+}: {
+  relay: PersistedRelay
+  servers: Array<FleetRelayInstance>
+  overview: RelayTailscaleOverview
+  pending: boolean
+}) {
+  const connectedCount = servers.filter(
+    (server) => server.tailscale.enabled
+  ).length
+
+  return (
+    <section className="min-w-0 overflow-hidden rounded-xl border bg-card/45">
+      <div className="flex flex-col gap-2 border-b bg-background/25 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="font-mono text-[8px] tracking-[0.16em] text-muted-foreground uppercase">
+            Servers on {relay.name}
+          </p>
+          <h2 className="mt-1 text-sm font-semibold">Tailnet publishing</h2>
+        </div>
+        <Badge variant="outline" className="w-fit font-mono text-[9px]">
+          {connectedCount}/{servers.length} SELECTED
+        </Badge>
+      </div>
+
+      {pending ? (
+        <div className="grid min-h-48 place-items-center">
+          <LoaderCircle className="size-4 animate-spin text-primary" />
+        </div>
+      ) : servers.length === 0 ? (
+        <div className="px-6 py-14 text-center">
+          <Server className="mx-auto size-5 text-muted-foreground" />
+          <p className="mt-3 text-sm font-semibold">No servers on this Relay</p>
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            Provision a server before publishing a private address.
+          </p>
+        </div>
+      ) : !overview.settings ? (
+        <div className="px-6 py-14 text-center">
+          <ShieldCheck className="mx-auto size-5 text-muted-foreground" />
+          <p className="mt-3 text-sm font-semibold">
+            Configure Tailscale first
+          </p>
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            Save the global domain and Relay hostname above.
+          </p>
+        </div>
+      ) : (
+        <>
+          <div className="max-w-full overflow-x-auto">
+            <table className="w-full min-w-[760px] border-collapse text-left">
+              <thead>
+                <tr className="border-b bg-muted/10 font-mono text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+                  <th className="w-14 px-4 py-2.5 font-medium">Use</th>
+                  <th className="px-3 py-2.5 font-medium">Server</th>
+                  <th className="w-[44%] px-3 py-2.5 font-medium">Hostname</th>
+                  <th className="px-3 py-2.5 font-medium">Tailnet IP</th>
+                  <th className="w-20 px-4 py-2.5 text-right font-medium">
+                    Action
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {servers.map((server) => (
+                  <ServerTailscaleRow
+                    key={`${server.id}:${server.tailscale.enabled}:${server.tailscale.subdomain ?? ""}:${overview.settings?.hostname}`}
+                    server={server}
+                    overview={overview}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex items-start gap-2 border-t bg-background/20 px-4 py-3 text-[9px] leading-4 text-muted-foreground">
+            <CircleAlert className="mt-0.5 size-3 shrink-0" />
+            Applying a row rebuilds that server&apos;s container with the same
+            data and preserves its current running or stopped state.
+          </div>
+        </>
+      )}
+    </section>
+  )
+})
+
+const ServerTailscaleRow = React.memo(function ServerTailscaleRow({
+  server,
+  overview,
+}: {
+  server: FleetRelayInstance
+  overview: RelayTailscaleOverview
+}) {
+  const queryClient = useQueryClient()
+  const settings = overview.settings
+  const hostnameNamespace = settings ? `${settings.hostname}.` : ""
+  const savedSubdomain = server.tailscale.subdomain ?? ""
+  const initialPrefix = savedSubdomain.startsWith(hostnameNamespace)
+    ? savedSubdomain.slice(hostnameNamespace.length)
+    : savedSubdomain || suggestedServerPrefix(server)
+  const [draft, setDraft] = React.useState<{
+    enabled: boolean
+    prefix: string
+  } | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
+  const enabled = draft?.enabled ?? server.tailscale.enabled
+  const prefix = draft?.prefix ?? initialPrefix
+  const normalizedPrefix = normalizeDnsValue(prefix)
+  const fullSubdomain = settings
+    ? `${settings.hostname}.${normalizedPrefix}`
+    : normalizedPrefix
+  const changed =
+    enabled !== server.tailscale.enabled ||
+    (enabled && fullSubdomain !== savedSubdomain)
+  const canEnable = overview.status.connected && Boolean(settings)
+
+  const mutation = useMutation({
+    mutationFn: updateInstanceTailscale,
+    onSuccess: async (updated) => {
+      queryClient.setQueryData<RelayFleetSnapshot>(
+        queryKeys.relay.snapshot,
+        (current) =>
+          replaceRelaySnapshotInstance(current, {
+            ...updated,
+            name: server.name,
+            relayId: server.relayId,
+          })
+      )
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: [
+            "relay",
+            server.relayId,
+            "instances",
+            server.id,
+            "startup",
+          ],
+        }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.relay.snapshot }),
+      ])
+    },
+  })
+
+  async function apply() {
+    if (
+      mutation.isPending ||
+      !changed ||
+      !server.managedByRelay ||
+      (enabled && (!settings || !normalizedPrefix))
+    ) {
+      return
+    }
+    setError(null)
+    try {
+      await mutation.mutateAsync({
+        data: {
+          enabled,
+          instanceId: server.id,
+          relayId: server.relayId,
+          subdomain: enabled ? fullSubdomain : undefined,
+        },
+      })
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "Could not update this server"
+      )
+    }
+  }
+
+  const tailnetAddress =
+    server.tailscale.enabled && overview.status.connected
+      ? (overview.status.ipv4Address ??
+        overview.status.ipv6Address ??
+        "Connected")
+      : "—"
+
+  return (
+    <tr className="border-b last:border-b-0">
+      <td className="px-4 py-3 align-top">
+        <input
+          type="checkbox"
+          aria-label={`Publish ${server.name} on Tailscale`}
+          checked={enabled}
+          disabled={
+            mutation.isPending ||
+            !server.managedByRelay ||
+            (!enabled && !canEnable)
+          }
+          onChange={(event) => {
+            setDraft({ enabled: event.target.checked, prefix })
+            setError(null)
+          }}
+          className="mt-1 accent-primary"
+        />
+      </td>
+      <td className="px-3 py-3 align-top">
+        <div className="max-w-44">
+          <p className="truncate text-xs font-medium">{server.name}</p>
+          <p className="mt-0.5 flex items-center gap-1.5 text-[9px] text-muted-foreground">
+            <span
+              className={`size-1.5 rounded-full ${
+                server.observedState === "running"
+                  ? "bg-emerald-400"
+                  : "bg-muted-foreground/35"
+              }`}
+            />
+            {server.version} · {server.implementation}
+          </p>
+          {!server.managedByRelay ? (
+            <p className="mt-1 text-[8px] text-amber-300">
+              Imported · read only
+            </p>
+          ) : null}
+        </div>
+      </td>
+      <td className="px-3 py-3 align-top">
+        <div className="flex min-w-80">
+          <span className="grid h-8 max-w-28 shrink-0 place-items-center truncate rounded-l-md border border-r-0 bg-muted/35 px-2 font-mono text-[9px] text-muted-foreground">
+            {settings?.hostname}.
+          </span>
+          <Input
+            aria-label={`Hostname prefix for ${server.name}`}
+            value={prefix}
+            onChange={(event) => {
+              setDraft({ enabled, prefix: event.target.value })
+              setError(null)
+            }}
+            disabled={!server.managedByRelay || mutation.isPending || !enabled}
+            placeholder="1.21.11.paper"
+            className="h-8 min-w-24 rounded-none font-mono text-[10px]"
+          />
+          <span className="grid h-8 max-w-24 shrink-0 place-items-center truncate rounded-r-md border border-l-0 bg-muted/35 px-2 font-mono text-[9px] text-muted-foreground">
+            .{settings?.domain}
+          </span>
+        </div>
+        {error ? (
+          <p className="mt-1.5 max-w-md text-[9px] leading-4 text-destructive">
+            {error}
+          </p>
+        ) : null}
+      </td>
+      <td className="px-3 py-3 align-top">
+        <span
+          className={`inline-flex h-8 items-center font-mono text-[10px] ${
+            tailnetAddress === "—" ? "text-muted-foreground" : "text-foreground"
+          }`}
+        >
+          {tailnetAddress}
+        </span>
+      </td>
+      <td className="px-4 py-3 text-right align-top">
+        <Button
+          type="button"
+          variant={changed ? "default" : "ghost"}
+          size="sm"
+          className="h-8"
+          disabled={
+            mutation.isPending ||
+            !changed ||
+            !server.managedByRelay ||
+            (enabled && !normalizedPrefix)
+          }
+          onClick={() => void apply()}
+        >
+          {mutation.isPending ? (
+            <LoaderCircle className="animate-spin" />
+          ) : changed ? (
+            <Save />
+          ) : (
+            <Check />
+          )}
+          <span className="sr-only">
+            {mutation.isPending
+              ? `Applying ${server.name}`
+              : changed
+                ? `Apply changes to ${server.name}`
+                : `${server.name} is saved`}
+          </span>
+        </Button>
+      </td>
+    </tr>
+  )
+})
+
+function StatusBadge({
+  overview,
+  compact = false,
+}: {
+  overview: RelayTailscaleOverview
+  compact?: boolean
+}) {
   const label = overview.status.connected
     ? "CONNECTED"
     : overview.status.installed
@@ -446,153 +894,30 @@ function StatusBadge({ overview }: { overview: RelayTailscaleOverview }) {
       ? "border-amber-400/30 text-amber-300"
       : ""
   return (
-    <Badge variant="outline" className={`font-mono text-[9px] ${tone}`}>
+    <Badge
+      variant="outline"
+      className={`font-mono ${compact ? "px-1.5 text-[8px]" : "text-[9px]"} ${tone}`}
+    >
       {label}
     </Badge>
   )
 }
 
-function NodeStatusCard({
-  relay,
-  overview,
-}: {
-  relay: PersistedRelay
-  overview: RelayTailscaleOverview
-}) {
-  return (
-    <section className="overflow-hidden rounded-xl border bg-card/45">
-      <div className="flex items-center gap-2 border-b bg-background/25 px-4 py-3">
-        <Server className="size-4 text-primary" />
-        <h2 className="text-sm font-semibold">{relay.name}</h2>
-      </div>
-      <StatusRow
-        label="Tailscale service"
-        value={
-          overview.status.connected
-            ? "Connected"
-            : overview.status.installed
-              ? "Installed"
-              : "Not installed"
-        }
-        healthy={overview.status.connected}
-      />
-      <StatusRow
-        label="CoreDNS"
-        value={overview.status.coreDnsRunning ? "Running" : "Stopped"}
-        healthy={overview.status.coreDnsRunning}
-      />
-      <StatusRow
-        label="Tailscale IPv4"
-        value={overview.status.ipv4Address ?? "Waiting for address"}
-        mono
-      />
-      <StatusRow
-        label="Tailscale IPv6"
-        value={overview.status.ipv6Address ?? "Waiting for address"}
-        mono
-      />
-      {overview.status.message ? (
-        <div className="border-t px-4 py-3 text-[10px] leading-5 text-muted-foreground">
-          {overview.status.message}
-        </div>
-      ) : null}
-    </section>
-  )
+function normalizeDnsValue(value: string): string {
+  return value
+    .trim()
+    .replace(/^[.]+|[.]+$/gu, "")
+    .toLowerCase()
 }
 
-function StatusRow({
-  label,
-  value,
-  healthy,
-  mono = false,
-}: {
-  label: string
-  value: string
-  healthy?: boolean
-  mono?: boolean
-}) {
-  return (
-    <div className="flex min-h-12 items-center justify-between gap-4 border-b px-4 py-2.5 last:border-b-0">
-      <span className="text-[10px] text-muted-foreground">{label}</span>
-      <span
-        className={`flex min-w-0 items-center gap-2 truncate text-[10px] font-medium ${mono ? "font-mono" : ""}`}
-      >
-        {healthy === undefined ? null : (
-          <span
-            className={`size-1.5 rounded-full ${healthy ? "bg-emerald-400" : "bg-muted-foreground/40"}`}
-          />
-        )}
-        {value}
-      </span>
-    </div>
+function suggestedServerPrefix(server: FleetRelayInstance): string {
+  const version = normalizeDnsValue(
+    server.version.replace(/[^a-z0-9.-]+/giu, "-")
   )
-}
-
-function DnsSetupCard({
-  overview,
-  settings,
-}: {
-  overview: RelayTailscaleOverview
-  settings: RelayTailscaleSettings
-}) {
-  return (
-    <section className="rounded-xl border border-primary/20 bg-primary/5 p-5">
-      <div className="flex items-center gap-2">
-        <ShieldCheck className="size-4 text-primary" />
-        <h2 className="text-sm font-semibold">Finish split DNS</h2>
-      </div>
-      <p className="mt-2 text-[10px] leading-5 text-muted-foreground">
-        In Tailscale DNS, add a custom nameserver restricted to the domain
-        below. This sends only Kiln server lookups to this node.
-      </p>
-      <div className="mt-4 space-y-2">
-        <CopyValue
-          label="Nameserver"
-          value={overview.status.dnsAddress ?? ""}
-        />
-        <CopyValue label="Restricted domain" value={settings.domain} />
-      </div>
-      <Button asChild variant="outline" size="sm" className="mt-4">
-        <a
-          href="https://login.tailscale.com/admin/dns"
-          target="_blank"
-          rel="noreferrer"
-        >
-          Open Tailscale DNS
-          <ExternalLink />
-        </a>
-      </Button>
-    </section>
+  const implementation = normalizeDnsValue(
+    (server.brickId ?? server.implementation).replace(/[^a-z0-9.-]+/giu, "-")
   )
-}
-
-function CopyValue({ label, value }: { label: string; value: string }) {
-  const [copied, setCopied] = React.useState(false)
-  return (
-    <button
-      type="button"
-      className="flex w-full items-center justify-between rounded-lg border bg-background/55 px-3 py-2.5 text-left transition-colors hover:bg-background/80"
-      onClick={async () => {
-        await navigator.clipboard.writeText(value)
-        setCopied(true)
-        window.setTimeout(() => setCopied(false), 1_800)
-      }}
-    >
-      <span>
-        <span className="block font-mono text-[8px] tracking-wider text-muted-foreground uppercase">
-          {label}
-        </span>
-        <span className="mt-0.5 block font-mono text-xs font-medium">
-          {value}
-        </span>
-      </span>
-      {copied ? (
-        <Check className="size-3.5 text-emerald-400" />
-      ) : (
-        <Copy className="size-3.5 text-muted-foreground" />
-      )}
-    </button>
-  )
+  return [version, implementation].filter(Boolean).join(".")
 }
 
 function suggestedHostname(name: string): string {
