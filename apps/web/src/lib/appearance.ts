@@ -182,10 +182,23 @@ export function applyAppearance(preferences: AppearancePreferences) {
 
   const root = document.documentElement
   const colorScheme = resolveColorScheme(preferences.colorScheme)
-  root.style.setProperty("--accent-hue", String(accent.hue))
-  root.style.setProperty("--accent-saturation", `${accent.saturation}%`)
-  root.classList.toggle("dark", colorScheme === "dark")
-  root.classList.toggle("light", colorScheme === "light")
+  const accentHue = String(accent.hue)
+  const accentSaturation = `${accent.saturation}%`
+  if (root.style.getPropertyValue("--accent-hue") !== accentHue) {
+    root.style.setProperty("--accent-hue", accentHue)
+  }
+  if (
+    root.style.getPropertyValue("--accent-saturation") !== accentSaturation
+  ) {
+    root.style.setProperty("--accent-saturation", accentSaturation)
+  }
+
+  const oppositeColorScheme = colorScheme === "dark" ? "light" : "dark"
+  if (root.classList.contains(oppositeColorScheme)) {
+    root.classList.replace(oppositeColorScheme, colorScheme)
+  } else if (!root.classList.contains(colorScheme)) {
+    root.classList.add(colorScheme)
+  }
   return true
 }
 

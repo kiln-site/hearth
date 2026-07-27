@@ -16,13 +16,25 @@ import { RelayConnectionToastMonitor } from "@/components/relay-connection-toast
 import { applyAppearance, saveAppearanceCache } from "@/lib/appearance"
 import type { AppearancePreferences } from "@/lib/appearance"
 import { uiPreferencesQueryOptions } from "@/lib/query-options"
+import type { UiPreferences } from "@/lib/query-options"
+
+function selectAppFramePreferences(preferences: UiPreferences) {
+  return {
+    appearance: preferences.appearance,
+    selectedInstanceRouteId: preferences.selectedInstanceRouteId,
+    sidebarOpen: preferences.sidebarOpen,
+  }
+}
 
 export const AppFrame = React.memo(function AppFrame({
   children,
 }: {
   children: React.ReactNode
 }) {
-  const { data: uiPreferences } = useSuspenseQuery(uiPreferencesQueryOptions())
+  const { data: uiPreferences } = useSuspenseQuery({
+    ...uiPreferencesQueryOptions(),
+    select: selectAppFramePreferences,
+  })
 
   return (
     <SidebarProvider defaultOpen={uiPreferences.sidebarOpen}>

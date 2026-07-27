@@ -21,6 +21,8 @@ import { getAuthState } from "@/server/auth"
 import { getUpdateOverview } from "@/server/updates"
 import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 
+export type UiPreferences = Awaited<ReturnType<typeof getUiPreferences>>
+
 export type RelayConnection = Awaited<
   ReturnType<typeof getRelayConnectionState>
 >

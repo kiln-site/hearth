@@ -9,7 +9,15 @@ import {
   relaySnapshotQueryOptions,
   uiPreferencesQueryOptions,
 } from "@/lib/query-options"
+import type { UiPreferences } from "@/lib/query-options"
 import { selectInstanceWorkspaceInstance } from "@/lib/relay-selectors"
+
+function selectFileTreePreferences(preferences: UiPreferences) {
+  return {
+    fileTreeCollapsed: preferences.fileTreeCollapsed,
+    fileTreeWidth: preferences.fileTreeWidth,
+  }
+}
 
 export const InstanceRouteFrame = React.memo(function InstanceRouteFrame({
   children,
@@ -29,7 +37,10 @@ export const InstanceRouteFrame = React.memo(function InstanceRouteFrame({
   const { data: capabilities } = useSuspenseQuery(
     accessCapabilitiesQueryOptions()
   )
-  const { data: uiPreferences } = useSuspenseQuery(uiPreferencesQueryOptions())
+  const { data: uiPreferences } = useSuspenseQuery({
+    ...uiPreferencesQueryOptions(),
+    select: selectFileTreePreferences,
+  })
   const instanceId = instance?.id
   const relayId = instance?.relayId
 
