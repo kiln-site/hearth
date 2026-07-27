@@ -41,6 +41,7 @@ if (command === "start" || command === "up" || command === "refresh") {
 
 const composeEnvironment = {
   ...process.env,
+  KILN_DEV_ENV_FILE: environmentFile,
   KILN_INSTALLATION_ID: stack,
   KILN_RELAY_HOST: `relay.${stack}.orb.local`,
   KILN_RELAY_NAME: primaryWorktree ? "L01" : stack,

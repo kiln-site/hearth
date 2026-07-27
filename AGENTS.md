@@ -44,13 +44,18 @@ pnpm dev:setup
 For every change:
 
 1. Switch to `main` and run `git pull --ff-only`.
-2. In T3 Code, create a branch and worktree from `main`; never work directly on
+2. Run `pnpm dev:docker:down` on `main` so its baseline stack is not left
+   running.
+3. In T3 Code, create a branch and worktree from `main`; never work directly on
    `main`.
-3. In the new worktree, run `pnpm dev:docker`.
-4. Immediately open the printed OrbStack URL in T3 Preview, leave it available
+4. In the new worktree, run `pnpm dev:docker`.
+5. Immediately open the printed OrbStack URL in T3 Preview, leave it available
    for the user, and confirm Hearth loads before making any changes.
-5. Develop and validate using that T3 Preview.
-6. Commit, push, and open a ready-for-review PR. Never merge the PR yourself.
+6. Develop and validate using that T3 Preview.
+7. Commit, push, and open a ready-for-review PR. Never merge the PR yourself.
+
+Do not run a development stack or Preview from `main`. Only active change
+worktrees should have running Docker containers and open Previews.
 
 Before deleting any worktree, run `pnpm dev:docker:destroy` inside it to remove
 its isolated stack and data. Use `pnpm dev:docker:down` only to stop a stack
@@ -61,8 +66,6 @@ After a PR is merged:
 1. Run `pnpm dev:docker:destroy` in the merged worktree.
 2. Switch to `main` and run `git pull --ff-only`.
 3. Delete the merged worktree and local branch.
-4. Run `pnpm dev:docker:refresh` on `main`.
-5. Verify the printed OrbStack URL in T3 Preview.
 
 # Reference Repos
 

@@ -87,6 +87,10 @@ services:
       dev.orbstack.http-port: "3000"
     volumes: !override
       - .:/workspace
+      - type: bind
+        source: "${KILN_DEV_ENV_FILE:?Run through pnpm dev:docker}"
+        target: /workspace/.env
+        read_only: true
       - hearth-dev-node-modules:/workspace/node_modules
       - hearth-dev-web-node-modules:/workspace/apps/web/node_modules
       - hearth-dev-contracts-node-modules:/workspace/packages/contracts/node_modules
