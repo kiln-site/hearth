@@ -17,7 +17,7 @@ export interface AppearancePreferences {
 export interface AppearanceOverride {
   accentColor: string | null
   colorScheme: ColorScheme
-  customColors: Array<string>
+  customColors: Array<string | null>
 }
 
 export type AccentHsl = {
@@ -108,7 +108,7 @@ export function normalizeAppearanceOverride(
     return {
       accentColor: null,
       colorScheme: defaultColorScheme,
-      customColors: [],
+      customColors: [null, null, null],
     }
   }
 
@@ -125,22 +125,21 @@ export function normalizeAppearanceOverride(
       value.colorScheme === "system")
       ? value.colorScheme
       : defaultColorScheme
-  const customColors: Array<string> = []
+  const customColors: Array<string | null> = [null, null, null]
   const customColorSet = new Set<string>()
-  if ("customColors" in value && Array.isArray(value.customColors)) {
-    for (const customColor of value.customColors) {
-      if (
-        typeof customColor !== "string" ||
-        !hexColorPattern.test(customColor)
-      ) {
-        continue
-      }
-      const normalizedColor = customColor.toLowerCase()
-      if (!customColorSet.has(normalizedColor)) {
-        customColorSet.add(normalizedColor)
-        customColors.push(normalizedColor)
-      }
-      if (customColors.length === maximumCustomAccentColors) break
+  const rawCustomColors =
+    "customColors" in value && Array.isArray(value.customColors)
+      ? value.customColors
+      : []
+  for (let index = 0; index < maximumCustomAccentColors; index += 1) {
+    const customColor = rawCustomColors[index]
+    if (typeof customColor !== "string" || !hexColorPattern.test(customColor)) {
+      continue
+    }
+    const normalizedColor = customColor.toLowerCase()
+    if (!customColorSet.has(normalizedColor)) {
+      customColorSet.add(normalizedColor)
+      customColors[index] = normalizedColor
     }
   }
 
@@ -187,9 +186,7 @@ export function applyAppearance(preferences: AppearancePreferences) {
   if (root.style.getPropertyValue("--accent-hue") !== accentHue) {
     root.style.setProperty("--accent-hue", accentHue)
   }
-  if (
-    root.style.getPropertyValue("--accent-saturation") !== accentSaturation
-  ) {
+  if (root.style.getPropertyValue("--accent-saturation") !== accentSaturation) {
     root.style.setProperty("--accent-saturation", accentSaturation)
   }
 

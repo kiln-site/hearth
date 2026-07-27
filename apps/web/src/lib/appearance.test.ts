@@ -46,7 +46,7 @@ describe("appearance defaults", () => {
     ).toEqual({
       accentColor: "#38bdf8",
       colorScheme: "light",
-      customColors: [],
+      customColors: [null, null, null],
     })
     expect(
       normalizeAppearanceOverride({
@@ -56,7 +56,7 @@ describe("appearance defaults", () => {
     ).toEqual({
       accentColor: null,
       colorScheme: "system",
-      customColors: [],
+      customColors: [null, null, null],
     })
     expect(
       normalizeAppearancePreferences({
@@ -66,24 +66,17 @@ describe("appearance defaults", () => {
     ).toEqual({ accentColor: "#38bdf8", colorScheme: "dark" })
   })
 
-  it("normalizes and limits custom accent colors", () => {
+  it("normalizes and preserves three custom accent slots", () => {
     expect(
       normalizeAppearanceOverride({
         accentColor: "#497DFF",
         colorScheme: "dark",
-        customColors: [
-          "#497DFF",
-          "#497dff",
-          "invalid",
-          "#14B8A6",
-          "#D946EF",
-          "#FFF000",
-        ],
+        customColors: ["#497DFF", null, "#14B8A6", "#D946EF"],
       })
     ).toEqual({
       accentColor: "#497dff",
       colorScheme: "dark",
-      customColors: ["#497dff", "#14b8a6", "#d946ef"],
+      customColors: ["#497dff", null, "#14b8a6"],
     })
   })
 

@@ -84,7 +84,7 @@ export const getUiPreferences = createServerFn({ method: "GET" }).handler(
         "platform.appearance.manage-default"
       ),
       customAccentColor: appearanceOverride?.accentColor ?? null,
-      customColors: appearanceOverride?.customColors ?? [],
+      customColors: appearanceOverride?.customColors ?? [null, null, null],
       defaultForNewUsers: platformDefault !== null,
     }
   }
@@ -98,7 +98,14 @@ export const updateAppearancePreferences = createServerFn({ method: "POST" })
         .regex(/^#[\da-f]{6}$/i)
         .nullable(),
       colorScheme: z.enum(["dark", "light", "system"]),
-      customColors: z.array(z.string().regex(/^#[\da-f]{6}$/i)).max(3),
+      customColors: z
+        .array(
+          z
+            .string()
+            .regex(/^#[\da-f]{6}$/i)
+            .nullable()
+        )
+        .max(3),
       defaultForNewUsers: z.boolean().optional(),
     })
   )

@@ -1,15 +1,11 @@
 import * as React from "react"
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query"
-import { Check, Monitor, Moon, Plus, Sun } from "lucide-react"
+import { Check, Monitor, Moon, Pencil, Sun } from "lucide-react"
 
 import { ColorPicker } from "@workspace/ui/components/color-picker"
 import { cn } from "@workspace/ui/lib/utils"
 
-import {
-  defaultAppearance,
-  maximumCustomAccentColors,
-  saveAppearanceCache,
-} from "@/lib/appearance"
+import { defaultAppearance, saveAppearanceCache } from "@/lib/appearance"
 import type {
   AppearanceOverride,
   AppearancePreferences,
@@ -28,6 +24,7 @@ const presets = [
   { color: "#f5f5f4", name: "White" },
 ] as const
 const customColorSeeds = ["#497dff", "#14b8a6", "#d946ef"] as const
+const customColorSlotIndexes = [0, 1, 2]
 
 type AppearanceUpdate = AppearanceOverride & {
   defaultForNewUsers?: boolean
@@ -40,6 +37,16 @@ function selectAppearanceSettingsPreferences(preferences: UiPreferences) {
     customAccentColor: preferences.customAccentColor,
     customColors: preferences.customColors,
   }
+}
+
+function fillCustomColorSlots(
+  customColors: AppearanceOverride["customColors"]
+): AppearanceOverride["customColors"] {
+  return [
+    customColors[0] ?? null,
+    customColors[1] ?? null,
+    customColors[2] ?? null,
+  ]
 }
 
 function useAppearanceSettings() {
@@ -58,13 +65,9 @@ function useAppearanceSettings() {
   const [customAccentColor, setCustomAccentColor] = React.useState<
     string | null
   >(uiPreferences.customAccentColor)
-  const [customColors, setCustomColors] = React.useState<Array<string>>(
-    uiPreferences.customColors
-  )
-  const nextCustomColorId = React.useRef(uiPreferences.customColors.length)
-  const [customColorIds, setCustomColorIds] = React.useState<Array<string>>(
-    () => uiPreferences.customColors.map((_, index) => `custom-color-${index}`)
-  )
+  const [customColors, setCustomColors] = React.useState<
+    AppearanceOverride["customColors"]
+  >(() => fillCustomColorSlots(uiPreferences.customColors))
   const [activeCustomIndex, setActiveCustomIndex] = React.useState<
     number | null
   >(null)
@@ -73,10 +76,6 @@ function useAppearanceSettings() {
   const customColorsRef = React.useRef(customColors)
   const defaultForNewUsersRef = React.useRef(
     initialPreferences?.defaultForNewUsers ?? false
-  )
-  const appearanceDefaultAccentColorRef = React.useRef(
-    initialPreferences?.appearanceDefault.accentColor ??
-      defaultAppearance.accentColor
   )
   const persistTimeout = React.useRef<number | null>(null)
   const pendingUpdate = React.useRef<AppearanceUpdate | null>(null)
@@ -207,25 +206,12 @@ function useAppearanceSettings() {
     [updateAppearance]
   )
 
-  const addCustomColor = React.useCallback(() => {
-    const currentCustomColors = customColorsRef.current
-    if (currentCustomColors.length >= maximumCustomAccentColors) return
-    const seed =
-      customColorSeeds.find((color) => !currentCustomColors.includes(color)) ??
-      customColorSeeds[0]
-    const nextCustomColors = [...currentCustomColors, seed]
-    const customColorId = `custom-color-${nextCustomColorId.current}`
-    nextCustomColorId.current += 1
-    setCustomColorIds((currentIds) => [...currentIds, customColorId])
-    setActiveCustomIndex(nextCustomColors.length - 1)
-    updateAccent(seed, nextCustomColors)
-  }, [updateAccent])
-
   const updateCustomColor = React.useCallback(
     (index: number, color: string) => {
-      const nextCustomColors = customColorsRef.current.map(
-        (customColor, colorIndex) =>
-          colorIndex === index ? color.toLowerCase() : customColor
+      const nextCustomColors = fillCustomColorSlots(
+        customColorsRef.current
+      ).map((customColor, colorIndex) =>
+        colorIndex === index ? color.toLowerCase() : customColor
       )
       updateAccent(color, nextCustomColors)
     },
@@ -235,20 +221,20 @@ function useAppearanceSettings() {
   const removeCustomColor = React.useCallback(
     (index: number) => {
       const currentAppearance = appearanceRef.current
-      const currentCustomColors = customColorsRef.current
+      const currentCustomColors = fillCustomColorSlots(customColorsRef.current)
       const removedColor = currentCustomColors[index]
-      const nextCustomColors = currentCustomColors.filter(
-        (_, colorIndex) => colorIndex !== index
-      )
-      setCustomColorIds((currentIds) =>
-        currentIds.filter((_, colorIndex) => colorIndex !== index)
+      const nextCustomColors = currentCustomColors.map(
+        (customColor, colorIndex) => (colorIndex === index ? null : customColor)
       )
       setActiveCustomIndex(null)
-      if (currentAppearance.accentColor === removedColor) {
+      if (
+        removedColor !== null &&
+        currentAppearance.accentColor === removedColor
+      ) {
         updateAppearance(
           {
             ...currentAppearance,
-            accentColor: appearanceDefaultAccentColorRef.current,
+            accentColor: defaultAppearance.accentColor,
           },
           null,
           nextCustomColors
@@ -282,8 +268,6 @@ function useAppearanceSettings() {
         : defaultAppearance
 
       defaultForNewUsersRef.current = enabled
-      appearanceDefaultAccentColorRef.current =
-        nextAppearanceDefault.accentColor
       if (shouldResetAccent && saveAppearanceCache(nextAppearance)) {
         appearanceRef.current = nextAppearance
         setAppearance(nextAppearance)
@@ -318,11 +302,9 @@ function useAppearanceSettings() {
     activeCustomIndex,
     appearance,
     canManageAppearanceDefault: uiPreferences.canManageAppearanceDefault,
-    customColorIds,
     customColors,
     defaultForNewUsers: defaultForNewUsersRef.current,
     setActiveCustomIndex,
-    addCustomColor,
     removeCustomColor,
     updateAccent,
     updateColorScheme,
@@ -346,9 +328,7 @@ export const AppearanceSettingsPage = React.memo(
           <AccentColorControl
             accentColor={settings.appearance.accentColor}
             activeCustomIndex={settings.activeCustomIndex}
-            customColorIds={settings.customColorIds}
             customColors={settings.customColors}
-            onAdd={settings.addCustomColor}
             onCustomChange={settings.updateCustomColor}
             onCustomOpenChange={settings.setActiveCustomIndex}
             onCustomRemove={settings.removeCustomColor}
@@ -372,9 +352,7 @@ export const AppearanceSettingsPage = React.memo(
 const AccentColorControl = React.memo(function AccentColorControl({
   accentColor,
   activeCustomIndex,
-  customColorIds,
   customColors,
-  onAdd,
   onCustomChange,
   onCustomOpenChange,
   onCustomRemove,
@@ -382,9 +360,7 @@ const AccentColorControl = React.memo(function AccentColorControl({
 }: {
   accentColor: string
   activeCustomIndex: number | null
-  customColorIds: Array<string>
-  customColors: Array<string>
-  onAdd: () => void
+  customColors: AppearanceOverride["customColors"]
   onCustomChange: (index: number, color: string) => void
   onCustomOpenChange: (index: number | null) => void
   onCustomRemove: (index: number) => void
@@ -401,7 +377,7 @@ const AccentColorControl = React.memo(function AccentColorControl({
           />
         </SwatchGroup>
 
-        <SwatchGroup label="Preset" separated>
+        <SwatchGroup label="Presets" separated>
           {presets.map((preset) => (
             <PresetColorSwatch
               key={preset.name}
@@ -413,30 +389,22 @@ const AccentColorControl = React.memo(function AccentColorControl({
         </SwatchGroup>
 
         <SwatchGroup label="Custom" separated>
-          {customColors.map((color, index) => (
+          {customColorSlotIndexes.map((index) => (
             <CustomColorControl
-              key={customColorIds[index]}
-              color={color}
+              key={`custom-color-${index}`}
+              color={customColors[index] ?? null}
               index={index}
               open={activeCustomIndex === index}
-              selected={accentColor === color}
+              selected={
+                customColors[index] !== null &&
+                accentColor === customColors[index]
+              }
               onChange={onCustomChange}
               onOpenChange={onCustomOpenChange}
               onRemove={onCustomRemove}
               onSelect={onSelect}
             />
           ))}
-
-          {customColors.length < maximumCustomAccentColors ? (
-            <button
-              type="button"
-              aria-label="Add custom color"
-              onClick={onAdd}
-              className="grid size-9 place-items-center border border-dashed border-input bg-input/10 text-muted-foreground transition-[color,background-color,border-color,transform] outline-none hover:scale-105 hover:border-primary/50 hover:bg-primary/6 hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/45"
-            >
-              <Plus className="size-4" aria-hidden="true" />
-            </button>
-          ) : null}
         </SwatchGroup>
       </div>
     </SettingRow>
@@ -468,10 +436,10 @@ function SwatchGroup({
           className="absolute inset-y-0 left-0 w-px bg-border"
         />
       ) : null}
-      <div className="flex min-h-9 flex-wrap items-center gap-2">
+      <div className="flex min-h-9 flex-wrap items-center justify-center gap-2">
         {children}
       </div>
-      <p className="text-[10px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
+      <p className="text-center text-[10px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
         {label}
       </p>
     </div>
@@ -512,7 +480,7 @@ const CustomColorControl = React.memo(function CustomColorControl({
   open,
   selected,
 }: {
-  color: string
+  color: string | null
   index: number
   onChange: (index: number, color: string) => void
   onOpenChange: (index: number | null) => void
@@ -530,22 +498,34 @@ const CustomColorControl = React.memo(function CustomColorControl({
     [index, onOpenChange]
   )
   const remove = React.useCallback(() => onRemove(index), [index, onRemove])
-  const select = React.useCallback(() => onSelect(color), [color, onSelect])
+  const select = React.useCallback(() => {
+    if (color !== null) onSelect(color)
+  }, [color, onSelect])
 
   return (
     <ColorPicker
-      defaultValue={color}
+      defaultValue={color ?? customColorSeeds[index] ?? customColorSeeds[0]}
       onValueChange={change}
-      onRemove={remove}
+      onRemove={color === null ? undefined : remove}
       open={open}
       onOpenChange={changeOpen}
     >
-      <ColorSwatch
-        color={color}
-        label={`Custom color ${index + 1}`}
-        selected={selected}
-        onClick={select}
-      />
+      {color === null ? (
+        <button
+          type="button"
+          aria-label={`Edit custom color ${index + 1}`}
+          className="grid size-9 place-items-center border border-dashed border-input bg-input/10 text-muted-foreground transition-[color,background-color,border-color,transform] outline-none hover:scale-105 hover:border-primary/50 hover:bg-primary/6 hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/45"
+        >
+          <Pencil className="size-3.5" aria-hidden="true" />
+        </button>
+      ) : (
+        <ColorSwatch
+          color={color}
+          label={`Custom color ${index + 1}`}
+          selected={selected}
+          onClick={select}
+        />
+      )}
     </ColorPicker>
   )
 })
