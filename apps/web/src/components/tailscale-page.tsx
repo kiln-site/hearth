@@ -108,8 +108,8 @@ const TailscaleRelayWorkspace = React.memo(function TailscaleRelayWorkspace({
 
   if (overviewQuery.status === "error") {
     return (
-      <div className="rounded-xl border border-amber-400/25 bg-amber-400/5 px-5 py-8 text-center">
-        <CircleAlert className="mx-auto size-5 text-amber-300" />
+      <div className="rounded-xl border border-chart-4/25 bg-chart-4/5 px-5 py-8 text-center">
+        <CircleAlert className="mx-auto size-5 text-chart-4" />
         <p className="mt-3 text-sm font-semibold">
           Tailscale status unavailable
         </p>
@@ -482,7 +482,7 @@ const RelayRailItem = React.memo(function RelayRailItem({
         <span className="mt-0.5 flex items-center gap-1.5 text-[9px] text-muted-foreground">
           <span
             className={`size-1.5 rounded-full ${
-              data.connected ? "bg-emerald-400" : "bg-muted-foreground/35"
+              data.connected ? "bg-chart-2" : "bg-muted-foreground/35"
             }`}
           />
           {data.serverCount} server{data.serverCount === 1 ? "" : "s"}
@@ -918,16 +918,14 @@ const TailscaleServerIdentityCell = React.memo(
             <span
               className={`size-1.5 rounded-full ${
                 server.observedState === "running"
-                  ? "bg-emerald-400"
+                  ? "bg-chart-2"
                   : "bg-muted-foreground/35"
               }`}
             />
             {server.version} · {server.implementation}
           </p>
           {!server.managedByRelay ? (
-            <p className="mt-1 text-[8px] text-amber-300">
-              Imported · read only
-            </p>
+            <p className="mt-1 text-[8px] text-chart-4">Imported · read only</p>
           ) : null}
         </div>
       </td>
@@ -1131,9 +1129,9 @@ function StatusBadge({
         ? "CONFIGURED"
         : "NOT SET"
   const tone = connected
-    ? "border-emerald-400/30 text-emerald-300"
+    ? "border-chart-2/35 text-chart-2"
     : installed
-      ? "border-amber-400/30 text-amber-300"
+      ? "border-chart-4/35 text-chart-4"
       : ""
   return (
     <Badge
