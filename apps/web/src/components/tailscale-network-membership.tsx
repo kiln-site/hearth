@@ -17,7 +17,6 @@ import {
   LoaderCircle,
   Network,
   Pencil,
-  Plus,
   RefreshCw,
   Route,
   Search,
@@ -1045,27 +1044,13 @@ export function GameServerTailscaleSection({
     ({ id }) => id === server.relayId
   )
   const save = useStackMembershipMutation()
-  const [joining, setJoining] = React.useState(false)
-  const memberships = React.useMemo(
-    () =>
-      stacks.flatMap((stack) => {
-        const binding = findBinding(stack, server)
-        return binding ? [{ binding, stack }] : []
-      }),
-    [server, stacks]
+  const [joiningStackId, setJoiningStackId] = React.useState<string | null>(
+    null
   )
-  const available = React.useMemo(
-    () =>
-      stacks.filter(
-        (stack) =>
-          !stack.bindings.some(
-            (binding) =>
-              binding.relayId === server.relayId &&
-              binding.instanceId === server.id
-          )
-      ),
-    [server.id, server.relayId, stacks]
-  )
+  const openJoinDialog = React.useCallback((stackId: string) => {
+    setJoiningStackId(stackId)
+  }, [])
+  const joiningStack = stacks.find(({ id }) => id === joiningStackId)
 
   return (
     <section className="overflow-hidden border border-border/80 bg-card/45">
@@ -1086,42 +1071,33 @@ export function GameServerTailscaleSection({
               Manage
             </Link>
           </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={save.isPending || relayUnsupported}
-            onClick={() => setJoining(true)}
-          >
-            <Plus />
-            Join network
-          </Button>
         </div>
       </div>
-      {memberships.length ? (
+      {stacks.length ? (
         <div className="divide-y divide-border/65">
-          {memberships.map(({ binding, stack }) => (
-            <GameServerMembershipRow
-              key={stack.id}
-              binding={binding}
-              pending={save.isPending}
-              stack={stack}
-              onLeave={() =>
-                save.mutateAsync({
-                  bindings: stack.bindings.filter(
-                    (candidate) =>
-                      candidate.relayId !== server.relayId ||
-                      candidate.instanceId !== server.id
-                  ),
-                  stack,
-                })
-              }
-            />
-          ))}
+          {stacks.map((stack) => {
+            const binding = findBinding(stack, server)
+            return (
+              <GameServerMembershipRow
+                key={stack.id}
+                binding={binding}
+                disabled={save.isPending}
+                joinDisabled={relayUnsupported}
+                pending={
+                  save.isPending && save.variables?.stack.id === stack.id
+                }
+                stack={stack}
+                relayId={server.relayId}
+                serverId={server.id}
+                onJoin={openJoinDialog}
+                onSave={save.mutateAsync}
+              />
+            )
+          })}
         </div>
       ) : (
         <p className="px-4 py-8 text-center text-xs text-muted-foreground">
-          This server is not connected to a Tailscale network.
+          No Tailscale networks are available.
         </p>
       )}
       {save.error ? (
@@ -1132,18 +1108,21 @@ export function GameServerTailscaleSection({
           {errorMessage(save.error)}
         </p>
       ) : null}
-      {joining ? (
+      {joiningStack ? (
         <JoinNetworkDialog
-          networks={available}
+          key={joiningStack.id}
+          network={joiningStack}
           open
           pending={save.isPending}
           server={server}
-          onOpenChange={setJoining}
-          onJoin={async (stack, hostname, authKey) => {
+          onOpenChange={(open) => {
+            if (!open) setJoiningStackId(null)
+          }}
+          onJoin={async (hostname, authKey) => {
             await save.mutateAsync({
               authKey,
               bindings: [
-                ...stack.bindings,
+                ...joiningStack.bindings,
                 {
                   address: "",
                   hostname,
@@ -1152,9 +1131,9 @@ export function GameServerTailscaleSection({
                   relayName: server.relayName,
                 },
               ],
-              stack,
+              stack: joiningStack,
             })
-            setJoining(false)
+            setJoiningStackId(null)
           }}
         />
       ) : null}
@@ -1251,8 +1230,7 @@ const TailscaleMembershipTable = React.memo(function TailscaleMembershipTable({
     (server: TailscaleServer) => (
       <TailscaleMembershipRow
         highlighted={
-          highlightedServerKey ===
-          tailscaleServerKey(server.relayId, server.id)
+          highlightedServerKey === tailscaleServerKey(server.relayId, server.id)
         }
         pending={pending}
         server={server}
@@ -1469,109 +1447,131 @@ const TailscaleMembershipRow = React.memo(function TailscaleMembershipRow({
 
 const GameServerMembershipRow = React.memo(function GameServerMembershipRow({
   binding,
+  disabled,
+  joinDisabled,
   pending,
+  relayId,
+  serverId,
   stack,
-  onLeave,
+  onJoin,
+  onSave,
 }: {
-  binding: StackBinding
+  binding?: StackBinding
+  disabled: boolean
+  joinDisabled: boolean
   pending: boolean
+  relayId: string
+  serverId: string
   stack: TailscaleStackOverview
-  onLeave: () => Promise<unknown>
+  onJoin: (stackId: string) => void
+  onSave: ReturnType<typeof useStackMembershipMutation>["mutateAsync"]
 }) {
   const deployment =
-    stack.deployments.find(
-      (candidate) => candidate.relayId === binding.relayId
-    ) ?? stack.deployments[0]
+    stack.deployments.find((candidate) => candidate.relayId === relayId) ??
+    stack.deployments[0]
   const routeId = deployment
     ? relayInstanceRouteId(deployment.relayId, deployment.instance.shortId)
     : null
-  const highlightedServerKey = tailscaleServerKey(
-    binding.relayId,
-    binding.instanceId
-  )
+  const highlightedServerKey = tailscaleServerKey(relayId, serverId)
 
   return (
     <div className="grid items-center gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
       <div className="min-w-0">
         <p className="truncate text-xs font-semibold">{stack.name}</p>
         <p className="mt-0.5 truncate font-mono text-[9px] text-muted-foreground">
-          {binding.address}
+          {binding ? binding.address : `*.${stack.domain}`}
         </p>
       </div>
-      <div className="flex min-w-0 items-center gap-1">
-        <p className="min-w-0 truncate font-mono text-[10px] text-muted-foreground">
-          {binding.hostname}.{stack.domain}
-        </p>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              asChild={Boolean(routeId)}
-              type="button"
-              size="icon-sm"
-              variant="ghost"
-              disabled={!routeId}
-              aria-label={`Edit ${binding.hostname}.${stack.domain}`}
-            >
-              {routeId ? (
-                <Link
-                  to="/server/$serverId/network"
-                  params={{ serverId: routeId }}
-                  search={{ member: highlightedServerKey }}
+      <p className="min-w-0 truncate font-mono text-[10px] text-muted-foreground">
+        {binding ? `${binding.hostname}.${stack.domain}` : "Not connected"}
+      </p>
+      <div className="flex items-center justify-end gap-1">
+        {binding ? (
+          <>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  asChild={Boolean(routeId)}
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  disabled={disabled || !routeId}
+                  aria-label={`Edit ${binding.hostname}.${stack.domain}`}
                 >
-                  <Pencil />
-                </Link>
-              ) : (
-                <Pencil />
-              )}
+                  {routeId ? (
+                    <Link
+                      to="/server/$serverId/network"
+                      params={{ serverId: routeId }}
+                      search={{ member: highlightedServerKey }}
+                    >
+                      <Pencil />
+                    </Link>
+                  ) : (
+                    <Pencil />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">Edit hostname</TooltipContent>
+            </Tooltip>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={disabled}
+              onClick={() =>
+                void onSave({
+                  bindings: stack.bindings.filter(
+                    (candidate) =>
+                      candidate.relayId !== relayId ||
+                      candidate.instanceId !== serverId
+                  ),
+                  stack,
+                }).catch(() => undefined)
+              }
+            >
+              {pending ? <LoaderCircle className="animate-spin" /> : <Unplug />}
+              Leave
             </Button>
-          </TooltipTrigger>
-          <TooltipContent side="top">Edit hostname</TooltipContent>
-        </Tooltip>
+          </>
+        ) : (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={disabled || joinDisabled}
+            onClick={() => onJoin(stack.id)}
+          >
+            {pending ? <LoaderCircle className="animate-spin" /> : <Network />}
+            Join
+          </Button>
+        )}
       </div>
-      <Button
-        type="button"
-        size="sm"
-        variant="ghost"
-        disabled={pending}
-        onClick={() => void onLeave().catch(() => undefined)}
-      >
-        {pending ? <LoaderCircle className="animate-spin" /> : <Unplug />}
-        Leave
-      </Button>
     </div>
   )
 })
 
 const JoinNetworkDialog = React.memo(function JoinNetworkDialog({
-  networks,
+  network,
   open,
   pending,
   server,
   onOpenChange,
   onJoin,
 }: {
-  networks: Array<TailscaleStackOverview>
+  network: TailscaleStackOverview
   open: boolean
   pending: boolean
   server: InstanceWorkspaceInstance
   onOpenChange: (open: boolean) => void
-  onJoin: (
-    stack: TailscaleStackOverview,
-    hostname: string,
-    authKey?: string
-  ) => Promise<void>
+  onJoin: (hostname: string, authKey?: string) => Promise<void>
 }) {
-  const [selectedId, setSelectedId] = React.useState(networks[0]?.id ?? "")
   const [hostname, setHostname] = React.useState(() =>
     defaultTailscaleHostname(server)
   )
   const [authKey, setAuthKey] = React.useState("")
-  const selected =
-    networks.find((network) => network.id === selectedId) ?? networks[0]
   const needsAuth = Boolean(
-    selected &&
-    !selected.integration &&
-    !selected.deployments.some(
+    !network.integration &&
+    !network.deployments.some(
       (deployment) => deployment.relayId === server.relayId
     )
   )
@@ -1580,27 +1580,9 @@ const JoinNetworkDialog = React.memo(function JoinNetworkDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Join a Tailscale network</DialogTitle>
+          <DialogTitle>Join {network.name}</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-2">
-          <label className="block">
-            <span className="mb-2 block text-xs font-medium">Network</span>
-            <select
-              value={selected?.id ?? ""}
-              disabled={networks.length === 0}
-              onChange={(event) => setSelectedId(event.target.value)}
-              className="flex h-9 w-full border border-input bg-background px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              {networks.length === 0 ? (
-                <option value="">No networks available</option>
-              ) : null}
-              {networks.map((network) => (
-                <option key={network.id} value={network.id}>
-                  {network.name}
-                </option>
-              ))}
-            </select>
-          </label>
           <label className="block">
             <span className="mb-2 block text-xs font-medium">Hostname</span>
             <div className="flex items-center">
@@ -1610,7 +1592,7 @@ const JoinNetworkDialog = React.memo(function JoinNetworkDialog({
                 className="min-w-0 rounded-r-none font-mono"
               />
               <span className="flex h-9 shrink-0 items-center border border-l-0 border-input bg-muted/30 px-3 font-mono text-xs text-muted-foreground">
-                .{selected?.domain}
+                .{network.domain}
               </span>
             </div>
           </label>
@@ -1631,46 +1613,29 @@ const JoinNetworkDialog = React.memo(function JoinNetworkDialog({
             </label>
           ) : null}
         </div>
-        <DialogFooter className="sm:justify-between">
-          <Button asChild variant="outline">
-            <Link to="/infra/tailscale" search={{ create: true }}>
-              <Plus />
-              Create network
-            </Link>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => onOpenChange(false)}
+          >
+            Cancel
           </Button>
-          <div className="flex flex-col-reverse gap-2 sm:flex-row">
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => onOpenChange(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              disabled={
-                pending ||
-                !selected ||
-                !hostname.trim() ||
-                (needsAuth && !authKey.trim())
-              }
-              onClick={() => {
-                if (!selected) return
-                void onJoin(
-                  selected,
-                  hostname.trim(),
-                  needsAuth ? authKey.trim() : undefined
-                ).catch(() => undefined)
-              }}
-            >
-              {pending ? (
-                <LoaderCircle className="animate-spin" />
-              ) : (
-                <Network />
-              )}
-              Join
-            </Button>
-          </div>
+          <Button
+            type="button"
+            disabled={
+              pending || !hostname.trim() || (needsAuth && !authKey.trim())
+            }
+            onClick={() =>
+              void onJoin(
+                hostname.trim(),
+                needsAuth ? authKey.trim() : undefined
+              ).catch(() => undefined)
+            }
+          >
+            {pending ? <LoaderCircle className="animate-spin" /> : <Network />}
+            Join
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
