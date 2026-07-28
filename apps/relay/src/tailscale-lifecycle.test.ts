@@ -179,4 +179,199 @@ describe("Tailscale pending removal recovery", () => {
       code: "ENOENT",
     })
   })
+
+  it("preserves authenticated state when logout fails and retries cleanup", async () => {
+    const dataDirectory = await mkdtemp(
+      join(tmpdir(), "kiln-tailscale-logout-")
+    )
+    temporaryDirectories.push(dataDirectory)
+    const config = loadConfig({
+      KILN_RELAY_DATA_DIR: dataDirectory,
+      KILN_RELAY_RESOURCE_NAMESPACE: "logout-test",
+      NODE_ENV: "test",
+    })
+    const id = "b".repeat(40)
+    const stackDirectory = join(config.rootDirectory, id)
+    const stackConfig = relayTailscaleStackConfigSchema.parse({
+      bindings: [],
+      domain: "test",
+      hostname: "private-network",
+      id,
+      name: "Private Network",
+      subnet: "10.165.56.0/24",
+    })
+    await mkdir(stackDirectory, { recursive: true })
+    await Promise.all([
+      writeFile(
+        join(stackDirectory, "stack.json"),
+        `${JSON.stringify(stackConfig)}\n`
+      ),
+      writeFile(join(stackDirectory, ".removing"), "prepared\n"),
+    ])
+
+    const container = "logout-test-kiln-ts-bbbbbbbb"
+    let logoutAttempts = 0
+    let containerPresent = true
+    commandMock.mockImplementation(
+      async (_executable: string, arguments_: Array<string>) => {
+        const name = arguments_.at(-1)
+        if (arguments_[0] === "container" && arguments_[1] === "inspect") {
+          if (name !== container || !containerPresent) {
+            throw new Error("container not found")
+          }
+          return {
+            stderr: "",
+            stdout:
+              arguments_[3] === "{{.Id}}"
+                ? "container-id\n"
+                : JSON.stringify({ "kiln.relay.owner": "logout-test" }),
+          }
+        }
+        if (
+          arguments_[0] === "exec" &&
+          arguments_.includes("logout") &&
+          logoutAttempts++ < 3
+        ) {
+          throw new Error("control plane unavailable")
+        }
+        if (arguments_[0] === "network" && arguments_[1] === "inspect") {
+          return {
+            stderr: "",
+            stdout: JSON.stringify({
+              "kiln.relay.owner": "logout-test",
+              "kiln.relay.network": `tailscale:${id}`,
+            }),
+          }
+        }
+        if (arguments_[0] === "run") containerPresent = true
+        return { stderr: "", stdout: "" }
+      }
+    )
+    const lifecycle = new LifecycleDriver(
+      config,
+      new DockerDriver(config),
+      new BrickCatalog(config.brickCatalogUrl)
+    )
+
+    await expect(lifecycle.removeTailscaleStack(id)).rejects.toThrow(
+      "local identity was preserved for retry"
+    )
+    await expect(access(join(stackDirectory, ".removing"))).resolves.toBe(
+      undefined
+    )
+    containerPresent = false
+    const stateDirectory = join(
+      config.dataDirectory,
+      "infrastructure",
+      "tailscale-stacks",
+      id,
+      "state"
+    )
+    await mkdir(stateDirectory, { recursive: true })
+    await writeFile(join(stateDirectory, "tailscaled.state"), "{}\n")
+
+    await lifecycle.removeTailscaleStack(id)
+
+    expect(logoutAttempts).toBe(4)
+    expect(
+      commandMock.mock.calls.some(
+        ([, arguments_]) =>
+          arguments_[0] === "run" && arguments_.includes(container)
+      )
+    ).toBe(true)
+    await expect(access(stackDirectory)).rejects.toMatchObject({
+      code: "ENOENT",
+    })
+  })
+
+  it("restores forwarding rules for a running stack and then stays idle", async () => {
+    const dataDirectory = await mkdtemp(
+      join(tmpdir(), "kiln-tailscale-firewall-")
+    )
+    temporaryDirectories.push(dataDirectory)
+    const config = loadConfig({
+      KILN_RELAY_DATA_DIR: dataDirectory,
+      KILN_RELAY_RESOURCE_NAMESPACE: "firewall-test",
+      NODE_ENV: "test",
+    })
+    const id = "c".repeat(40)
+    const stackDirectory = join(config.rootDirectory, id)
+    const stackConfig = relayTailscaleStackConfigSchema.parse({
+      bindings: [
+        {
+          address: "10.165.57.10",
+          hostname: "paper",
+          instanceId: "d".repeat(40),
+        },
+      ],
+      domain: "test",
+      hostname: "private-network",
+      id,
+      name: "Private Network",
+      subnet: "10.165.57.0/24",
+    })
+    await mkdir(stackDirectory, { recursive: true })
+    await writeFile(
+      join(stackDirectory, "stack.json"),
+      `${JSON.stringify(stackConfig)}\n`
+    )
+    let current = false
+    commandMock.mockImplementation(
+      async (_executable: string, arguments_: Array<string>) => {
+        if (
+          arguments_[0] === "container" &&
+          arguments_[1] === "inspect" &&
+          arguments_[3] === "{{.Id}}|{{.State.StartedAt}}|{{.State.Running}}"
+        ) {
+          return {
+            stderr: "",
+            stdout: "container-id|2026-07-28T18:00:00Z|true\n",
+          }
+        }
+        if (arguments_[0] === "exec" && arguments_.includes("-C")) {
+          if (!current) throw new Error("rule missing")
+          return { stderr: "", stdout: "" }
+        }
+        if (arguments_[0] === "exec" && arguments_.includes("-S")) {
+          if (!current) throw new Error("chain missing")
+          return {
+            stderr: "",
+            stdout: [
+              "-N KILN-TAILSCALE",
+              "-A KILN-TAILSCALE -d 10.165.57.10/32 -j RETURN",
+              "-A KILN-TAILSCALE -j DROP",
+            ].join("\n"),
+          }
+        }
+        return { stderr: "", stdout: "" }
+      }
+    )
+    const lifecycle = new LifecycleDriver(
+      config,
+      new DockerDriver(config),
+      new BrickCatalog(config.brickCatalogUrl)
+    )
+
+    await lifecycle.reconcileTailscaleStackFirewalls()
+    const mutationsAfterRepair = commandMock.mock.calls.filter(
+      ([, arguments_]) =>
+        arguments_[0] === "exec" &&
+        (arguments_.includes("-I") ||
+          arguments_.includes("-F") ||
+          arguments_.includes("-A"))
+    ).length
+    current = true
+    await lifecycle.reconcileTailscaleStackFirewalls()
+
+    expect(mutationsAfterRepair).toBeGreaterThan(0)
+    expect(
+      commandMock.mock.calls.filter(
+        ([, arguments_]) =>
+          arguments_[0] === "exec" &&
+          (arguments_.includes("-I") ||
+            arguments_.includes("-F") ||
+            arguments_.includes("-A"))
+      )
+    ).toHaveLength(mutationsAfterRepair)
+  })
 })

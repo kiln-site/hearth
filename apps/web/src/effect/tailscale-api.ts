@@ -8,7 +8,7 @@ const tailscaleOAuthTokenUrl = `${tailscaleApiBaseUrl}/oauth/token`
 
 export const requiredTailscaleOAuthScopes = [
   "auth_keys",
-  "devices:core:read",
+  "devices:core",
   "devices:routes",
   "dns",
 ] as const
@@ -257,6 +257,31 @@ export const inspectTailscaleControlPlaneEffect = Effect.fn(
   } satisfies TailscaleControlPlaneInspection
 })
 
+export const removeTailscaleControlPlaneDeviceEffect = Effect.fn(
+  "tailscale.controlPlane.removeDevice"
+)(function* (
+  credential: TailscaleOAuthCredential,
+  deployment: TailscaleControlPlaneDeployment
+) {
+  const session = yield* tailscaleSessionEffect(
+    credential.clientId,
+    credential.clientSecret,
+    credential.tags
+  )
+  const result = yield* requestTailscaleJson(
+    `${tailscaleApiBaseUrl}/tailnet/-/devices?fields=all`,
+    session.accessToken,
+    TailscaleDevicesSchema
+  )
+  const device = findTailscaleDevice(result.devices, deployment)
+  if (!device) return
+  yield* requestTailscaleVoid(
+    `${tailscaleApiBaseUrl}/device/${encodeURIComponent(device.id)}`,
+    session.accessToken,
+    { method: "DELETE" }
+  )
+})
+
 export function missingTailscaleOAuthScopes(
   scopes: ReadonlyArray<string>
 ): Array<(typeof requiredTailscaleOAuthScopes)[number]> {
@@ -388,6 +413,31 @@ const approveDeploymentRouteEffect = Effect.fn(
       message: `Waiting for ${deployment.hostname} to advertise ${deployment.subnet}`,
     })
   }
+  const otherDevices = result.devices.filter(
+    (candidate) => candidate.id !== device.id
+  )
+  const conflicts = yield* Effect.forEach(
+    otherDevices,
+    (candidate) =>
+      requestTailscaleJson(
+        `${tailscaleApiBaseUrl}/device/${encodeURIComponent(candidate.id)}/routes`,
+        session.accessToken,
+        TailscaleDeviceRoutesSchema
+      ).pipe(
+        Effect.map((candidateRoutes) =>
+          candidateRoutes.advertisedRoutes?.includes(deployment.subnet)
+            ? candidate
+            : null
+        )
+      ),
+    { concurrency: 4 }
+  )
+  const conflict = conflicts.find((candidate) => candidate !== null)
+  if (conflict) {
+    return yield* tailscaleFailure(
+      `${deployment.subnet} is already advertised by ${conflict.hostname ?? conflict.name ?? conflict.id}`
+    )
+  }
   if (routes.enabledRoutes?.includes(deployment.subnet)) return
   yield* requestTailscaleJson(
     `${tailscaleApiBaseUrl}/device/${encodeURIComponent(device.id)}/routes`,
@@ -427,6 +477,39 @@ function requestTailscaleJson<TValue>(
         throw new Error(`Tailscale returned HTTP ${response.status}`)
       }
       return Schema.decodeUnknownSync(schema)(await response.json())
+    },
+    catch: (cause) =>
+      ExternalServiceError.make({
+        cause,
+        message:
+          cause instanceof Error
+            ? cause.message
+            : "Tailscale returned an invalid response",
+        service: "Tailscale",
+      }),
+  })
+}
+
+function requestTailscaleVoid(
+  url: string,
+  accessToken: string,
+  init: RequestInit
+): Effect.Effect<void, ExternalServiceError> {
+  return Effect.tryPromise({
+    try: async () => {
+      const response = await fetch(url, {
+        ...init,
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${accessToken}`,
+          ...init.headers,
+        },
+        redirect: "follow",
+        signal: AbortSignal.timeout(15_000),
+      })
+      if (!response.ok && response.status !== 404) {
+        throw new Error(`Tailscale returned HTTP ${response.status}`)
+      }
     },
     catch: (cause) =>
       ExternalServiceError.make({

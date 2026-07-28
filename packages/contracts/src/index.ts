@@ -343,6 +343,7 @@ export const relayTailscaleStackDnsSchema = z
 
 export const relayTailscaleStackRemoveSchema = z
   .object({
+    controlPlaneDeviceRemoved: z.boolean().default(false),
     id: relayTailscaleStackIdSchema,
     mode: z.enum(["prepare", "commit", "rollback"]).default("commit"),
   })

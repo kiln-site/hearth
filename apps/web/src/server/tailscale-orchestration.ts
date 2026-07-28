@@ -17,6 +17,7 @@ export interface TailscaleDeploymentState {
   name: string
   relayId: string
   relayName: string
+  subnet: string
 }
 
 export interface DesiredTailscaleDeployment {
@@ -35,10 +36,7 @@ export interface TailscaleDeploymentOperations<
     target: DesiredTailscaleDeployment,
     input: RelayTailscaleStackApply
   ) => Promise<TDeployment>
-  remove: (
-    deployment: TailscaleDeploymentState,
-    mode: TailscaleRemovalMode
-  ) => Promise<void>
+  remove: (deployment: TDeployment, mode: TailscaleRemovalMode) => Promise<void>
   syncDns: (
     deployment: TDeployment,
     records: RelayTailscaleStackDns["records"]
@@ -57,6 +55,7 @@ export async function applyTailscaleDeploymentPlan<
   name,
   operations,
   beforeFinalize,
+  reservedSubnets = new Set(),
 }: {
   authKey?: string
   authKeyForTarget?: (
@@ -69,6 +68,7 @@ export async function applyTailscaleDeploymentPlan<
   name: string
   operations: TailscaleDeploymentOperations<TDeployment>
   beforeFinalize?: (deployments: ReadonlyArray<TDeployment>) => Promise<void>
+  reservedSubnets?: ReadonlySet<string>
 }): Promise<Array<TDeployment>> {
   const previousByRelay = new Map(
     current.map((deployment) => [deployment.relayId, deployment])
@@ -106,6 +106,14 @@ export async function applyTailscaleDeploymentPlan<
         name,
       })
       applied.push(deployment)
+      const peer = applied
+        .slice(0, -1)
+        .find((candidate) => candidate.subnet === deployment.subnet)
+      if (reservedSubnets.has(deployment.subnet) || peer) {
+        throw new Error(
+          `${deployment.subnet} is already assigned to another Tailscale node`
+        )
+      }
     })
 
     const records = applied.flatMap((deployment) =>

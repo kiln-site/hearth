@@ -106,6 +106,32 @@ describe("Tailscale deployment orchestration", () => {
     expect(applied).toEqual([])
   })
 
+  it("rolls back a new node whose allocated subnet is already reserved", async () => {
+    const removed: Array<string> = []
+    const colliding = deployment("relay-a", "installed")
+
+    await expect(
+      applyTailscaleDeploymentPlan({
+        authKey: "test-auth-key",
+        current: [],
+        desired: [target("relay-a")],
+        domain: "test",
+        id: "a".repeat(40),
+        name: "Test network",
+        operations: {
+          apply: async () => colliding,
+          remove: async (value, mode) => {
+            if (mode === "commit") removed.push(value.relayId)
+          },
+          syncDns: async (value) => value,
+        },
+        reservedSubnets: new Set([colliding.subnet]),
+      })
+    ).rejects.toThrow("already assigned")
+
+    expect(removed).toEqual(["relay-a"])
+  })
+
   it("restores changed nodes when a later node apply fails", async () => {
     const applyRevisions: Array<string> = []
     const synchronized: Array<string> = []
@@ -430,5 +456,6 @@ function deployment(
     relayId,
     relayName: relayId,
     revision,
+    subnet: `10.128.${relayId.at(-1)?.charCodeAt(0) ?? 0}.0/24`,
   }
 }

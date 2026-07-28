@@ -16,12 +16,16 @@ import {
   recoveryRouteLabels,
   routeLabelsRequireRestart,
   allocateTailscaleBindingAddress,
+  allocateTailscaleStackSubnet,
   assignTailscaleBindingAddresses,
   tailscaleStackCoreDnsConfiguration,
+  tailscaleStackCoreDnsRecords,
+  tailscaleStackFirewallIsCurrent,
   tailscaleStackFirewallRules,
   tailscaleStackPendingRemoval,
   tailscaleStackServiceAddress,
   tailscaleStackSubnet,
+  tailscaleStackWithoutInstance,
   tailscaleCoreDnsConfiguration,
   traefikDynamicConfiguration,
   traefikRouteLabels,
@@ -193,24 +197,33 @@ describe("Tailscale Brick networking", () => {
         { address: "10.165.55.11" },
       ])
     ).toEqual([
-      [
-        "-A",
-        "KILN-TAILSCALE",
-        "-d",
-        "10.165.55.10/32",
-        "-j",
-        "RETURN",
-      ],
-      [
-        "-A",
-        "KILN-TAILSCALE",
-        "-d",
-        "10.165.55.11/32",
-        "-j",
-        "RETURN",
-      ],
+      ["-A", "KILN-TAILSCALE", "-d", "10.165.55.10/32", "-j", "RETURN"],
+      ["-A", "KILN-TAILSCALE", "-d", "10.165.55.11/32", "-j", "RETURN"],
       ["-A", "KILN-TAILSCALE", "-j", "DROP"],
     ])
+  })
+
+  it("recognizes only a complete installed forwarding allowlist", () => {
+    const bindings = [{ address: "10.165.55.10" }]
+    const specification = [
+      "-N KILN-TAILSCALE",
+      "-A KILN-TAILSCALE -d 10.165.55.10/32 -j RETURN",
+      "-A KILN-TAILSCALE -j DROP",
+    ].join("\n")
+
+    expect(tailscaleStackFirewallIsCurrent(true, specification, bindings)).toBe(
+      true
+    )
+    expect(
+      tailscaleStackFirewallIsCurrent(false, specification, bindings)
+    ).toBe(false)
+    expect(
+      tailscaleStackFirewallIsCurrent(
+        true,
+        "-A KILN-TAILSCALE -j DROP",
+        bindings
+      )
+    ).toBe(false)
   })
 
   it("assigns stable node-specific subnets and reserves service addresses", () => {
@@ -223,12 +236,27 @@ describe("Tailscale Brick networking", () => {
     expect(tailscaleStackServiceAddress(first)).toMatch(/\.2$/u)
   })
 
+  it("probes to another deterministic subnet when the preferred one is reserved", () => {
+    const stackId = "a".repeat(40)
+    const preferred = allocateTailscaleStackSubnet(stackId, "node-a", new Set())
+    const replacement = allocateTailscaleStackSubnet(
+      stackId,
+      "node-a",
+      new Set([preferred])
+    )
+
+    expect(replacement).not.toBe(preferred)
+    expect(
+      allocateTailscaleStackSubnet(stackId, "node-a", new Set([preferred]))
+    ).toBe(replacement)
+  })
+
   it("keeps existing server addresses reserved while allocating new ones", () => {
     const reserved = new Set(["10.165.55.10", "10.165.55.11"])
 
-    expect(
-      allocateTailscaleBindingAddress("10.165.55.0/24", reserved)
-    ).toBe("10.165.55.12")
+    expect(allocateTailscaleBindingAddress("10.165.55.0/24", reserved)).toBe(
+      "10.165.55.12"
+    )
   })
 
   it("reclaims removed addresses while replacing a full subnet in one apply", () => {
@@ -300,6 +328,60 @@ describe("Tailscale Brick networking", () => {
     expect(configuration.indexOf("paper.test")).toBeLessThan(
       configuration.indexOf("survival.test")
     )
+    expect(tailscaleStackCoreDnsRecords("test", configuration)).toEqual([
+      { address: "10.165.55.10", hostname: "paper" },
+      { address: "10.140.2.10", hostname: "survival" },
+    ])
+  })
+
+  it("removes a deleted server binding and only its replicated DNS record", () => {
+    const removedId = "b".repeat(40)
+    const retainedId = "c".repeat(40)
+    const config = relayTailscaleStackConfigSchema.parse({
+      bindings: [
+        {
+          address: "10.165.55.10",
+          hostname: "paper",
+          instanceId: removedId,
+        },
+        {
+          address: "10.165.55.11",
+          hostname: "survival",
+          instanceId: retainedId,
+        },
+      ],
+      domain: "test",
+      hostname: "private-network",
+      id: "a".repeat(40),
+      name: "Private Network",
+      subnet: "10.165.55.0/24",
+    })
+
+    expect(
+      tailscaleStackWithoutInstance(
+        config,
+        [
+          { address: "10.165.55.10", hostname: "paper" },
+          { address: "10.165.55.11", hostname: "survival" },
+          { address: "10.140.2.10", hostname: "remote" },
+        ],
+        removedId
+      )
+    ).toMatchObject({
+      config: {
+        bindings: [
+          {
+            address: "10.165.55.11",
+            hostname: "survival",
+            instanceId: retainedId,
+          },
+        ],
+      },
+      records: [
+        { address: "10.165.55.11", hostname: "survival" },
+        { address: "10.140.2.10", hostname: "remote" },
+      ],
+    })
   })
 
   it("keeps a prepared removal discoverable after its containers are gone", () => {

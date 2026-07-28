@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto"
 import {
+  access,
   chmod,
   chown,
   mkdir,
@@ -40,6 +41,7 @@ import {
   relayTailscaleOverviewSchema,
   relayTailscaleSettingsSchema,
   relayTailscaleStackConfigSchema,
+  relayTailscaleStackDnsSchema,
   relayTailscaleStackSchema,
 } from "@workspace/contracts"
 import type { BrickCatalog } from "./bricks.js"
@@ -64,9 +66,12 @@ const COREDNS_IMAGE = "coredns/coredns:1.14.2"
 const TAILSCALE_STACK_DISK_BYTES = 128 * 1024 * 1024
 const TAILSCALE_STACK_MEMORY_BYTES = 64 * 1024 * 1024
 const TAILSCALE_STACK_FORWARD_CHAIN = "KILN-TAILSCALE"
+const TAILSCALE_STACK_SUBNET_COUNT = 64 * 256
 
 export function tailscaleStackFirewallRules(
-  bindings: ReadonlyArray<Pick<RelayTailscaleStackConfig["bindings"][number], "address">>
+  bindings: ReadonlyArray<
+    Pick<RelayTailscaleStackConfig["bindings"][number], "address">
+  >
 ): Array<Array<string>> {
   return [
     ...bindings.map(({ address }) => [
@@ -81,6 +86,27 @@ export function tailscaleStackFirewallRules(
     ]),
     ["-A", TAILSCALE_STACK_FORWARD_CHAIN, "-j", "DROP"],
   ]
+}
+
+export function tailscaleStackFirewallIsCurrent(
+  hookExists: boolean,
+  specification: string,
+  bindings: ReadonlyArray<
+    Pick<RelayTailscaleStackConfig["bindings"][number], "address">
+  >
+): boolean {
+  if (!hookExists) return false
+  const current = specification
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith(`-A ${TAILSCALE_STACK_FORWARD_CHAIN} `))
+  const expected = tailscaleStackFirewallRules(bindings).map((rule) =>
+    rule.join(" ")
+  )
+  return (
+    current.length === expected.length &&
+    current.every((line, index) => line === expected[index])
+  )
 }
 
 export function tailscaleStackPendingRemoval(
@@ -157,6 +183,9 @@ export class LifecycleDriver {
   #edgeReconciliationTimer: NodeJS.Timeout | null = null
   #hostDataDirectoryPromise: Promise<string> | null = null
   #listenerMode: RelayProxySettings["mode"] | null = null
+  readonly #tailscaleConfigs = new Map<string, RelayTailscaleStackConfig>()
+  #tailscaleConfigsDiscovered = false
+  readonly #tailscaleFirewallGenerations = new Map<string, string>()
   #webRoutes: ReadonlyArray<RelayStoredWebRoute> = []
 
   constructor(config: RelayConfig, docker: DockerDriver, bricks: BrickCatalog) {
@@ -403,8 +432,7 @@ export class LifecycleDriver {
     const stacks = await Promise.all(
       entries
         .filter(
-          (entry) =>
-            entry.isDirectory() && /^[a-f0-9]{40}$/u.test(entry.name)
+          (entry) => entry.isDirectory() && /^[a-f0-9]{40}$/u.test(entry.name)
         )
         .map(async (entry) => {
           const config = await this.#readTailscaleStackConfig(entry.name)
@@ -414,6 +442,47 @@ export class LifecycleDriver {
     return stacks
       .filter((stack): stack is RelayTailscaleStack => stack !== null)
       .sort((left, right) => left.name.localeCompare(right.name))
+  }
+
+  async reconcileTailscaleStackFirewalls(): Promise<void> {
+    const configs = await this.#knownTailscaleStackConfigs()
+    const stackIds = new Set(configs.map(({ id }) => id))
+    for (const id of this.#tailscaleFirewallGenerations.keys()) {
+      if (!stackIds.has(id)) this.#tailscaleFirewallGenerations.delete(id)
+    }
+    const results = await Promise.allSettled(
+      configs.map(async (config) => {
+        if (await this.#tailscaleStackRemovalPending(config.id)) return
+        const generation = await this.#tailscaleStackContainerGeneration(
+          config.id
+        )
+        if (!generation) {
+          this.#tailscaleFirewallGenerations.delete(config.id)
+          return
+        }
+        if (this.#tailscaleFirewallGenerations.get(config.id) === generation) {
+          return
+        }
+        await this.#ensureTailscaleStackFirewall(config)
+        this.#tailscaleFirewallGenerations.set(config.id, generation)
+      })
+    )
+    const failures = results.flatMap((result, index) =>
+      result.status === "rejected"
+        ? [
+            `${configs[index]?.name ?? "Unknown stack"}: ${
+              result.reason instanceof Error
+                ? result.reason.message
+                : "unknown error"
+            }`,
+          ]
+        : []
+    )
+    if (failures.length > 0) {
+      throw new Error(
+        `Could not restore Tailscale forwarding rules: ${failures.join("; ")}`
+      )
+    }
   }
 
   async applyTailscaleStack(
@@ -431,7 +500,9 @@ export class LifecycleDriver {
         (candidate) => candidate.id === binding.instanceId
       )
       if (!instance || !instance.managedByRelay) {
-        throw new Error(`Server ${binding.instanceId.slice(0, 8)} was not found`)
+        throw new Error(
+          `Server ${binding.instanceId.slice(0, 8)} was not found`
+        )
       }
       if (instance.brickId === builtinTailscaleBrickId) {
         throw new Error("A Tailscale deployment cannot attach to itself")
@@ -450,7 +521,18 @@ export class LifecycleDriver {
       )
     }
 
-    const subnet = existing?.subnet ?? tailscaleStackSubnet(input.id, this.#config.nodeId)
+    const reservedSubnets = new Set(
+      (await this.#tailscaleStackConfigs())
+        .filter((config) => config.id !== input.id)
+        .map((config) => config.subnet)
+    )
+    const subnet =
+      existing?.subnet ??
+      allocateTailscaleStackSubnet(
+        input.id,
+        this.#config.nodeId,
+        reservedSubnets
+      )
     const bindings = assignTailscaleBindingAddresses(
       subnet,
       existing?.bindings ?? [],
@@ -468,8 +550,13 @@ export class LifecycleDriver {
     const containerName = this.#resources.tailscaleStackContainer(input.id)
     const containerExists = await this.#containerExists(containerName)
     if (!containerExists && !input.authKey) {
-      throw new Error("An auth key is required to install Tailscale on this node")
+      throw new Error(
+        "An auth key is required to install Tailscale on this node"
+      )
     }
+    const previousDnsRecords = existing
+      ? await this.#readTailscaleStackDnsRecords(existing)
+      : []
 
     try {
       await this.#ensureTailscaleStackNetwork(config)
@@ -498,16 +585,29 @@ export class LifecycleDriver {
       )
       return this.#tailscaleStack(config)
     } catch (cause) {
-      await this.#rollbackTailscaleStackApply(config, existing).catch(
-        () => undefined
-      )
+      let rollbackMessage = ""
+      try {
+        await this.#rollbackTailscaleStackApply(
+          config,
+          existing,
+          previousDnsRecords
+        )
+      } catch (rollbackCause) {
+        rollbackMessage = ` Rollback also failed: ${
+          rollbackCause instanceof Error
+            ? rollbackCause.message
+            : "unknown error"
+        }.`
+      }
       const message =
         cause instanceof Error
           ? input.authKey
             ? cause.message.replaceAll(input.authKey, "[REDACTED]")
             : cause.message
           : "unknown error"
-      throw new Error(`Could not apply Tailscale stack: ${message}`)
+      throw new Error(
+        `Could not apply Tailscale stack: ${message}.${rollbackMessage}`
+      )
     }
   }
 
@@ -527,7 +627,9 @@ export class LifecycleDriver {
         ) !== index
     )
     if (duplicateHostname) {
-      throw new Error(`Duplicate private hostname ${duplicateHostname.hostname}`)
+      throw new Error(
+        `Duplicate private hostname ${duplicateHostname.hostname}`
+      )
     }
     await this.#ensureTailscaleStackDns(config, input.records)
     return this.#tailscaleStack(config)
@@ -535,7 +637,8 @@ export class LifecycleDriver {
 
   async removeTailscaleStack(
     id: string,
-    mode: "commit" | "prepare" | "rollback" = "commit"
+    mode: "commit" | "prepare" | "rollback" = "commit",
+    controlPlaneDeviceRemoved = false
   ): Promise<void> {
     if (mode === "prepare") {
       await this.#prepareTailscaleStackRemoval(id)
@@ -547,7 +650,7 @@ export class LifecycleDriver {
     }
 
     await this.#prepareTailscaleStackRemoval(id)
-    await this.#commitTailscaleStackRemoval(id)
+    await this.#commitTailscaleStackRemoval(id, controlPlaneDeviceRemoved)
   }
 
   async #prepareTailscaleStackRemoval(id: string): Promise<void> {
@@ -611,19 +714,46 @@ export class LifecycleDriver {
     await rm(this.#tailscaleStackRemovalSnapshot(id), { force: true })
   }
 
-  async #commitTailscaleStackRemoval(id: string): Promise<void> {
+  async #commitTailscaleStackRemoval(
+    id: string,
+    controlPlaneDeviceRemoved = false
+  ): Promise<void> {
     const config = await this.#readTailscaleStackConfig(id)
     if (!config) return
     const network = this.#resources.tailscaleStackNetwork(id)
     const container = this.#resources.tailscaleStackContainer(id)
-    if (await this.#containerExists(container)) {
+    if (
+      !controlPlaneDeviceRemoved &&
+      !(await this.#containerExists(container)) &&
+      (await this.#tailscaleStackIdentityExists(id))
+    ) {
+      await this.#ensureTailscaleStackNetwork(config)
+      await this.#replaceContainer(
+        container,
+        await this.#tailscaleStackContainerArguments(config, false)
+      )
+    }
+    if (
+      !controlPlaneDeviceRemoved &&
+      (await this.#containerExists(container))
+    ) {
       await command("docker", ["start", container], {
         timeout: 30_000,
-      }).catch(() => undefined)
+      })
+      try {
+        await this.#logoutTailscaleStack(container)
+      } catch (cause) {
+        await command("docker", ["stop", "--time", "10", container], {
+          timeout: 30_000,
+        }).catch(() => undefined)
+        throw new Error(
+          `Could not log the Tailscale machine out; local identity was preserved for retry: ${
+            cause instanceof Error ? cause.message : "unknown error"
+          }`,
+          { cause }
+        )
+      }
     }
-    await command("docker", ["exec", container, "tailscale", "logout"]).catch(
-      () => undefined
-    )
     await this.#removeOwnedContainer(
       this.#resources.tailscaleStackDnsContainer(id)
     )
@@ -642,6 +772,25 @@ export class LifecycleDriver {
       force: true,
       recursive: true,
     })
+    this.#tailscaleConfigs.delete(id)
+  }
+
+  async #logoutTailscaleStack(container: string): Promise<void> {
+    let lastCause: unknown
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await command("docker", ["exec", container, "tailscale", "logout"], {
+          timeout: 30_000,
+        })
+        return
+      } catch (cause) {
+        lastCause = cause
+        if (attempt < 2) {
+          await new Promise((resolvePromise) => setTimeout(resolvePromise, 500))
+        }
+      }
+    }
+    throw lastCause
   }
 
   #tailscaleStackRemovalMarker(id: string): string {
@@ -1593,12 +1742,29 @@ export class LifecycleDriver {
         "Remove this logical network from Infrastructure → Tailscale so every node is cleaned up"
       )
     }
-    await command("docker", ["stop", "--time", "30", instance.service], {
-      timeout: 45_000,
-    }).catch(() => undefined)
-    await command("docker", ["rm", "--force", instance.service], {
-      timeout: 90_000,
-    })
+    const detachedStacks =
+      await this.#detachInstanceFromTailscaleStacks(instance)
+    try {
+      await command("docker", ["stop", "--time", "30", instance.service], {
+        timeout: 45_000,
+      }).catch(() => undefined)
+      await command("docker", ["rm", "--force", instance.service], {
+        timeout: 90_000,
+      })
+    } catch (cause) {
+      const rollbackFailures =
+        await this.#restoreInstanceTailscaleStacks(detachedStacks)
+      throw new Error(
+        `Could not delete the server: ${
+          cause instanceof Error ? cause.message : "unknown error"
+        }${
+          rollbackFailures.length > 0
+            ? `. Tailscale rollback also failed: ${rollbackFailures.join("; ")}`
+            : ""
+        }`,
+        { cause }
+      )
+    }
     if (deleteData) {
       await rm(join(this.#config.rootDirectory, instance.directory), {
         recursive: true,
@@ -2091,6 +2257,38 @@ export class LifecycleDriver {
     }
   }
 
+  async #tailscaleStackConfigs(): Promise<Array<RelayTailscaleStackConfig>> {
+    const entries = await readdir(this.#config.rootDirectory, {
+      encoding: "utf8",
+      withFileTypes: true,
+    }).catch((cause: unknown) => {
+      if (hasErrorCode(cause, "ENOENT")) return []
+      throw cause
+    })
+    const configs = await Promise.all(
+      entries
+        .filter(
+          (entry) => entry.isDirectory() && /^[a-f0-9]{40}$/u.test(entry.name)
+        )
+        .map((entry) => this.#readTailscaleStackConfig(entry.name))
+    )
+    const found = configs.filter(
+      (config): config is RelayTailscaleStackConfig => config !== null
+    )
+    for (const config of found) this.#tailscaleConfigs.set(config.id, config)
+    this.#tailscaleConfigsDiscovered = true
+    return found
+  }
+
+  async #knownTailscaleStackConfigs(): Promise<
+    Array<RelayTailscaleStackConfig>
+  > {
+    if (!this.#tailscaleConfigsDiscovered) {
+      await this.#tailscaleStackConfigs()
+    }
+    return [...this.#tailscaleConfigs.values()]
+  }
+
   async #writeTailscaleStackConfig(
     config: RelayTailscaleStackConfig
   ): Promise<void> {
@@ -2101,6 +2299,8 @@ export class LifecycleDriver {
       `${JSON.stringify(config, null, 2)}\n`,
       { mode: 0o600 }
     )
+    this.#tailscaleConfigs.set(config.id, config)
+    this.#tailscaleConfigsDiscovered = true
   }
 
   async #ensureTailscaleStackNetwork(
@@ -2236,7 +2436,6 @@ export class LifecycleDriver {
         )
       }
     } catch (cause) {
-      await this.#removeOwnedContainer(name).catch(() => undefined)
       const message =
         cause instanceof Error
           ? cause.message.replaceAll(authKey, "[REDACTED]")
@@ -2348,64 +2547,15 @@ export class LifecycleDriver {
       await this.#tailscaleStackContainerArguments(config, false)
     )
     if (!(await this.#waitForTailscaleStackConnection(config.id, 45_000))) {
-      throw new Error(
-        "Tailscale did not reconnect with its persisted identity"
-      )
+      throw new Error("Tailscale did not reconnect with its persisted identity")
     }
   }
 
   async #configureTailscaleStackRouting(
     config: RelayTailscaleStackConfig
   ): Promise<void> {
+    await this.#ensureTailscaleStackFirewall(config)
     const container = this.#resources.tailscaleStackContainer(config.id)
-    const chain = TAILSCALE_STACK_FORWARD_CHAIN
-    await command("docker", [
-      "exec",
-      container,
-      "iptables",
-      "-N",
-      chain,
-    ]).catch(() => undefined)
-    const hook = await command("docker", [
-      "exec",
-      container,
-      "iptables",
-      "-C",
-      "FORWARD",
-      "-i",
-      "tailscale0",
-      "-j",
-      chain,
-    ]).catch(() => null)
-    if (!hook) {
-      await command("docker", [
-        "exec",
-        container,
-        "iptables",
-        "-I",
-        "FORWARD",
-        "1",
-        "-i",
-        "tailscale0",
-        "-j",
-        chain,
-      ])
-    }
-    await command("docker", [
-      "exec",
-      container,
-      "iptables",
-      "-F",
-      chain,
-    ])
-    for (const rule of tailscaleStackFirewallRules(config.bindings)) {
-      await command("docker", [
-        "exec",
-        container,
-        "iptables",
-        ...rule,
-      ])
-    }
     await command(
       "docker",
       [
@@ -2420,9 +2570,64 @@ export class LifecycleDriver {
     )
   }
 
+  async #ensureTailscaleStackFirewall(
+    config: RelayTailscaleStackConfig
+  ): Promise<void> {
+    const container = this.#resources.tailscaleStackContainer(config.id)
+    const chain = TAILSCALE_STACK_FORWARD_CHAIN
+    const [hook, specification] = await Promise.all([
+      command("docker", [
+        "exec",
+        container,
+        "iptables",
+        "-C",
+        "FORWARD",
+        "-i",
+        "tailscale0",
+        "-j",
+        chain,
+      ]).catch(() => null),
+      command("docker", ["exec", container, "iptables", "-S", chain]).catch(
+        () => null
+      ),
+    ])
+    if (
+      specification &&
+      tailscaleStackFirewallIsCurrent(
+        Boolean(hook),
+        specification.stdout,
+        config.bindings
+      )
+    ) {
+      return
+    }
+    await command("docker", ["exec", container, "iptables", "-N", chain]).catch(
+      () => undefined
+    )
+    if (!hook) {
+      await command("docker", [
+        "exec",
+        container,
+        "iptables",
+        "-I",
+        "FORWARD",
+        "1",
+        "-i",
+        "tailscale0",
+        "-j",
+        chain,
+      ])
+    }
+    await command("docker", ["exec", container, "iptables", "-F", chain])
+    for (const rule of tailscaleStackFirewallRules(config.bindings)) {
+      await command("docker", ["exec", container, "iptables", ...rule])
+    }
+  }
+
   async #rollbackTailscaleStackApply(
     attempted: RelayTailscaleStackConfig,
-    existing: RelayTailscaleStackConfig | null
+    existing: RelayTailscaleStackConfig | null,
+    previousDnsRecords: ReadonlyArray<{ address: string; hostname: string }>
   ): Promise<void> {
     if (existing) {
       await this.#writeTailscaleStackConfig(existing)
@@ -2433,13 +2638,27 @@ export class LifecycleDriver {
         existing.bindings
       )
       await this.#configureTailscaleStackRouting(existing)
-      await this.#ensureTailscaleStackDns(
-        existing,
-        existing.bindings.map(({ address, hostname }) => ({
-          address,
-          hostname,
-        }))
+      await this.#ensureTailscaleStackDns(existing, previousDnsRecords)
+      return
+    }
+
+    if (
+      await this.#containerExists(
+        this.#resources.tailscaleStackContainer(attempted.id)
       )
+    ) {
+      await this.#prepareTailscaleStackRemoval(attempted.id)
+      await this.#commitTailscaleStackRemoval(attempted.id)
+      return
+    }
+    if (await this.#tailscaleStackIdentityExists(attempted.id)) {
+      await this.#ensureTailscaleStackNetwork(attempted)
+      await this.#replaceContainer(
+        this.#resources.tailscaleStackContainer(attempted.id),
+        await this.#tailscaleStackContainerArguments(attempted, false)
+      )
+      await this.#prepareTailscaleStackRemoval(attempted.id)
+      await this.#commitTailscaleStackRemoval(attempted.id)
       return
     }
 
@@ -2451,9 +2670,6 @@ export class LifecycleDriver {
     await this.#removeOwnedContainer(
       this.#resources.tailscaleStackDnsContainer(attempted.id)
     )
-    await this.#removeOwnedContainer(
-      this.#resources.tailscaleStackContainer(attempted.id)
-    )
     await this.#removeOwnedNetwork(
       this.#resources.tailscaleStackNetwork(attempted.id)
     )
@@ -2461,6 +2677,7 @@ export class LifecycleDriver {
       force: true,
       recursive: true,
     })
+    this.#tailscaleConfigs.delete(attempted.id)
     await rm(
       join(
         this.#config.dataDirectory,
@@ -2476,6 +2693,12 @@ export class LifecycleDriver {
     config: RelayTailscaleStackConfig,
     records: ReadonlyArray<{ address: string; hostname: string }>
   ): Promise<void> {
+    const recordsPath = this.#tailscaleStackDnsRecordsPath(config.id)
+    await writeFile(
+      recordsPath,
+      `${JSON.stringify({ id: config.id, records }, null, 2)}\n`,
+      { mode: 0o600 }
+    )
     const path = join(this.#config.rootDirectory, config.id, "Corefile")
     await writeFile(
       path,
@@ -2514,6 +2737,158 @@ export class LifecycleDriver {
         "/etc/coredns/Corefile",
       ]
     )
+  }
+
+  #tailscaleStackDnsRecordsPath(id: string): string {
+    return join(this.#config.rootDirectory, id, "dns-records.json")
+  }
+
+  async #tailscaleStackIdentityExists(id: string): Promise<boolean> {
+    try {
+      await access(
+        join(
+          this.#config.dataDirectory,
+          "infrastructure",
+          "tailscale-stacks",
+          id,
+          "state",
+          "tailscaled.state"
+        )
+      )
+      return true
+    } catch (cause) {
+      if (hasErrorCode(cause, "ENOENT")) return false
+      throw cause
+    }
+  }
+
+  async #tailscaleStackContainerGeneration(id: string): Promise<string | null> {
+    const inspected = await command("docker", [
+      "container",
+      "inspect",
+      "--format",
+      "{{.Id}}|{{.State.StartedAt}}|{{.State.Running}}",
+      this.#resources.tailscaleStackContainer(id),
+    ]).catch(() => null)
+    if (!inspected) return null
+    const generation = inspected.stdout.trim()
+    return generation.endsWith("|true") ? generation : null
+  }
+
+  async #readTailscaleStackDnsRecords(
+    config: RelayTailscaleStackConfig
+  ): Promise<Array<{ address: string; hostname: string }>> {
+    try {
+      return relayTailscaleStackDnsSchema.parse(
+        JSON.parse(
+          await readFile(this.#tailscaleStackDnsRecordsPath(config.id), "utf8")
+        )
+      ).records
+    } catch (cause) {
+      if (!hasErrorCode(cause, "ENOENT")) throw cause
+    }
+    try {
+      return tailscaleStackCoreDnsRecords(
+        config.domain,
+        await readFile(
+          join(this.#config.rootDirectory, config.id, "Corefile"),
+          "utf8"
+        )
+      )
+    } catch (cause) {
+      if (hasErrorCode(cause, "ENOENT")) {
+        return config.bindings.map(({ address, hostname }) => ({
+          address,
+          hostname,
+        }))
+      }
+      throw cause
+    }
+  }
+
+  async #detachInstanceFromTailscaleStacks(
+    instance: RelayInstanceConfig
+  ): Promise<
+    Array<{
+      next: RelayTailscaleStackConfig
+      previous: RelayTailscaleStackConfig
+      records: Array<{ address: string; hostname: string }>
+    }>
+  > {
+    const configs = (await this.#tailscaleStackConfigs()).filter((config) =>
+      config.bindings.some((binding) => binding.instanceId === instance.id)
+    )
+    const completed: Array<{
+      next: RelayTailscaleStackConfig
+      previous: RelayTailscaleStackConfig
+      records: Array<{ address: string; hostname: string }>
+    }> = []
+    try {
+      for (const previous of configs) {
+        if (await this.#tailscaleStackRemovalPending(previous.id)) {
+          throw new Error(
+            `Finish removing ${previous.name} from Tailscale before deleting this server`
+          )
+        }
+        const records = await this.#readTailscaleStackDnsRecords(previous)
+        const detached = tailscaleStackWithoutInstance(
+          previous,
+          records,
+          instance.id
+        )
+        const next = detached.config
+        completed.push({ next, previous, records })
+        await this.#reconcileTailscaleStackBindings(
+          previous.id,
+          previous.bindings,
+          next.bindings
+        )
+        await this.#writeTailscaleStackConfig(next)
+        await this.#configureTailscaleStackRouting(next)
+        await this.#ensureTailscaleStackDns(next, detached.records)
+      }
+      return completed
+    } catch (cause) {
+      const rollbackFailures =
+        await this.#restoreInstanceTailscaleStacks(completed)
+      throw new Error(
+        `Could not remove the server from its Tailscale networks: ${
+          cause instanceof Error ? cause.message : "unknown error"
+        }${
+          rollbackFailures.length > 0
+            ? `. Rollback also failed: ${rollbackFailures.join("; ")}`
+            : ""
+        }`,
+        { cause }
+      )
+    }
+  }
+
+  async #restoreInstanceTailscaleStacks(
+    changes: ReadonlyArray<{
+      next: RelayTailscaleStackConfig
+      previous: RelayTailscaleStackConfig
+      records: Array<{ address: string; hostname: string }>
+    }>
+  ): Promise<Array<string>> {
+    const failures: Array<string> = []
+    for (const change of [...changes].reverse()) {
+      try {
+        await this.#writeTailscaleStackConfig(change.previous)
+        await this.#reconcileTailscaleStackBindings(
+          change.previous.id,
+          change.next.bindings,
+          change.previous.bindings
+        )
+        await this.#configureTailscaleStackRouting(change.previous)
+        await this.#ensureTailscaleStackDns(change.previous, change.records)
+      } catch (cause) {
+        failures.push(
+          cause instanceof Error ? cause.message : "unknown rollback error"
+        )
+      }
+    }
+    return failures
   }
 
   async #waitForTailscaleStackConnection(
@@ -2577,9 +2952,7 @@ export class LifecycleDriver {
         this.#resources.tailscaleStackDnsContainer(config.id)
       ),
     ])
-    const connected = Boolean(
-      addresses.ipv4Address || addresses.ipv6Address
-    )
+    const connected = Boolean(addresses.ipv4Address || addresses.ipv6Address)
     return relayTailscaleStackSchema.parse({
       ...config,
       components: { coreDnsRunning, tailscaleRunning },
@@ -3328,14 +3701,26 @@ export function tailscaleCoreDnsConfiguration(
   return `${settings.domain}:${settings.dnsPort} {\n    bind ${address}\n    errors\n    template IN A {\n        match "${pattern}"\n        answer "{{ .Name }} 60 IN A ${address}"\n    }\n    template IN AAAA {\n        match "${pattern}"\n        rcode NOERROR\n    }\n}\n`
 }
 
-export function tailscaleStackSubnet(
+export function tailscaleStackSubnet(stackId: string, nodeId: string): string {
+  return allocateTailscaleStackSubnet(stackId, nodeId, new Set())
+}
+
+export function allocateTailscaleStackSubnet(
   stackId: string,
-  nodeId: string
+  nodeId: string,
+  reserved: ReadonlySet<string>
 ): string {
-  const digest = createHash("sha256")
-    .update(`${stackId}:${nodeId}`)
-    .digest()
-  return `10.${128 + ((digest[0] ?? 0) % 64)}.${digest[1] ?? 0}.0/24`
+  const digest = createHash("sha256").update(`${stackId}:${nodeId}`).digest()
+  const start =
+    (((digest[0] ?? 0) << 8) | (digest[1] ?? 0)) % TAILSCALE_STACK_SUBNET_COUNT
+  const stepSeed = ((digest[2] ?? 0) << 8) | (digest[3] ?? 0)
+  const step = (stepSeed % (TAILSCALE_STACK_SUBNET_COUNT / 2)) * 2 + 1
+  for (let offset = 0; offset < TAILSCALE_STACK_SUBNET_COUNT; offset += 1) {
+    const index = (start + offset * step) % TAILSCALE_STACK_SUBNET_COUNT
+    const subnet = `10.${128 + Math.floor(index / 256)}.${index % 256}.0/24`
+    if (!reserved.has(subnet)) return subnet
+  }
+  throw new Error("No private Tailscale subnets remain on this Relay")
 }
 
 export function tailscaleStackServiceAddress(subnet: string): string {
@@ -3356,7 +3741,9 @@ export function allocateTailscaleBindingAddress(
     reserved.add(address)
     return address
   }
-  throw new Error(`Tailscale subnet ${subnet} has no available server addresses`)
+  throw new Error(
+    `Tailscale subnet ${subnet} has no available server addresses`
+  )
 }
 
 export function assignTailscaleBindingAddresses(
@@ -3390,6 +3777,30 @@ export function assignTailscaleBindingAddresses(
   })
 }
 
+export function tailscaleStackWithoutInstance(
+  config: RelayTailscaleStackConfig,
+  records: ReadonlyArray<{ address: string; hostname: string }>,
+  instanceId: string
+): {
+  config: RelayTailscaleStackConfig
+  records: Array<{ address: string; hostname: string }>
+} {
+  const removedAddresses = new Set(
+    config.bindings
+      .filter((binding) => binding.instanceId === instanceId)
+      .map(({ address }) => address)
+  )
+  return {
+    config: relayTailscaleStackConfigSchema.parse({
+      ...config,
+      bindings: config.bindings.filter(
+        (binding) => binding.instanceId !== instanceId
+      ),
+    }),
+    records: records.filter((record) => !removedAddresses.has(record.address)),
+  }
+}
+
 export function tailscaleStackCoreDnsConfiguration(
   domain: string,
   records: ReadonlyArray<{ address: string; hostname: string }>
@@ -3402,4 +3813,27 @@ export function tailscaleStackCoreDnsConfiguration(
     )
     .join("\n")
   return `${domain}:53 {\n    errors\n    cache 30\n    hosts {\n${entries}${entries ? "\n" : ""}        ttl 60\n    }\n}\n`
+}
+
+export function tailscaleStackCoreDnsRecords(
+  domain: string,
+  configuration: string
+): Array<{ address: string; hostname: string }> {
+  const suffix = `.${domain}`
+  const records = configuration
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/u))
+    .flatMap(([address, name]) => {
+      if (!address || !name || !name.endsWith(suffix)) return []
+      return [
+        {
+          address,
+          hostname: name.slice(0, -suffix.length),
+        },
+      ]
+    })
+  return relayTailscaleStackDnsSchema.parse({
+    id: "0".repeat(40),
+    records,
+  }).records
 }

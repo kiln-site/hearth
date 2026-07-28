@@ -18,6 +18,7 @@ import { z } from "zod"
 import {
   createTailscaleNodeAuthKeyEffect,
   inspectTailscaleControlPlaneEffect,
+  removeTailscaleControlPlaneDeviceEffect,
   syncTailscaleControlPlaneEffect,
   verifyTailscaleOAuthCredentialEffect,
 } from "@/effect/tailscale-api"
@@ -366,6 +367,10 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
     const removed = currentForStack.filter(
       ({ relayId }) => !desiredRelayIds.has(relayId)
     )
+    const reservedSubnets = new Set<string>()
+    for (const deployment of current) {
+      if (deployment.id !== id) reservedSubnets.add(deployment.subnet)
+    }
     requireStagedRemovalSupport(removed, currentResult.snapshots, relayById)
     const synchronized = await applyTailscaleDeploymentPlan({
       authKey: data.authKey,
@@ -378,7 +383,18 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
       domain: data.domain,
       id,
       name: data.name,
-      operations: tailscaleDeploymentOperations(id, relayById),
+      operations: tailscaleDeploymentOperations(
+        id,
+        relayById,
+        integrationCredential
+          ? (deployment) =>
+              removeTailscaleControlPlaneDevice(
+                integrationCredential,
+                deployment
+              )
+          : undefined
+      ),
+      reservedSubnets,
       beforeFinalize: async (deployments) => {
         if (integrationCredential && definition?.integration) {
           try {
@@ -491,7 +507,14 @@ export const removeTailscaleStack = createServerFn({ method: "POST" })
       domain: definition?.domain ?? fallback?.domain ?? "test",
       id: data.id,
       name: definition?.name ?? fallback?.name ?? "Tailscale network",
-      operations: tailscaleDeploymentOperations(data.id, relayById),
+      operations: tailscaleDeploymentOperations(
+        data.id,
+        relayById,
+        credential
+          ? (deployment) =>
+              removeTailscaleControlPlaneDevice(credential, deployment)
+          : undefined
+      ),
       beforeFinalize: async () => {
         if (credential && definition) {
           try {
@@ -504,20 +527,9 @@ export const removeTailscaleStack = createServerFn({ method: "POST" })
             throw cause
           }
         }
-        try {
-          await removeTailscaleNetworkDefinition(data.id)
-        } catch (cause) {
-          if (credential && definition) {
-            await restoreTailscaleControlPlane(
-              credential,
-              definition,
-              deployments
-            )
-          }
-          throw cause
-        }
       },
     })
+    await removeTailscaleNetworkDefinition(data.id)
     await invalidateRelaySnapshots(deployments.map(({ relayId }) => relayId))
     return { removed: true }
   })
@@ -600,7 +612,8 @@ async function loadTailscaleDeployments(
             unavailableRelay: null,
             unsupportedRelay: {
               id: relay.id,
-              message: "Update this Relay before changing Tailscale memberships",
+              message:
+                "Update this Relay before changing Tailscale memberships",
               name: relay.name,
             },
           }
@@ -662,7 +675,8 @@ async function loadTailscaleDeployments(
 
 function tailscaleDeploymentOperations(
   id: string,
-  relayById: ReadonlyMap<string, PersistedRelay>
+  relayById: ReadonlyMap<string, PersistedRelay>,
+  removeFromControlPlane?: (deployment: TailscaleDeployment) => Promise<void>
 ): TailscaleDeploymentOperations<TailscaleDeployment> {
   return {
     apply: async (target, input) => {
@@ -678,7 +692,17 @@ function tailscaleDeploymentOperations(
       }
     },
     remove: async (deployment, mode) => {
-      await removeDeployment(deployment, relayById, mode)
+      const controlPlaneDeviceRemoved =
+        mode === "commit" && Boolean(removeFromControlPlane)
+      if (controlPlaneDeviceRemoved) {
+        await removeFromControlPlane?.(deployment)
+      }
+      await removeDeployment(
+        deployment,
+        relayById,
+        mode,
+        controlPlaneDeviceRemoved
+      )
     },
     syncDns: async (deployment, records) => {
       const relay = relayById.get(deployment.relayId)
@@ -703,14 +727,15 @@ function tailscaleDeploymentOperations(
 async function removeDeployment(
   deployment: Pick<TailscaleDeployment, "id" | "relayId">,
   relayById: ReadonlyMap<string, PersistedRelay>,
-  mode: "commit" | "prepare" | "rollback"
+  mode: "commit" | "prepare" | "rollback",
+  controlPlaneDeviceRemoved = false
 ): Promise<void> {
   const relay = relayById.get(deployment.relayId)
   if (!relay) throw new Error("The network's node is unavailable")
   await relayRpc(
     relay,
     "relay.tailscale.stack.remove",
-    { id: deployment.id, mode },
+    { controlPlaneDeviceRemoved, id: deployment.id, mode },
     120_000
   )
 }
@@ -771,6 +796,16 @@ function createTailscaleNodeAuthKey(
   return runAppEffect(
     "tailscale.authKey.create",
     createTailscaleNodeAuthKeyEffect(credential, nodeName)
+  )
+}
+
+function removeTailscaleControlPlaneDevice(
+  credential: TailscaleOAuthCredential,
+  deployment: TailscaleDeployment
+) {
+  return runAppEffect(
+    "tailscale.controlPlane.removeDevice",
+    removeTailscaleControlPlaneDeviceEffect(credential, deployment)
   )
 }
 
@@ -935,9 +970,7 @@ async function reconcileTailscaleDomainAfterDefinitionFailure(
     ownerCredential,
     tailscaleOverviewForDeployments(
       owner,
-      current.deployments.filter(
-        (deployment) => deployment.id === owner.id
-      )
+      current.deployments.filter((deployment) => deployment.id === owner.id)
     )
   )
   return owner

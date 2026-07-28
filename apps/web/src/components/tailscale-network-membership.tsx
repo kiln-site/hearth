@@ -685,7 +685,7 @@ function SetupCredentialsStep({
             />
           ) : (
             <p className="font-mono text-[9px] text-muted-foreground">
-              auth_keys · devices:core:read · devices:routes · dns
+              auth_keys · devices:core · devices:routes · dns
             </p>
           )}
         </div>

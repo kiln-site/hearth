@@ -96,6 +96,7 @@ const startupCore = await runRelayEffect(
 )
 const cliArguments = process.argv.slice(2)
 let relayIdentity = startupCore.identity
+config.nodeId = relayIdentity.fingerprint
 config.nodeName = relayIdentity.name
 const bricks = new BrickCatalog(config.brickCatalogUrl)
 const docker = new DockerDriver(config)
@@ -131,6 +132,27 @@ await lifecycle.initializeProxy(
   await loadStartupWebRoutes(),
   startupProxySettings
 )
+let tailscaleFirewallError: string | null = null
+const reconcileTailscaleFirewalls = async () => {
+  try {
+    await lifecycle.reconcileTailscaleStackFirewalls()
+    if (tailscaleFirewallError) {
+      console.log("Relay restored Tailscale forwarding rules")
+      tailscaleFirewallError = null
+    }
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : "unknown error"
+    if (message !== tailscaleFirewallError) {
+      console.error("Relay could not restore Tailscale forwarding rules", cause)
+      tailscaleFirewallError = message
+    }
+  }
+}
+await reconcileTailscaleFirewalls()
+const tailscaleFirewallTimer = setInterval(() => {
+  void reconcileTailscaleFirewalls()
+}, 10_000)
+tailscaleFirewallTimer.unref()
 const instanceMutations = new Map<string, Promise<unknown>>()
 let webRouteMutation: Promise<unknown> = Promise.resolve()
 const snapshotHub = new RelaySnapshotHub(relaySnapshot)
@@ -674,11 +696,10 @@ async function executeControlRequest(
       )
     }
     case "relay.tailscale.stack.remove": {
-      const { id, mode } = relayTailscaleStackRemoveSchema.parse(
-        request.payload
-      )
+      const { controlPlaneDeviceRemoved, id, mode } =
+        relayTailscaleStackRemoveSchema.parse(request.payload)
       await serializeInstanceMutation(id, () =>
-        lifecycle.removeTailscaleStack(id, mode)
+        lifecycle.removeTailscaleStack(id, mode, controlPlaneDeviceRemoved)
       )
       if (mode === "commit") {
         await runRelayEffect(
@@ -1041,6 +1062,7 @@ async function executeControlRequest(
         )
       )
       config.nodeName = relayIdentity.name
+      config.nodeId = relayIdentity.fingerprint
       await appendRelayAudit("relay.renamed", client.id, request.id, {
         name: relayIdentity.name,
       })

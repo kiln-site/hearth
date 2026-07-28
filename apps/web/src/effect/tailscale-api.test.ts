@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test"
 import {
   findTailscaleDevice,
   missingTailscaleOAuthScopes,
+  removeTailscaleControlPlaneDeviceEffect,
   requiredTailscaleOAuthScopes,
   syncTailscaleControlPlaneEffect,
   verifyTailscaleOAuthCredentialEffect,
@@ -16,7 +17,7 @@ describe("Tailscale API integration", () => {
 
   it("reports only missing Kiln scopes", () => {
     expect(missingTailscaleOAuthScopes(["auth_keys", "dns"])).toEqual([
-      "devices:core:read",
+      "devices:core",
       "devices:routes",
     ])
     expect(missingTailscaleOAuthScopes(requiredTailscaleOAuthScopes)).toEqual(
@@ -137,5 +138,122 @@ describe("Tailscale API integration", () => {
     const [url, init] = fetchMock.mock.calls[1] ?? []
     expect(url).toBe("https://api.tailscale.com/api/v2/tailnet/-/dns/split-dns")
     expect(JSON.parse(String(init?.body))).toEqual({ test: null })
+  })
+
+  it("deletes a leaving node from the Tailnet", async () => {
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.endsWith("/oauth/token")) {
+          return Response.json({
+            access_token: "access-token",
+            scope: requiredTailscaleOAuthScopes.join(" "),
+          })
+        }
+        if (url.includes("/tailnet/-/devices")) {
+          return Response.json({
+            devices: [
+              {
+                addresses: ["100.64.12.96"],
+                hostname: "kiln-network-node",
+                id: "device-id",
+              },
+            ],
+          })
+        }
+        expect(init?.method).toBe("DELETE")
+        return new Response(null, { status: 204 })
+      }
+    )
+    vi.stubGlobal("fetch", fetchMock)
+
+    await Effect.runPromise(
+      removeTailscaleControlPlaneDeviceEffect(
+        {
+          clientId: "oauth-client",
+          clientSecret: "oauth-client-secret",
+          scopes: [...requiredTailscaleOAuthScopes],
+          tags: ["tag:kiln"],
+        },
+        {
+          hostname: "kiln-network-node",
+          status: { ipv4Address: "100.64.12.96" },
+          subnet: "10.187.39.0/24",
+        }
+      )
+    )
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(String(fetchMock.mock.calls[2]?.[0])).toBe(
+      "https://api.tailscale.com/api/v2/device/device-id"
+    )
+  })
+
+  it("rejects a subnet already advertised by another Tailnet device", async () => {
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = String(input)
+        if (url.endsWith("/oauth/token")) {
+          return Response.json({
+            access_token: "access-token",
+            scope: requiredTailscaleOAuthScopes.join(" "),
+          })
+        }
+        if (url.includes("/tailnet/-/devices")) {
+          return Response.json({
+            devices: [
+              {
+                addresses: ["100.64.12.96"],
+                hostname: "kiln-network-node",
+                id: "target-device",
+              },
+              {
+                hostname: "existing-router",
+                id: "existing-device",
+              },
+            ],
+          })
+        }
+        if (url.endsWith("/device/target-device/routes")) {
+          return Response.json({
+            advertisedRoutes: ["10.187.39.0/24"],
+            enabledRoutes: [],
+          })
+        }
+        if (url.endsWith("/device/existing-device/routes")) {
+          return Response.json({
+            advertisedRoutes: ["10.187.39.0/24"],
+            enabledRoutes: ["10.187.39.0/24"],
+          })
+        }
+        return Response.json({})
+      }
+    )
+    vi.stubGlobal("fetch", fetchMock)
+
+    await expect(
+      Effect.runPromise(
+        syncTailscaleControlPlaneEffect(
+          {
+            clientId: "oauth-client",
+            clientSecret: "oauth-client-secret",
+            scopes: [...requiredTailscaleOAuthScopes],
+            tags: ["tag:kiln"],
+          },
+          {
+            deployments: [
+              {
+                hostname: "kiln-network-node",
+                status: { ipv4Address: "100.64.12.96" },
+                subnet: "10.187.39.0/24",
+              },
+            ],
+            domain: "test",
+            id: "a".repeat(40),
+            name: "Test network",
+          }
+        )
+      )
+    ).rejects.toThrow("already advertised by existing-router")
   })
 })
