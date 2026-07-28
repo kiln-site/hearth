@@ -5,6 +5,7 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query"
+import { Link } from "@tanstack/react-router"
 import {
   KeyRound,
   LoaderCircle,
@@ -12,6 +13,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Settings2,
   Unplug,
 } from "lucide-react"
 
@@ -52,6 +54,13 @@ import {
   tailscaleServerKey,
 } from "@/lib/tailscale-selectors"
 import type { TailscaleServer } from "@/lib/tailscale-selectors"
+import {
+  showTailscaleOperationError,
+  showTailscaleOperationProgress,
+  showTailscaleOperationSuccess,
+  tailscaleOperationToastId,
+  type TailscaleOperation,
+} from "@/lib/tailscale-operation-toasts"
 import {
   saveTailscaleStack,
   type TailscaleStackOverview,
@@ -148,16 +157,24 @@ export function GameServerTailscaleSection({
           <Network className="size-4 shrink-0 text-primary" />
           <h2 className="truncate text-sm font-semibold">Tailscale networks</h2>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          disabled={available.length === 0 || save.isPending}
-          onClick={() => setJoining(true)}
-        >
-          <Plus />
-          Join network
-        </Button>
+        <div className="flex items-center gap-1.5">
+          <Button asChild size="sm" variant="ghost">
+            <Link to="/infra/tailscale">
+              <Settings2 />
+              Manage
+            </Link>
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={save.isPending}
+            onClick={() => setJoining(true)}
+          >
+            <Plus />
+            Join network
+          </Button>
+        </div>
       </div>
       {memberships.length ? (
         <div className="divide-y divide-border/65">
@@ -568,9 +585,13 @@ const JoinNetworkDialog = React.memo(function JoinNetworkDialog({
             <span className="mb-2 block text-xs font-medium">Network</span>
             <select
               value={selected?.id ?? ""}
+              disabled={networks.length === 0}
               onChange={(event) => setSelectedId(event.target.value)}
               className="flex h-9 w-full border border-input bg-background px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring"
             >
+              {networks.length === 0 ? (
+                <option value="">No networks available</option>
+              ) : null}
               {networks.map((network) => (
                 <option key={network.id} value={network.id}>
                   {network.name}
@@ -595,7 +616,7 @@ const JoinNetworkDialog = React.memo(function JoinNetworkDialog({
             <label className="block">
               <span className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                 <KeyRound className="size-3.5" />
-                Auth key
+                Auth key for this node
               </span>
               <Input
                 type="password"
@@ -608,34 +629,46 @@ const JoinNetworkDialog = React.memo(function JoinNetworkDialog({
             </label>
           ) : null}
         </div>
-        <DialogFooter>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => onOpenChange(false)}
-          >
-            Cancel
+        <DialogFooter className="sm:justify-between">
+          <Button asChild variant="outline">
+            <Link to="/infra/tailscale" search={{ create: true }}>
+              <Plus />
+              Create network
+            </Link>
           </Button>
-          <Button
-            type="button"
-            disabled={
-              pending ||
-              !selected ||
-              !hostname.trim() ||
-              (needsAuth && !authKey.trim())
-            }
-            onClick={() => {
-              if (!selected) return
-              void onJoin(
-                selected,
-                hostname.trim(),
-                needsAuth ? authKey.trim() : undefined
-              ).catch(() => undefined)
-            }}
-          >
-            {pending ? <LoaderCircle className="animate-spin" /> : <Network />}
-            Join
-          </Button>
+          <div className="flex flex-col-reverse gap-2 sm:flex-row">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => onOpenChange(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={
+                pending ||
+                !selected ||
+                !hostname.trim() ||
+                (needsAuth && !authKey.trim())
+              }
+              onClick={() => {
+                if (!selected) return
+                void onJoin(
+                  selected,
+                  hostname.trim(),
+                  needsAuth ? authKey.trim() : undefined
+                ).catch(() => undefined)
+              }}
+            >
+              {pending ? (
+                <LoaderCircle className="animate-spin" />
+              ) : (
+                <Network />
+              )}
+              Join
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -715,13 +748,69 @@ function useStackMembershipMutation() {
       saveTailscaleStack({
         data: stackSaveInput(stack, bindings, authKey),
       }),
+    onMutate: ({ bindings, stack }) => {
+      const toast = membershipOperationToast(stack, bindings)
+      showTailscaleOperationProgress(toast)
+      return toast
+    },
     onSuccess: async (next) => {
       queryClient.setQueryData(queryKeys.tailscaleStacks, next)
       await queryClient.invalidateQueries({
         queryKey: queryKeys.relay.snapshot,
       })
     },
+    onError: (cause, _input, toast) => {
+      if (toast) showTailscaleOperationError(toast, cause)
+    },
+    onSettled: (_data, error, _input, toast) => {
+      if (!error && toast) showTailscaleOperationSuccess(toast)
+    },
   })
+}
+
+function membershipOperationToast(
+  stack: TailscaleStackOverview,
+  bindings: Array<StackBinding>
+) {
+  const currentBindingKeys = new Set(stack.bindings.map(stackBindingKey))
+  const nextBindingKeys = new Set(bindings.map(stackBindingKey))
+  const added = bindings.some(
+    (binding) => !currentBindingKeys.has(stackBindingKey(binding))
+  )
+  const removed = stack.bindings.some(
+    (binding) => !nextBindingKeys.has(stackBindingKey(binding))
+  )
+  const deployedRelayIds = new Set(
+    stack.deployments.map(({ relayId }) => relayId)
+  )
+  const newRelayIds = new Set<string>()
+  for (const { relayId } of bindings) {
+    if (!deployedRelayIds.has(relayId)) {
+      newRelayIds.add(relayId)
+    }
+  }
+  const operation: TailscaleOperation =
+    newRelayIds.size > 0
+      ? "install"
+      : added
+        ? "connect"
+        : removed
+          ? "disconnect"
+          : "update"
+
+  return {
+    id: tailscaleOperationToastId(stack.id),
+    networkName: stack.name,
+    nodeCount: operation === "install" ? newRelayIds.size : undefined,
+    operation,
+  }
+}
+
+function stackBindingKey({
+  instanceId,
+  relayId,
+}: Pick<StackBinding, "instanceId" | "relayId">): string {
+  return `${relayId}:${instanceId}`
 }
 
 function stackSaveInput(

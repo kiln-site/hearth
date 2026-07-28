@@ -60,6 +60,12 @@ import {
 } from "@/lib/tailscale-selectors"
 import type { TailscaleServer } from "@/lib/tailscale-selectors"
 import {
+  showTailscaleOperationError,
+  showTailscaleOperationProgress,
+  showTailscaleOperationSuccess,
+  tailscaleOperationToastId,
+} from "@/lib/tailscale-operation-toasts"
+import {
   removeTailscaleStack,
   saveTailscaleStack,
   type TailscaleStackOverview,
@@ -69,9 +75,14 @@ type SaveStackInput = Parameters<typeof saveTailscaleStack>[0]["data"]
 
 const emptyServers: Array<TailscaleServer> = []
 
-export const TailscalePage = React.memo(function TailscalePage() {
+export const TailscalePage = React.memo(function TailscalePage({
+  createOpen,
+  onCreateOpenChange,
+}: {
+  createOpen: boolean
+  onCreateOpenChange: (open: boolean) => void
+}) {
   const [searchStore] = React.useState(createWorkspaceTableSearchStore)
-  const [createOpen, setCreateOpen] = React.useState(false)
   const [editingId, setEditingId] = React.useState<string | null>(null)
   const [removingId, setRemovingId] = React.useState<string | null>(null)
   const { data: stacks } = useSuspenseQuery(tailscaleStacksQueryOptions())
@@ -83,17 +94,20 @@ export const TailscalePage = React.memo(function TailscalePage() {
       <section className="overflow-hidden rounded-xl border bg-card/45 [contain:paint]">
         <TailscaleToolbar
           searchStore={searchStore}
-          onAdd={() => setCreateOpen(true)}
+          onAdd={() => onCreateOpenChange(true)}
         />
         <TailscaleTable
           searchStore={searchStore}
           stacks={stacks}
-          onAdd={() => setCreateOpen(true)}
+          onAdd={() => onCreateOpenChange(true)}
           onEdit={setEditingId}
         />
       </section>
 
-      <CreateNetworkDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <CreateNetworkDialog
+        open={createOpen}
+        onOpenChange={onCreateOpenChange}
+      />
       {editingStack ? (
         <EditNetworkDialog
           key={editingStack.id}
@@ -624,12 +638,28 @@ const CreateNetworkForm = React.memo(function CreateNetworkForm({
   }, [search, servers])
   const install = useMutation({
     mutationFn: (input: SaveStackInput) => saveTailscaleStack({ data: input }),
+    onMutate: (input) => {
+      const toast = {
+        id: tailscaleOperationToastId(input.id ?? id),
+        networkName: input.name,
+        nodeCount: new Set(input.bindings.map(({ relayId }) => relayId)).size,
+        operation: "install" as const,
+      }
+      showTailscaleOperationProgress(toast)
+      return toast
+    },
     onSuccess: async (next) => {
       queryClient.setQueryData(queryKeys.tailscaleStacks, next)
       await queryClient.invalidateQueries({
         queryKey: queryKeys.relay.snapshot,
       })
       onDone()
+    },
+    onError: (cause, _input, toast) => {
+      if (toast) showTailscaleOperationError(toast, cause)
+    },
+    onSettled: (_data, error, _input, toast) => {
+      if (!error && toast) showTailscaleOperationSuccess(toast)
     },
   })
   const toggle = React.useCallback((server: TailscaleServer) => {
