@@ -400,20 +400,11 @@ export class LifecycleDriver {
     }
 
     const subnet = existing?.subnet ?? tailscaleStackSubnet(input.id, this.#config.nodeId)
-    const previousByInstance = new Map(
-      existing?.bindings.map((binding) => [binding.instanceId, binding]) ?? []
+    const bindings = assignTailscaleBindingAddresses(
+      subnet,
+      existing?.bindings ?? [],
+      input.bindings
     )
-    const reserved = new Set(
-      (existing?.bindings ?? []).map((binding) => binding.address)
-    )
-    const bindings = input.bindings.map((binding) => {
-      const previous = previousByInstance.get(binding.instanceId)
-      return {
-        ...binding,
-        address:
-          previous?.address ?? allocateTailscaleBindingAddress(subnet, reserved),
-      }
-    })
     const config = relayTailscaleStackConfigSchema.parse({
       bindings,
       domain: input.domain,
@@ -3202,6 +3193,37 @@ export function allocateTailscaleBindingAddress(
     return address
   }
   throw new Error(`Tailscale subnet ${subnet} has no available server addresses`)
+}
+
+export function assignTailscaleBindingAddresses(
+  subnet: string,
+  existing: ReadonlyArray<{
+    address: string
+    hostname: string
+    instanceId: string
+  }>,
+  desired: ReadonlyArray<{ hostname: string; instanceId: string }>
+): Array<{ address: string; hostname: string; instanceId: string }> {
+  const desiredInstanceIds = new Set(
+    desired.map(({ instanceId }) => instanceId)
+  )
+  const previousByInstance = new Map(
+    existing.map((binding) => [binding.instanceId, binding])
+  )
+  const reserved = new Set(
+    existing
+      .filter(({ instanceId }) => desiredInstanceIds.has(instanceId))
+      .map(({ address }) => address)
+  )
+
+  return desired.map((binding) => {
+    const previous = previousByInstance.get(binding.instanceId)
+    return {
+      ...binding,
+      address:
+        previous?.address ?? allocateTailscaleBindingAddress(subnet, reserved),
+    }
+  })
 }
 
 export function tailscaleStackCoreDnsConfiguration(

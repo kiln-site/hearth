@@ -476,20 +476,26 @@ export class DockerDriver {
     const boundedLimit = Math.min(Math.max(limit, 100), 5_000)
     const startedAt = consoleStartedAt(discovered.container)
     const results = await Promise.all(
-      targets.map(async (target) => ({
-        target,
-        result: await command(
-          "docker",
-          [
-            "logs",
-            "--timestamps",
-            "--tail",
-            String(boundedLimit),
-            target.container.Id,
-          ],
-          { timeout: 15_000 }
-        ),
-      }))
+      targets.map(async (target) => {
+        const targetSince = dockerLogSinceArguments(
+          target.container.State.StartedAt
+        )
+        return {
+          target,
+          result: await command(
+            "docker",
+            [
+              "logs",
+              "--timestamps",
+              ...targetSince,
+              "--tail",
+              String(boundedLimit),
+              target.container.Id,
+            ],
+            { timeout: 15_000 }
+          ),
+        }
+      })
     )
     const rawLines = results
       .flatMap(({ result, target }) =>
@@ -522,17 +528,22 @@ export class DockerDriver {
     const targets = await this.#consoleTargets(instance, discovered)
     const startedAt = consoleStartedAt(discovered.container)
     const results = await Promise.all(
-      targets.map(async (target) => ({
-        target,
-        result: await command(
-          "docker",
-          ["logs", "--timestamps", target.container.Id],
-          {
-            maxBuffer: MAX_SHARED_CONSOLE_BYTES + 1024,
-            timeout: 30_000,
-          }
-        ),
-      }))
+      targets.map(async (target) => {
+        const targetSince = dockerLogSinceArguments(
+          target.container.State.StartedAt
+        )
+        return {
+          target,
+          result: await command(
+            "docker",
+            ["logs", "--timestamps", ...targetSince, target.container.Id],
+            {
+              maxBuffer: MAX_SHARED_CONSOLE_BYTES + 1024,
+              timeout: 30_000,
+            }
+          ),
+        }
+      })
     )
     const lines = results
       .flatMap(({ result, target }) =>
@@ -600,12 +611,16 @@ export class DockerDriver {
       let stdoutBuffer = ""
       let stderrBuffer = ""
       let settled = false
+      const targetSince = dockerLogSinceArguments(
+        target.container.State.StartedAt
+      )
       const child = spawn(
         "docker",
         [
           "logs",
           "--follow",
           "--timestamps",
+          ...targetSince,
           "--tail",
           String(Math.ceil(boundedLimit / targets.length)),
           target.container.Id,
@@ -1897,6 +1912,13 @@ function consoleStartedAt(container: DockerInspect): string | null {
   return Number.isFinite(timestamp) && timestamp > 0
     ? container.State.StartedAt
     : null
+}
+
+export function dockerLogSinceArguments(startedAt: string): Array<string> {
+  const timestamp = Date.parse(startedAt)
+  return Number.isFinite(timestamp) && timestamp > 0
+    ? ["--since", startedAt]
+    : []
 }
 
 function parseConsoleCompletion(

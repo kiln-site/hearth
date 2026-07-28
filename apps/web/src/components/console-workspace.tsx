@@ -80,6 +80,7 @@ import {
 } from "@/lib/relay-selectors"
 import { useInstanceRelayConnected } from "@/components/instance-workspace-context"
 import { uploadConsoleLogToMclogs } from "@/server/relay"
+import type { TailscaleStackOverview } from "@/server/tailscale"
 
 const consoleTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
@@ -87,6 +88,7 @@ const consoleTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   second: "2-digit",
   hour12: false,
 })
+const emptyTailscaleStacks: Array<TailscaleStackOverview> = []
 
 interface CommandCompletions {
   cursor: number
@@ -228,10 +230,11 @@ function TailscaleConsoleStreamController({
   instanceId: string
   streamStore: ConsoleAggregateStreamStore
 }) {
-  const { data: stacks = [] } = useQuery({
+  const { data } = useQuery({
     ...tailscaleStacksQueryOptions(),
     notifyOnChangeProps: ["data"],
   })
+  const stacks = data?.stacks ?? emptyTailscaleStacks
   const stack = stacks.find((candidate) => candidate.id === instanceId)
 
   return stack?.deployments.map((deployment) => (
@@ -581,10 +584,11 @@ function TailscaleConsoleFilterMenus({
   instanceId: string
   uiStore: ConsoleUiStore
 }) {
-  const { data: stacks = [] } = useQuery({
+  const { data } = useQuery({
     ...tailscaleStacksQueryOptions(),
     notifyOnChangeProps: ["data"],
   })
+  const stacks = data?.stacks ?? emptyTailscaleStacks
   const relays = React.useMemo(() => {
     const stack = stacks.find((candidate) => candidate.id === instanceId)
     return (

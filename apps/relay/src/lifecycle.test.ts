@@ -14,6 +14,7 @@ import {
   recoveryRouteLabels,
   routeLabelsRequireRestart,
   allocateTailscaleBindingAddress,
+  assignTailscaleBindingAddresses,
   tailscaleStackCoreDnsConfiguration,
   tailscaleStackServiceAddress,
   tailscaleStackSubnet,
@@ -197,6 +198,63 @@ describe("Tailscale Brick networking", () => {
     expect(
       allocateTailscaleBindingAddress("10.165.55.0/24", reserved)
     ).toBe("10.165.55.12")
+  })
+
+  it("reclaims removed addresses while replacing a full subnet in one apply", () => {
+    const existing = Array.from({ length: 245 }, (_, index) => ({
+      address: `10.165.55.${index + 10}`,
+      hostname: `old-${index}`,
+      instanceId: `old-${index}`,
+    }))
+    const desired = Array.from({ length: 245 }, (_, index) => ({
+      hostname: `new-${index}`,
+      instanceId: `new-${index}`,
+    }))
+
+    const assigned = assignTailscaleBindingAddresses(
+      "10.165.55.0/24",
+      existing,
+      desired
+    )
+
+    expect(assigned).toHaveLength(245)
+    expect(assigned[0]?.address).toBe("10.165.55.10")
+    expect(assigned.at(-1)?.address).toBe("10.165.55.254")
+  })
+
+  it("keeps retained addresses reserved while reusing removed addresses", () => {
+    const assigned = assignTailscaleBindingAddresses(
+      "10.165.55.0/24",
+      [
+        {
+          address: "10.165.55.10",
+          hostname: "removed",
+          instanceId: "removed",
+        },
+        {
+          address: "10.165.55.11",
+          hostname: "retained",
+          instanceId: "retained",
+        },
+      ],
+      [
+        { hostname: "replacement", instanceId: "replacement" },
+        { hostname: "retained-new-name", instanceId: "retained" },
+      ]
+    )
+
+    expect(assigned).toEqual([
+      {
+        address: "10.165.55.10",
+        hostname: "replacement",
+        instanceId: "replacement",
+      },
+      {
+        address: "10.165.55.11",
+        hostname: "retained-new-name",
+        instanceId: "retained",
+      },
+    ])
   })
 
   it("renders deterministic cross-node DNS records", () => {

@@ -15,13 +15,23 @@ import {
 } from "@workspace/contracts"
 import { z } from "zod"
 
+import {
+  loadTailscaleNetworkDefinitionsEffect,
+  removeTailscaleNetworkDefinitionEffect,
+  saveTailscaleNetworkDefinitionEffect,
+  type TailscaleNetworkDefinition,
+} from "@/effect/tailscale-networks"
+import { runAppEffect } from "@/effect/runtime"
 import { isPlatformAdmin } from "@/lib/access-control"
 import { invalidateRelayCache, relayCachePolicy } from "@/lib/relay-client"
 import { relayRpc } from "@/lib/relay-connection"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import { listPersistedRelays } from "@/lib/relay-registry"
 import { requireAuthenticatedUser } from "@/server/auth"
-import { runAppEffect } from "@/effect/runtime"
+import {
+  applyTailscaleDeploymentPlan,
+  type DesiredTailscaleDeployment,
+} from "@/server/tailscale-orchestration"
 import type { RelaySnapshot, RelayTailscaleStack } from "@workspace/contracts"
 
 const stackBindingInputSchema = z.strictObject({
@@ -59,6 +69,15 @@ export interface TailscaleStackOverview {
   domain: string
   id: string
   name: string
+}
+
+export interface TailscaleStacksResult {
+  stacks: Array<TailscaleStackOverview>
+  unavailableRelays: Array<{
+    id: string
+    message: string
+    name: string
+  }>
 }
 
 export const getTailscaleStacks = createServerFn({ method: "GET" }).handler(
@@ -99,6 +118,7 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
     }
 
     const currentDeploymentsPromise = loadTailscaleDeployments(relays)
+    const definitionsPromise = loadTailscaleNetworkDefinitions()
     const snapshots = new Map<string, RelaySnapshot>()
     await Promise.all(
       [...grouped.keys()].map(async (relayId) => {
@@ -123,115 +143,113 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
       }
     }
 
-    const current = await currentDeploymentsPromise
+    const currentResult = await currentDeploymentsPromise
+    requireCompleteTailscaleDeploymentList(currentResult.unavailableRelays)
+    const current = currentResult.deployments
+    const definitions = await definitionsPromise
     const currentForStack = current.filter((deployment) => deployment.id === id)
+    const definition = definitions.find((candidate) => candidate.id === id)
+    const nextDefinition = {
+      domain: data.domain,
+      id,
+      name: data.name,
+    }
     if (grouped.size === 0) {
-      const [anchor, ...removed] = currentForStack
-      if (!anchor) {
+      if (!definition && currentForStack.length === 0) {
         throw new Error("Select at least one server to create this network")
       }
-      const relay = relayById.get(anchor.relayId)
-      if (!relay) throw new Error("The network's node is unavailable")
-      relayTailscaleStackSchema.parse(
-        await relayRpc(
-          relay,
-          "relay.tailscale.stack.apply",
-          {
-            bindings: [],
-            domain: data.domain,
-            hostname: deploymentHostname(data.name, relay.name, relay.id),
-            id,
-            name: data.name,
-          },
-          240_000
-        )
+      await saveTailscaleNetworkDefinition(nextDefinition)
+      await removeDeployments(currentForStack, relayById)
+      await invalidateRelaySnapshots(
+        currentForStack.map(({ relayId }) => relayId)
       )
-      const synchronized = relayTailscaleStackSchema.parse(
-        await relayRpc(
-          relay,
-          "relay.tailscale.stack.dns",
-          { id, records: [] },
-          60_000
-        )
-      )
-      await removeDeployments(removed, relayById)
-      await invalidateRelaySnapshots([
-        anchor.relayId,
-        ...removed.map(({ relayId }) => relayId),
-      ])
-      return groupTailscaleDeployments([
-        ...current.filter((deployment) => deployment.id !== id),
-        {
-          ...synchronized,
-          relayId: anchor.relayId,
-          relayName: relay.name,
-        },
-      ])
+      return {
+        stacks: groupTailscaleDeployments(
+          current.filter((deployment) => deployment.id !== id),
+          replaceTailscaleNetworkDefinition(definitions, nextDefinition)
+        ),
+        unavailableRelays: [],
+      }
     }
 
-    const applied = await Promise.all(
-      [...grouped.entries()].map(async ([relayId, bindings]) => {
-        const relay = relayById.get(relayId)!
-        const stack = relayTailscaleStackSchema.parse(
-          await relayRpc(
-            relay,
-            "relay.tailscale.stack.apply",
-            {
-              authKey: data.authKey,
-              bindings: bindings.map(({ hostname, instanceId }) => ({
-                hostname,
-                instanceId,
-              })),
-              domain: data.domain,
-              hostname: deploymentHostname(data.name, relay.name, relay.id),
-              id,
-              name: data.name,
-            },
-            240_000
-          )
-        )
-        return { ...stack, relayId, relayName: relay.name }
-      })
-    )
-
-    const records = applied.flatMap((deployment) =>
-      deployment.bindings.map(({ address, hostname }) => ({
-        address,
-        hostname,
-      }))
-    )
-    const synchronized = await Promise.all(
-      applied.map(async (deployment) => {
-        const relay = relayById.get(deployment.relayId)!
-        const stack = relayTailscaleStackSchema.parse(
-          await relayRpc(
-            relay,
-            "relay.tailscale.stack.dns",
-            { id, records },
-            60_000
-          )
-        )
+    const desired = [...grouped.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map<DesiredTailscaleDeployment>(([relayId, bindings]) => {
+        const relay = relayById.get(relayId)
+        if (!relay) throw new Error("A selected server's node is unavailable")
         return {
-          ...stack,
-          relayId: deployment.relayId,
-          relayName: deployment.relayName,
+          bindings: bindings.map(({ hostname, instanceId }) => ({
+            hostname,
+            instanceId,
+          })),
+          hostname: deploymentHostname(data.name, relay.name, relay.id),
+          relayId,
+          relayName: relay.name,
         }
       })
-    )
+    const synchronized = await applyTailscaleDeploymentPlan({
+      authKey: data.authKey,
+      current: currentForStack,
+      desired,
+      domain: data.domain,
+      id,
+      name: data.name,
+      operations: {
+        apply: async (target, input) => {
+          const relay = relayById.get(target.relayId)
+          if (!relay) throw new Error("The network's node is unavailable")
+          const stack = relayTailscaleStackSchema.parse(
+            await relayRpc(relay, "relay.tailscale.stack.apply", input, 240_000)
+          )
+          return {
+            ...stack,
+            relayId: target.relayId,
+            relayName: target.relayName,
+          }
+        },
+        remove: async (deployment) => {
+          await removeDeployment(deployment, relayById)
+        },
+        syncDns: async (deployment, records) => {
+          const relay = relayById.get(deployment.relayId)
+          if (!relay) throw new Error("The network's node is unavailable")
+          const stack = relayTailscaleStackSchema.parse(
+            await relayRpc(
+              relay,
+              "relay.tailscale.stack.dns",
+              { id, records },
+              60_000
+            )
+          )
+          return {
+            ...stack,
+            relayId: deployment.relayId,
+            relayName: deployment.relayName,
+          }
+        },
+      },
+    })
 
     const desiredRelayIds = new Set(grouped.keys())
     const removed = currentForStack.filter(
       ({ relayId }) => !desiredRelayIds.has(relayId)
     )
     await removeDeployments(removed, relayById)
+    await saveTailscaleNetworkDefinition(nextDefinition)
     await invalidateRelaySnapshots([
       ...desiredRelayIds,
       ...removed.map(({ relayId }) => relayId),
     ])
-    return groupTailscaleDeployments([
-      ...current.filter((deployment) => deployment.id !== id),
-      ...synchronized,
-    ])
+    return {
+      stacks: groupTailscaleDeployments(
+        [
+          ...current.filter((deployment) => deployment.id !== id),
+          ...synchronized,
+        ],
+        replaceTailscaleNetworkDefinition(definitions, nextDefinition)
+      ),
+      unavailableRelays: [],
+    }
   })
 
 export const removeTailscaleStack = createServerFn({ method: "POST" })
@@ -242,10 +260,13 @@ export const removeTailscaleStack = createServerFn({ method: "POST" })
       (relay) => relay.enabled
     )
     const relayById = new Map(relays.map((relay) => [relay.id, relay]))
-    const deployments = (await loadTailscaleDeployments(relays)).filter(
+    const current = await loadTailscaleDeployments(relays)
+    requireCompleteTailscaleDeploymentList(current.unavailableRelays)
+    const deployments = current.deployments.filter(
       (deployment) => deployment.id === data.id
     )
     await removeDeployments(deployments, relayById)
+    await removeTailscaleNetworkDefinition(data.id)
     await invalidateRelaySnapshots(deployments.map(({ relayId }) => relayId))
     return { removed: true }
   })
@@ -257,16 +278,30 @@ async function requireTailscaleAdministrator() {
   }
 }
 
-async function loadTailscaleStacks(): Promise<Array<TailscaleStackOverview>> {
+async function loadTailscaleStacks(): Promise<TailscaleStacksResult> {
   const relays = (await listPersistedRelays()).filter((relay) => relay.enabled)
-  const deployments = await loadTailscaleDeployments(relays)
-  return groupTailscaleDeployments(deployments)
+  const [definitions, result] = await Promise.all([
+    loadTailscaleNetworkDefinitions(),
+    loadTailscaleDeployments(relays),
+  ])
+  return {
+    stacks: groupTailscaleDeployments(result.deployments, definitions),
+    unavailableRelays: result.unavailableRelays,
+  }
 }
 
 function groupTailscaleDeployments(
-  deployments: ReadonlyArray<TailscaleDeployment>
+  deployments: ReadonlyArray<TailscaleDeployment>,
+  definitions: ReadonlyArray<TailscaleNetworkDefinition>
 ): Array<TailscaleStackOverview> {
   const grouped = new Map<string, TailscaleStackOverview>()
+  for (const definition of definitions) {
+    grouped.set(definition.id, {
+      ...definition,
+      bindings: [],
+      deployments: [],
+    })
+  }
   for (const deployment of deployments) {
     const stack = grouped.get(deployment.id) ?? {
       bindings: [],
@@ -292,22 +327,45 @@ function groupTailscaleDeployments(
 
 async function loadTailscaleDeployments(
   relays: ReadonlyArray<PersistedRelay>
-): Promise<Array<TailscaleDeployment>> {
-  const settled = await Promise.allSettled(
+): Promise<{
+  deployments: Array<TailscaleDeployment>
+  unavailableRelays: TailscaleStacksResult["unavailableRelays"]
+}> {
+  const results = await Promise.all(
     relays.map(async (relay) => {
-      const stacks = relayTailscaleStacksSchema.parse(
-        await relayRpc(relay, "relay.tailscale.stack.list", {}, 5_000)
-      )
-      return stacks.map((stack) => ({
-        ...stack,
-        relayId: relay.id,
-        relayName: relay.name,
-      }))
+      try {
+        const stacks = relayTailscaleStacksSchema.parse(
+          await relayRpc(relay, "relay.tailscale.stack.list", {}, 5_000)
+        )
+        return {
+          deployments: stacks.map((stack) => ({
+            ...stack,
+            relayId: relay.id,
+            relayName: relay.name,
+          })),
+          unavailableRelay: null,
+        }
+      } catch (cause) {
+        return {
+          deployments: [],
+          unavailableRelay: {
+            id: relay.id,
+            message:
+              cause instanceof Error
+                ? cause.message
+                : "The Relay did not return its Tailscale deployments",
+            name: relay.name,
+          },
+        }
+      }
     })
   )
-  return settled.flatMap((result) =>
-    result.status === "fulfilled" ? result.value : []
-  )
+  return {
+    deployments: results.flatMap((result) => result.deployments),
+    unavailableRelays: results.flatMap((result) =>
+      result.unavailableRelay ? [result.unavailableRelay] : []
+    ),
+  }
 }
 
 async function removeDeployments(
@@ -315,11 +373,21 @@ async function removeDeployments(
   relayById: ReadonlyMap<string, PersistedRelay>
 ): Promise<void> {
   await Promise.all(
-    deployments.map(({ id, relayId }) => {
-      const relay = relayById.get(relayId)
-      if (!relay) return Promise.resolve()
-      return relayRpc(relay, "relay.tailscale.stack.remove", { id }, 120_000)
-    })
+    deployments.map((deployment) => removeDeployment(deployment, relayById))
+  )
+}
+
+async function removeDeployment(
+  deployment: Pick<TailscaleDeployment, "id" | "relayId">,
+  relayById: ReadonlyMap<string, PersistedRelay>
+): Promise<void> {
+  const relay = relayById.get(deployment.relayId)
+  if (!relay) throw new Error("The network's node is unavailable")
+  await relayRpc(
+    relay,
+    "relay.tailscale.stack.remove",
+    { id: deployment.id },
+    120_000
   )
 }
 
@@ -347,4 +415,47 @@ function deploymentHostname(
     .replace(/^-+|-+$/gu, "")
   const suffix = relayId.slice(0, 6).toLowerCase()
   return `${slug.slice(0, Math.max(1, 56 - suffix.length)).replace(/-+$/u, "")}-${suffix}`
+}
+
+function loadTailscaleNetworkDefinitions() {
+  return runAppEffect(
+    "tailscale.networks.load",
+    loadTailscaleNetworkDefinitionsEffect()
+  )
+}
+
+function saveTailscaleNetworkDefinition(
+  definition: TailscaleNetworkDefinition
+) {
+  return runAppEffect(
+    "tailscale.networks.save",
+    saveTailscaleNetworkDefinitionEffect(definition)
+  )
+}
+
+function removeTailscaleNetworkDefinition(id: string) {
+  return runAppEffect(
+    "tailscale.networks.remove",
+    removeTailscaleNetworkDefinitionEffect(id)
+  )
+}
+
+function replaceTailscaleNetworkDefinition(
+  definitions: ReadonlyArray<TailscaleNetworkDefinition>,
+  next: TailscaleNetworkDefinition
+): Array<TailscaleNetworkDefinition> {
+  return [
+    ...definitions.filter((definition) => definition.id !== next.id),
+    next,
+  ]
+}
+
+function requireCompleteTailscaleDeploymentList(
+  unavailableRelays: TailscaleStacksResult["unavailableRelays"]
+): void {
+  if (unavailableRelays.length === 0) return
+  const names = unavailableRelays.map(({ name }) => name).join(", ")
+  throw new Error(
+    `Tailscale networks cannot be changed until these Relays are available and updated: ${names}`
+  )
 }

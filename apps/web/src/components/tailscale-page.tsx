@@ -85,18 +85,31 @@ export const TailscalePage = React.memo(function TailscalePage({
   const [searchStore] = React.useState(createWorkspaceTableSearchStore)
   const [editingId, setEditingId] = React.useState<string | null>(null)
   const [removingId, setRemovingId] = React.useState<string | null>(null)
-  const { data: stacks } = useSuspenseQuery(tailscaleStacksQueryOptions())
+  const { data } = useSuspenseQuery(tailscaleStacksQueryOptions())
+  const { stacks, unavailableRelays } = data
   const editingStack = stacks.find((stack) => stack.id === editingId) ?? null
   const removingStack = stacks.find((stack) => stack.id === removingId) ?? null
 
   return (
     <div className="mx-auto w-full max-w-[90rem] px-3 pb-10 sm:px-5">
+      {unavailableRelays.length ? (
+        <div
+          className="mb-3 flex items-center gap-2 border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-xs text-amber-700 dark:text-amber-300"
+          role="alert"
+        >
+          <CircleAlert className="size-4 shrink-0" />
+          Changes are paused until these Relays are available and updated:{" "}
+          {unavailableRelays.map(({ name }) => name).join(", ")}
+        </div>
+      ) : null}
       <section className="overflow-hidden rounded-xl border bg-card/45 [contain:paint]">
         <TailscaleToolbar
+          changesBlocked={unavailableRelays.length > 0}
           searchStore={searchStore}
           onAdd={() => onCreateOpenChange(true)}
         />
         <TailscaleTable
+          changesBlocked={unavailableRelays.length > 0}
           searchStore={searchStore}
           stacks={stacks}
           onAdd={() => onCreateOpenChange(true)}
@@ -136,9 +149,11 @@ export const TailscalePage = React.memo(function TailscalePage({
 })
 
 const TailscaleToolbar = React.memo(function TailscaleToolbar({
+  changesBlocked,
   searchStore,
   onAdd,
 }: {
+  changesBlocked: boolean
   searchStore: WorkspaceTableSearchStore
   onAdd: () => void
 }) {
@@ -196,6 +211,7 @@ const TailscaleToolbar = React.memo(function TailscaleToolbar({
       <Button
         type="button"
         className={`${mobileSearchOpen ? "hidden sm:inline-flex" : ""} ml-auto`}
+        disabled={changesBlocked}
         onClick={onAdd}
       >
         <Plus />
@@ -260,11 +276,13 @@ const TailscaleSearchInput = React.memo(function TailscaleSearchInput({
 })
 
 const TailscaleTable = React.memo(function TailscaleTable({
+  changesBlocked,
   searchStore,
   stacks,
   onAdd,
   onEdit,
 }: {
+  changesBlocked: boolean
   searchStore: WorkspaceTableSearchStore
   stacks: Array<TailscaleStackOverview>
   onAdd: () => void
@@ -272,15 +290,23 @@ const TailscaleTable = React.memo(function TailscaleTable({
 }) {
   const renderRow = React.useCallback(
     (stack: TailscaleStackOverview) => (
-      <TailscaleTableRow stack={stack} onEdit={onEdit} />
+      <TailscaleTableRow
+        changesBlocked={changesBlocked}
+        stack={stack}
+        onEdit={onEdit}
+      />
     ),
-    [onEdit]
+    [changesBlocked, onEdit]
   )
   const renderEmpty = React.useCallback(
     (searchActive: boolean) => (
-      <EmptyTailscaleTable searchActive={searchActive} onAdd={onAdd} />
+      <EmptyTailscaleTable
+        changesBlocked={changesBlocked}
+        searchActive={searchActive}
+        onAdd={onAdd}
+      />
     ),
-    [onAdd]
+    [changesBlocked, onAdd]
   )
 
   return (
@@ -319,9 +345,11 @@ const TailscaleTableHead = React.memo(function TailscaleTableHead() {
 })
 
 const TailscaleTableRow = React.memo(function TailscaleTableRow({
+  changesBlocked,
   stack,
   onEdit,
 }: {
+  changesBlocked: boolean
   stack: TailscaleStackOverview
   onEdit: (id: string) => void
 }) {
@@ -372,6 +400,7 @@ const TailscaleTableRow = React.memo(function TailscaleTableRow({
                 size="icon-sm"
                 variant="ghost"
                 aria-label={`Edit ${stack.name}`}
+                disabled={changesBlocked}
                 onClick={() => onEdit(stack.id)}
               >
                 <Pencil />
@@ -410,9 +439,11 @@ const TailscaleTableRow = React.memo(function TailscaleTableRow({
 })
 
 function EmptyTailscaleTable({
+  changesBlocked,
   searchActive,
   onAdd,
 }: {
+  changesBlocked: boolean
   searchActive: boolean
   onAdd: () => void
 }) {
@@ -425,7 +456,13 @@ function EmptyTailscaleTable({
           : "No Tailscale networks"}
       </p>
       {!searchActive ? (
-        <Button type="button" size="sm" className="mt-4" onClick={onAdd}>
+        <Button
+          type="button"
+          size="sm"
+          className="mt-4"
+          disabled={changesBlocked}
+          onClick={onAdd}
+        >
           <Plus />
           Add Network
         </Button>

@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vite-plus/test"
 
-import { parseConsoleLine } from "./docker.js"
+import { dockerLogSinceArguments, parseConsoleLine } from "./docker.js"
 
 describe("Docker console parsing", () => {
+  it("limits every log target to its current container session", () => {
+    expect(dockerLogSinceArguments("2026-07-25T17:59:03.000000000Z")).toEqual([
+      "--since",
+      "2026-07-25T17:59:03.000000000Z",
+    ])
+    expect(dockerLogSinceArguments("0001-01-01T00:00:00Z")).toEqual([])
+  })
+
   it("retains safe ANSI styling while keeping searchable plain text", () => {
     expect(
       parseConsoleLine(
