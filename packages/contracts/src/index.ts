@@ -652,10 +652,13 @@ export const relayTailscaleStackSchema = z
 
 export const relayTailscaleStacksSchema = z.array(relayTailscaleStackSchema)
 
+export const relayNodeCapabilitySchema = z.enum(["tailscale-stacks"])
+
 export const relayNodeSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   version: z.string().min(1),
+  capabilities: z.array(relayNodeCapabilitySchema).default([]),
   canProvisionInstances: z.boolean().default(true),
   platform: z.string().min(1),
   arch: z.string().min(1),

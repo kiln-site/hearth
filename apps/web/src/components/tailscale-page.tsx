@@ -47,6 +47,7 @@ import {
   useWorkspaceTableSearchInput,
 } from "@/components/workspace-data-table"
 import type { WorkspaceTableSearchStore } from "@/components/workspace-data-table"
+import { TailscaleRelayUpdateHint } from "@/components/tailscale-relay-update-hint"
 import { relayInstanceRouteId } from "@/lib/relay-fleet"
 import {
   queryKeys,
@@ -86,30 +87,18 @@ export const TailscalePage = React.memo(function TailscalePage({
   const [editingId, setEditingId] = React.useState<string | null>(null)
   const [removingId, setRemovingId] = React.useState<string | null>(null)
   const { data } = useSuspenseQuery(tailscaleStacksQueryOptions())
-  const { stacks, unavailableRelays } = data
+  const { stacks } = data
   const editingStack = stacks.find((stack) => stack.id === editingId) ?? null
   const removingStack = stacks.find((stack) => stack.id === removingId) ?? null
 
   return (
     <div className="mx-auto w-full max-w-[90rem] px-3 pb-10 sm:px-5">
-      {unavailableRelays.length ? (
-        <div
-          className="mb-3 flex items-center gap-2 border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-xs text-amber-700 dark:text-amber-300"
-          role="alert"
-        >
-          <CircleAlert className="size-4 shrink-0" />
-          Changes are paused until these Relays are available and updated:{" "}
-          {unavailableRelays.map(({ name }) => name).join(", ")}
-        </div>
-      ) : null}
       <section className="overflow-hidden rounded-xl border bg-card/45 [contain:paint]">
         <TailscaleToolbar
-          changesBlocked={unavailableRelays.length > 0}
           searchStore={searchStore}
           onAdd={() => onCreateOpenChange(true)}
         />
         <TailscaleTable
-          changesBlocked={unavailableRelays.length > 0}
           searchStore={searchStore}
           stacks={stacks}
           onAdd={() => onCreateOpenChange(true)}
@@ -149,11 +138,9 @@ export const TailscalePage = React.memo(function TailscalePage({
 })
 
 const TailscaleToolbar = React.memo(function TailscaleToolbar({
-  changesBlocked,
   searchStore,
   onAdd,
 }: {
-  changesBlocked: boolean
   searchStore: WorkspaceTableSearchStore
   onAdd: () => void
 }) {
@@ -211,7 +198,6 @@ const TailscaleToolbar = React.memo(function TailscaleToolbar({
       <Button
         type="button"
         className={`${mobileSearchOpen ? "hidden sm:inline-flex" : ""} ml-auto`}
-        disabled={changesBlocked}
         onClick={onAdd}
       >
         <Plus />
@@ -276,13 +262,11 @@ const TailscaleSearchInput = React.memo(function TailscaleSearchInput({
 })
 
 const TailscaleTable = React.memo(function TailscaleTable({
-  changesBlocked,
   searchStore,
   stacks,
   onAdd,
   onEdit,
 }: {
-  changesBlocked: boolean
   searchStore: WorkspaceTableSearchStore
   stacks: Array<TailscaleStackOverview>
   onAdd: () => void
@@ -290,23 +274,18 @@ const TailscaleTable = React.memo(function TailscaleTable({
 }) {
   const renderRow = React.useCallback(
     (stack: TailscaleStackOverview) => (
-      <TailscaleTableRow
-        changesBlocked={changesBlocked}
-        stack={stack}
-        onEdit={onEdit}
-      />
+      <TailscaleTableRow stack={stack} onEdit={onEdit} />
     ),
-    [changesBlocked, onEdit]
+    [onEdit]
   )
   const renderEmpty = React.useCallback(
     (searchActive: boolean) => (
       <EmptyTailscaleTable
-        changesBlocked={changesBlocked}
         searchActive={searchActive}
         onAdd={onAdd}
       />
     ),
-    [changesBlocked, onAdd]
+    [onAdd]
   )
 
   return (
@@ -345,11 +324,9 @@ const TailscaleTableHead = React.memo(function TailscaleTableHead() {
 })
 
 const TailscaleTableRow = React.memo(function TailscaleTableRow({
-  changesBlocked,
   stack,
   onEdit,
 }: {
-  changesBlocked: boolean
   stack: TailscaleStackOverview
   onEdit: (id: string) => void
 }) {
@@ -400,7 +377,6 @@ const TailscaleTableRow = React.memo(function TailscaleTableRow({
                 size="icon-sm"
                 variant="ghost"
                 aria-label={`Edit ${stack.name}`}
-                disabled={changesBlocked}
                 onClick={() => onEdit(stack.id)}
               >
                 <Pencil />
@@ -439,11 +415,9 @@ const TailscaleTableRow = React.memo(function TailscaleTableRow({
 })
 
 function EmptyTailscaleTable({
-  changesBlocked,
   searchActive,
   onAdd,
 }: {
-  changesBlocked: boolean
   searchActive: boolean
   onAdd: () => void
 }) {
@@ -460,7 +434,6 @@ function EmptyTailscaleTable({
           type="button"
           size="sm"
           className="mt-4"
-          disabled={changesBlocked}
           onClick={onAdd}
         >
           <Plus />
@@ -673,6 +646,17 @@ const CreateNetworkForm = React.memo(function CreateNetworkForm({
         .includes(query)
     )
   }, [search, servers])
+  const supportedServerKeys = React.useMemo(
+    () =>
+      new Set(
+        servers.flatMap((server) =>
+          server.tailscaleSupported
+            ? [tailscaleServerKey(server.relayId, server.id)]
+            : []
+        )
+      ),
+    [servers]
+  )
   const install = useMutation({
     mutationFn: (input: SaveStackInput) => saveTailscaleStack({ data: input }),
     onMutate: (input) => {
@@ -704,7 +688,7 @@ const CreateNetworkForm = React.memo(function CreateNetworkForm({
     setBindings((current) => {
       const next = new Map(current)
       if (next.has(key)) next.delete(key)
-      else
+      else if (server.tailscaleSupported)
         next.set(key, {
           hostname: defaultTailscaleHostname(server),
           relayId: server.relayId,
@@ -730,6 +714,7 @@ const CreateNetworkForm = React.memo(function CreateNetworkForm({
     domain.trim() &&
     authKey.trim() &&
     bindings.size > 0 &&
+    [...bindings.keys()].every((key) => supportedServerKeys.has(key)) &&
     [...bindings.values()].every((binding) => binding.hostname.trim())
 
   return (
@@ -874,7 +859,9 @@ const CreateNetworkServerRow = React.memo(function CreateNetworkServerRow({
         "mb-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 rounded-lg border px-3 py-2.5 transition-colors",
         binding
           ? "border-primary/25 bg-primary/6"
-          : "border-transparent hover:bg-accent/35"
+          : server.tailscaleSupported
+            ? "border-transparent hover:bg-accent/35"
+            : "border-transparent opacity-60"
       )}
     >
       <button
@@ -882,6 +869,7 @@ const CreateNetworkServerRow = React.memo(function CreateNetworkServerRow({
         role="checkbox"
         aria-label={`${binding ? "Remove" : "Add"} ${server.name}`}
         aria-checked={Boolean(binding)}
+        disabled={!server.tailscaleSupported && !binding}
         onClick={() => onToggle(server)}
         className={cn(
           "mt-0.5 grid size-5 place-items-center rounded border",
@@ -893,18 +881,26 @@ const CreateNetworkServerRow = React.memo(function CreateNetworkServerRow({
         {binding ? <Check className="size-3.5" /> : null}
       </button>
       <div className="min-w-0">
-        <button
-          type="button"
-          className="block w-full text-left"
-          onClick={() => onToggle(server)}
-        >
-          <span className="block truncate text-sm font-medium">
-            {server.name}
+        <div className="flex min-w-0 items-start gap-1.5">
+          <button
+            type="button"
+            disabled={!server.tailscaleSupported && !binding}
+            className="block min-w-0 flex-1 text-left disabled:cursor-not-allowed"
+            onClick={() => onToggle(server)}
+          >
+            <span className="block truncate text-sm font-medium">
+              {server.name}
+            </span>
+            <span className="block truncate font-mono text-[10px] text-muted-foreground">
+              {server.shortId} · {server.relayName}
+            </span>
+          </button>
+          <span className="grid size-4 shrink-0 place-items-center">
+            {!server.tailscaleSupported ? (
+              <TailscaleRelayUpdateHint relayName={server.relayName} />
+            ) : null}
           </span>
-          <span className="font-mono text-[10px] text-muted-foreground">
-            {server.shortId} · {server.relayName}
-          </span>
-        </button>
+        </div>
         {binding ? (
           <div className="mt-2 flex">
             <Input

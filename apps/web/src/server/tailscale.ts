@@ -73,6 +73,11 @@ export interface TailscaleStackOverview {
 
 export interface TailscaleStacksResult {
   stacks: Array<TailscaleStackOverview>
+  unsupportedRelays: Array<{
+    id: string
+    message: string
+    name: string
+  }>
   unavailableRelays: Array<{
     id: string
     message: string
@@ -117,22 +122,30 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
       grouped.set(binding.relayId, relayBindings)
     }
 
-    const currentDeploymentsPromise = loadTailscaleDeployments(relays)
-    const definitionsPromise = loadTailscaleNetworkDefinitions()
-    const snapshots = new Map<string, RelaySnapshot>()
-    await Promise.all(
-      [...grouped.keys()].map(async (relayId) => {
-        const relay = relayById.get(relayId)!
-        const snapshot = relaySnapshotSchema.parse(
-          await relayRpc(relay, "relay.snapshot", {}, 30_000)
-        )
-        snapshots.set(relayId, snapshot)
-      })
-    )
+    const [currentResult, definitions] = await Promise.all([
+      loadTailscaleDeployments(relays),
+      loadTailscaleNetworkDefinitions(),
+    ])
+    const current = currentResult.deployments
+    const currentForStack = current.filter((deployment) => deployment.id === id)
+    const definition = definitions.find((candidate) => candidate.id === id)
+    if (definition || currentForStack.length > 0) {
+      requireCompleteTailscaleDeploymentList(currentResult.unavailableRelays)
+    }
     for (const binding of data.bindings) {
-      const instance = snapshots
-        .get(binding.relayId)
-        ?.instances.find((candidate) => candidate.id === binding.instanceId)
+      const snapshot = currentResult.snapshots.get(binding.relayId)
+      if (!snapshot) {
+        throw new Error("A selected server's node is unavailable")
+      }
+      if (!relaySupportsTailscaleStacks(snapshot)) {
+        const relay = relayById.get(binding.relayId)
+        throw new Error(
+          `${relay?.name ?? "This Relay"} must be updated before its servers can join a Tailscale network`
+        )
+      }
+      const instance = snapshot.instances.find(
+        (candidate) => candidate.id === binding.instanceId
+      )
       if (!instance || !instance.managedByRelay) {
         throw new Error(
           `Server ${binding.instanceId.slice(0, 8)} is unavailable`
@@ -143,12 +156,6 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
       }
     }
 
-    const currentResult = await currentDeploymentsPromise
-    requireCompleteTailscaleDeploymentList(currentResult.unavailableRelays)
-    const current = currentResult.deployments
-    const definitions = await definitionsPromise
-    const currentForStack = current.filter((deployment) => deployment.id === id)
-    const definition = definitions.find((candidate) => candidate.id === id)
     const nextDefinition = {
       domain: data.domain,
       id,
@@ -233,7 +240,8 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
         ],
         replaceTailscaleNetworkDefinition(definitions, nextDefinition)
       ),
-      unavailableRelays: [],
+      unavailableRelays: currentResult.unavailableRelays,
+      unsupportedRelays: currentResult.unsupportedRelays,
     }
   })
 
@@ -272,6 +280,7 @@ async function loadTailscaleStacks(): Promise<TailscaleStacksResult> {
   return {
     stacks: groupTailscaleDeployments(result.deployments, definitions),
     unavailableRelays: result.unavailableRelays,
+    unsupportedRelays: result.unsupportedRelays,
   }
 }
 
@@ -314,11 +323,29 @@ async function loadTailscaleDeployments(
   relays: ReadonlyArray<PersistedRelay>
 ): Promise<{
   deployments: Array<TailscaleDeployment>
+  snapshots: Map<string, RelaySnapshot>
+  unsupportedRelays: TailscaleStacksResult["unsupportedRelays"]
   unavailableRelays: TailscaleStacksResult["unavailableRelays"]
 }> {
   const results = await Promise.all(
     relays.map(async (relay) => {
       try {
+        const snapshot = relaySnapshotSchema.parse(
+          await relayRpc(relay, "relay.snapshot", {}, 5_000)
+        )
+        if (!relaySupportsTailscaleStacks(snapshot)) {
+          return {
+            deployments: [],
+            relayId: relay.id,
+            snapshot,
+            unavailableRelay: null,
+            unsupportedRelay: {
+              id: relay.id,
+              message: "Update this Relay to add its servers to Tailscale",
+              name: relay.name,
+            },
+          }
+        }
         const stacks = relayTailscaleStacksSchema.parse(
           await relayRpc(relay, "relay.tailscale.stack.list", {}, 5_000)
         )
@@ -328,11 +355,16 @@ async function loadTailscaleDeployments(
             relayId: relay.id,
             relayName: relay.name,
           })),
+          relayId: relay.id,
+          snapshot,
           unavailableRelay: null,
+          unsupportedRelay: null,
         }
       } catch (cause) {
         return {
           deployments: [],
+          relayId: relay.id,
+          snapshot: null,
           unavailableRelay: {
             id: relay.id,
             message:
@@ -341,12 +373,21 @@ async function loadTailscaleDeployments(
                 : "The Relay did not return its Tailscale deployments",
             name: relay.name,
           },
+          unsupportedRelay: null,
         }
       }
     })
   )
+  const snapshots = new Map<string, RelaySnapshot>()
+  for (const result of results) {
+    if (result.snapshot) snapshots.set(result.relayId, result.snapshot)
+  }
   return {
     deployments: results.flatMap((result) => result.deployments),
+    snapshots,
+    unsupportedRelays: results.flatMap((result) =>
+      result.unsupportedRelay ? [result.unsupportedRelay] : []
+    ),
     unavailableRelays: results.flatMap((result) =>
       result.unavailableRelay ? [result.unavailableRelay] : []
     ),
@@ -441,6 +482,10 @@ function requireCompleteTailscaleDeploymentList(
   if (unavailableRelays.length === 0) return
   const names = unavailableRelays.map(({ name }) => name).join(", ")
   throw new Error(
-    `Tailscale networks cannot be changed until these Relays are available and updated: ${names}`
+    `Tailscale networks cannot be changed while these Relays are unavailable: ${names}`
   )
+}
+
+function relaySupportsTailscaleStacks(snapshot: RelaySnapshot): boolean {
+  return snapshot.node.capabilities.includes("tailscale-stacks")
 }

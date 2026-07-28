@@ -42,6 +42,7 @@ import {
   useWorkspaceTableSearchInput,
 } from "@/components/workspace-data-table"
 import type { WorkspaceTableSearchStore } from "@/components/workspace-data-table"
+import { TailscaleRelayUpdateHint } from "@/components/tailscale-relay-update-hint"
 import {
   queryKeys,
   relaySnapshotQueryOptions,
@@ -64,29 +65,12 @@ import {
 import {
   saveTailscaleStack,
   type TailscaleStackOverview,
-  type TailscaleStacksResult,
 } from "@/server/tailscale"
 
 type StackBinding = TailscaleStackOverview["bindings"][number]
 type SaveStackInput = Parameters<typeof saveTailscaleStack>[0]["data"]
 
 const emptyServers: Array<TailscaleServer> = []
-
-function UnavailableRelaysAlert({
-  relays,
-}: {
-  relays: TailscaleStacksResult["unavailableRelays"]
-}) {
-  return (
-    <p
-      className="border-b border-amber-500/25 bg-amber-500/8 px-4 py-2 text-xs text-amber-700 dark:text-amber-300"
-      role="alert"
-    >
-      Changes are paused until these Relays are available and updated:{" "}
-      {relays.map(({ name }) => name).join(", ")}
-    </p>
-  )
-}
 
 export function TailscaleNetworkMembershipPage({
   stackId,
@@ -95,7 +79,7 @@ export function TailscaleNetworkMembershipPage({
 }) {
   const [searchStore] = React.useState(createWorkspaceTableSearchStore)
   const { data } = useSuspenseQuery(tailscaleStacksQueryOptions())
-  const { stacks, unavailableRelays } = data
+  const { stacks } = data
   const { data: servers = emptyServers, isPending: serversPending } = useQuery({
     ...relaySnapshotQueryOptions(),
     notifyOnChangeProps: ["data", "isPending"],
@@ -116,9 +100,6 @@ export function TailscaleNetworkMembershipPage({
     <main className="min-h-0 flex-1 overflow-y-auto bg-background/55 p-3 sm:p-5">
       <section className="mx-auto max-w-[90rem] overflow-hidden rounded-xl border bg-card/45 [contain:paint]">
         <MembershipToolbar searchStore={searchStore} stackName={stack.name} />
-        {unavailableRelays.length ? (
-          <UnavailableRelaysAlert relays={unavailableRelays} />
-        ) : null}
         {save.error ? (
           <p
             className="border-b border-destructive/25 bg-destructive/5 px-4 py-2 text-xs text-destructive"
@@ -128,7 +109,7 @@ export function TailscaleNetworkMembershipPage({
           </p>
         ) : null}
         <TailscaleMembershipTable
-          pending={save.isPending || unavailableRelays.length > 0}
+          pending={save.isPending}
           searchStore={searchStore}
           servers={servers}
           serversPending={serversPending}
@@ -148,8 +129,10 @@ export function GameServerTailscaleSection({
   server: InstanceWorkspaceInstance
 }) {
   const { data } = useSuspenseQuery(tailscaleStacksQueryOptions())
-  const { stacks, unavailableRelays } = data
-  const changesBlocked = unavailableRelays.length > 0
+  const { stacks, unsupportedRelays } = data
+  const relayUnsupported = unsupportedRelays.some(
+    ({ id }) => id === server.relayId
+  )
   const save = useStackMembershipMutation()
   const [joining, setJoining] = React.useState(false)
   const memberships = React.useMemo(
@@ -179,6 +162,11 @@ export function GameServerTailscaleSection({
         <div className="flex min-w-0 items-center gap-2.5">
           <Network className="size-4 shrink-0 text-primary" />
           <h2 className="truncate text-sm font-semibold">Tailscale networks</h2>
+          <span className="grid size-4 shrink-0 place-items-center">
+            {relayUnsupported ? (
+              <TailscaleRelayUpdateHint relayName={server.relayName} />
+            ) : null}
+          </span>
         </div>
         <div className="flex items-center gap-1.5">
           <Button asChild size="sm" variant="ghost">
@@ -191,7 +179,7 @@ export function GameServerTailscaleSection({
             type="button"
             size="sm"
             variant="outline"
-            disabled={save.isPending || changesBlocked}
+            disabled={save.isPending || relayUnsupported}
             onClick={() => setJoining(true)}
           >
             <Plus />
@@ -199,16 +187,13 @@ export function GameServerTailscaleSection({
           </Button>
         </div>
       </div>
-      {changesBlocked ? (
-        <UnavailableRelaysAlert relays={unavailableRelays} />
-      ) : null}
       {memberships.length ? (
         <div className="divide-y divide-border/65">
           {memberships.map(({ binding, stack }) => (
             <GameServerMembershipRow
               key={stack.id}
               binding={binding}
-              pending={save.isPending || changesBlocked}
+              pending={save.isPending}
               stack={stack}
               onLeave={() =>
                 save.mutateAsync({
@@ -240,7 +225,7 @@ export function GameServerTailscaleSection({
         <JoinNetworkDialog
           networks={available}
           open
-          pending={save.isPending || changesBlocked}
+          pending={save.isPending}
           server={server}
           onOpenChange={setJoining}
           onJoin={async (stack, hostname, authKey) => {
@@ -423,6 +408,7 @@ const TailscaleMembershipRow = React.memo(function TailscaleMembershipRow({
   const deploymentExists = stack.deployments.some(
     (deployment) => deployment.relayId === server.relayId
   )
+  const disabled = pending || !server.tailscaleSupported
   const dirty = Boolean(binding && hostname.trim() !== binding.hostname)
 
   React.useEffect(() => {
@@ -451,22 +437,36 @@ const TailscaleMembershipRow = React.memo(function TailscaleMembershipRow({
       <tr className="group transition-colors hover:bg-accent/25">
         <WorkspaceTableCell>
           <div className="min-w-0">
-            <p className="truncate text-xs font-semibold">{server.name}</p>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <p className="truncate text-xs font-semibold">{server.name}</p>
+              <span className="grid size-4 shrink-0 place-items-center sm:hidden">
+                {!server.tailscaleSupported ? (
+                  <TailscaleRelayUpdateHint relayName={server.relayName} />
+                ) : null}
+              </span>
+            </div>
             <p className="truncate font-mono text-[9px] text-muted-foreground">
               {server.shortId}
             </p>
           </div>
         </WorkspaceTableCell>
         <WorkspaceTableCell className="hidden sm:table-cell">
-          <span className="truncate text-xs text-muted-foreground">
-            {server.relayName}
-          </span>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-xs text-muted-foreground">
+              {server.relayName}
+            </span>
+            <span className="grid size-4 shrink-0 place-items-center">
+              {!server.tailscaleSupported ? (
+                <TailscaleRelayUpdateHint relayName={server.relayName} />
+              ) : null}
+            </span>
+          </div>
         </WorkspaceTableCell>
         <WorkspaceTableCell>
           <div className="flex min-w-0 items-center gap-1.5">
             <Input
               value={hostname}
-              disabled={pending}
+              disabled={disabled}
               onChange={(event) => setHostname(event.target.value)}
               aria-label={`Hostname for ${server.name}`}
               className="h-8 min-w-0 font-mono text-xs"
@@ -479,7 +479,7 @@ const TailscaleMembershipRow = React.memo(function TailscaleMembershipRow({
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={pending || !hostname.trim()}
+                disabled={disabled || !hostname.trim()}
                 onClick={() =>
                   void onSave(
                     stack.bindings.map((candidate) =>
@@ -499,7 +499,7 @@ const TailscaleMembershipRow = React.memo(function TailscaleMembershipRow({
         <WorkspaceTableCell className="text-center">
           <Switch
             checked={Boolean(binding)}
-            disabled={pending || !hostname.trim()}
+            disabled={disabled || !hostname.trim()}
             aria-label={`${binding ? "Disconnect" : "Connect"} ${server.name}`}
             onCheckedChange={(checked) => {
               if (!checked) {

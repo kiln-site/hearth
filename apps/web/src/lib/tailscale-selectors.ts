@@ -11,11 +11,18 @@ export type TailscaleServer = Pick<
   | "relayName"
   | "routeId"
   | "shortId"
->
+> & {
+  tailscaleSupported: boolean
+}
 
 export function selectTailscaleServers(
   snapshot: RelayFleetSnapshot
 ): Array<TailscaleServer> {
+  const supportedRelayIds = new Set(
+    snapshot.nodes.flatMap((node) =>
+      node.capabilities.includes("tailscale-stacks") ? [node.relayId] : []
+    )
+  )
   return snapshot.instances
     .flatMap((instance) =>
       instance.brickId === builtinTailscaleBrickId
@@ -29,13 +36,16 @@ export function selectTailscaleServers(
               relayName: instance.relayName,
               routeId: instance.routeId,
               shortId: instance.shortId,
+              tailscaleSupported: supportedRelayIds.has(instance.relayId),
             },
           ]
     )
     .sort((left, right) => left.name.localeCompare(right.name))
 }
 
-export function defaultTailscaleHostname(server: TailscaleServer): string {
+export function defaultTailscaleHostname(
+  server: Pick<TailscaleServer, "name" | "shortId">
+): string {
   const slug = server.name
     .toLowerCase()
     .replace(/[^a-z0-9]+/gu, "-")
