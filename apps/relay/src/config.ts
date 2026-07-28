@@ -9,6 +9,7 @@ export interface RelayInstanceConfig {
   brickId?: string
   brickNetworkMode?: "direct" | "minecraft-backend" | "minecraft-proxy"
   brickPrimaryPort?: number
+  brickPrimaryPortProtocol?: "tcp" | "udp"
   brickSource?: string
   connectAddress: string
   directory: string

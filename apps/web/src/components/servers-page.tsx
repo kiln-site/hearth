@@ -714,7 +714,7 @@ function serverStatusTone(state: ServerListInstance["observedState"]) {
   }
   return {
     dot: "bg-muted-foreground/50",
-    label: "Offline",
+    label: "Stopped",
     text: "text-muted-foreground",
   }
 }

@@ -447,7 +447,7 @@ describe("Tailscale Brick networking", () => {
     })
     expect(pending.instance).toMatchObject({
       containerId: null,
-      observedState: "offline",
+      observedState: "stopped",
       status: "Removal pending",
     })
     expect(pending.bindings).toEqual(config.bindings)

@@ -69,7 +69,7 @@ describe("Tailscale pending removal recovery", () => {
         javaVersion: "Tailscale + CoreDNS",
         managedByRelay: true,
         name: "Private Network",
-        observedState: "offline",
+        observedState: "stopped",
         service: "pending-removal-test-kiln-ts-aaaaaaaa",
         shortId: id.slice(0, 8),
         startedAt: null,

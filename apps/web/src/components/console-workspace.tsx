@@ -1344,7 +1344,7 @@ const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
                   onKeyDown={command.keyDown}
                   placeholder={
                     !command.running
-                      ? "Server is offline"
+                      ? "Server is stopped"
                       : !command.available
                         ? "Relay disconnected — command saved as a draft"
                         : "Send a server command…"
@@ -2354,7 +2354,7 @@ function initialConsoleStateLines(
   if (state && state !== "starting" && state !== "provisioning") {
     lines.push(consoleStateLine("running", startedAt))
   }
-  if (state === "stopping" || state === "offline" || state === "failed") {
+  if (state === "stopping" || state === "stopped" || state === "failed") {
     lines.push(consoleStateLine(state, null))
   }
   return lines
@@ -2366,7 +2366,7 @@ function consoleStateLine(
 ): RelayConsoleLine {
   const labels: Record<RelayObservedState, string> = {
     failed: "Server failed.",
-    offline: "Server stopped.",
+    stopped: "Server stopped.",
     provisioning: "Server is provisioning.",
     running: "Server is running.",
     starting: "Server is starting.",

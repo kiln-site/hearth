@@ -69,6 +69,7 @@ export function relayControlDeadlineMs(
   if (operation === "relay.tailscale.stack.remove") return 120_000
   if (operation === "hearth.tailscale.instance.detach") return 60_000
   if (operation === "instance.delete") return 360_000
+  if (operation === "instance.action") return 180_000
   if (operation === "instance.logs.share") return 60_000
   if (
     operation === "instance.create" ||

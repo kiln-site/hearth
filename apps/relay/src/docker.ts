@@ -3,6 +3,7 @@ import { spawn } from "node:child_process"
 import { existsSync, readdirSync } from "node:fs"
 import { statfs } from "node:fs/promises"
 import { request } from "node:http"
+import { Socket } from "node:net"
 import { hostname } from "node:os"
 import { basename, relative, resolve } from "node:path"
 
@@ -18,7 +19,6 @@ import type {
   RelayDesiredState,
   RelayInstance,
   RelayInstanceResources,
-  RelayObservedState,
 } from "@workspace/contracts"
 import {
   builtinTailscaleBrickId,
@@ -35,6 +35,13 @@ import {
   relayResourceNames,
   type RelayResourceNames,
 } from "./relay-resources.js"
+import {
+  INSTANCE_STARTUP_READINESS_TIMEOUT_MS,
+  INSTANCE_STOP_TIMEOUT_SECONDS,
+  observedInstancePowerState,
+  type InstancePowerAction,
+  type InstancePowerTransition,
+} from "./power-state.js"
 import { WEB_ROUTE_LABEL_PREFIX } from "./web-route-labels.js"
 import type { RelayWebRouteLabelSnapshot } from "./web-route-labels.js"
 
@@ -57,8 +64,19 @@ interface DockerInspect {
     RW: boolean
   }>
   Name: string
+  NetworkSettings?: {
+    Networks?: Record<
+      string,
+      {
+        IPAddress?: string
+      }
+    >
+  }
   State: {
     ExitCode: number
+    Health?: {
+      Status: string
+    }
     OOMKilled: boolean
     Restarting: boolean
     Running: boolean
@@ -84,6 +102,7 @@ interface DockerRecreateInspect {
   }
   State: {
     Running: boolean
+    StartedAt: string
   }
 }
 
@@ -233,6 +252,7 @@ export class DockerDriver {
   readonly #consoleSizeStarts = new Map<string, string>()
   readonly #consoleSizePending = new Map<string, Promise<void>>()
   readonly #diskUsageCache = new Map<string, DiskUsageCacheEntry>()
+  readonly #powerTransitions = new Map<string, InstancePowerTransition>()
   #diskUsageQueue = Promise.resolve()
   #relayStartedAt: Promise<string | null> | undefined
   readonly #resourceCache = new Map<string, ResourceCacheEntry>()
@@ -265,6 +285,10 @@ export class DockerDriver {
       if (!activeInstanceIds.has(instanceId))
         this.#resourceHistory.delete(instanceId)
     }
+    for (const instanceId of this.#powerTransitions.keys()) {
+      if (!activeInstanceIds.has(instanceId))
+        this.#powerTransitions.delete(instanceId)
+    }
     await Promise.all(
       discovered.map(({ config, container }) =>
         config.managedByRelay
@@ -272,23 +296,67 @@ export class DockerDriver {
           : Promise.resolve()
       )
     )
+    const now = Date.now()
+    const readiness = new Map<string, boolean>()
+    await Promise.all(
+      discovered.map(async ({ config, container }) => {
+        const transition = this.#powerTransitions.get(config.id)
+        const startedAt = Date.parse(container.State.StartedAt)
+        const startedRecently =
+          Number.isFinite(startedAt) &&
+          now - startedAt < INSTANCE_STARTUP_READINESS_TIMEOUT_MS
+        if (
+          !container.State.Running ||
+          container.State.Health ||
+          (!startedRecently &&
+            (!transition ||
+              (transition.action !== "start" &&
+                transition.action !== "restart")))
+        ) {
+          return
+        }
+        const ready = await this.#primaryPortReady(config, container)
+        if (ready !== undefined) readiness.set(config.id, ready)
+      })
+    )
 
     const instances = discovered.map(({ config, container }) => {
-      const desiredState: RelayDesiredState = container.State.Running
-        ? "running"
-        : "stopped"
-      const observedState = this.#observedState(container)
+      const transition = this.#powerTransitions.get(config.id)
+      const desiredState: RelayDesiredState = transition
+        ? transition.action === "stop" || transition.action === "kill"
+          ? "stopped"
+          : "running"
+        : container.State.Running
+          ? "running"
+          : "stopped"
+      const powerState = observedInstancePowerState(
+        container.State,
+        transition,
+        now,
+        readiness.get(config.id)
+      )
+      if (powerState.transitionComplete) {
+        this.#powerTransitions.delete(config.id)
+      }
       const resources = this.#resourcesFor({ config, container })
 
       return {
         ...config,
         containerId: container.Id.slice(0, 12),
         desiredState,
-        observedState,
+        observedState: powerState.observedState,
         startedAt: container.State.Running ? container.State.StartedAt : null,
-        status: container.State.Running
-          ? "Running"
-          : `Exited (${container.State.ExitCode})`,
+        status:
+          powerState.observedState === "running"
+            ? "Running"
+            : powerState.observedState === "starting"
+              ? "Starting"
+              : powerState.observedState === "stopping"
+                ? "Stopping"
+                : powerState.observedState === "failed" &&
+                    container.State.Running
+                  ? "Unhealthy"
+                  : `Exited (${container.State.ExitCode})`,
         resources,
       }
     })
@@ -325,22 +393,67 @@ export class DockerDriver {
 
   async runAction(
     instance: RelayInstanceConfig,
-    action: "start" | "stop" | "restart" | "kill"
+    action: InstancePowerAction
   ): Promise<RelayInstance> {
-    if (instance.managedByRelay) {
-      await command("docker", [action, instance.service], {
-        timeout: action === "start" ? 120_000 : 90_000,
-      })
-    } else {
-      const common = this.#composeArguments()
-      const actionArguments =
-        action === "start"
-          ? ["up", "--detach", "--no-deps", instance.service]
-          : [action, instance.service]
+    const discovered = await this.#findDiscovered(instance.id)
+    const transition: InstancePowerTransition = {
+      action,
+      commandCompleted: false,
+      initialStartedAt: discovered.container.State.Running
+        ? discovered.container.State.StartedAt
+        : null,
+      requestedAt: Date.now(),
+    }
+    this.#powerTransitions.set(instance.id, transition)
 
-      await command("docker", [...common, ...actionArguments], {
-        cwd: this.#config.projectDirectory,
-        timeout: action === "start" ? 120_000 : 90_000,
+    try {
+      const timeout =
+        action === "start"
+          ? 120_000
+          : action === "restart"
+            ? (INSTANCE_STOP_TIMEOUT_SECONDS + 60) * 1_000
+            : (INSTANCE_STOP_TIMEOUT_SECONDS + 15) * 1_000
+      if (instance.managedByRelay) {
+        const actionArguments =
+          action === "stop" || action === "restart"
+            ? [
+                action,
+                "--time",
+                String(INSTANCE_STOP_TIMEOUT_SECONDS),
+                instance.service,
+              ]
+            : [action, instance.service]
+        await command("docker", actionArguments, { timeout })
+      } else {
+        const common = this.#composeArguments()
+        const actionArguments =
+          action === "start"
+            ? ["up", "--detach", "--no-deps", instance.service]
+            : action === "stop" || action === "restart"
+              ? [
+                  action,
+                  "--timeout",
+                  String(INSTANCE_STOP_TIMEOUT_SECONDS),
+                  instance.service,
+                ]
+              : [action, instance.service]
+
+        await command("docker", [...common, ...actionArguments], {
+          cwd: this.#config.projectDirectory,
+          timeout,
+        })
+      }
+    } catch (cause) {
+      if (this.#powerTransitions.get(instance.id) === transition) {
+        this.#powerTransitions.delete(instance.id)
+      }
+      throw cause
+    }
+
+    if (this.#powerTransitions.get(instance.id) === transition) {
+      this.#powerTransitions.set(instance.id, {
+        ...transition,
+        commandCompleted: true,
       })
     }
 
@@ -353,7 +466,8 @@ export class DockerDriver {
   async recreateOwnedInstance(
     instance: RelayInstanceConfig,
     routeLabels: Readonly<Record<string, string>>,
-    edgeNetwork: string | null
+    edgeNetwork: string | null,
+    action: "start" | "restart"
   ): Promise<RelayInstance> {
     if (!instance.managedByRelay) {
       throw new Error("Relay can only recreate containers it created")
@@ -391,14 +505,37 @@ export class DockerDriver {
       )
     }
 
+    const transition: InstancePowerTransition = {
+      action,
+      commandCompleted: false,
+      initialStartedAt: current.State.Running ? current.State.StartedAt : null,
+      requestedAt: Date.now(),
+    }
+    this.#powerTransitions.set(instance.id, transition)
     const backupName = `${instance.service}-kiln-backup-${Date.now()}`
     let replacementCreated = false
-    if (current.State.Running) {
-      await command("docker", ["stop", "--time", "30", instance.service], {
-        timeout: 45_000,
-      })
+    try {
+      if (current.State.Running) {
+        await command(
+          "docker",
+          [
+            "stop",
+            "--time",
+            String(INSTANCE_STOP_TIMEOUT_SECONDS),
+            instance.service,
+          ],
+          {
+            timeout: (INSTANCE_STOP_TIMEOUT_SECONDS + 15) * 1_000,
+          }
+        )
+      }
+      await command("docker", ["rename", instance.service, backupName])
+    } catch (cause) {
+      if (this.#powerTransitions.get(instance.id) === transition) {
+        this.#powerTransitions.delete(instance.id)
+      }
+      throw cause
     }
-    await command("docker", ["rename", instance.service, backupName])
 
     try {
       await this.#dockerJson(
@@ -434,6 +571,12 @@ export class DockerDriver {
       await command("docker", ["start", instance.service], {
         timeout: 120_000,
       })
+      if (this.#powerTransitions.get(instance.id) === transition) {
+        this.#powerTransitions.set(instance.id, {
+          ...transition,
+          commandCompleted: true,
+        })
+      }
     } catch (cause) {
       if (replacementCreated) {
         await command("docker", ["rm", "--force", instance.service]).catch(
@@ -446,6 +589,9 @@ export class DockerDriver {
       await command("docker", ["start", instance.service], {
         timeout: 120_000,
       }).catch(() => undefined)
+      if (this.#powerTransitions.get(instance.id) === transition) {
+        this.#powerTransitions.delete(instance.id)
+      }
       throw new Error(
         `Kiln could not apply web routes to ${instance.name}; the previous container was restored.`,
         { cause }
@@ -991,6 +1137,34 @@ export class DockerDriver {
     })
   }
 
+  async #primaryPortReady(
+    instance: RelayInstanceConfig,
+    container: DockerInspect
+  ): Promise<boolean | undefined> {
+    const protocol =
+      instance.brickPrimaryPortProtocol ??
+      (instance.brickNetworkMode === "minecraft-backend" ||
+      instance.brickNetworkMode === "minecraft-proxy"
+        ? "tcp"
+        : undefined)
+    const port = instance.brickPrimaryPort
+    if (protocol !== "tcp" || !port) return undefined
+
+    const addresses = Object.values(
+      container.NetworkSettings?.Networks ?? {}
+    ).flatMap(({ IPAddress: address }) => (address ? [address] : []))
+    if (addresses.length === 0) return undefined
+    const probe =
+      instance.brickNetworkMode === "minecraft-backend" ||
+      instance.brickNetworkMode === "minecraft-proxy"
+        ? minecraftStatusReady
+        : tcpPortOpen
+    const attempts = await Promise.all(
+      addresses.map((address) => probe(address, port))
+    )
+    return attempts.some(Boolean)
+  }
+
   #resourcesFor(instance: DiscoveredInstance): RelayInstanceResources | null {
     const key = instance.container.Id
     const now = Date.now()
@@ -1166,8 +1340,13 @@ export class DockerDriver {
             )
             await command(
               "docker",
-              ["stop", "--time", "30", current.config.service],
-              { timeout: 45_000 }
+              [
+                "stop",
+                "--time",
+                String(INSTANCE_STOP_TIMEOUT_SECONDS),
+                current.config.service,
+              ],
+              { timeout: (INSTANCE_STOP_TIMEOUT_SECONDS + 15) * 1_000 }
             )
           }
         } catch {
@@ -1512,6 +1691,11 @@ export class DockerDriver {
         primaryPort <= 65_535
           ? primaryPort
           : undefined,
+      brickPrimaryPortProtocol:
+        labels["kiln.brick.primary-port-protocol"] === "tcp" ||
+        labels["kiln.brick.primary-port-protocol"] === "udp"
+          ? labels["kiln.brick.primary-port-protocol"]
+          : undefined,
       brickSource: labels["kiln.brick.source"],
       connectAddress:
         labels["kiln.instance.hostname"] ??
@@ -1545,17 +1729,6 @@ export class DockerDriver {
     }
   }
 
-  #observedState(container: DockerInspect): RelayObservedState {
-    if (container.State.Restarting || container.State.Status === "restarting") {
-      return "starting"
-    }
-    if (container.State.Running) return "running"
-    if (container.State.OOMKilled) return "failed"
-    return container.State.ExitCode === 0 || container.State.ExitCode === 143
-      ? "offline"
-      : "failed"
-  }
-
   #composeArguments(): Array<string> {
     return [
       "compose",
@@ -1567,6 +1740,71 @@ export class DockerDriver {
       this.#config.projectName,
     ]
   }
+}
+
+function tcpPortOpen(host: string, port: number): Promise<boolean> {
+  return new Promise((resolvePromise) => {
+    const socket = new Socket()
+    let settled = false
+    const settle = (open: boolean) => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolvePromise(open)
+    }
+    socket.setTimeout(500)
+    socket.once("connect", () => settle(true))
+    socket.once("error", () => settle(false))
+    socket.once("timeout", () => settle(false))
+    socket.connect(port, host)
+  })
+}
+
+function minecraftStatusReady(host: string, port: number): Promise<boolean> {
+  const address = Buffer.from("localhost")
+  const handshakePayload = Buffer.concat([
+    Buffer.from([0]),
+    Buffer.from([0]),
+    encodeVarInt(address.length),
+    address,
+    Buffer.from([port >> 8, port & 0xff]),
+    Buffer.from([1]),
+  ])
+  const request = Buffer.concat([
+    encodeVarInt(handshakePayload.length),
+    handshakePayload,
+    Buffer.from([1, 0]),
+  ])
+
+  return new Promise((resolvePromise) => {
+    const socket = new Socket()
+    let settled = false
+    const settle = (ready: boolean) => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolvePromise(ready)
+    }
+    socket.setTimeout(750)
+    socket.once("connect", () => socket.write(request))
+    socket.once("data", () => settle(true))
+    socket.once("close", () => settle(false))
+    socket.once("error", () => settle(false))
+    socket.once("timeout", () => settle(false))
+    socket.connect(port, host)
+  })
+}
+
+function encodeVarInt(value: number): Buffer {
+  const bytes: Array<number> = []
+  let remaining = value
+  do {
+    let current = remaining & 0x7f
+    remaining >>>= 7
+    if (remaining !== 0) current |= 0x80
+    bytes.push(current)
+  } while (remaining !== 0)
+  return Buffer.from(bytes)
 }
 
 function matchesInstanceId(instance: RelayInstanceConfig, id: string): boolean {

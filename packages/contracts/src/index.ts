@@ -5,14 +5,17 @@ export * from "./release-version.js"
 
 export const relayIdSchema = z.string().regex(/^[A-Za-z\d_-]{43}$/u)
 
-export const relayObservedStateSchema = z.enum([
-  "offline",
-  "provisioning",
-  "starting",
-  "running",
-  "stopping",
-  "failed",
-])
+export const relayObservedStateSchema = z
+  .enum([
+    "offline",
+    "stopped",
+    "provisioning",
+    "starting",
+    "running",
+    "stopping",
+    "failed",
+  ])
+  .transform((state) => (state === "offline" ? ("stopped" as const) : state))
 
 export const relayDesiredStateSchema = z.enum(["stopped", "running"])
 
@@ -599,6 +602,7 @@ export const relayInstanceSchema = z.object({
     .enum(["direct", "minecraft-backend", "minecraft-proxy"])
     .optional(),
   brickPrimaryPort: z.number().int().min(1).max(65_535).optional(),
+  brickPrimaryPortProtocol: z.enum(["tcp", "udp"]).optional(),
   brickSource: brickSourceSchema.optional(),
   tailscale: relayInstanceTailscaleSchema.default({ enabled: false }),
   variables: brickVariableValuesSchema.optional(),

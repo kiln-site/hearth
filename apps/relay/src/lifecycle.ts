@@ -47,6 +47,7 @@ import {
 import type { BrickCatalog } from "./bricks.js"
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
 import type { DockerDriver } from "./docker.js"
+import { INSTANCE_STOP_TIMEOUT_SECONDS } from "./power-state.js"
 import {
   relayOwnerLabel,
   relayOwnsLabels,
@@ -123,7 +124,7 @@ export function tailscaleStackPendingRemoval(
     instance: {
       ...snapshot.instance,
       containerId: null,
-      observedState: "offline",
+      observedState: "stopped",
       resources: null,
       startedAt: null,
       status: "Removal pending",
@@ -1264,7 +1265,8 @@ export class LifecycleDriver {
           desiredLabels,
           usesExternalEdge && routes.length > 0
             ? this.#resources.edgeNetwork
-            : null
+            : null,
+          action
         )
       }
     }
@@ -1346,9 +1348,18 @@ export class LifecycleDriver {
       memoryLimitBytes: dockerMemoryBytes(resolved.memory),
     })
 
-    await command("docker", ["stop", "--time", "30", existing.service], {
-      timeout: 45_000,
-    }).catch(() => undefined)
+    await command(
+      "docker",
+      [
+        "stop",
+        "--time",
+        String(INSTANCE_STOP_TIMEOUT_SECONDS),
+        existing.service,
+      ],
+      {
+        timeout: (INSTANCE_STOP_TIMEOUT_SECONDS + 15) * 1_000,
+      }
+    ).catch(() => undefined)
     await command("docker", ["rm", "--force", existing.service], {
       timeout: 90_000,
     })
@@ -1574,6 +1585,8 @@ export class LifecycleDriver {
       "--label",
       `kiln.brick.primary-port=${primaryPort.container}`,
       "--label",
+      `kiln.brick.primary-port-protocol=${primaryPort.protocol}`,
+      "--label",
       "kiln.traefik.managed=true",
       "--label",
       `kiln.traefik.service.port=${primaryPort.container}`,
@@ -1774,9 +1787,18 @@ export class LifecycleDriver {
         })
       }
       detachedStacks = await this.#detachInstanceFromTailscaleStacks(instance)
-      await command("docker", ["stop", "--time", "30", instance.service], {
-        timeout: 45_000,
-      }).catch(() => undefined)
+      await command(
+        "docker",
+        [
+          "stop",
+          "--time",
+          String(INSTANCE_STOP_TIMEOUT_SECONDS),
+          instance.service,
+        ],
+        {
+          timeout: (INSTANCE_STOP_TIMEOUT_SECONDS + 15) * 1_000,
+        }
+      ).catch(() => undefined)
       await command("docker", ["rm", "--force", instance.service], {
         timeout: 90_000,
       })

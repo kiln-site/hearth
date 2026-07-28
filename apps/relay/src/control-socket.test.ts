@@ -41,6 +41,7 @@ describe("Relay control timeouts", () => {
     expect(relayControlDeadlineMs("instance.delete")).toBeGreaterThan(
       relayControlDeadlineMs("hearth.tailscale.instance.detach") + 135_000
     )
+    expect(relayControlDeadlineMs("instance.action")).toBeGreaterThan(75_000)
     expect(
       relayControlRequestTimeoutMs({ ...request, timeoutMs: 0 }, 10_000_000)
     ).toBeNull()

@@ -16,6 +16,7 @@ import {
   relayMclogsUploadResultSchema,
   relayIdSchema,
   relayInstanceSchema,
+  relayControlDeadlineMs,
   relaySaveFileInputSchema,
   relaySnapshotSchema,
 } from "@workspace/contracts"
@@ -450,7 +451,8 @@ export const performRelayAction = createServerFn({ method: "POST" })
     const response = await relayFetch(
       relay,
       `/v1/instances/${encodeURIComponent(instanceId)}/actions`,
-      { method: "POST", body: JSON.stringify({ action }) }
+      { method: "POST", body: JSON.stringify({ action }) },
+      relayControlDeadlineMs("instance.action")
     )
     const instance = relayInstanceSchema.parse(await response.json())
     await runAppEffect(

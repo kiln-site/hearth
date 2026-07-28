@@ -511,6 +511,12 @@ function ServerPowerControls({
   const isStarting = instance.observedState === "starting"
   const isStopping = instance.observedState === "stopping"
   const powerIsOn = isRunning || isStarting
+  const powerIsTransitioning =
+    action === "start" ||
+    action === "stop" ||
+    action === "restart" ||
+    isStarting ||
+    isStopping
   const startUnavailable =
     !relayConnected || powerIsOn || isStopping || action !== null
   const stopUnavailable =
@@ -529,22 +535,22 @@ function ServerPowerControls({
         size="sm"
         className={
           powerIsOn
-            ? "hidden h-9 gap-1.5 !border-red-500/65 !bg-red-600 px-3 text-xs !text-white shadow-none hover:!border-red-400 hover:!bg-red-500 disabled:!border-red-500/35 disabled:!bg-red-600/45 disabled:!text-white/70 md:inline-flex"
-            : "hidden h-9 gap-1.5 !border-blue-500/65 !bg-blue-600 px-3 text-xs !text-white shadow-none hover:!border-blue-400 hover:!bg-blue-500 md:inline-flex"
+            ? "hidden h-9 w-[6.5rem] justify-center gap-1.5 !border-red-500/65 !bg-red-600 px-3 text-xs !text-white shadow-none hover:!border-red-400 hover:!bg-red-500 disabled:!border-red-500/35 disabled:!bg-red-600/45 disabled:!text-white/70 md:inline-flex"
+            : "hidden h-9 w-[6.5rem] justify-center gap-1.5 !border-blue-500/65 !bg-blue-600 px-3 text-xs !text-white shadow-none hover:!border-blue-400 hover:!bg-blue-500 md:inline-flex"
         }
         disabled={!relayConnected || action !== null || isStopping}
         onClick={() => runAction(powerIsOn ? "stop" : "start")}
       >
-        {action === "start" || action === "stop" || isStopping ? (
+        {powerIsTransitioning ? (
           <LoaderCircle className="animate-spin" />
         ) : powerIsOn ? (
           <CircleStop />
         ) : (
           <Play />
         )}
-        {action === "start"
+        {action === "start" || isStarting
           ? "Starting"
-          : action === "stop" || isStopping
+          : action === "stop" || action === "restart" || isStopping
             ? "Stopping"
             : powerIsOn
               ? "Stop"
@@ -567,11 +573,7 @@ function ServerPowerControls({
                 aria-label="Server actions"
                 disabled={!relayConnected || action !== null}
               >
-                {action !== null ? (
-                  <LoaderCircle className="animate-spin" />
-                ) : (
-                  <EllipsisVertical />
-                )}
+                <EllipsisVertical />
               </Button>
             </PopoverTrigger>
           </TooltipTrigger>
@@ -1114,7 +1116,7 @@ function formatBrowserLocalTimestamp(value: string | null): string | null {
 function resourceItem(instance: InstanceRuntime, id: ResourceId): ResourceItem {
   const resources = instance.resources
   const unavailable =
-    instance.observedState === "running" ? "Sampling" : "Offline"
+    instance.observedState === "running" ? "Sampling" : "Stopped"
 
   if (id === "cpu") {
     return {
