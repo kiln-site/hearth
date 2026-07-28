@@ -1297,9 +1297,15 @@ const ConsoleLogRow = React.memo(function ConsoleLogRow({
         <ConsoleTimestamp timestamp={line.timestamp} />
       ) : null}
       <span
-        className={`${stateLine ? "sticky left-0 w-[100cqw] shrink-0 px-3 text-center before:absolute before:top-[-6px] before:left-1/2 before:w-[min(76%,44rem)] before:-translate-x-1/2 before:border-t before:border-stone-500/20 after:absolute after:bottom-[-6px] after:left-1/2 after:w-[min(76%,44rem)] after:-translate-x-1/2 after:border-b after:border-stone-500/20" : `min-w-0 flex-1 ${showTimestamps ? "" : "ml-3"}`} leading-[18px] ${wrapLines ? "break-words" : ""} ${lineTextTone(line.level)}`}
+        className={`${stateLine ? "sticky left-0 w-[100cqw] shrink-0 px-3 text-center" : `min-w-0 flex-1 ${showTimestamps ? "" : "ml-3"}`} leading-[18px] ${wrapLines ? "break-words" : ""} ${lineTextTone(line.level)}`}
       >
-        {renderConsoleText(line, query)}
+        {stateLine ? (
+          <span className="mx-auto flex w-[min(76%,44rem)] items-center gap-3 before:min-w-0 before:flex-1 before:border-t before:border-stone-500/20 after:min-w-0 after:flex-1 after:border-t after:border-stone-500/20">
+            <span className="shrink-0">{renderConsoleText(line, query)}</span>
+          </span>
+        ) : (
+          renderConsoleText(line, query)
+        )}
       </span>
     </div>
   )
