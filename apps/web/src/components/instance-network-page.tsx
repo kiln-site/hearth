@@ -46,7 +46,11 @@ import {
   updateInstanceWebRoutes,
 } from "@/server/relay"
 
-export function InstanceNetworkPage() {
+export function InstanceNetworkPage({
+  highlightedTailscaleMember,
+}: {
+  highlightedTailscaleMember?: string
+}) {
   const instance = useInstanceIdentity()
   const { data: isPlatformAdmin } = useSuspenseQuery({
     ...accessCapabilitiesQueryOptions(),
@@ -55,7 +59,10 @@ export function InstanceNetworkPage() {
 
   if (instance.implementation.toLowerCase() === "tailscale") {
     return isPlatformAdmin ? (
-      <TailscaleNetworkMembershipPage stackId={instance.id} />
+      <TailscaleNetworkMembershipPage
+        highlightedServerKey={highlightedTailscaleMember}
+        stackId={instance.id}
+      />
     ) : (
       <div className="grid min-h-0 flex-1 place-items-center bg-background/55">
         <p className="text-sm text-muted-foreground">

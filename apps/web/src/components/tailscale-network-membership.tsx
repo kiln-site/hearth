@@ -16,6 +16,7 @@ import {
   KeyRound,
   LoaderCircle,
   Network,
+  Pencil,
   Plus,
   RefreshCw,
   Route,
@@ -54,6 +55,7 @@ import {
 } from "@/components/workspace-data-table"
 import type { WorkspaceTableSearchStore } from "@/components/workspace-data-table"
 import { TailscaleRelayUpdateHint } from "@/components/tailscale-relay-update-hint"
+import { relayInstanceRouteId } from "@/lib/relay-fleet"
 import {
   queryKeys,
   relaySnapshotQueryOptions,
@@ -88,8 +90,10 @@ type SaveStackInput = Parameters<typeof saveTailscaleStack>[0]["data"]
 const emptyServers: Array<TailscaleServer> = []
 
 export function TailscaleNetworkMembershipPage({
+  highlightedServerKey,
   stackId,
 }: {
+  highlightedServerKey?: string
   stackId: string
 }) {
   const [searchStore] = React.useState(createWorkspaceTableSearchStore)
@@ -125,6 +129,7 @@ export function TailscaleNetworkMembershipPage({
           </p>
         ) : null}
         <TailscaleMembershipTable
+          highlightedServerKey={highlightedServerKey}
           pending={save.isPending}
           searchStore={searchStore}
           servers={servers}
@@ -1226,6 +1231,7 @@ const TailscaleMembershipSyncButton = React.memo(
 )
 
 const TailscaleMembershipTable = React.memo(function TailscaleMembershipTable({
+  highlightedServerKey,
   pending,
   searchStore,
   servers,
@@ -1233,6 +1239,7 @@ const TailscaleMembershipTable = React.memo(function TailscaleMembershipTable({
   stack,
   onSave,
 }: {
+  highlightedServerKey?: string
   pending: boolean
   searchStore: WorkspaceTableSearchStore
   servers: Array<TailscaleServer>
@@ -1243,13 +1250,17 @@ const TailscaleMembershipTable = React.memo(function TailscaleMembershipTable({
   const renderRow = React.useCallback(
     (server: TailscaleServer) => (
       <TailscaleMembershipRow
+        highlighted={
+          highlightedServerKey ===
+          tailscaleServerKey(server.relayId, server.id)
+        }
         pending={pending}
         server={server}
         stack={stack}
         onSave={onSave}
       />
     ),
-    [onSave, pending, stack]
+    [highlightedServerKey, onSave, pending, stack]
   )
   const renderEmpty = React.useCallback(
     (searchActive: boolean) => (
@@ -1297,11 +1308,13 @@ const MembershipTableHead = React.memo(function MembershipTableHead() {
 })
 
 const TailscaleMembershipRow = React.memo(function TailscaleMembershipRow({
+  highlighted,
   pending,
   server,
   stack,
   onSave,
 }: {
+  highlighted: boolean
   pending: boolean
   server: TailscaleServer
   stack: TailscaleStackOverview
@@ -1311,6 +1324,8 @@ const TailscaleMembershipRow = React.memo(function TailscaleMembershipRow({
   const initialHostname = binding?.hostname ?? defaultTailscaleHostname(server)
   const [hostname, setHostname] = React.useState(initialHostname)
   const [authOpen, setAuthOpen] = React.useState(false)
+  const hostnameRef = React.useRef<HTMLInputElement>(null)
+  const rowRef = React.useRef<HTMLTableRowElement>(null)
   const deploymentExists = stack.deployments.some(
     (deployment) => deployment.relayId === server.relayId
   )
@@ -1320,6 +1335,13 @@ const TailscaleMembershipRow = React.memo(function TailscaleMembershipRow({
   React.useEffect(() => {
     setHostname(initialHostname)
   }, [initialHostname])
+
+  React.useEffect(() => {
+    if (!highlighted) return
+    rowRef.current?.scrollIntoView({ block: "center", inline: "nearest" })
+    hostnameRef.current?.focus({ preventScroll: true })
+    hostnameRef.current?.select()
+  }, [highlighted])
 
   const enable = async (authKey?: string) => {
     await onSave(
@@ -1340,7 +1362,14 @@ const TailscaleMembershipRow = React.memo(function TailscaleMembershipRow({
 
   return (
     <>
-      <tr className="group transition-colors hover:bg-accent/25">
+      <tr
+        ref={rowRef}
+        className={
+          highlighted
+            ? "group bg-primary/10 outline-1 -outline-offset-1 outline-primary/40 transition-colors"
+            : "group transition-colors hover:bg-accent/25"
+        }
+      >
         <WorkspaceTableCell>
           <div className="min-w-0">
             <div className="flex min-w-0 items-center gap-1.5">
@@ -1371,6 +1400,7 @@ const TailscaleMembershipRow = React.memo(function TailscaleMembershipRow({
         <WorkspaceTableCell>
           <div className="flex min-w-0 items-center gap-1.5">
             <Input
+              ref={hostnameRef}
               value={hostname}
               disabled={disabled}
               onChange={(event) => setHostname(event.target.value)}
@@ -1448,6 +1478,18 @@ const GameServerMembershipRow = React.memo(function GameServerMembershipRow({
   stack: TailscaleStackOverview
   onLeave: () => Promise<unknown>
 }) {
+  const deployment =
+    stack.deployments.find(
+      (candidate) => candidate.relayId === binding.relayId
+    ) ?? stack.deployments[0]
+  const routeId = deployment
+    ? relayInstanceRouteId(deployment.relayId, deployment.instance.shortId)
+    : null
+  const highlightedServerKey = tailscaleServerKey(
+    binding.relayId,
+    binding.instanceId
+  )
+
   return (
     <div className="grid items-center gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
       <div className="min-w-0">
@@ -1456,9 +1498,36 @@ const GameServerMembershipRow = React.memo(function GameServerMembershipRow({
           {binding.address}
         </p>
       </div>
-      <p className="truncate font-mono text-[10px] text-muted-foreground">
-        {binding.hostname}.{stack.domain}
-      </p>
+      <div className="flex min-w-0 items-center gap-1">
+        <p className="min-w-0 truncate font-mono text-[10px] text-muted-foreground">
+          {binding.hostname}.{stack.domain}
+        </p>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              asChild={Boolean(routeId)}
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              disabled={!routeId}
+              aria-label={`Edit ${binding.hostname}.${stack.domain}`}
+            >
+              {routeId ? (
+                <Link
+                  to="/server/$serverId/network"
+                  params={{ serverId: routeId }}
+                  search={{ member: highlightedServerKey }}
+                >
+                  <Pencil />
+                </Link>
+              ) : (
+                <Pencil />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="top">Edit hostname</TooltipContent>
+        </Tooltip>
+      </div>
       <Button
         type="button"
         size="sm"
