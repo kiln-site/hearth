@@ -47,7 +47,12 @@ export interface ControlSocketOptions {
   readonly execute: (
     request: RelayControlRequest,
     client: RelayClientGrant,
-    signal: AbortSignal
+    signal: AbortSignal,
+    requestHearth: (
+      operation: RelayControlOperation,
+      payload: unknown,
+      timeoutMs: number
+    ) => Promise<unknown>
   ) => Promise<unknown>
   readonly identity: RelayIdentity
   readonly initialSnapshot: () => Promise<unknown>
@@ -384,7 +389,8 @@ function authenticateSocket(
       const payload = await options.execute(
         request,
         currentClient,
-        controller.signal
+        controller.signal,
+        requestClient
       )
       if (isAuditedMutation(request.operation)) {
         void options
@@ -654,6 +660,8 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
       return "instance.network.read"
     case "instance.network.routes.write":
       return "instance.network.write"
+    case "hearth.tailscale.instance.detach":
+      return null
     case "sftp.authorization.resolve":
       return "instance.sftp.connect"
   }

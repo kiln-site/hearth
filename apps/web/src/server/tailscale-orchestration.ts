@@ -43,6 +43,151 @@ export interface TailscaleDeploymentOperations<
   ) => Promise<TDeployment>
 }
 
+export async function synchronizeInstanceDeletionDns<
+  TDeployment extends TailscaleDeploymentState,
+>({
+  current,
+  instanceId,
+  mode,
+  operations,
+  relayId,
+  stackIds,
+}: {
+  current: ReadonlyArray<TDeployment>
+  instanceId: string
+  mode: "prepare" | "rollback"
+  operations: Pick<TailscaleDeploymentOperations<TDeployment>, "syncDns">
+  relayId: string
+  stackIds: ReadonlyArray<string>
+}): Promise<void> {
+  const requestedStackIds = new Set(stackIds)
+  const deploymentsByStack = new Map<string, Array<TDeployment>>()
+  for (const deployment of current) {
+    if (!requestedStackIds.has(deployment.id)) continue
+    const deployments = deploymentsByStack.get(deployment.id) ?? []
+    deployments.push(deployment)
+    deploymentsByStack.set(deployment.id, deployments)
+  }
+
+  const plans: Array<{
+    previousRecords: RelayTailscaleStackDns["records"]
+    records: RelayTailscaleStackDns["records"]
+    targets: Array<TDeployment>
+  }> = []
+  for (const stackId of requestedStackIds) {
+    const deployments = deploymentsByStack.get(stackId)
+    if (!deployments?.length) {
+      throw new Error(`Tailscale network ${stackId.slice(0, 8)} is unavailable`)
+    }
+    if (
+      mode === "prepare" &&
+      !deployments.some(
+        (deployment) =>
+          deployment.relayId === relayId &&
+          deployment.bindings.some(
+            (binding) => binding.instanceId === instanceId
+          )
+      )
+    ) {
+      throw new Error(
+        `Tailscale network ${deploymentLabel(deployments)} no longer contains this server`
+      )
+    }
+
+    const previousRecordsWithSource = deploymentRecords(deployments)
+    const nextRecords =
+      mode === "prepare"
+        ? previousRecordsWithSource.filter(
+            ({ instanceId: recordInstanceId, relayId: recordRelayId }) =>
+              recordInstanceId !== instanceId || recordRelayId !== relayId
+          )
+        : previousRecordsWithSource
+    plans.push({
+      previousRecords: previousRecordsWithSource.map(
+        ({ address, hostname }) => ({ address, hostname })
+      ),
+      records: nextRecords.map(({ address, hostname }) => ({
+        address,
+        hostname,
+      })),
+      targets:
+        mode === "prepare"
+          ? deployments.filter((deployment) => deployment.relayId !== relayId)
+          : deployments,
+    })
+  }
+
+  if (mode === "rollback") {
+    const tasks = plans.flatMap((plan) =>
+      plan.targets.map((deployment) => ({ deployment, records: plan.records }))
+    )
+    const results = await Promise.allSettled(
+      tasks.map(({ deployment, records }) =>
+        operations.syncDns(deployment, records)
+      )
+    )
+    const failures = results.flatMap((result, index) =>
+      result.status === "rejected"
+        ? [
+            rollbackFailure(
+              tasks[index]?.deployment.relayName ?? "Unknown Relay",
+              result.reason
+            ),
+          ]
+        : []
+    )
+    if (failures.length > 0) {
+      throw new Error(
+        `Could not restore Tailscale DNS after server deletion failed: ${failures.join("; ")}`
+      )
+    }
+    return
+  }
+
+  const synchronized: Array<{
+    deployment: TDeployment
+    previousRecords: RelayTailscaleStackDns["records"]
+  }> = []
+  try {
+    await runSequentially(plans, (plan) =>
+      runSequentially(plan.targets, async (deployment) => {
+        const updated = await operations.syncDns(deployment, plan.records)
+        synchronized.push({
+          deployment: updated,
+          previousRecords: plan.previousRecords,
+        })
+      })
+    )
+  } catch (cause) {
+    const rollbackTargets = [...synchronized].reverse()
+    const rollbackResults = await Promise.allSettled(
+      rollbackTargets.map(({ deployment, previousRecords }) =>
+        operations.syncDns(deployment, previousRecords)
+      )
+    )
+    const rollbackFailures = rollbackResults.flatMap((result, index) =>
+      result.status === "rejected"
+        ? [
+            rollbackFailure(
+              rollbackTargets[index]?.deployment.relayName ?? "Unknown Relay",
+              result.reason
+            ),
+          ]
+        : []
+    )
+    throw new Error(
+      `Could not prepare Tailscale DNS for server deletion: ${
+        cause instanceof Error ? cause.message : "unknown error"
+      }${
+        rollbackFailures.length
+          ? `. DNS rollback also failed: ${rollbackFailures.join("; ")}`
+          : ""
+      }`,
+      { cause }
+    )
+  }
+}
+
 export async function applyTailscaleDeploymentPlan<
   TDeployment extends TailscaleDeploymentState,
 >({
@@ -291,6 +436,28 @@ function deploymentTarget(
 function rollbackFailure(relayName: string, cause: unknown): string {
   const message = cause instanceof Error ? cause.message : "unknown error"
   return `${relayName}: ${message}`
+}
+
+function deploymentLabel(
+  deployments: ReadonlyArray<TailscaleDeploymentState>
+): string {
+  return deployments[0]?.name ?? "network"
+}
+
+function deploymentRecords(
+  deployments: ReadonlyArray<TailscaleDeploymentState>
+): Array<{
+  address: string
+  hostname: string
+  instanceId: string
+  relayId: string
+}> {
+  return deployments.flatMap((deployment) =>
+    deployment.bindings.map((binding) => ({
+      ...binding,
+      relayId: deployment.relayId,
+    }))
+  )
 }
 
 async function runSequentially<TValue>(

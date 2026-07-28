@@ -25,7 +25,11 @@ import {
   relayUpdateInstanceStartupSchema,
   relayBootstrapDiscoveryTranscript,
 } from "@workspace/contracts"
-import type { RelayControlRequest, RelayInstance } from "@workspace/contracts"
+import type {
+  RelayControlOperation,
+  RelayControlRequest,
+  RelayInstance,
+} from "@workspace/contracts"
 
 import { BrickCatalog } from "./bricks.js"
 import { attachBrowserSocket } from "./browser-socket.js"
@@ -630,7 +634,12 @@ async function relaySnapshot() {
 async function executeControlRequest(
   request: RelayControlRequest,
   client: RelayClientGrant,
-  signal: AbortSignal
+  signal: AbortSignal,
+  requestHearth: (
+    operation: RelayControlOperation,
+    payload: unknown,
+    timeoutMs: number
+  ) => Promise<unknown>
 ): Promise<unknown> {
   if (signal.aborted) throw new Error("Relay request was cancelled")
   const payload = payloadRecord(request.payload)
@@ -897,7 +906,16 @@ async function executeControlRequest(
     case "instance.delete": {
       const instanceId = requiredString(payload, "instanceId")
       await serializeInstanceMutation(instanceId, () =>
-        lifecycle.deleteInstance(instanceId, payload.deleteData === true)
+        lifecycle.deleteInstance(
+          instanceId,
+          payload.deleteData === true,
+          ({ mode, stackIds }) =>
+            requestHearth(
+              "hearth.tailscale.instance.detach",
+              { instanceId, mode, stackIds },
+              60_000
+            ).then(() => undefined)
+        )
       )
       await runRelayEffect(
         "relay.instance.deleteName",

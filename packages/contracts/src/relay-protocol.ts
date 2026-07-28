@@ -54,6 +54,7 @@ export const relayControlOperations = [
   "instance.logs.latest",
   "instance.network.routes.read",
   "instance.network.routes.write",
+  "hearth.tailscale.instance.detach",
   "sftp.authorization.resolve",
 ] as const
 
@@ -66,6 +67,7 @@ export function relayControlDeadlineMs(
   if (operation === "relay.tailscale.install") return 240_000
   if (operation === "relay.tailscale.stack.apply") return 240_000
   if (operation === "relay.tailscale.stack.remove") return 120_000
+  if (operation === "hearth.tailscale.instance.detach") return 60_000
   if (operation === "instance.logs.share") return 60_000
   if (
     operation === "instance.create" ||

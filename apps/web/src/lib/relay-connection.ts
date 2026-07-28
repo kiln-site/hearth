@@ -17,6 +17,8 @@ import type {
   RelayControlOperation,
   RelayControlRequest,
 } from "@workspace/contracts"
+import { relayTailscaleStackIdSchema } from "@workspace/contracts"
+import { z } from "zod"
 
 import {
   relayControlEndpoint,
@@ -29,6 +31,11 @@ export { relayControlEndpoint }
 export type { RelayEndpoint }
 
 const MAX_BACKOFF_MS = 30_000
+const tailscaleInstanceDetachSchema = z.strictObject({
+  instanceId: z.string().regex(/^[a-f0-9]{40}$/u),
+  mode: z.enum(["prepare", "rollback"]),
+  stackIds: z.array(relayTailscaleStackIdSchema).min(1).max(4_096),
+})
 
 class RelayRequestTimeoutError extends Error {
   override readonly name = "RelayRequestTimeoutError"
@@ -395,6 +402,28 @@ class RelayConnection {
     try {
       const duration = relayControlRequestTimeoutMs(request, Date.now())
       if (duration === null) throw new Error("Relay request timeout is invalid")
+      if (request.operation === "hearth.tailscale.instance.detach") {
+        const input = tailscaleInstanceDetachSchema.parse(request.payload)
+        const { synchronizeTailscaleInstanceDeletion } =
+          await import("@/server/tailscale-instance-deletion")
+        await synchronizeTailscaleInstanceDeletion(
+          {
+            ...input,
+            relayId: this.#relay.id,
+          },
+          relayRpc
+        )
+        socket.send(
+          JSON.stringify({
+            id: randomUUID(),
+            payload: { synchronized: true },
+            replyTo: request.id,
+            type: "response",
+            v: 1,
+          })
+        )
+        return
+      }
       if (request.operation !== "sftp.authorization.resolve") {
         throw new Error("Relay operation is not available from Hearth")
       }

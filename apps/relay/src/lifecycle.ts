@@ -1731,7 +1731,14 @@ export class LifecycleDriver {
     }
   }
 
-  async deleteInstance(id: string, deleteData: boolean): Promise<void> {
+  async deleteInstance(
+    id: string,
+    deleteData: boolean,
+    synchronizeTailscaleDns?: (input: {
+      mode: "prepare" | "rollback"
+      stackIds: ReadonlyArray<string>
+    }) => Promise<void>
+  ): Promise<void> {
     const instance = await this.#docker.findInstance(id)
     if (!instance) throw new Error("Instance not found")
     if (!instance.managedByRelay) {
@@ -1742,9 +1749,30 @@ export class LifecycleDriver {
         "Remove this logical network from Infrastructure → Tailscale so every node is cleaned up"
       )
     }
-    const detachedStacks =
-      await this.#detachInstanceFromTailscaleStacks(instance)
+    const affectedStackIds = (await this.#tailscaleStackConfigs())
+      .filter((config) =>
+        config.bindings.some((binding) => binding.instanceId === instance.id)
+      )
+      .map(({ id: stackId }) => stackId)
+    if (affectedStackIds.length > 0 && !synchronizeTailscaleDns) {
+      throw new Error(
+        "Hearth must synchronize peer Tailscale DNS before deleting this server"
+      )
+    }
+    if (affectedStackIds.length > 0) {
+      await synchronizeTailscaleDns?.({
+        mode: "prepare",
+        stackIds: affectedStackIds,
+      })
+    }
+
+    let detachedStacks: Array<{
+      next: RelayTailscaleStackConfig
+      previous: RelayTailscaleStackConfig
+      records: Array<{ address: string; hostname: string }>
+    }> = []
     try {
+      detachedStacks = await this.#detachInstanceFromTailscaleStacks(instance)
       await command("docker", ["stop", "--time", "30", instance.service], {
         timeout: 45_000,
       }).catch(() => undefined)
@@ -1754,6 +1782,22 @@ export class LifecycleDriver {
     } catch (cause) {
       const rollbackFailures =
         await this.#restoreInstanceTailscaleStacks(detachedStacks)
+      if (affectedStackIds.length > 0) {
+        try {
+          await synchronizeTailscaleDns?.({
+            mode: "rollback",
+            stackIds: affectedStackIds,
+          })
+        } catch (rollbackCause) {
+          rollbackFailures.push(
+            `peer DNS: ${
+              rollbackCause instanceof Error
+                ? rollbackCause.message
+                : "unknown rollback error"
+            }`
+          )
+        }
+      }
       throw new Error(
         `Could not delete the server: ${
           cause instanceof Error ? cause.message : "unknown error"

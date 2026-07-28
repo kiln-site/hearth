@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test"
 
 import {
   applyTailscaleDeploymentPlan,
+  synchronizeInstanceDeletionDns,
   type DesiredTailscaleDeployment,
   type TailscaleDeploymentState,
 } from "./tailscale-orchestration"
@@ -423,6 +424,81 @@ describe("Tailscale deployment orchestration", () => {
     expect([...synchronized.entries()]).toEqual([
       ["relay-a", ["10.165.55.10", "10.165.55.11"]],
       ["relay-b", ["10.165.55.10", "10.165.55.11"]],
+    ])
+  })
+
+  it("removes a deleted server from peer Relay DNS", async () => {
+    const synchronized = new Map<
+      string,
+      Array<{ address: string; hostname: string }>
+    >()
+    const current = [
+      deployment("relay-a", "old", "10.165.55.10"),
+      deployment("relay-b", "old", "10.165.55.11"),
+    ]
+
+    await synchronizeInstanceDeletionDns({
+      current,
+      instanceId: "relay-a",
+      mode: "prepare",
+      operations: {
+        syncDns: async (value, records) => {
+          synchronized.set(value.relayId, records)
+          return value
+        },
+      },
+      relayId: "relay-a",
+      stackIds: ["a".repeat(40)],
+    })
+
+    expect([...synchronized.entries()]).toEqual([
+      ["relay-b", [{ address: "10.165.55.11", hostname: "old" }]],
+    ])
+  })
+
+  it("restores peer DNS when preparing a server deletion fails", async () => {
+    const calls: Array<{ addresses: Array<string>; relayId: string }> = []
+    const current = [
+      deployment("relay-a", "old", "10.165.55.10"),
+      deployment("relay-b", "old", "10.165.55.11"),
+      deployment("relay-c", "old", "10.165.55.12"),
+    ]
+
+    await expect(
+      synchronizeInstanceDeletionDns({
+        current,
+        instanceId: "relay-a",
+        mode: "prepare",
+        operations: {
+          syncDns: async (value, records) => {
+            calls.push({
+              addresses: records.map(({ address }) => address),
+              relayId: value.relayId,
+            })
+            if (value.relayId === "relay-c") {
+              throw new Error("peer unavailable")
+            }
+            return value
+          },
+        },
+        relayId: "relay-a",
+        stackIds: ["a".repeat(40)],
+      })
+    ).rejects.toThrow("peer unavailable")
+
+    expect(calls).toEqual([
+      {
+        addresses: ["10.165.55.11", "10.165.55.12"],
+        relayId: "relay-b",
+      },
+      {
+        addresses: ["10.165.55.11", "10.165.55.12"],
+        relayId: "relay-c",
+      },
+      {
+        addresses: ["10.165.55.10", "10.165.55.11", "10.165.55.12"],
+        relayId: "relay-b",
+      },
     ])
   })
 })

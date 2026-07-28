@@ -384,7 +384,6 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
       id,
       name: data.name,
       operations: tailscaleDeploymentOperations(
-        id,
         relayById,
         integrationCredential
           ? (deployment) =>
@@ -508,7 +507,6 @@ export const removeTailscaleStack = createServerFn({ method: "POST" })
       id: data.id,
       name: definition?.name ?? fallback?.name ?? "Tailscale network",
       operations: tailscaleDeploymentOperations(
-        data.id,
         relayById,
         credential
           ? (deployment) =>
@@ -674,7 +672,6 @@ async function loadTailscaleDeployments(
 }
 
 function tailscaleDeploymentOperations(
-  id: string,
   relayById: ReadonlyMap<string, PersistedRelay>,
   removeFromControlPlane?: (deployment: TailscaleDeployment) => Promise<void>
 ): TailscaleDeploymentOperations<TailscaleDeployment> {
@@ -711,7 +708,7 @@ function tailscaleDeploymentOperations(
         await relayRpc(
           relay,
           "relay.tailscale.stack.dns",
-          { id, records },
+          { id: deployment.id, records },
           60_000
         )
       )
