@@ -697,9 +697,13 @@ function InstancePowerControls({
   const relayActionMutation = useMutation({
     mutationFn: performRelayAction,
     onSuccess: (updated) => {
+      const reconciled = reconcilePendingPowerInstance(
+        instance.relayId,
+        updated
+      )
       queryClient.setQueryData<RelayFleetSnapshot>(
         queryKeys.relay.snapshot,
-        (snapshot) => replaceRelaySnapshotInstance(snapshot, updated)
+        (snapshot) => replaceRelaySnapshotInstance(snapshot, reconciled)
       )
     },
   })

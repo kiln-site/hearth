@@ -57,9 +57,10 @@ export function shouldRecordConsoleStateTransition(
   next: RelayObservedState
 ) {
   if (previous === next) return false
+  if (previous === "stopping" && next === "running") return false
   if (
     (previous === "stopped" || previous === "failed") &&
-    next === "stopping"
+    (next === "running" || next === "stopping")
   ) {
     return false
   }

@@ -30,12 +30,18 @@ describe("console lifecycle lines", () => {
   })
 
   it("ignores stale states that move a stopping lifecycle backwards", () => {
+    expect(shouldRecordConsoleStateTransition("stopping", "running")).toBe(
+      false
+    )
     expect(shouldRecordConsoleStateTransition("stopped", "stopping")).toBe(
       false
     )
+    expect(shouldRecordConsoleStateTransition("stopped", "running")).toBe(false)
+    expect(shouldRecordConsoleStateTransition("failed", "running")).toBe(false)
     expect(shouldRecordConsoleStateTransition("stopping", "stopped")).toBe(true)
     expect(shouldRecordConsoleStateTransition("stopping", "starting")).toBe(
       true
     )
+    expect(shouldRecordConsoleStateTransition("stopped", "starting")).toBe(true)
   })
 })
