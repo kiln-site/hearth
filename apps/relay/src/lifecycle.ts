@@ -63,6 +63,25 @@ const TAILSCALE_IMAGE = "tailscale/tailscale:stable"
 const COREDNS_IMAGE = "coredns/coredns:1.14.2"
 const TAILSCALE_STACK_DISK_BYTES = 128 * 1024 * 1024
 const TAILSCALE_STACK_MEMORY_BYTES = 64 * 1024 * 1024
+const TAILSCALE_STACK_FORWARD_CHAIN = "KILN-TAILSCALE"
+
+export function tailscaleStackFirewallRules(
+  bindings: ReadonlyArray<Pick<RelayTailscaleStackConfig["bindings"][number], "address">>
+): Array<Array<string>> {
+  return [
+    ...bindings.map(({ address }) => [
+      "-A",
+      TAILSCALE_STACK_FORWARD_CHAIN,
+      "-d",
+      `${address}/32`,
+      "-j",
+      // Continue through Tailscale's own forwarding chain so it can mark the
+      // packet for masquerading. ACCEPT here would bypass that return path.
+      "RETURN",
+    ]),
+    ["-A", TAILSCALE_STACK_FORWARD_CHAIN, "-j", "DROP"],
+  ]
+}
 
 function dockerMemoryBytes(value: string): number {
   const match = value.match(/^(\d+)([bkmgt])$/iu)
@@ -2189,7 +2208,7 @@ export class LifecycleDriver {
     config: RelayTailscaleStackConfig
   ): Promise<void> {
     const container = this.#resources.tailscaleStackContainer(config.id)
-    const chain = "KILN-TAILSCALE"
+    const chain = TAILSCALE_STACK_FORWARD_CHAIN
     await command("docker", [
       "exec",
       container,
@@ -2229,28 +2248,14 @@ export class LifecycleDriver {
       "-F",
       chain,
     ])
-    for (const binding of config.bindings) {
+    for (const rule of tailscaleStackFirewallRules(config.bindings)) {
       await command("docker", [
         "exec",
         container,
         "iptables",
-        "-A",
-        chain,
-        "-d",
-        `${binding.address}/32`,
-        "-j",
-        "ACCEPT",
+        ...rule,
       ])
     }
-    await command("docker", [
-      "exec",
-      container,
-      "iptables",
-      "-A",
-      chain,
-      "-j",
-      "DROP",
-    ])
     await command(
       "docker",
       [

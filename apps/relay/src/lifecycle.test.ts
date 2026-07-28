@@ -16,6 +16,7 @@ import {
   allocateTailscaleBindingAddress,
   assignTailscaleBindingAddresses,
   tailscaleStackCoreDnsConfiguration,
+  tailscaleStackFirewallRules,
   tailscaleStackServiceAddress,
   tailscaleStackSubnet,
   tailscaleCoreDnsConfiguration,
@@ -182,6 +183,33 @@ describe("Tailscale contracts", () => {
 })
 
 describe("Tailscale Brick networking", () => {
+  it("allows selected servers before dropping other traffic without bypassing Tailscale forwarding", () => {
+    expect(
+      tailscaleStackFirewallRules([
+        { address: "10.165.55.10" },
+        { address: "10.165.55.11" },
+      ])
+    ).toEqual([
+      [
+        "-A",
+        "KILN-TAILSCALE",
+        "-d",
+        "10.165.55.10/32",
+        "-j",
+        "RETURN",
+      ],
+      [
+        "-A",
+        "KILN-TAILSCALE",
+        "-d",
+        "10.165.55.11/32",
+        "-j",
+        "RETURN",
+      ],
+      ["-A", "KILN-TAILSCALE", "-j", "DROP"],
+    ])
+  })
+
   it("assigns stable node-specific subnets and reserves service addresses", () => {
     const stackId = "a".repeat(40)
     const first = tailscaleStackSubnet(stackId, "node-a")

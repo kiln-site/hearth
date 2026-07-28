@@ -43,6 +43,11 @@ const TailscaleDeviceRoutesSchema = Schema.Struct({
   enabledRoutes: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 
+const TailscaleSplitDnsSchema = Schema.Record(
+  Schema.String,
+  Schema.Array(Schema.String)
+)
+
 class TailscaleRoutePendingError extends Schema.TaggedErrorClass<TailscaleRoutePendingError>()(
   "TailscaleRoutePendingError",
   {
@@ -63,6 +68,7 @@ interface TailscaleControlPlaneNetwork {
   domain: string
   id: string
   name: string
+  previousDomain?: string
 }
 
 interface TailscaleSession {
@@ -78,10 +84,26 @@ export interface VerifiedTailscaleOAuthCredential {
   tags: Array<string>
 }
 
+export interface TailscaleControlPlaneInspection {
+  dns: {
+    currentResolvers: Array<string>
+    desiredResolvers: Array<string>
+    previousDomain: string | null
+    previousResolvers: Array<string>
+  }
+  routes: Array<{
+    advertised: boolean
+    approved: boolean
+    hostname: string
+    subnet: string
+    tailnetIp: string | null
+  }>
+}
+
 export const verifyTailscaleOAuthCredentialEffect = Effect.fn(
   "tailscale.oauth.verify"
-)(function* (clientId: string, clientSecret: string) {
-  const session = yield* tailscaleSessionEffect(clientId, clientSecret)
+)(function* (clientId: string, clientSecret: string, tags: Array<string>) {
+  const session = yield* tailscaleSessionEffect(clientId, clientSecret, tags)
   return {
     clientId: session.clientId,
     scopes: session.scopes,
@@ -94,7 +116,8 @@ export const createTailscaleNodeAuthKeyEffect = Effect.fn(
 )(function* (credential: TailscaleOAuthCredential, nodeName: string) {
   const session = yield* tailscaleSessionEffect(
     credential.clientId,
-    credential.clientSecret
+    credential.clientSecret,
+    credential.tags
   )
   const result = yield* requestTailscaleJson(
     `${tailscaleApiBaseUrl}/tailnet/-/keys`,
@@ -140,7 +163,8 @@ export const syncTailscaleControlPlaneEffect = Effect.fn(
   })
   const session = yield* tailscaleSessionEffect(
     credential.clientId,
-    credential.clientSecret
+    credential.clientSecret,
+    credential.tags
   )
   for (const deployment of network.deployments) {
     yield* approveDeploymentRouteEffect(session, deployment).pipe(
@@ -170,14 +194,72 @@ export const syncTailscaleControlPlaneEffect = Effect.fn(
   yield* requestTailscaleJson(
     `${tailscaleApiBaseUrl}/tailnet/-/dns/split-dns`,
     session.accessToken,
-    Schema.Unknown,
+    TailscaleSplitDnsSchema,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ [network.domain]: resolvers }),
+      body: JSON.stringify({
+        [network.domain]: resolvers,
+        ...(network.previousDomain && network.previousDomain !== network.domain
+          ? { [network.previousDomain]: null }
+          : {}),
+      }),
     }
   )
   return { resolvers }
+})
+
+export const inspectTailscaleControlPlaneEffect = Effect.fn(
+  "tailscale.controlPlane.inspect"
+)(function* (
+  credential: TailscaleOAuthCredential,
+  network: TailscaleControlPlaneNetwork
+) {
+  const session = yield* tailscaleSessionEffect(
+    credential.clientId,
+    credential.clientSecret,
+    credential.tags
+  )
+  const [splitDns, devicesResult] = yield* Effect.all([
+    requestTailscaleJson(
+      `${tailscaleApiBaseUrl}/tailnet/-/dns/split-dns`,
+      session.accessToken,
+      TailscaleSplitDnsSchema
+    ),
+    requestTailscaleJson(
+      `${tailscaleApiBaseUrl}/tailnet/-/devices?fields=all`,
+      session.accessToken,
+      TailscaleDevicesSchema
+    ),
+  ])
+  const routes = yield* Effect.forEach(
+    network.deployments,
+    (deployment) =>
+      inspectDeploymentRouteEffect(session, devicesResult.devices, deployment),
+    { concurrency: 4 }
+  )
+  const desiredResolvers = [
+    ...new Set(
+      network.deployments.flatMap(({ status }) =>
+        status.ipv4Address ? [status.ipv4Address] : []
+      )
+    ),
+  ].sort()
+  return {
+    dns: {
+      currentResolvers: [...(splitDns[network.domain] ?? [])].sort(),
+      desiredResolvers,
+      previousDomain:
+        network.previousDomain && network.previousDomain !== network.domain
+          ? network.previousDomain
+          : null,
+      previousResolvers:
+        network.previousDomain && network.previousDomain !== network.domain
+          ? [...(splitDns[network.previousDomain] ?? [])].sort()
+          : [],
+    },
+    routes,
+  } satisfies TailscaleControlPlaneInspection
 })
 
 export function missingTailscaleOAuthScopes(
@@ -206,11 +288,15 @@ export function findTailscaleDevice(
 
 const tailscaleSessionEffect = Effect.fn("tailscale.oauth.session")(function* (
   clientId: string,
-  clientSecret: string
+  clientSecret: string,
+  tags: Array<string>
 ) {
   const form = new URLSearchParams({
     client_id: clientId,
     client_secret: clientSecret,
+    grant_type: "client_credentials",
+    scope: requiredTailscaleOAuthScopes.join(" "),
+    tags: tags.join(" "),
   })
   const token = yield* requestTailscaleJson(
     tailscaleOAuthTokenUrl,
@@ -222,16 +308,12 @@ const tailscaleSessionEffect = Effect.fn("tailscale.oauth.session")(function* (
       body: form,
     }
   )
-  const client = yield* requestTailscaleJson(
-    `${tailscaleApiBaseUrl}/tailnet/-/keys/${encodeURIComponent(clientId)}`,
-    token.access_token,
-    TailscaleKeySchema
-  )
+  // The token endpoint has already authorized the exact scopes and tags in
+  // the request. OAuth token responses may omit `scope` when it is unchanged.
   const scopes = [
-    ...new Set([
-      ...(client.scopes ?? []),
-      ...(token.scope?.split(/\s+/u).filter(Boolean) ?? []),
-    ]),
+    ...new Set(
+      token.scope?.split(/\s+/u).filter(Boolean) ?? requiredTailscaleOAuthScopes
+    ),
   ].sort()
   const missing = missingTailscaleOAuthScopes(scopes)
   if (missing.length > 0) {
@@ -239,8 +321,8 @@ const tailscaleSessionEffect = Effect.fn("tailscale.oauth.session")(function* (
       `Kiln requires these OAuth scopes: ${missing.join(", ")}`
     )
   }
-  const tags = [...new Set(client.tags ?? [])].sort()
-  if (tags.length === 0) {
+  const authorizedTags = [...new Set(tags)].sort()
+  if (authorizedTags.length === 0) {
     return yield* tailscaleFailure(
       "The Kiln OAuth client must include at least one device tag"
     )
@@ -249,8 +331,39 @@ const tailscaleSessionEffect = Effect.fn("tailscale.oauth.session")(function* (
     accessToken: token.access_token,
     clientId,
     scopes,
-    tags,
+    tags: authorizedTags,
   } satisfies TailscaleSession
+})
+
+const inspectDeploymentRouteEffect = Effect.fn(
+  "tailscale.controlPlane.inspectRoute"
+)(function* (
+  session: TailscaleSession,
+  devices: ReadonlyArray<typeof TailscaleDeviceSchema.Type>,
+  deployment: TailscaleControlPlaneDeployment
+) {
+  const device = findTailscaleDevice(devices, deployment)
+  if (!device) {
+    return {
+      advertised: false,
+      approved: false,
+      hostname: deployment.hostname,
+      subnet: deployment.subnet,
+      tailnetIp: deployment.status.ipv4Address,
+    }
+  }
+  const routes = yield* requestTailscaleJson(
+    `${tailscaleApiBaseUrl}/device/${encodeURIComponent(device.id)}/routes`,
+    session.accessToken,
+    TailscaleDeviceRoutesSchema
+  )
+  return {
+    advertised: routes.advertisedRoutes?.includes(deployment.subnet) ?? false,
+    approved: routes.enabledRoutes?.includes(deployment.subnet) ?? false,
+    hostname: deployment.hostname,
+    subnet: deployment.subnet,
+    tailnetIp: deployment.status.ipv4Address,
+  }
 })
 
 const approveDeploymentRouteEffect = Effect.fn(

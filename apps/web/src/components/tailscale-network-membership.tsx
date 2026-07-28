@@ -7,12 +7,18 @@ import {
 } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import {
+  Check,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   ExternalLink,
+  Globe2,
   KeyRound,
   LoaderCircle,
   Network,
   Plus,
   RefreshCw,
+  Route,
   Search,
   Settings2,
   ShieldCheck,
@@ -24,6 +30,7 @@ import { Button } from "@workspace/ui/components/button"
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -68,6 +75,8 @@ import {
 } from "@/lib/tailscale-operation-toasts"
 import {
   configureTailscaleIntegration,
+  getTailscaleIntegrationStatus,
+  previewTailscaleIntegration,
   saveTailscaleStack,
   syncTailscaleIntegration,
   type TailscaleStackOverview,
@@ -105,11 +114,7 @@ export function TailscaleNetworkMembershipPage({
   return (
     <main className="min-h-0 flex-1 overflow-y-auto bg-background/55 p-3 sm:p-5">
       <section className="mx-auto max-w-[90rem] overflow-hidden rounded-xl border bg-card/45 [contain:paint]">
-        <TailscaleOAuthSetup
-          key={stack.id}
-          integration={stack.integration}
-          stackId={stack.id}
-        />
+        <TailscaleOAuthSetup key={stack.id} stack={stack} />
         <MembershipToolbar searchStore={searchStore} stackName={stack.name} />
         {save.error ? (
           <p
@@ -135,75 +140,25 @@ export function TailscaleNetworkMembershipPage({
 }
 
 const TailscaleOAuthSetup = React.memo(function TailscaleOAuthSetup({
-  integration,
-  stackId,
+  stack,
 }: {
-  integration: TailscaleStackOverview["integration"]
-  stackId: string
+  stack: TailscaleStackOverview
 }) {
   const queryClient = useQueryClient()
-  const clientIdFieldId = React.useId()
-  const clientSecretFieldId = React.useId()
-  const [editing, setEditing] = React.useState(false)
-  const [clientId, setClientId] = React.useState("")
-  const [clientSecret, setClientSecret] = React.useState("")
-  const configure = useMutation({
-    mutationFn: () =>
-      configureTailscaleIntegration({
-        data: {
-          clientId: clientId.trim(),
-          clientSecret: clientSecret.trim(),
-          id: stackId,
-        },
-      }),
-    onMutate: () => {
-      showToast({
-        id: tailscaleSetupToastId(stackId),
-        message: "Connecting Kiln to Tailscale…",
-        type: "loading",
-      })
-    },
-    onSuccess: (next) => {
-      queryClient.setQueryData(queryKeys.tailscaleStacks, next)
-      setClientSecret("")
-      setEditing(false)
-      const lastError = next.stacks.find(({ id }) => id === stackId)
-        ?.integration?.lastError
-      dismissToast(tailscaleSetupToastId(stackId))
-      showToast({
-        id: tailscaleSetupToastId(stackId),
-        message: lastError
-          ? "Kiln connected; Tailscale configuration needs attention"
-          : "Kiln connected to Tailscale",
-        type: lastError ? "warning" : "success",
-      })
-    },
-    onError: async (cause) => {
-      await queryClient.invalidateQueries({
-        queryKey: queryKeys.tailscaleStacks,
-      })
-      dismissToast(tailscaleSetupToastId(stackId))
-      showToast({
-        id: tailscaleSetupToastId(stackId),
-        message: errorMessage(cause),
-        type: "error",
-      })
-    },
-  })
   const sync = useMutation({
-    mutationFn: () => syncTailscaleIntegration({ data: { id: stackId } }),
+    mutationFn: () => syncTailscaleIntegration({ data: { id: stack.id } }),
     onMutate: () => {
       showToast({
-        id: tailscaleSetupToastId(stackId),
+        id: tailscaleSetupToastId(stack.id),
         message: "Syncing Tailscale…",
         type: "loading",
       })
     },
     onSuccess: (next) => {
       queryClient.setQueryData(queryKeys.tailscaleStacks, next)
-      dismissToast(tailscaleSetupToastId(stackId))
+      dismissToast(tailscaleSetupToastId(stack.id))
       showToast({
-        id: tailscaleSetupToastId(stackId),
+        id: tailscaleSetupToastId(stack.id),
         message: "Tailscale configuration synced",
         type: "success",
       })
@@ -212,98 +167,452 @@ const TailscaleOAuthSetup = React.memo(function TailscaleOAuthSetup({
       await queryClient.invalidateQueries({
         queryKey: queryKeys.tailscaleStacks,
       })
-      dismissToast(tailscaleSetupToastId(stackId))
+      dismissToast(tailscaleSetupToastId(stack.id))
       showToast({
-        id: tailscaleSetupToastId(stackId),
+        id: tailscaleSetupToastId(stack.id),
         message: errorMessage(cause),
         type: "error",
       })
     },
   })
-  const pending = configure.isPending || sync.isPending
+  const [open, setOpen] = React.useState(false)
+  const integration = stack.integration
+  const needsAttention = Boolean(integration?.lastError)
 
-  if (integration && !editing) {
-    const needsAttention = Boolean(integration.lastError)
-    return (
+  return (
+    <>
       <div className="flex min-h-16 items-center gap-3 border-b bg-background/40 px-4 py-3">
         <span className="grid size-9 shrink-0 place-items-center rounded-lg border border-border/70 bg-background/60">
           {needsAttention ? (
             <TriangleAlert className="size-4 text-amber-400" />
-          ) : (
+          ) : integration ? (
             <ShieldCheck className="size-4 text-emerald-400" />
+          ) : (
+            <KeyRound className="size-4 text-primary" />
           )}
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
-            <h2 className="truncate text-xs font-semibold">
-              Kiln authentication
-            </h2>
+            <h2 className="truncate text-xs font-semibold">Tailnet setup</h2>
             <span
               className={
                 needsAttention
                   ? "font-mono text-[9px] text-amber-400 uppercase"
-                  : "font-mono text-[9px] text-emerald-400 uppercase"
+                  : integration
+                    ? "font-mono text-[9px] text-emerald-400 uppercase"
+                    : "font-mono text-[9px] text-muted-foreground uppercase"
               }
             >
-              {needsAttention ? "Sync required" : "Connected"}
+              {needsAttention
+                ? "Needs attention"
+                : integration
+                  ? "Connected"
+                  : "Not configured"}
             </span>
           </div>
           <p className="truncate font-mono text-[9px] text-muted-foreground">
-            {integration.clientId}
-            {integration.tags.length ? ` · ${integration.tags.join(", ")}` : ""}
+            {integration
+              ? `${integration.clientId} · ${integration.tags.join(", ")}`
+              : `*.${stack.domain}`}
           </p>
         </div>
+        {integration ? (
+          <Button
+            type="button"
+            size="sm"
+            variant={needsAttention ? "default" : "outline"}
+            disabled={sync.isPending}
+            onClick={() => sync.mutate()}
+          >
+            {sync.isPending ? (
+              <LoaderCircle className="animate-spin" />
+            ) : (
+              <RefreshCw />
+            )}
+            Sync
+          </Button>
+        ) : null}
         <Button
           type="button"
           size="sm"
-          variant="ghost"
-          disabled={pending}
-          onClick={() => {
-            setClientId(integration.clientId)
-            setEditing(true)
-          }}
+          variant={integration ? "ghost" : "default"}
+          onClick={() => setOpen(true)}
         >
-          Reconfigure
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant={needsAttention ? "default" : "outline"}
-          disabled={pending}
-          onClick={() => sync.mutate()}
-        >
-          {sync.isPending ? (
-            <LoaderCircle className="animate-spin" />
-          ) : (
-            <RefreshCw />
-          )}
-          Sync
+          {integration ? <Settings2 /> : <KeyRound />}
+          {integration ? "Manage" : "Set up"}
         </Button>
       </div>
-    )
+      {open ? (
+        <TailscaleSetupDialog open stack={stack} onOpenChange={setOpen} />
+      ) : null}
+    </>
+  )
+})
+
+type SetupPreview = Awaited<ReturnType<typeof previewTailscaleIntegration>>
+
+const setupSteps = ["Credentials", "Domain", "DNS", "Routes", "Ready"] as const
+
+const TailscaleSetupDialog = React.memo(function TailscaleSetupDialog({
+  open,
+  stack,
+  onOpenChange,
+}: {
+  open: boolean
+  stack: TailscaleStackOverview
+  onOpenChange: (open: boolean) => void
+}) {
+  const queryClient = useQueryClient()
+  const [step, setStep] = React.useState(0)
+  const [clientId, setClientId] = React.useState(
+    stack.integration?.clientId ?? ""
+  )
+  const [clientSecret, setClientSecret] = React.useState("")
+  const [tag, setTag] = React.useState(stack.integration?.tags[0] ?? "tag:kiln")
+  const [domain, setDomain] = React.useState(stack.domain)
+  const [preview, setPreview] = React.useState<SetupPreview | null>(null)
+  const [dnsApproved, setDnsApproved] = React.useState(false)
+  const [routesApproved, setRoutesApproved] = React.useState(false)
+  const [complete, setComplete] = React.useState(false)
+  const clientIdFieldId = React.useId()
+  const clientSecretFieldId = React.useId()
+  const tagFieldId = React.useId()
+  const domainFieldId = React.useId()
+
+  const authenticate = useMutation({
+    mutationFn: (candidateDomain: string) =>
+      previewTailscaleIntegration({
+        data: {
+          clientId: clientId.trim(),
+          clientSecret: clientSecret.trim(),
+          domain: normalizeTailscaleDomain(candidateDomain),
+          id: stack.id,
+          tag: tag.trim(),
+        },
+      }),
+    onSuccess: (result) => setPreview(result),
+  })
+  const apply = useMutation({
+    mutationFn: async () => {
+      const nextDomain = normalizeTailscaleDomain(domain)
+      if (nextDomain !== stack.domain) {
+        await saveTailscaleStack({
+          data: stackSaveInput(stack, stack.bindings, undefined, nextDomain),
+        })
+      }
+      const input = {
+        clientId: clientId.trim(),
+        clientSecret: clientSecret.trim(),
+        domain: nextDomain,
+        id: stack.id,
+        previousDomain: stack.domain,
+        tag: tag.trim(),
+      }
+      const result = await configureTailscaleIntegration({ data: input }).catch(
+        async (cause: unknown) => {
+          if (!isNetworkChangeError(cause)) throw cause
+          return recoverTailscaleIntegrationStatus(stack.id, cause)
+        }
+      )
+      if (!tailscaleSetupVerified(result.inspection)) {
+        throw new Error(
+          "Tailscale accepted the changes, but DNS or route verification is still pending"
+        )
+      }
+      return result
+    },
+    onMutate: () => {
+      showToast({
+        id: tailscaleSetupToastId(stack.id),
+        message: "Configuring your Tailnet…",
+        type: "loading",
+      })
+    },
+    onSuccess: (result) => {
+      queryClient.setQueryData(queryKeys.tailscaleStacks, result.stacks)
+      setPreview((current) =>
+        current ? { ...current, inspection: result.inspection } : current
+      )
+      setClientSecret("")
+      setComplete(true)
+      dismissToast(tailscaleSetupToastId(stack.id))
+      showToast({
+        id: tailscaleSetupToastId(stack.id),
+        message: "Your Tailscale network is ready",
+        type: "success",
+      })
+    },
+    onError: async (cause) => {
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.tailscaleStacks,
+      })
+      dismissToast(tailscaleSetupToastId(stack.id))
+      showToast({
+        id: tailscaleSetupToastId(stack.id),
+        message: errorMessage(cause),
+        type: "error",
+      })
+    },
+  })
+
+  const inspection = preview?.inspection
+  const pending = authenticate.isPending || apply.isPending
+  const error = authenticate.error ?? apply.error
+
+  const goBack = () => {
+    if (pending || complete) return
+    setStep((current) => Math.max(0, current - 1))
   }
 
   return (
-    <form
-      className="border-b bg-background/40 p-4"
-      onSubmit={(event) => {
-        event.preventDefault()
-        configure.mutate()
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!pending) onOpenChange(nextOpen)
       }}
     >
-      <div className="mb-3 flex min-w-0 items-center gap-2">
-        <ShieldCheck className="size-4 shrink-0 text-primary" />
-        <h2 className="shrink-0 text-xs font-semibold">Kiln authentication</h2>
-        <span className="hidden truncate font-mono text-[8px] text-muted-foreground xl:block">
-          auth_keys · devices:core:read · devices:routes · dns
-        </span>
-        <Button
-          asChild
-          type="button"
-          size="sm"
-          variant="ghost"
-          className="ml-auto shrink-0"
-        >
+      <DialogContent className="overflow-hidden p-0 sm:max-w-2xl">
+        <DialogHeader className="border-b border-border/70 px-5 pt-5 pb-4">
+          <DialogTitle>Set up Tailscale</DialogTitle>
+          <DialogDescription>
+            Connect {stack.name} to its private DNS and routes.
+          </DialogDescription>
+        </DialogHeader>
+        <SetupStepRail activeStep={step} complete={complete} />
+        <div className="min-h-[22rem] px-5 py-5">
+          {step === 0 ? (
+            <SetupCredentialsStep
+              authenticated={Boolean(preview)}
+              clientId={clientId}
+              clientIdFieldId={clientIdFieldId}
+              clientSecret={clientSecret}
+              clientSecretFieldId={clientSecretFieldId}
+              error={authenticate.error}
+              pending={authenticate.isPending}
+              tag={tag}
+              tagFieldId={tagFieldId}
+              onClientIdChange={(value) => {
+                setClientId(value)
+                setPreview(null)
+                authenticate.reset()
+              }}
+              onClientSecretChange={(value) => {
+                setClientSecret(value)
+                setPreview(null)
+                authenticate.reset()
+              }}
+              onTagChange={(value) => {
+                setTag(value)
+                setPreview(null)
+                authenticate.reset()
+              }}
+              onAuthenticate={() =>
+                authenticate.mutate(normalizeTailscaleDomain(domain))
+              }
+            />
+          ) : null}
+          {step === 1 ? (
+            <SetupDomainStep
+              domain={domain}
+              fieldId={domainFieldId}
+              onChange={(value) => {
+                setDomain(value)
+                setDnsApproved(false)
+                setRoutesApproved(false)
+              }}
+            />
+          ) : null}
+          {step === 2 && inspection ? (
+            <SetupDnsStep
+              approved={dnsApproved}
+              domain={normalizeTailscaleDomain(domain)}
+              inspection={inspection}
+              onApprovedChange={setDnsApproved}
+            />
+          ) : null}
+          {step === 3 && inspection ? (
+            <SetupRoutesStep
+              approved={routesApproved}
+              routes={inspection.routes}
+              onApprovedChange={setRoutesApproved}
+            />
+          ) : null}
+          {step === 4 ? (
+            <SetupReadyStep
+              complete={complete}
+              domain={normalizeTailscaleDomain(domain)}
+              inspection={inspection}
+              networkName={stack.name}
+              pending={apply.isPending}
+            />
+          ) : null}
+          {error && step !== 0 ? (
+            <SetupResult
+              tone="error"
+              title="Setup could not continue"
+              value={errorMessage(error)}
+            />
+          ) : null}
+        </div>
+        <DialogFooter className="sm:justify-between">
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={pending || complete || step === 0}
+            onClick={goBack}
+          >
+            <ChevronLeft />
+            Back
+          </Button>
+          <div className="flex flex-col-reverse gap-2 sm:flex-row">
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={pending}
+              onClick={() => onOpenChange(false)}
+            >
+              {complete ? "Close" : "Cancel"}
+            </Button>
+            {!complete ? (
+              <Button
+                type="button"
+                disabled={
+                  pending ||
+                  (step === 0 && !preview) ||
+                  (step === 1 && !normalizeTailscaleDomain(domain)) ||
+                  (step === 2 && !dnsApproved) ||
+                  (step === 3 && !routesApproved)
+                }
+                onClick={() => {
+                  if (step === 1) {
+                    authenticate.mutate(normalizeTailscaleDomain(domain), {
+                      onSuccess: () => setStep(2),
+                    })
+                    return
+                  }
+                  if (step === 4) {
+                    apply.mutate()
+                    return
+                  }
+                  setStep((current) =>
+                    Math.min(setupSteps.length - 1, current + 1)
+                  )
+                }}
+              >
+                {pending ? (
+                  <LoaderCircle className="animate-spin" />
+                ) : step === 4 ? (
+                  <Check />
+                ) : (
+                  <ChevronRight />
+                )}
+                {step === 0
+                  ? "Continue"
+                  : step === 1
+                    ? "Review DNS"
+                    : step === 2
+                      ? "Review routes"
+                      : step === 3
+                        ? "Final review"
+                        : "Apply setup"}
+              </Button>
+            ) : null}
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+})
+
+function SetupStepRail({
+  activeStep,
+  complete,
+}: {
+  activeStep: number
+  complete: boolean
+}) {
+  return (
+    <ol
+      className="grid grid-cols-5 border-b border-border/70 bg-background/35"
+      aria-label="Tailscale setup progress"
+    >
+      {setupSteps.map((label, index) => {
+        const finished = complete || index < activeStep
+        const active = index === activeStep
+        return (
+          <li
+            key={label}
+            aria-current={active ? "step" : undefined}
+            className="relative flex min-w-0 flex-col items-center gap-1 px-1 py-3"
+          >
+            <span
+              className={
+                finished
+                  ? "grid size-5 place-items-center rounded-full bg-emerald-500/15 text-emerald-400"
+                  : active
+                    ? "grid size-5 place-items-center rounded-full bg-primary text-primary-foreground"
+                    : "grid size-5 place-items-center rounded-full border border-border text-muted-foreground"
+              }
+            >
+              {finished ? (
+                <Check className="size-3" />
+              ) : (
+                <span className="font-mono text-[9px]">{index + 1}</span>
+              )}
+            </span>
+            <span
+              className={
+                active || finished
+                  ? "truncate text-[9px] font-medium"
+                  : "truncate text-[9px] text-muted-foreground"
+              }
+            >
+              {label}
+            </span>
+            {active ? (
+              <span className="absolute inset-x-3 bottom-0 h-0.5 bg-primary" />
+            ) : null}
+          </li>
+        )
+      })}
+    </ol>
+  )
+}
+
+function SetupCredentialsStep({
+  authenticated,
+  clientId,
+  clientIdFieldId,
+  clientSecret,
+  clientSecretFieldId,
+  error,
+  pending,
+  tag,
+  tagFieldId,
+  onAuthenticate,
+  onClientIdChange,
+  onClientSecretChange,
+  onTagChange,
+}: {
+  authenticated: boolean
+  clientId: string
+  clientIdFieldId: string
+  clientSecret: string
+  clientSecretFieldId: string
+  error: Error | null
+  pending: boolean
+  tag: string
+  tagFieldId: string
+  onAuthenticate: () => void
+  onClientIdChange: (value: string) => void
+  onClientSecretChange: (value: string) => void
+  onTagChange: (value: string) => void
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <SetupHeading icon={KeyRound} title="OAuth credentials" />
+        <Button asChild type="button" size="sm" variant="ghost">
           <a
             href="https://login.tailscale.com/admin/settings/oauth"
             target="_blank"
@@ -314,32 +623,26 @@ const TailscaleOAuthSetup = React.memo(function TailscaleOAuthSetup({
           </a>
         </Button>
       </div>
-      <div className="grid items-end gap-3 lg:grid-cols-[minmax(12rem,0.8fr)_minmax(16rem,1fr)_auto]">
-        <label className="block min-w-0" htmlFor={clientIdFieldId}>
-          <span className="mb-1.5 block text-[10px] font-medium">
-            OAuth client ID
-          </span>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <SetupField label="Client ID" fieldId={clientIdFieldId}>
           <Input
             id={clientIdFieldId}
             aria-label="OAuth client ID"
             value={clientId}
-            onChange={(event) => setClientId(event.target.value)}
+            onChange={(event) => onClientIdChange(event.target.value)}
             autoCapitalize="none"
             autoCorrect="off"
             autoComplete="off"
             placeholder="k…CNTRL"
             className="font-mono"
           />
-        </label>
-        <label className="block min-w-0" htmlFor={clientSecretFieldId}>
-          <span className="mb-1.5 block text-[10px] font-medium">
-            OAuth client secret
-          </span>
+        </SetupField>
+        <SetupField label="Client secret" fieldId={clientSecretFieldId}>
           <Input
             id={clientSecretFieldId}
             aria-label="OAuth client secret"
             value={clientSecret}
-            onChange={(event) => setClientSecret(event.target.value)}
+            onChange={(event) => onClientSecretChange(event.target.value)}
             type="password"
             autoCapitalize="none"
             autoCorrect="off"
@@ -347,37 +650,384 @@ const TailscaleOAuthSetup = React.memo(function TailscaleOAuthSetup({
             placeholder="tskey-client-…"
             className="font-mono"
           />
-        </label>
-        <div className="flex items-center justify-end gap-2">
-          {integration ? (
-            <Button
-              type="button"
-              variant="ghost"
-              disabled={pending}
-              onClick={() => {
-                setClientSecret("")
-                setEditing(false)
-              }}
-            >
-              Cancel
-            </Button>
-          ) : null}
-          <Button
-            type="submit"
-            disabled={pending || !clientId.trim() || !clientSecret.trim()}
+        </SetupField>
+      </div>
+      <SetupField label="Device tag" fieldId={tagFieldId}>
+        <Input
+          id={tagFieldId}
+          aria-label="Tailscale device tag"
+          value={tag}
+          onChange={(event) => onTagChange(event.target.value)}
+          autoCapitalize="none"
+          autoCorrect="off"
+          autoComplete="off"
+          placeholder="tag:kiln"
+          className="max-w-xs font-mono"
+        />
+      </SetupField>
+      <div className="flex min-h-16 items-center gap-3 border border-border/70 bg-background/35 p-3">
+        <div className="min-w-0 flex-1">
+          {authenticated ? (
+            <SetupResult
+              tone="success"
+              title="Authentication successful"
+              value="The credential has every scope and the selected device tag Kiln needs."
+            />
+          ) : error ? (
+            <SetupResult
+              tone="error"
+              title="Authentication failed"
+              value={errorMessage(error)}
+            />
+          ) : (
+            <p className="font-mono text-[9px] text-muted-foreground">
+              auth_keys · devices:core:read · devices:routes · dns
+            </p>
+          )}
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant={authenticated ? "outline" : "default"}
+          disabled={
+            pending || !clientId.trim() || !clientSecret.trim() || !tag.trim()
+          }
+          onClick={onAuthenticate}
+        >
+          {pending ? (
+            <LoaderCircle className="animate-spin" />
+          ) : authenticated ? (
+            <Check />
+          ) : (
+            <KeyRound />
+          )}
+          {authenticated ? "Verified" : "Authenticate"}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function SetupDomainStep({
+  domain,
+  fieldId,
+  onChange,
+}: {
+  domain: string
+  fieldId: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <div className="space-y-5">
+      <SetupHeading icon={Globe2} title="Private domain" />
+      <SetupField label="Network TLD or subdomain" fieldId={fieldId}>
+        <Input
+          id={fieldId}
+          aria-label="Network TLD or subdomain"
+          value={domain}
+          onChange={(event) => onChange(event.target.value)}
+          autoCapitalize="none"
+          autoCorrect="off"
+          placeholder="test or mc.server"
+          className="max-w-sm font-mono"
+          autoFocus
+        />
+      </SetupField>
+      <div className="border border-border/70 bg-background/35 p-4">
+        <span className="font-mono text-[9px] text-muted-foreground uppercase">
+          Server address
+        </span>
+        <p className="mt-2 truncate font-mono text-sm">
+          1.21.11.paper.{normalizeTailscaleDomain(domain) || "test"}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function SetupDnsStep({
+  approved,
+  domain,
+  inspection,
+  onApprovedChange,
+}: {
+  approved: boolean
+  domain: string
+  inspection: SetupPreview["inspection"]
+  onApprovedChange: (approved: boolean) => void
+}) {
+  const {
+    currentResolvers,
+    desiredResolvers,
+    previousDomain,
+    previousResolvers,
+  } = inspection.dns
+  const replaces =
+    currentResolvers.length > 0 &&
+    !sameStrings(currentResolvers, desiredResolvers)
+  return (
+    <div className="space-y-4">
+      <SetupHeading icon={Globe2} title="Split DNS" />
+      <div className="divide-y divide-border/70 border border-border/70">
+        <SetupChangeRow
+          label={`.${domain}`}
+          before={
+            currentResolvers.length ? currentResolvers.join(", ") : "Not set"
+          }
+          after={desiredResolvers.join(", ") || "Waiting for a Tailnet IP"}
+          tone={replaces ? "warning" : "default"}
+        />
+        {previousDomain && previousResolvers.length ? (
+          <SetupChangeRow
+            label={`.${previousDomain}`}
+            before={previousResolvers.join(", ")}
+            after="Removed"
+            tone="warning"
+          />
+        ) : null}
+      </div>
+      {replaces ? (
+        <SetupResult
+          tone="warning"
+          title={`.${domain} already points somewhere else`}
+          value="Continuing replaces that Tailnet DNS entry. It does not change DNS outside Tailscale."
+        />
+      ) : null}
+      <SetupApproval
+        checked={approved}
+        title={replaces ? "Replace this DNS entry" : "Create this DNS entry"}
+        onCheckedChange={onApprovedChange}
+      />
+    </div>
+  )
+}
+
+function SetupRoutesStep({
+  approved,
+  routes,
+  onApprovedChange,
+}: {
+  approved: boolean
+  routes: SetupPreview["inspection"]["routes"]
+  onApprovedChange: (approved: boolean) => void
+}) {
+  return (
+    <div className="space-y-4">
+      <SetupHeading icon={Route} title="Private routes" />
+      <div className="divide-y divide-border/70 border border-border/70">
+        {routes.map((route) => (
+          <div
+            key={`${route.hostname}:${route.subnet}`}
+            className="flex items-center gap-3 px-3 py-3"
           >
-            {configure.isPending ? (
-              <LoaderCircle className="animate-spin" />
-            ) : (
-              <KeyRound />
-            )}
-            Connect
-          </Button>
+            <span
+              className={
+                route.approved
+                  ? "size-2 rounded-full bg-emerald-400"
+                  : route.advertised
+                    ? "size-2 rounded-full bg-amber-400"
+                    : "size-2 rounded-full bg-muted-foreground"
+              }
+            />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-medium">{route.hostname}</p>
+              <p className="font-mono text-[9px] text-muted-foreground">
+                {route.subnet}
+              </p>
+            </div>
+            <span className="font-mono text-[9px] text-muted-foreground uppercase">
+              {route.approved
+                ? "Approved"
+                : route.advertised
+                  ? "Ready to approve"
+                  : "Waiting to advertise"}
+            </span>
+          </div>
+        ))}
+      </div>
+      <SetupApproval
+        checked={approved}
+        title="Allow Kiln to approve these private routes"
+        onCheckedChange={onApprovedChange}
+      />
+    </div>
+  )
+}
+
+function SetupReadyStep({
+  complete,
+  domain,
+  inspection,
+  networkName,
+  pending,
+}: {
+  complete: boolean
+  domain: string
+  inspection: SetupPreview["inspection"] | undefined
+  networkName: string
+  pending: boolean
+}) {
+  if (complete) {
+    return (
+      <div className="grid min-h-[18rem] place-items-center text-center">
+        <div>
+          <span className="mx-auto grid size-14 place-items-center rounded-full bg-emerald-500/15 text-emerald-400">
+            <CheckCircle2 className="size-7" />
+          </span>
+          <h3 className="mt-4 text-lg font-semibold">Tailnet ready</h3>
+          <p className="mt-2 font-mono text-xs text-muted-foreground">
+            *.{domain}
+          </p>
         </div>
       </div>
-    </form>
+    )
+  }
+  return (
+    <div className="space-y-5">
+      <SetupHeading icon={CheckCircle2} title="Ready to apply" />
+      <div className="divide-y divide-border/70 border border-border/70">
+        <SetupSummaryRow label="Network" value={networkName} />
+        <SetupSummaryRow label="Private domain" value={`*.${domain}`} />
+        <SetupSummaryRow
+          label="DNS resolvers"
+          value={inspection?.dns.desiredResolvers.join(", ") || "Pending"}
+        />
+        <SetupSummaryRow
+          label="Private routes"
+          value={`${inspection?.routes.length ?? 0} node${inspection?.routes.length === 1 ? "" : "s"}`}
+        />
+      </div>
+      {pending ? (
+        <SetupResult
+          tone="pending"
+          title="Applying Tailnet configuration"
+          value="Kiln is updating DNS, approving routes, and verifying every node."
+        />
+      ) : null}
+    </div>
   )
-})
+}
+
+function SetupHeading({
+  icon: Icon,
+  title,
+}: {
+  icon: React.ComponentType<{ className?: string }>
+  title: string
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <Icon className="size-4 text-primary" />
+      <h3 className="text-sm font-semibold">{title}</h3>
+    </div>
+  )
+}
+
+function SetupField({
+  children,
+  fieldId,
+  label,
+}: {
+  children: React.ReactNode
+  fieldId: string
+  label: string
+}) {
+  return (
+    <label className="block min-w-0" htmlFor={fieldId}>
+      <span className="mb-1.5 block text-[10px] font-medium">{label}</span>
+      {children}
+    </label>
+  )
+}
+
+function SetupResult({
+  title,
+  tone,
+  value,
+}: {
+  title: string
+  tone: "error" | "pending" | "success" | "warning"
+  value: string
+}) {
+  return (
+    <div
+      role={tone === "error" ? "alert" : "status"}
+      className={
+        tone === "success"
+          ? "border border-emerald-500/25 bg-emerald-500/8 px-3 py-2.5 text-emerald-300"
+          : tone === "error"
+            ? "border border-destructive/30 bg-destructive/8 px-3 py-2.5 text-destructive"
+            : tone === "warning"
+              ? "border border-amber-500/25 bg-amber-500/8 px-3 py-2.5 text-amber-300"
+              : "border border-primary/25 bg-primary/8 px-3 py-2.5 text-foreground"
+      }
+    >
+      <p className="text-xs font-semibold">{title}</p>
+      <p className="mt-1 text-[10px] leading-4 opacity-80">{value}</p>
+    </div>
+  )
+}
+
+function SetupApproval({
+  checked,
+  title,
+  onCheckedChange,
+}: {
+  checked: boolean
+  title: string
+  onCheckedChange: (checked: boolean) => void
+}) {
+  return (
+    <label className="flex cursor-pointer items-center justify-between gap-4 border border-border/70 bg-background/35 px-3 py-3">
+      <span className="text-xs font-medium">{title}</span>
+      <Switch
+        checked={checked}
+        aria-label={title}
+        onCheckedChange={onCheckedChange}
+      />
+    </label>
+  )
+}
+
+function SetupChangeRow({
+  after,
+  before,
+  label,
+  tone,
+}: {
+  after: string
+  before: string
+  label: string
+  tone: "default" | "warning"
+}) {
+  return (
+    <div className="grid gap-2 px-3 py-3 sm:grid-cols-[minmax(0,0.7fr)_minmax(0,1fr)_auto_minmax(0,1fr)] sm:items-center">
+      <span className="truncate font-mono text-xs">{label}</span>
+      <span
+        className={
+          tone === "warning"
+            ? "truncate font-mono text-[10px] text-amber-300"
+            : "truncate font-mono text-[10px] text-muted-foreground"
+        }
+      >
+        {before}
+      </span>
+      <ChevronRight className="hidden size-3 text-muted-foreground sm:block" />
+      <span className="truncate font-mono text-[10px] text-foreground">
+        {after}
+      </span>
+    </div>
+  )
+}
+
+function SetupSummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-4 px-3 py-3">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className="truncate font-mono text-[10px]">{value}</span>
+    </div>
+  )
+}
 
 export function GameServerTailscaleSection({
   server,
@@ -1099,7 +1749,8 @@ function stackBindingKey({
 function stackSaveInput(
   stack: TailscaleStackOverview,
   bindings: Array<StackBinding>,
-  authKey?: string
+  authKey?: string,
+  domain = stack.domain
 ): SaveStackInput {
   return {
     ...(authKey ? { authKey } : {}),
@@ -1108,10 +1759,71 @@ function stackSaveInput(
       instanceId,
       relayId,
     })),
-    domain: stack.domain,
+    domain,
     id: stack.id,
     name: stack.name,
   }
+}
+
+function normalizeTailscaleDomain(value: string): string {
+  return value
+    .trim()
+    .replace(/^[.]+|[.]+$/gu, "")
+    .toLowerCase()
+}
+
+function sameStrings(
+  left: ReadonlyArray<string>,
+  right: ReadonlyArray<string>
+): boolean {
+  const sortedLeft = [...left].sort()
+  const sortedRight = [...right].sort()
+  return (
+    sortedLeft.length === sortedRight.length &&
+    sortedLeft.every((value, index) => value === sortedRight[index])
+  )
+}
+
+function tailscaleSetupVerified(
+  inspection: SetupPreview["inspection"]
+): boolean {
+  return (
+    inspection.dns.desiredResolvers.length > 0 &&
+    sameStrings(
+      inspection.dns.currentResolvers,
+      inspection.dns.desiredResolvers
+    ) &&
+    inspection.routes.length > 0 &&
+    inspection.routes.every((route) => route.advertised && route.approved)
+  )
+}
+
+function isNetworkChangeError(cause: unknown): boolean {
+  return (
+    cause instanceof TypeError &&
+    cause.message.toLowerCase().includes("failed to fetch")
+  )
+}
+
+async function recoverTailscaleIntegrationStatus(
+  stackId: string,
+  originalError: unknown
+) {
+  // Applying split DNS briefly changes the browser's network configuration on
+  // the same Mac. Chromium cancels the successful request with
+  // ERR_NETWORK_CHANGED, so verify the persisted result once networking settles.
+  for (const delay of [250, 500, 1_000, 2_000, 3_000]) {
+    await new Promise((resolve) => setTimeout(resolve, delay))
+    try {
+      const result = await getTailscaleIntegrationStatus({
+        data: { id: stackId },
+      })
+      if (tailscaleSetupVerified(result.inspection)) return result
+    } catch {
+      // The DNS transition may cancel more than one request.
+    }
+  }
+  throw originalError
 }
 
 function findBinding(

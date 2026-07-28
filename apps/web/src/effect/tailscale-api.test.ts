@@ -1,12 +1,18 @@
-import { describe, expect, it } from "vite-plus/test"
+import { Effect } from "effect"
+import { afterEach, describe, expect, it, vi } from "vite-plus/test"
 
 import {
   findTailscaleDevice,
   missingTailscaleOAuthScopes,
   requiredTailscaleOAuthScopes,
+  verifyTailscaleOAuthCredentialEffect,
 } from "./tailscale-api"
 
 describe("Tailscale API integration", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   it("reports only missing Kiln scopes", () => {
     expect(missingTailscaleOAuthScopes(["auth_keys", "dns"])).toEqual([
       "devices:core:read",
@@ -58,5 +64,39 @@ describe("Tailscale API integration", () => {
     )
 
     expect(selected?.id).toBe("device-hostname")
+  })
+
+  it("verifies requested scopes and tags without treating the client as an auth key", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        Response.json({
+          access_token: "access-token",
+          expires_in: 3_600,
+          scope: requiredTailscaleOAuthScopes.join(" "),
+          token_type: "Bearer",
+        })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+
+    const verified = await Effect.runPromise(
+      verifyTailscaleOAuthCredentialEffect(
+        "oauth-client",
+        "oauth-client-secret",
+        ["tag:kiln"]
+      )
+    )
+
+    expect(verified).toEqual({
+      clientId: "oauth-client",
+      scopes: [...requiredTailscaleOAuthScopes].sort(),
+      tags: ["tag:kiln"],
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0] ?? []
+    expect(url).toBe("https://api.tailscale.com/api/v2/oauth/token")
+    const body = new URLSearchParams(String(init?.body))
+    expect(body.get("grant_type")).toBe("client_credentials")
+    expect(body.get("scope")).toBe(requiredTailscaleOAuthScopes.join(" "))
+    expect(body.get("tags")).toBe("tag:kiln")
   })
 })
