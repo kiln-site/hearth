@@ -420,6 +420,10 @@ export class LifecycleDriver {
     rawInput: RelayTailscaleStackApply
   ): Promise<RelayTailscaleStack> {
     const input = rawInput
+    await this.#assertTailscaleStackRemovalNotPending(
+      input.id,
+      "apply changes to"
+    )
     const existing = await this.#readTailscaleStackConfig(input.id)
     const instances = await this.#docker.inspectInstances()
     for (const binding of input.bindings) {
@@ -510,6 +514,10 @@ export class LifecycleDriver {
   async syncTailscaleStackDns(
     input: RelayTailscaleStackDns
   ): Promise<RelayTailscaleStack> {
+    await this.#assertTailscaleStackRemovalNotPending(
+      input.id,
+      "synchronize DNS for"
+    )
     const config = await this.#readTailscaleStackConfig(input.id)
     if (!config) throw new Error("Tailscale stack not found")
     const duplicateHostname = input.records.find(
@@ -538,24 +546,24 @@ export class LifecycleDriver {
       return
     }
 
-    if (!(await this.#tailscaleStackRemovalPending(id))) {
-      await this.#prepareTailscaleStackRemoval(id)
-    }
+    await this.#prepareTailscaleStackRemoval(id)
     await this.#commitTailscaleStackRemoval(id)
   }
 
   async #prepareTailscaleStackRemoval(id: string): Promise<void> {
     const config = await this.#readTailscaleStackConfig(id)
     if (!config) return
-    if (await this.#tailscaleStackRemovalPending(id)) return
-    const snapshot = await this.#tailscaleStack(config)
-    await writeFile(
-      this.#tailscaleStackRemovalSnapshot(id),
-      `${JSON.stringify(snapshot, null, 2)}\n`,
-      { mode: 0o600 }
-    )
-    const marker = this.#tailscaleStackRemovalMarker(id)
-    await writeFile(marker, "prepared\n", { mode: 0o600 })
+    const alreadyPending = await this.#tailscaleStackRemovalPending(id)
+    if (!alreadyPending) {
+      const snapshot = await this.#tailscaleStack(config)
+      await writeFile(
+        this.#tailscaleStackRemovalSnapshot(id),
+        `${JSON.stringify(snapshot, null, 2)}\n`,
+        { mode: 0o600 }
+      )
+      const marker = this.#tailscaleStackRemovalMarker(id)
+      await writeFile(marker, "prepared\n", { mode: 0o600 })
+    }
     const network = this.#resources.tailscaleStackNetwork(id)
     try {
       for (const binding of config.bindings) {
@@ -580,7 +588,9 @@ export class LifecycleDriver {
         })
       }
     } catch (cause) {
-      await this.#rollbackTailscaleStackRemoval(id).catch(() => undefined)
+      if (!alreadyPending) {
+        await this.#rollbackTailscaleStackRemoval(id).catch(() => undefined)
+      }
       throw cause
     }
   }
@@ -650,6 +660,16 @@ export class LifecycleDriver {
       if (hasErrorCode(cause, "ENOENT")) return false
       throw cause
     }
+  }
+
+  async #assertTailscaleStackRemovalNotPending(
+    id: string,
+    operation: string
+  ): Promise<void> {
+    if (!(await this.#tailscaleStackRemovalPending(id))) return
+    throw new Error(
+      `Cannot ${operation} this Tailscale deployment while removal cleanup is pending. Retry removing the node from Infrastructure → Tailscale first.`
+    )
   }
 
   async #readTailscaleStackRemovalSnapshot(
@@ -1042,6 +1062,9 @@ export class LifecycleDriver {
     routes: ReadonlyArray<RelayInstanceWebRoute>
   ): Promise<RelayInstance> {
     if (instance.brickId === builtinTailscaleBrickId) {
+      if (action === "start" || action === "restart") {
+        await this.#assertTailscaleStackRemovalNotPending(instance.id, action)
+      }
       const coreDns = this.#resources.tailscaleStackDnsContainer(instance.id)
       if (action === "stop" || action === "kill") {
         await command("docker", [action, coreDns]).catch(() => undefined)
@@ -2528,16 +2551,19 @@ export class LifecycleDriver {
   async #tailscaleStack(
     config: RelayTailscaleStackConfig
   ): Promise<RelayTailscaleStack> {
+    if (await this.#tailscaleStackRemovalPending(config.id)) {
+      const snapshot = await this.#readTailscaleStackRemovalSnapshot(config.id)
+      if (!snapshot) {
+        throw new Error(
+          `Tailscale stack ${config.name} is pending removal but its recovery snapshot is missing`
+        )
+      }
+      return tailscaleStackPendingRemoval(config, snapshot)
+    }
     const instance = (await this.#docker.inspectInstances()).find(
       (candidate) => candidate.id === config.id
     )
     if (!instance) {
-      if (await this.#tailscaleStackRemovalPending(config.id)) {
-        const snapshot = await this.#readTailscaleStackRemovalSnapshot(
-          config.id
-        )
-        if (snapshot) return tailscaleStackPendingRemoval(config, snapshot)
-      }
       throw new Error(
         `Tailscale stack ${config.name} is configured but its container is missing`
       )
@@ -2711,7 +2737,7 @@ export class LifecycleDriver {
         `Docker network ${name} is not owned by this Relay and will not be removed`
       )
     }
-    await command("docker", ["network", "rm", name]).catch(() => undefined)
+    await command("docker", ["network", "rm", name])
   }
 
   async #hostDataDirectory(): Promise<string> {
