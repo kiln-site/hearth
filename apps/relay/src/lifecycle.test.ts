@@ -4,6 +4,8 @@ import {
   relayInstanceWebRoutesSchema,
   relayTailscaleDomainSchema,
   relayTailscaleStackApplySchema,
+  relayTailscaleStackConfigSchema,
+  relayTailscaleStackSchema,
 } from "@workspace/contracts"
 
 import { loadConfig } from "./config.js"
@@ -17,6 +19,7 @@ import {
   assignTailscaleBindingAddresses,
   tailscaleStackCoreDnsConfiguration,
   tailscaleStackFirewallRules,
+  tailscaleStackPendingRemoval,
   tailscaleStackServiceAddress,
   tailscaleStackSubnet,
   tailscaleCoreDnsConfiguration,
@@ -297,6 +300,75 @@ describe("Tailscale Brick networking", () => {
     expect(configuration.indexOf("paper.test")).toBeLessThan(
       configuration.indexOf("survival.test")
     )
+  })
+
+  it("keeps a prepared removal discoverable after its containers are gone", () => {
+    const id = "a".repeat(40)
+    const config = relayTailscaleStackConfigSchema.parse({
+      bindings: [
+        {
+          address: "10.165.55.10",
+          hostname: "paper",
+          instanceId: "b".repeat(40),
+        },
+      ],
+      domain: "test",
+      hostname: "private-network",
+      id,
+      name: "Private Network",
+      subnet: "10.165.55.0/24",
+    })
+    const snapshot = relayTailscaleStackSchema.parse({
+      ...config,
+      components: {
+        coreDnsRunning: true,
+        tailscaleRunning: true,
+      },
+      instance: {
+        brickId: "tailscale",
+        connectAddress: "private-network.test",
+        containerId: "docker-container-id",
+        desiredState: "running",
+        directory: id,
+        game: "Networking",
+        id,
+        implementation: "Tailscale",
+        javaVersion: "Tailscale + CoreDNS",
+        managedByRelay: true,
+        name: "Private Network",
+        observedState: "running",
+        service: "kiln-tailscale-private-network",
+        shortId: id.slice(0, 8),
+        startedAt: "2026-07-28T12:00:00.000Z",
+        status: "Running",
+        version: "stable",
+      },
+      status: {
+        connected: true,
+        ipv4Address: "100.64.12.96",
+        ipv6Address: null,
+        message: null,
+      },
+    })
+
+    const pending = tailscaleStackPendingRemoval(config, snapshot)
+
+    expect(pending.components).toEqual({
+      coreDnsRunning: false,
+      tailscaleRunning: false,
+    })
+    expect(pending.status).toEqual({
+      connected: false,
+      ipv4Address: null,
+      ipv6Address: null,
+      message: "Removal pending",
+    })
+    expect(pending.instance).toMatchObject({
+      containerId: null,
+      observedState: "offline",
+      status: "Removal pending",
+    })
+    expect(pending.bindings).toEqual(config.bindings)
   })
 })
 

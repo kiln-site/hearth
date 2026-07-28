@@ -926,9 +926,11 @@ async function reconcileTailscaleDomainAfterDefinitionFailure(
     ) ?? null
   if (!owner) return null
 
-  const ownerCredential = owner.integration
-    ? await loadTailscaleNetworkCredential(owner.id)
-    : credential
+  // Clearing the losing request's tailnet is sufficient when the database
+  // owner is not integrated. Never use one network's `/tailnet/-` credential
+  // to modify another network's DNS or routes.
+  if (!owner.integration) return owner
+  const ownerCredential = await loadTailscaleNetworkCredential(owner.id)
   await synchronizeTailscaleControlPlane(
     ownerCredential,
     tailscaleOverviewForDeployments(

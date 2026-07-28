@@ -83,6 +83,34 @@ export function tailscaleStackFirewallRules(
   ]
 }
 
+export function tailscaleStackPendingRemoval(
+  config: RelayTailscaleStackConfig,
+  snapshot: RelayTailscaleStack
+): RelayTailscaleStack {
+  return relayTailscaleStackSchema.parse({
+    ...snapshot,
+    ...config,
+    components: {
+      coreDnsRunning: false,
+      tailscaleRunning: false,
+    },
+    instance: {
+      ...snapshot.instance,
+      containerId: null,
+      observedState: "offline",
+      resources: null,
+      startedAt: null,
+      status: "Removal pending",
+    },
+    status: {
+      connected: false,
+      ipv4Address: null,
+      ipv6Address: null,
+      message: "Removal pending",
+    },
+  })
+}
+
 function dockerMemoryBytes(value: string): number {
   const match = value.match(/^(\d+)([bkmgt])$/iu)
   if (!match?.[1] || !match[2]) {
@@ -519,8 +547,14 @@ export class LifecycleDriver {
   async #prepareTailscaleStackRemoval(id: string): Promise<void> {
     const config = await this.#readTailscaleStackConfig(id)
     if (!config) return
-    const marker = this.#tailscaleStackRemovalMarker(id)
     if (await this.#tailscaleStackRemovalPending(id)) return
+    const snapshot = await this.#tailscaleStack(config)
+    await writeFile(
+      this.#tailscaleStackRemovalSnapshot(id),
+      `${JSON.stringify(snapshot, null, 2)}\n`,
+      { mode: 0o600 }
+    )
+    const marker = this.#tailscaleStackRemovalMarker(id)
     await writeFile(marker, "prepared\n", { mode: 0o600 })
     const network = this.#resources.tailscaleStackNetwork(id)
     try {
@@ -564,6 +598,7 @@ export class LifecycleDriver {
       config.bindings.map(({ address, hostname }) => ({ address, hostname }))
     )
     await rm(this.#tailscaleStackRemovalMarker(id), { force: true })
+    await rm(this.#tailscaleStackRemovalSnapshot(id), { force: true })
   }
 
   async #commitTailscaleStackRemoval(id: string): Promise<void> {
@@ -603,12 +638,31 @@ export class LifecycleDriver {
     return join(this.#config.rootDirectory, id, ".removing")
   }
 
+  #tailscaleStackRemovalSnapshot(id: string): string {
+    return join(this.#config.rootDirectory, id, ".removing-stack.json")
+  }
+
   async #tailscaleStackRemovalPending(id: string): Promise<boolean> {
     try {
       await readFile(this.#tailscaleStackRemovalMarker(id))
       return true
     } catch (cause) {
       if (hasErrorCode(cause, "ENOENT")) return false
+      throw cause
+    }
+  }
+
+  async #readTailscaleStackRemovalSnapshot(
+    id: string
+  ): Promise<RelayTailscaleStack | null> {
+    try {
+      return relayTailscaleStackSchema.parse(
+        JSON.parse(
+          await readFile(this.#tailscaleStackRemovalSnapshot(id), "utf8")
+        )
+      )
+    } catch (cause) {
+      if (hasErrorCode(cause, "ENOENT")) return null
       throw cause
     }
   }
@@ -2478,6 +2532,12 @@ export class LifecycleDriver {
       (candidate) => candidate.id === config.id
     )
     if (!instance) {
+      if (await this.#tailscaleStackRemovalPending(config.id)) {
+        const snapshot = await this.#readTailscaleStackRemovalSnapshot(
+          config.id
+        )
+        if (snapshot) return tailscaleStackPendingRemoval(config, snapshot)
+      }
       throw new Error(
         `Tailscale stack ${config.name} is configured but its container is missing`
       )
