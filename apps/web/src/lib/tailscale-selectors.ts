@@ -20,7 +20,10 @@ export function selectTailscaleServers(
 ): Array<TailscaleServer> {
   const supportedRelayIds = new Set(
     snapshot.nodes.flatMap((node) =>
-      node.capabilities.includes("tailscale-stacks") ? [node.relayId] : []
+      node.capabilities.includes("tailscale-stacks") &&
+      node.capabilities.includes("tailscale-staged-removal")
+        ? [node.relayId]
+        : []
     )
   )
   return snapshot.instances

@@ -344,6 +344,7 @@ export const relayTailscaleStackDnsSchema = z
 export const relayTailscaleStackRemoveSchema = z
   .object({
     id: relayTailscaleStackIdSchema,
+    mode: z.enum(["prepare", "commit", "rollback"]).default("commit"),
   })
   .strict()
 
@@ -652,7 +653,10 @@ export const relayTailscaleStackSchema = z
 
 export const relayTailscaleStacksSchema = z.array(relayTailscaleStackSchema)
 
-export const relayNodeCapabilitySchema = z.enum(["tailscale-stacks"])
+export const relayNodeCapabilitySchema = z.enum([
+  "tailscale-stacks",
+  "tailscale-staged-removal",
+])
 
 export const relayNodeSchema = z.object({
   id: z.string().min(1),

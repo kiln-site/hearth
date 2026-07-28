@@ -5,6 +5,7 @@ import {
   findTailscaleDevice,
   missingTailscaleOAuthScopes,
   requiredTailscaleOAuthScopes,
+  syncTailscaleControlPlaneEffect,
   verifyTailscaleOAuthCredentialEffect,
 } from "./tailscale-api"
 
@@ -98,5 +99,43 @@ describe("Tailscale API integration", () => {
     expect(body.get("grant_type")).toBe("client_credentials")
     expect(body.get("scope")).toBe(requiredTailscaleOAuthScopes.join(" "))
     expect(body.get("tags")).toBe("tag:kiln")
+  })
+
+  it("clears split DNS when a network no longer has deployments", async () => {
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, _init?: RequestInit) => {
+        if (String(input).endsWith("/oauth/token")) {
+          return Response.json({
+            access_token: "access-token",
+            scope: requiredTailscaleOAuthScopes.join(" "),
+          })
+        }
+        return Response.json({})
+      }
+    )
+    vi.stubGlobal("fetch", fetchMock)
+
+    const result = await Effect.runPromise(
+      syncTailscaleControlPlaneEffect(
+        {
+          clientId: "oauth-client",
+          clientSecret: "oauth-client-secret",
+          scopes: [...requiredTailscaleOAuthScopes],
+          tags: ["tag:kiln"],
+        },
+        {
+          deployments: [],
+          domain: "test",
+          id: "a".repeat(40),
+          name: "Test network",
+        }
+      )
+    )
+
+    expect(result).toEqual({ resolvers: [] })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const [url, init] = fetchMock.mock.calls[1] ?? []
+    expect(url).toBe("https://api.tailscale.com/api/v2/tailnet/-/dns/split-dns")
+    expect(JSON.parse(String(init?.body))).toEqual({ test: null })
   })
 })

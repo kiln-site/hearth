@@ -1081,7 +1081,9 @@ export function GameServerTailscaleSection({
               <GameServerMembershipRow
                 key={stack.id}
                 binding={binding}
-                disabled={save.isPending}
+                disabled={
+                  save.isPending || (relayUnsupported && Boolean(binding))
+                }
                 joinDisabled={relayUnsupported}
                 pending={
                   save.isPending && save.variables?.stack.id === stack.id

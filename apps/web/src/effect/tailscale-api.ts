@@ -186,11 +186,6 @@ export const syncTailscaleControlPlaneEffect = Effect.fn(
       )
     ),
   ].sort()
-  if (resolvers.length === 0) {
-    return yield* tailscaleFailure(
-      "Tailscale has not assigned an address to this network"
-    )
-  }
   yield* requestTailscaleJson(
     `${tailscaleApiBaseUrl}/tailnet/-/dns/split-dns`,
     session.accessToken,
@@ -199,7 +194,7 @@ export const syncTailscaleControlPlaneEffect = Effect.fn(
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        [network.domain]: resolvers,
+        [network.domain]: resolvers.length > 0 ? resolvers : null,
         ...(network.previousDomain && network.previousDomain !== network.domain
           ? { [network.previousDomain]: null }
           : {}),

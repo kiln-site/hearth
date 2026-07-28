@@ -497,38 +497,93 @@ export class LifecycleDriver {
     return this.#tailscaleStack(config)
   }
 
-  async removeTailscaleStack(id: string): Promise<void> {
+  async removeTailscaleStack(
+    id: string,
+    mode: "commit" | "prepare" | "rollback" = "commit"
+  ): Promise<void> {
+    if (mode === "prepare") {
+      await this.#prepareTailscaleStackRemoval(id)
+      return
+    }
+    if (mode === "rollback") {
+      await this.#rollbackTailscaleStackRemoval(id)
+      return
+    }
+
+    if (!(await this.#tailscaleStackRemovalPending(id))) {
+      await this.#prepareTailscaleStackRemoval(id)
+    }
+    await this.#commitTailscaleStackRemoval(id)
+  }
+
+  async #prepareTailscaleStackRemoval(id: string): Promise<void> {
+    const config = await this.#readTailscaleStackConfig(id)
+    if (!config) return
+    const marker = this.#tailscaleStackRemovalMarker(id)
+    if (await this.#tailscaleStackRemovalPending(id)) return
+    await writeFile(marker, "prepared\n", { mode: 0o600 })
+    const network = this.#resources.tailscaleStackNetwork(id)
+    try {
+      for (const binding of config.bindings) {
+        const instance = await this.#docker.findInstance(binding.instanceId)
+        if (instance) {
+          await command("docker", [
+            "network",
+            "disconnect",
+            "--force",
+            network,
+            instance.service,
+          ]).catch(() => undefined)
+        }
+      }
+      await this.#removeOwnedContainer(
+        this.#resources.tailscaleStackDnsContainer(id)
+      )
+      const container = this.#resources.tailscaleStackContainer(id)
+      if (await this.#containerExists(container)) {
+        await command("docker", ["stop", "--time", "10", container], {
+          timeout: 30_000,
+        })
+      }
+    } catch (cause) {
+      await this.#rollbackTailscaleStackRemoval(id).catch(() => undefined)
+      throw cause
+    }
+  }
+
+  async #rollbackTailscaleStackRemoval(id: string): Promise<void> {
+    if (!(await this.#tailscaleStackRemovalPending(id))) return
+    const config = await this.#readTailscaleStackConfig(id)
+    if (!config) return
+    await this.#ensureTailscaleStackNetwork(config)
+    await this.#restartTailscaleStack(config)
+    await this.#reconcileTailscaleStackBindings(id, [], config.bindings)
+    await this.#configureTailscaleStackRouting(config)
+    await this.#ensureTailscaleStackDns(
+      config,
+      config.bindings.map(({ address, hostname }) => ({ address, hostname }))
+    )
+    await rm(this.#tailscaleStackRemovalMarker(id), { force: true })
+  }
+
+  async #commitTailscaleStackRemoval(id: string): Promise<void> {
     const config = await this.#readTailscaleStackConfig(id)
     if (!config) return
     const network = this.#resources.tailscaleStackNetwork(id)
-    for (const binding of config.bindings) {
-      const instance = await this.#docker.findInstance(binding.instanceId)
-      if (instance) {
-        await command("docker", [
-          "network",
-          "disconnect",
-          "--force",
-          network,
-          instance.service,
-        ]).catch(() => undefined)
-      }
-    }
     const container = this.#resources.tailscaleStackContainer(id)
-    await command("docker", [
-      "exec",
-      container,
-      "tailscale",
-      "logout",
-    ]).catch(() => undefined)
+    if (await this.#containerExists(container)) {
+      await command("docker", ["start", container], {
+        timeout: 30_000,
+      }).catch(() => undefined)
+    }
+    await command("docker", ["exec", container, "tailscale", "logout"]).catch(
+      () => undefined
+    )
     await this.#removeOwnedContainer(
       this.#resources.tailscaleStackDnsContainer(id)
     )
     await this.#removeOwnedContainer(container)
     await this.#removeOwnedNetwork(network)
-    await rm(join(this.#config.rootDirectory, id), {
-      force: true,
-      recursive: true,
-    })
     await rm(
       join(
         this.#config.dataDirectory,
@@ -538,6 +593,24 @@ export class LifecycleDriver {
       ),
       { force: true, recursive: true }
     )
+    await rm(join(this.#config.rootDirectory, id), {
+      force: true,
+      recursive: true,
+    })
+  }
+
+  #tailscaleStackRemovalMarker(id: string): string {
+    return join(this.#config.rootDirectory, id, ".removing")
+  }
+
+  async #tailscaleStackRemovalPending(id: string): Promise<boolean> {
+    try {
+      await readFile(this.#tailscaleStackRemovalMarker(id))
+      return true
+    } catch (cause) {
+      if (hasErrorCode(cause, "ENOENT")) return false
+      throw cause
+    }
   }
 
   async proxySettings(): Promise<RelayProxySettings> {

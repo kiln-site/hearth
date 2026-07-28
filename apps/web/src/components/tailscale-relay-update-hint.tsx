@@ -9,7 +9,7 @@ import {
 
 export const TailscaleRelayUpdateHint = React.memo(
   function TailscaleRelayUpdateHint({ relayName }: { relayName: string }) {
-    const message = `Update ${relayName} before adding its servers to Tailscale`
+    const message = `Update ${relayName} before changing Tailscale memberships`
 
     return (
       <Tooltip>

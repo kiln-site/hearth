@@ -26,6 +26,8 @@ export interface DesiredTailscaleDeployment {
   relayName: string
 }
 
+export type TailscaleRemovalMode = "commit" | "prepare" | "rollback"
+
 interface TailscaleDeploymentOperations<
   TDeployment extends TailscaleDeploymentState,
 > {
@@ -33,7 +35,10 @@ interface TailscaleDeploymentOperations<
     target: DesiredTailscaleDeployment,
     input: RelayTailscaleStackApply
   ) => Promise<TDeployment>
-  remove: (deployment: TailscaleDeploymentState) => Promise<void>
+  remove: (
+    deployment: TailscaleDeploymentState,
+    mode: TailscaleRemovalMode
+  ) => Promise<void>
   syncDns: (
     deployment: TDeployment,
     records: RelayTailscaleStackDns["records"]
@@ -51,6 +56,7 @@ export async function applyTailscaleDeploymentPlan<
   id,
   name,
   operations,
+  beforeFinalize,
 }: {
   authKey?: string
   authKeyForTarget?: (
@@ -62,6 +68,7 @@ export async function applyTailscaleDeploymentPlan<
   id: string
   name: string
   operations: TailscaleDeploymentOperations<TDeployment>
+  beforeFinalize?: (deployments: ReadonlyArray<TDeployment>) => Promise<void>
 }): Promise<Array<TDeployment>> {
   const previousByRelay = new Map(
     current.map((deployment) => [deployment.relayId, deployment])
@@ -69,6 +76,15 @@ export async function applyTailscaleDeploymentPlan<
   const desiredRelayIds = new Set(desired.map(({ relayId }) => relayId))
   const removed = current.filter(({ relayId }) => !desiredRelayIds.has(relayId))
   const applied: Array<TDeployment> = []
+  const preparedRemovals: Array<TDeployment> = []
+  const newTargetCount = desired.filter(
+    ({ relayId }) => !previousByRelay.has(relayId)
+  ).length
+  if (newTargetCount > 1 && !authKeyForTarget) {
+    throw new Error(
+      "A manual auth key can add one new Relay at a time. Generate a separate key for each Relay."
+    )
+  }
 
   try {
     // A later node may reject a one-time key or fail during installation.
@@ -77,7 +93,9 @@ export async function applyTailscaleDeploymentPlan<
       const previous = previousByRelay.get(target.relayId)
       const targetAuthKey = previous
         ? undefined
-        : ((await authKeyForTarget?.(target)) ?? authKey)
+        : authKeyForTarget
+          ? await authKeyForTarget(target)
+          : authKey
       const deployment = await operations.apply(target, {
         ...(targetAuthKey ? { authKey: targetAuthKey } : {}),
         bindings: target.bindings,
@@ -104,14 +122,37 @@ export async function applyTailscaleDeploymentPlan<
       synchronized.push(result.value)
     }
 
-    // Keep removals inside the same compensation boundary as applies and DNS.
-    // If one fails, the catch below restores every retained node that changed.
-    await runSequentially(removed, operations.remove)
+    // Preparing a removal keeps its identity on disk, so every prepared node
+    // can be restored if a later node or control-plane update fails.
+    await runSequentially(removed, async (deployment) => {
+      preparedRemovals.push(deployment)
+      await operations.remove(deployment, "prepare")
+    })
+    await beforeFinalize?.(synchronized)
+
+    // Cleanup is deliberately delayed until the desired state is durable.
+    // A failed commit leaves the prepared deployment discoverable so the next
+    // save can retry it without credentials or an inconsistent live stack.
+    const cleanupResults = await Promise.allSettled(
+      preparedRemovals.map((deployment) =>
+        operations.remove(deployment, "commit")
+      )
+    )
+    for (const [index, result] of cleanupResults.entries()) {
+      if (result.status === "rejected") {
+        const deployment = preparedRemovals[index]
+        console.error(
+          `Could not finalize Tailscale removal on ${deployment?.relayName ?? "Unknown Relay"}`,
+          result.reason
+        )
+      }
+    }
     return synchronized
   } catch (cause) {
     const rollbackFailures = await rollbackTailscaleDeploymentPlan(
       current,
       applied,
+      preparedRemovals,
       operations
     )
     const message =
@@ -133,12 +174,28 @@ async function rollbackTailscaleDeploymentPlan<
 >(
   current: ReadonlyArray<TDeployment>,
   applied: ReadonlyArray<TDeployment>,
+  preparedRemovals: ReadonlyArray<TDeployment>,
   operations: TailscaleDeploymentOperations<TDeployment>
 ): Promise<Array<string>> {
   const previousByRelay = new Map(
     current.map((deployment) => [deployment.relayId, deployment])
   )
   const failures: Array<string> = []
+
+  const removalRollbacks = [...preparedRemovals].reverse()
+  const removalRollbackResults = await Promise.allSettled(
+    removalRollbacks.map((deployment) =>
+      operations.remove(deployment, "rollback")
+    )
+  )
+  for (const [index, result] of removalRollbackResults.entries()) {
+    if (result.status === "rejected") {
+      const deployment = removalRollbacks[index]
+      failures.push(
+        rollbackFailure(deployment?.relayName ?? "Unknown Relay", result.reason)
+      )
+    }
+  }
 
   const rollbackDeployments = [...applied].reverse()
   const rollbackResults = await Promise.allSettled(
@@ -156,7 +213,8 @@ async function rollbackTailscaleDeploymentPlan<
           name: previous.name,
         })
       } else {
-        await operations.remove(deployment)
+        await operations.remove(deployment, "prepare")
+        await operations.remove(deployment, "commit")
       }
     })
   )

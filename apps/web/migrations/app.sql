@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS kiln_tailscale_network (
   oauth_last_synced_at TIMESTAMP(3) NULL,
   oauth_last_error VARCHAR(512) NULL,
   created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  UNIQUE KEY kiln_tailscale_network_domain_unique (domain)
 );
 
 CREATE TABLE IF NOT EXISTS kiln_file_activity (

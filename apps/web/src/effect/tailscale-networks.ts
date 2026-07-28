@@ -76,15 +76,30 @@ export const saveTailscaleNetworkDefinitionEffect = Effect.fn(
   "tailscaleNetworks.save"
 )(function* (definition: TailscaleNetworkDefinition) {
   const database = yield* Database
-  yield* database.execute(
-    "tailscaleNetworks.save",
-    `INSERT INTO ${databaseTable("tailscale_network")} (id, name, domain)
-     VALUES (?, ?, ?)
-     ON DUPLICATE KEY UPDATE
-       name = VALUES(name),
-       domain = VALUES(domain)`,
-    [definition.id, definition.name, definition.domain]
-  )
+  yield* database.transaction("tailscaleNetworks.save", async (transaction) => {
+    const existing = await transaction.queryRows<RowDataPacket>(
+      `SELECT id
+         FROM ${databaseTable("tailscale_network")}
+        WHERE id = ?
+        LIMIT 1
+          FOR UPDATE`,
+      [definition.id]
+    )
+    if (existing.length > 0) {
+      await transaction.execute(
+        `UPDATE ${databaseTable("tailscale_network")}
+            SET name = ?, domain = ?
+          WHERE id = ?`,
+        [definition.name, definition.domain, definition.id]
+      )
+      return
+    }
+    await transaction.execute(
+      `INSERT INTO ${databaseTable("tailscale_network")} (id, name, domain)
+       VALUES (?, ?, ?)`,
+      [definition.id, definition.name, definition.domain]
+    )
+  })
 })
 
 export const saveTailscaleNetworkIntegrationEffect = Effect.fn(

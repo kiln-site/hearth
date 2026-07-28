@@ -674,16 +674,20 @@ async function executeControlRequest(
       )
     }
     case "relay.tailscale.stack.remove": {
-      const { id } = relayTailscaleStackRemoveSchema.parse(request.payload)
+      const { id, mode } = relayTailscaleStackRemoveSchema.parse(
+        request.payload
+      )
       await serializeInstanceMutation(id, () =>
-        lifecycle.removeTailscaleStack(id)
+        lifecycle.removeTailscaleStack(id, mode)
       )
-      await runRelayEffect(
-        "relay.tailscale.stack.deleteName",
-        startup.state.deleteInstanceName(id)
-      )
+      if (mode === "commit") {
+        await runRelayEffect(
+          "relay.tailscale.stack.deleteName",
+          startup.state.deleteInstanceName(id)
+        )
+      }
       await snapshotHub.refresh()
-      return { removed: true }
+      return { mode, removed: mode === "commit" }
     }
     case "relay.proxy.read": {
       const settings = await lifecycle.proxySettings()

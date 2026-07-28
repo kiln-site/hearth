@@ -709,11 +709,15 @@ const CreateNetworkForm = React.memo(function CreateNetworkForm({
     },
     []
   )
+  const selectedRelayCount = new Set(
+    [...bindings.values()].map(({ relayId }) => relayId)
+  ).size
   const canSubmit =
     name.trim() &&
     domain.trim() &&
     authKey.trim() &&
     bindings.size > 0 &&
+    selectedRelayCount === 1 &&
     [...bindings.keys()].every((key) => supportedServerKeys.has(key)) &&
     [...bindings.values()].every((binding) => binding.hostname.trim())
 
@@ -774,6 +778,13 @@ const CreateNetworkForm = React.memo(function CreateNetworkForm({
               placeholder="tskey-auth-…"
               className="font-mono"
             />
+            {selectedRelayCount > 1 ? (
+              <span className="mt-2 flex gap-1.5 text-[10px] leading-relaxed text-amber-400">
+                <CircleAlert className="mt-0.5 size-3 shrink-0" />
+                Manual auth installs one Relay at a time. Select servers on one
+                Relay, then connect Kiln to Tailscale before adding more.
+              </span>
+            ) : null}
           </label>
         </div>
         <div className="border-t p-4">

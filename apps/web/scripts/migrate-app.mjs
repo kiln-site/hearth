@@ -43,11 +43,47 @@ async function ensureTailscaleNetworkSchema(database) {
     ["oauth_last_synced_at", "TIMESTAMP(3) NULL"],
     ["oauth_last_error", "VARCHAR(512) NULL"],
   ].filter(([name]) => !names.has(name))
-  if (additions.length === 0) return
+  if (additions.length > 0) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("tailscale_network")} ${additions
+        .map(([name, definition]) => `ADD COLUMN ${name} ${definition}`)
+        .join(", ")}`
+    )
+  }
+  await ensureTailscaleNetworkDomainUnique(database)
+}
+
+async function ensureTailscaleNetworkDomainUnique(database) {
+  const tableName = databaseTableName("tailscale_network")
+  const [indexes] = await database.execute(
+    `SELECT INDEX_NAME
+       FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?
+        AND COLUMN_NAME = 'domain'
+        AND NON_UNIQUE = 0`,
+    [tableName]
+  )
+  if (indexes.length > 0) return
+
+  const [duplicates] = await database.query(
+    `SELECT domain, COUNT(*) AS network_count
+       FROM ${databaseTable("tailscale_network")}
+      GROUP BY domain
+     HAVING COUNT(*) > 1
+      LIMIT 1`
+  )
+  const duplicate = duplicates[0]
+  if (duplicate) {
+    throw new Error(
+      `Cannot make Tailscale network domains unique while ${duplicate.domain} is used by ${duplicate.network_count} networks`
+    )
+  }
+
+  const constraintName = databaseTableName("tailscale_network_domain_unique")
   await database.query(
-    `ALTER TABLE ${databaseTable("tailscale_network")} ${additions
-      .map(([name, definition]) => `ADD COLUMN ${name} ${definition}`)
-      .join(", ")}`
+    `ALTER TABLE ${databaseTable("tailscale_network")}
+     ADD UNIQUE KEY \`${constraintName}\` (domain)`
   )
 }
 

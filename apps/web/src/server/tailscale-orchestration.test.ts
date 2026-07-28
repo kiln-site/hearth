@@ -81,6 +81,31 @@ describe("Tailscale deployment orchestration", () => {
     ])
   })
 
+  it("rejects a manual auth key before applying more than one new node", async () => {
+    const applied: Array<string> = []
+
+    await expect(
+      applyTailscaleDeploymentPlan({
+        authKey: "one-off-key",
+        current: [],
+        desired: [target("relay-a"), target("relay-b")],
+        domain: "test",
+        id: "a".repeat(40),
+        name: "Test network",
+        operations: {
+          apply: async (desired) => {
+            applied.push(desired.relayId)
+            return deployment(desired.relayId, "applied")
+          },
+          remove: async () => undefined,
+          syncDns: async (value) => value,
+        },
+      })
+    ).rejects.toThrow("one new Relay at a time")
+
+    expect(applied).toEqual([])
+  })
+
   it("restores changed nodes when a later node apply fails", async () => {
     const applyRevisions: Array<string> = []
     const synchronized: Array<string> = []
@@ -120,7 +145,7 @@ describe("Tailscale deployment orchestration", () => {
 
     await expect(
       applyTailscaleDeploymentPlan({
-        authKey: "test-auth-key",
+        authKeyForTarget: async (desired) => `key-${desired.relayId}`,
         current: [],
         desired: [target("relay-a"), target("relay-b")],
         domain: "test",
@@ -131,8 +156,8 @@ describe("Tailscale deployment orchestration", () => {
             if (desired.relayId === "relay-b") throw new Error("join failed")
             return deployment(desired.relayId, "installed")
           },
-          remove: async (value) => {
-            removed.push(value.relayId)
+          remove: async (value, mode) => {
+            if (mode === "commit") removed.push(value.relayId)
           },
           syncDns: async (value) => value,
         },
@@ -195,9 +220,9 @@ describe("Tailscale deployment orchestration", () => {
             applyRevisions.push(revision)
             return deployment(desired.relayId, revision)
           },
-          remove: async (value) => {
-            removed.push(value.relayId)
-            throw new Error("remove failed")
+          remove: async (value, mode) => {
+            removed.push(`${value.relayId}:${mode}`)
+            if (mode === "prepare") throw new Error("remove failed")
           },
           syncDns: async (value) => {
             synchronized.push(`${value.relayId}:${value.revision}`)
@@ -208,7 +233,7 @@ describe("Tailscale deployment orchestration", () => {
     ).rejects.toThrow("remove failed")
 
     expect(applyRevisions).toEqual(["changed", "restored"])
-    expect(removed).toEqual(["relay-b"])
+    expect(removed).toEqual(["relay-b:prepare", "relay-b:rollback"])
     expect(synchronized).toEqual([
       "relay-a:changed",
       "relay-a:old",
@@ -228,15 +253,52 @@ describe("Tailscale deployment orchestration", () => {
       name: "Test network",
       operations: {
         apply: async (desired) => deployment(desired.relayId, "changed"),
-        remove: async (value) => {
-          removed.push(value.relayId)
+        remove: async (value, mode) => {
+          removed.push(`${value.relayId}:${mode}`)
         },
         syncDns: async (value) => value,
       },
     })
 
     expect(result).toEqual([])
-    expect(removed).toEqual(["relay-a", "relay-b"])
+    expect(removed).toEqual([
+      "relay-a:prepare",
+      "relay-b:prepare",
+      "relay-a:commit",
+      "relay-b:commit",
+    ])
+  })
+
+  it("restores earlier removals when a later removal cannot be prepared", async () => {
+    const removals: Array<string> = []
+    const current = [deployment("relay-a", "old"), deployment("relay-b", "old")]
+
+    await expect(
+      applyTailscaleDeploymentPlan({
+        current,
+        desired: [],
+        domain: "test",
+        id: "a".repeat(40),
+        name: "Test network",
+        operations: {
+          apply: async (desired) => deployment(desired.relayId, "changed"),
+          remove: async (value, mode) => {
+            removals.push(`${value.relayId}:${mode}`)
+            if (value.relayId === "relay-b" && mode === "prepare") {
+              throw new Error("second removal failed")
+            }
+          },
+          syncDns: async (value) => value,
+        },
+      })
+    ).rejects.toThrow("second removal failed")
+
+    expect(removals).toEqual([
+      "relay-a:prepare",
+      "relay-b:prepare",
+      "relay-b:rollback",
+      "relay-a:rollback",
+    ])
   })
 })
 
