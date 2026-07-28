@@ -44,6 +44,7 @@ export async function applyTailscaleDeploymentPlan<
   TDeployment extends TailscaleDeploymentState,
 >({
   authKey,
+  authKeyForTarget,
   current,
   desired,
   domain,
@@ -52,6 +53,9 @@ export async function applyTailscaleDeploymentPlan<
   operations,
 }: {
   authKey?: string
+  authKeyForTarget?: (
+    target: DesiredTailscaleDeployment
+  ) => Promise<string | undefined>
   current: ReadonlyArray<TDeployment>
   desired: ReadonlyArray<DesiredTailscaleDeployment>
   domain: string
@@ -63,9 +67,7 @@ export async function applyTailscaleDeploymentPlan<
     current.map((deployment) => [deployment.relayId, deployment])
   )
   const desiredRelayIds = new Set(desired.map(({ relayId }) => relayId))
-  const removed = current.filter(
-    ({ relayId }) => !desiredRelayIds.has(relayId)
-  )
+  const removed = current.filter(({ relayId }) => !desiredRelayIds.has(relayId))
   const applied: Array<TDeployment> = []
 
   try {
@@ -73,8 +75,11 @@ export async function applyTailscaleDeploymentPlan<
     // Applying one node at a time lets us compensate every completed peer.
     await runSequentially(desired, async (target) => {
       const previous = previousByRelay.get(target.relayId)
+      const targetAuthKey = previous
+        ? undefined
+        : ((await authKeyForTarget?.(target)) ?? authKey)
       const deployment = await operations.apply(target, {
-        ...(previous || !authKey ? {} : { authKey }),
+        ...(targetAuthKey ? { authKey: targetAuthKey } : {}),
         bindings: target.bindings,
         domain,
         hostname: target.hostname,

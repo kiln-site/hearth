@@ -50,6 +50,12 @@ CREATE TABLE IF NOT EXISTS kiln_tailscale_network (
   id CHAR(40) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
   name VARCHAR(120) NOT NULL,
   domain VARCHAR(120) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  oauth_client_id VARCHAR(120) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  oauth_client_secret_ciphertext TEXT NULL,
+  oauth_scopes JSON NULL,
+  oauth_tags JSON NULL,
+  oauth_last_synced_at TIMESTAMP(3) NULL,
+  oauth_last_error VARCHAR(512) NULL,
   created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
 );

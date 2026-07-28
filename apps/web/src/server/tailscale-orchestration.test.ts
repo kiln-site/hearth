@@ -46,6 +46,41 @@ describe("Tailscale deployment orchestration", () => {
     expect(result.map(({ relayId }) => relayId)).toEqual(["relay-a", "relay-b"])
   })
 
+  it("creates a separate auth key for each new node", async () => {
+    const created: Array<string> = []
+    const applied: Array<{ authKey?: string; relayId: string }> = []
+
+    await applyTailscaleDeploymentPlan({
+      authKeyForTarget: async (desired) => {
+        created.push(desired.relayId)
+        return `key-${desired.relayId}`
+      },
+      current: [deployment("relay-a", "old")],
+      desired: [target("relay-a"), target("relay-b"), target("relay-c")],
+      domain: "test",
+      id: "a".repeat(40),
+      name: "Test network",
+      operations: {
+        apply: async (desired, input) => {
+          applied.push({
+            authKey: input.authKey,
+            relayId: desired.relayId,
+          })
+          return deployment(desired.relayId, "applied")
+        },
+        remove: async () => undefined,
+        syncDns: async (value) => value,
+      },
+    })
+
+    expect(created).toEqual(["relay-b", "relay-c"])
+    expect(applied).toEqual([
+      { authKey: undefined, relayId: "relay-a" },
+      { authKey: "key-relay-b", relayId: "relay-b" },
+      { authKey: "key-relay-c", relayId: "relay-c" },
+    ])
+  })
+
   it("restores changed nodes when a later node apply fails", async () => {
     const applyRevisions: Array<string> = []
     const synchronized: Array<string> = []
@@ -109,10 +144,7 @@ describe("Tailscale deployment orchestration", () => {
 
   it("restores every node after a DNS synchronization failure", async () => {
     const restored: Array<string> = []
-    const current = [
-      deployment("relay-a", "old"),
-      deployment("relay-b", "old"),
-    ]
+    const current = [deployment("relay-a", "old"), deployment("relay-b", "old")]
 
     await expect(
       applyTailscaleDeploymentPlan({
@@ -147,10 +179,7 @@ describe("Tailscale deployment orchestration", () => {
     const applyRevisions: Array<string> = []
     const removed: Array<string> = []
     const synchronized: Array<string> = []
-    const current = [
-      deployment("relay-a", "old"),
-      deployment("relay-b", "old"),
-    ]
+    const current = [deployment("relay-a", "old"), deployment("relay-b", "old")]
 
     await expect(
       applyTailscaleDeploymentPlan({

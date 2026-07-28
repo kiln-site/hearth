@@ -21,9 +21,34 @@ const connection = await mysql.createConnection({
 try {
   await connection.query(sql)
   await ensureFileActivitySchema(connection)
+  await ensureTailscaleNetworkSchema(connection)
   console.log("Kiln application tables are up to date")
 } finally {
   await connection.end()
+}
+
+async function ensureTailscaleNetworkSchema(database) {
+  const [columns] = await database.query(
+    `SHOW COLUMNS FROM ${databaseTable("tailscale_network")}`
+  )
+  const names = new Set(columns.map((column) => column.Field))
+  const additions = [
+    [
+      "oauth_client_id",
+      "VARCHAR(120) CHARACTER SET ascii COLLATE ascii_bin NULL",
+    ],
+    ["oauth_client_secret_ciphertext", "TEXT NULL"],
+    ["oauth_scopes", "JSON NULL"],
+    ["oauth_tags", "JSON NULL"],
+    ["oauth_last_synced_at", "TIMESTAMP(3) NULL"],
+    ["oauth_last_error", "VARCHAR(512) NULL"],
+  ].filter(([name]) => !names.has(name))
+  if (additions.length === 0) return
+  await database.query(
+    `ALTER TABLE ${databaseTable("tailscale_network")} ${additions
+      .map(([name, definition]) => `ADD COLUMN ${name} ${definition}`)
+      .join(", ")}`
+  )
 }
 
 async function ensureFileActivitySchema(database) {

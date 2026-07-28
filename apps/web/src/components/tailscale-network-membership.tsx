@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import {
+  ExternalLink,
   KeyRound,
   LoaderCircle,
   Network,
@@ -14,6 +15,8 @@ import {
   RefreshCw,
   Search,
   Settings2,
+  ShieldCheck,
+  TriangleAlert,
   Unplug,
 } from "lucide-react"
 
@@ -26,6 +29,7 @@ import {
   DialogTitle,
 } from "@workspace/ui/components/dialog"
 import { Input } from "@workspace/ui/components/input"
+import { dismissToast, showToast } from "@workspace/ui/components/sonner"
 import { Switch } from "@workspace/ui/components/switch"
 import {
   Tooltip,
@@ -63,7 +67,9 @@ import {
   type TailscaleOperation,
 } from "@/lib/tailscale-operation-toasts"
 import {
+  configureTailscaleIntegration,
   saveTailscaleStack,
+  syncTailscaleIntegration,
   type TailscaleStackOverview,
 } from "@/server/tailscale"
 
@@ -99,6 +105,11 @@ export function TailscaleNetworkMembershipPage({
   return (
     <main className="min-h-0 flex-1 overflow-y-auto bg-background/55 p-3 sm:p-5">
       <section className="mx-auto max-w-[90rem] overflow-hidden rounded-xl border bg-card/45 [contain:paint]">
+        <TailscaleOAuthSetup
+          key={stack.id}
+          integration={stack.integration}
+          stackId={stack.id}
+        />
         <MembershipToolbar searchStore={searchStore} stackName={stack.name} />
         {save.error ? (
           <p
@@ -122,6 +133,251 @@ export function TailscaleNetworkMembershipPage({
     </main>
   )
 }
+
+const TailscaleOAuthSetup = React.memo(function TailscaleOAuthSetup({
+  integration,
+  stackId,
+}: {
+  integration: TailscaleStackOverview["integration"]
+  stackId: string
+}) {
+  const queryClient = useQueryClient()
+  const clientIdFieldId = React.useId()
+  const clientSecretFieldId = React.useId()
+  const [editing, setEditing] = React.useState(false)
+  const [clientId, setClientId] = React.useState("")
+  const [clientSecret, setClientSecret] = React.useState("")
+  const configure = useMutation({
+    mutationFn: () =>
+      configureTailscaleIntegration({
+        data: {
+          clientId: clientId.trim(),
+          clientSecret: clientSecret.trim(),
+          id: stackId,
+        },
+      }),
+    onMutate: () => {
+      showToast({
+        id: tailscaleSetupToastId(stackId),
+        message: "Connecting Kiln to Tailscale…",
+        type: "loading",
+      })
+    },
+    onSuccess: (next) => {
+      queryClient.setQueryData(queryKeys.tailscaleStacks, next)
+      setClientSecret("")
+      setEditing(false)
+      const lastError = next.stacks.find(({ id }) => id === stackId)
+        ?.integration?.lastError
+      dismissToast(tailscaleSetupToastId(stackId))
+      showToast({
+        id: tailscaleSetupToastId(stackId),
+        message: lastError
+          ? "Kiln connected; Tailscale configuration needs attention"
+          : "Kiln connected to Tailscale",
+        type: lastError ? "warning" : "success",
+      })
+    },
+    onError: async (cause) => {
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.tailscaleStacks,
+      })
+      dismissToast(tailscaleSetupToastId(stackId))
+      showToast({
+        id: tailscaleSetupToastId(stackId),
+        message: errorMessage(cause),
+        type: "error",
+      })
+    },
+  })
+  const sync = useMutation({
+    mutationFn: () => syncTailscaleIntegration({ data: { id: stackId } }),
+    onMutate: () => {
+      showToast({
+        id: tailscaleSetupToastId(stackId),
+        message: "Syncing Tailscale…",
+        type: "loading",
+      })
+    },
+    onSuccess: (next) => {
+      queryClient.setQueryData(queryKeys.tailscaleStacks, next)
+      dismissToast(tailscaleSetupToastId(stackId))
+      showToast({
+        id: tailscaleSetupToastId(stackId),
+        message: "Tailscale configuration synced",
+        type: "success",
+      })
+    },
+    onError: async (cause) => {
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.tailscaleStacks,
+      })
+      dismissToast(tailscaleSetupToastId(stackId))
+      showToast({
+        id: tailscaleSetupToastId(stackId),
+        message: errorMessage(cause),
+        type: "error",
+      })
+    },
+  })
+  const pending = configure.isPending || sync.isPending
+
+  if (integration && !editing) {
+    const needsAttention = Boolean(integration.lastError)
+    return (
+      <div className="flex min-h-16 items-center gap-3 border-b bg-background/40 px-4 py-3">
+        <span className="grid size-9 shrink-0 place-items-center rounded-lg border border-border/70 bg-background/60">
+          {needsAttention ? (
+            <TriangleAlert className="size-4 text-amber-400" />
+          ) : (
+            <ShieldCheck className="size-4 text-emerald-400" />
+          )}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <h2 className="truncate text-xs font-semibold">
+              Kiln authentication
+            </h2>
+            <span
+              className={
+                needsAttention
+                  ? "font-mono text-[9px] text-amber-400 uppercase"
+                  : "font-mono text-[9px] text-emerald-400 uppercase"
+              }
+            >
+              {needsAttention ? "Sync required" : "Connected"}
+            </span>
+          </div>
+          <p className="truncate font-mono text-[9px] text-muted-foreground">
+            {integration.clientId}
+            {integration.tags.length ? ` · ${integration.tags.join(", ")}` : ""}
+          </p>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          disabled={pending}
+          onClick={() => {
+            setClientId(integration.clientId)
+            setEditing(true)
+          }}
+        >
+          Reconfigure
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={needsAttention ? "default" : "outline"}
+          disabled={pending}
+          onClick={() => sync.mutate()}
+        >
+          {sync.isPending ? (
+            <LoaderCircle className="animate-spin" />
+          ) : (
+            <RefreshCw />
+          )}
+          Sync
+        </Button>
+      </div>
+    )
+  }
+
+  return (
+    <form
+      className="border-b bg-background/40 p-4"
+      onSubmit={(event) => {
+        event.preventDefault()
+        configure.mutate()
+      }}
+    >
+      <div className="mb-3 flex min-w-0 items-center gap-2">
+        <ShieldCheck className="size-4 shrink-0 text-primary" />
+        <h2 className="shrink-0 text-xs font-semibold">Kiln authentication</h2>
+        <span className="hidden truncate font-mono text-[8px] text-muted-foreground xl:block">
+          auth_keys · devices:core:read · devices:routes · dns
+        </span>
+        <Button
+          asChild
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="ml-auto shrink-0"
+        >
+          <a
+            href="https://login.tailscale.com/admin/settings/oauth"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Create credential
+            <ExternalLink />
+          </a>
+        </Button>
+      </div>
+      <div className="grid items-end gap-3 lg:grid-cols-[minmax(12rem,0.8fr)_minmax(16rem,1fr)_auto]">
+        <label className="block min-w-0" htmlFor={clientIdFieldId}>
+          <span className="mb-1.5 block text-[10px] font-medium">
+            OAuth client ID
+          </span>
+          <Input
+            id={clientIdFieldId}
+            aria-label="OAuth client ID"
+            value={clientId}
+            onChange={(event) => setClientId(event.target.value)}
+            autoCapitalize="none"
+            autoCorrect="off"
+            autoComplete="off"
+            placeholder="k…CNTRL"
+            className="font-mono"
+          />
+        </label>
+        <label className="block min-w-0" htmlFor={clientSecretFieldId}>
+          <span className="mb-1.5 block text-[10px] font-medium">
+            OAuth client secret
+          </span>
+          <Input
+            id={clientSecretFieldId}
+            aria-label="OAuth client secret"
+            value={clientSecret}
+            onChange={(event) => setClientSecret(event.target.value)}
+            type="password"
+            autoCapitalize="none"
+            autoCorrect="off"
+            autoComplete="off"
+            placeholder="tskey-client-…"
+            className="font-mono"
+          />
+        </label>
+        <div className="flex items-center justify-end gap-2">
+          {integration ? (
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={pending}
+              onClick={() => {
+                setClientSecret("")
+                setEditing(false)
+              }}
+            >
+              Cancel
+            </Button>
+          ) : null}
+          <Button
+            type="submit"
+            disabled={pending || !clientId.trim() || !clientSecret.trim()}
+          >
+            {configure.isPending ? (
+              <LoaderCircle className="animate-spin" />
+            ) : (
+              <KeyRound />
+            )}
+            Connect
+          </Button>
+        </div>
+      </div>
+    </form>
+  )
+})
 
 export function GameServerTailscaleSection({
   server,
@@ -512,7 +768,7 @@ const TailscaleMembershipRow = React.memo(function TailscaleMembershipRow({
                 )
                 return
               }
-              if (deploymentExists) void enable()
+              if (deploymentExists || stack.integration) void enable()
               else setAuthOpen(true)
             }}
           />
@@ -595,6 +851,7 @@ const JoinNetworkDialog = React.memo(function JoinNetworkDialog({
     networks.find((network) => network.id === selectedId) ?? networks[0]
   const needsAuth = Boolean(
     selected &&
+    !selected.integration &&
     !selected.deployments.some(
       (deployment) => deployment.relayId === server.relayId
     )
@@ -887,4 +1144,8 @@ function errorMessage(cause: unknown) {
   return cause instanceof Error
     ? cause.message
     : "The Tailscale network could not be updated."
+}
+
+function tailscaleSetupToastId(stackId: string) {
+  return `kiln-tailscale-setup-${stackId}`
 }
