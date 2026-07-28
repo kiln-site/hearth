@@ -389,7 +389,7 @@ function InstanceIdCopyButton({
       <TooltipTrigger asChild>
         <button
           type="button"
-          className={`truncate font-mono transition-colors ${copied ? "text-emerald-400" : "hover:text-foreground"}`}
+          className={`shrink-0 font-mono transition-colors ${copied ? "text-emerald-400" : "hover:text-foreground"}`}
           aria-label={`Copy full server ID ${id}`}
           onClick={copy}
         >
@@ -411,7 +411,7 @@ function InstanceAddressCopyButton({ address }: { address: string }) {
       <TooltipTrigger asChild>
         <button
           type="button"
-          className={`hidden min-w-0 items-center gap-1 truncate font-mono transition-colors xl:inline-flex ${copied ? "text-emerald-400" : "text-primary/75 hover:text-primary"}`}
+          className={`flex min-w-0 flex-1 items-center gap-1 truncate font-mono transition-colors ${copied ? "text-emerald-400" : "text-primary/75 hover:text-primary"}`}
           aria-label={`Copy server address ${address}`}
           onClick={copy}
         >
@@ -438,7 +438,7 @@ function InstanceIdentity({
   instance: InstanceWorkspaceInstance
 }) {
   return (
-    <div className="min-w-0 flex-1">
+    <div className="@container min-w-0 flex-1">
       <h1
         className="flex min-w-0 items-baseline gap-1.5 font-heading tracking-[-0.03em]"
         title={instance.name}
@@ -452,12 +452,16 @@ function InstanceIdentity({
         </span>
       </h1>
       <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] whitespace-nowrap text-muted-foreground sm:text-xs">
-        <span className="shrink-0">
-          {instance.implementation} {instance.version}
+        <span className="hidden shrink-0 items-center gap-1.5 @[30rem]:inline-flex">
+          <span>
+            {instance.implementation} {instance.version}
+          </span>
+          <span className="text-border">/</span>
         </span>
-        <span className="text-border">/</span>
-        <InstanceIdCopyButton id={instance.id} shortId={instance.shortId} />
-        <span className="hidden text-border xl:inline">/</span>
+        <span className="hidden shrink-0 items-center gap-1.5 @[40rem]:inline-flex">
+          <InstanceIdCopyButton id={instance.id} shortId={instance.shortId} />
+          <span className="text-border">/</span>
+        </span>
         <InstanceAddressCopyButton address={instance.connectAddress} />
       </div>
       {error ? (
