@@ -10,6 +10,7 @@ import type {
 } from "@workspace/contracts"
 import {
   ArrowDown,
+  Boxes,
   Check,
   Clock3,
   Copy,
@@ -17,6 +18,7 @@ import {
   EyeOff,
   ListFilter,
   LoaderCircle,
+  RadioTower,
   Search,
   Share2,
   TriangleAlert,
@@ -41,10 +43,14 @@ import {
 
 import {
   consoleLevels,
+  consoleServices,
+  createConsoleAggregateStreamStore,
   createConsoleStreamStore,
   createConsoleUiStore,
 } from "@/components/console/console-stores"
 import type {
+  ConsoleAggregateStreamStore,
+  ConsoleService,
   ConsoleStreamSnapshot,
   ConsoleStreamStore,
   ConsoleUiStore,
@@ -58,8 +64,15 @@ import {
   sendDirectRelayCommand,
 } from "@/lib/relay-console-command"
 import { redactSensitiveText } from "@/lib/redaction"
-import { queryKeys, relaySnapshotQueryOptions } from "@/lib/query-options"
-import { selectInstanceObservedState } from "@/lib/relay-selectors"
+import {
+  queryKeys,
+  relaySnapshotQueryOptions,
+  tailscaleStacksQueryOptions,
+} from "@/lib/query-options"
+import {
+  selectInstanceObservedState,
+  selectInstanceRelayConnected,
+} from "@/lib/relay-selectors"
 import {
   selectInstanceRuntime,
   type InstanceRuntime,
@@ -119,19 +132,31 @@ function ConsoleWorkspaceSession({
   canShare: boolean
   canWrite: boolean
 }) {
+  const tailscale = instance.implementation.toLowerCase() === "tailscale"
   const [uiStore] = React.useState(createConsoleUiStore)
-  const [streamStore] = React.useState(createConsoleStreamStore)
+  const [streamStore] = React.useState<ConsoleStreamStore>(() =>
+    tailscale
+      ? createConsoleAggregateStreamStore(instance.id)
+      : createConsoleStreamStore()
+  )
 
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-card">
-      <ConsoleStreamController
-        instanceId={instance.id}
-        relayId={instance.relayId}
-        streamStore={streamStore}
-      />
+      {tailscale ? (
+        <TailscaleConsoleStreamController
+          instanceId={instance.id}
+          streamStore={streamStore as ConsoleAggregateStreamStore}
+        />
+      ) : (
+        <ConsoleStreamController
+          instanceId={instance.id}
+          relayId={instance.relayId}
+          streamStore={streamStore}
+        />
+      )}
       <ConsoleToolbar
         active={active}
-        canShare={canShare}
+        canShare={canShare && !tailscale}
         instance={instance}
         streamStore={streamStore}
         uiStore={uiStore}
@@ -196,6 +221,90 @@ function ConsoleStreamController({
   return null
 }
 
+function TailscaleConsoleStreamController({
+  instanceId,
+  streamStore,
+}: {
+  instanceId: string
+  streamStore: ConsoleAggregateStreamStore
+}) {
+  const { data: stacks = [] } = useQuery({
+    ...tailscaleStacksQueryOptions(),
+    notifyOnChangeProps: ["data"],
+  })
+  const stack = stacks.find((candidate) => candidate.id === instanceId)
+
+  return stack?.deployments.map((deployment) => (
+    <TailscaleConsoleStreamSource
+      key={deployment.relayId}
+      instanceId={instanceId}
+      relayId={deployment.relayId}
+      relayName={deployment.relayName}
+      streamStore={streamStore}
+    />
+  ))
+}
+
+function TailscaleConsoleStreamSource({
+  instanceId,
+  relayId,
+  relayName,
+  streamStore,
+}: {
+  instanceId: string
+  relayId: string
+  relayName: string
+  streamStore: ConsoleAggregateStreamStore
+}) {
+  const selectRuntime = React.useMemo(
+    () => selectInstanceRuntime(instanceId, relayId),
+    [instanceId, relayId]
+  )
+  const selectConnected = React.useMemo(
+    () => selectInstanceRelayConnected(instanceId, relayId),
+    [instanceId, relayId]
+  )
+  const { data: runtime } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectRuntime,
+  })
+  const { data: relayConnected = false } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectConnected,
+  })
+  const snapshot = useRelayConsoleStream(
+    relayId,
+    instanceId,
+    relayConnected,
+    runtime
+  )
+  const effectiveSnapshot = React.useMemo(
+    () =>
+      relayConnected
+        ? snapshot
+        : {
+            ...snapshot,
+            connection: "unavailable" as const,
+            error: "Hearth cannot reach this Relay right now.",
+            loading: false,
+          },
+    [relayConnected, snapshot]
+  )
+
+  React.useLayoutEffect(() => {
+    streamStore.setSourceSnapshot(
+      relayId,
+      { id: relayId, name: relayName },
+      effectiveSnapshot
+    )
+  }, [effectiveSnapshot, relayId, relayName, streamStore])
+  React.useEffect(
+    () => () => streamStore.removeSource(relayId),
+    [relayId, streamStore]
+  )
+  return null
+}
+
 const ConsoleLogViewportController = React.memo(
   function ConsoleLogViewportController({
     active,
@@ -224,8 +333,23 @@ const ConsoleLogViewportController = React.memo(
         const text = filters.redactSensitive
           ? redactSensitiveText(line.text)
           : line.text
+        const source = line as RelayConsoleLine & {
+          relayId?: string
+          service?: ConsoleService
+        }
+        const relayMatches =
+          filters.relayIds === null ||
+          !source.relayId ||
+          filters.relayIds.has(source.relayId)
+        const service = consoleLineService(source)
+        const serviceMatches =
+          filters.services === null ||
+          service === null ||
+          filters.services.has(service)
         if (
           filters.levels.has(line.level) &&
+          relayMatches &&
+          serviceMatches &&
           (!normalizedQuery || text.toLowerCase().includes(normalizedQuery))
         ) {
           filtered.push(
@@ -252,6 +376,15 @@ const ConsoleLogViewportController = React.memo(
   }
 )
 
+function consoleLineService(
+  line: RelayConsoleLine & { service?: ConsoleService }
+): ConsoleService | null {
+  if (line.service) return line.service
+  if (line.text.startsWith("[tailscale] ")) return "tailscale"
+  if (line.text.startsWith("[coredns] ")) return "coredns"
+  return null
+}
+
 interface ConsoleToolbarProps {
   active: boolean
   canShare: boolean
@@ -271,6 +404,12 @@ const ConsoleToolbar = React.memo(function ConsoleToolbar({
     <div className="flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b px-3 py-2.5 sm:px-4">
       <ConsoleSearchControl uiStore={uiStore} />
       <ConsoleLevelMenu uiStore={uiStore} />
+      {instance.implementation.toLowerCase() === "tailscale" ? (
+        <TailscaleConsoleFilterMenus
+          instanceId={instance.id}
+          uiStore={uiStore}
+        />
+      ) : null}
       <div className="ml-auto flex items-center gap-1.5">
         <ConsoleShareButton
           canShare={canShare}
@@ -432,6 +571,187 @@ function ConsoleLevelFilterAction({
       level={level === "all" ? undefined : level}
       onClick={() => uiStore.toggleLevel(level)}
     />
+  )
+}
+
+function TailscaleConsoleFilterMenus({
+  instanceId,
+  uiStore,
+}: {
+  instanceId: string
+  uiStore: ConsoleUiStore
+}) {
+  const { data: stacks = [] } = useQuery({
+    ...tailscaleStacksQueryOptions(),
+    notifyOnChangeProps: ["data"],
+  })
+  const relays = React.useMemo(() => {
+    const stack = stacks.find((candidate) => candidate.id === instanceId)
+    return (
+      stack?.deployments.map(({ relayId, relayName }) => ({
+        id: relayId,
+        label: relayName,
+      })) ?? []
+    )
+  }, [instanceId, stacks])
+
+  return (
+    <>
+      <ConsoleRelayMenu relays={relays} uiStore={uiStore} />
+      <ConsoleServiceMenu uiStore={uiStore} />
+    </>
+  )
+}
+
+function ConsoleRelayMenu({
+  relays,
+  uiStore,
+}: {
+  relays: Array<{ id: string; label: string }>
+  uiStore: ConsoleUiStore
+}) {
+  const selected = React.useSyncExternalStore(
+    uiStore.subscribe,
+    uiStore.getRelayIdsSnapshot,
+    uiStore.getRelayIdsSnapshot
+  )
+  const all = selected === null
+  const relayIds = React.useMemo(() => relays.map(({ id }) => id), [relays])
+
+  return (
+    <Popover>
+      <ConsoleTooltip content="Filter Relay">
+        <PopoverTrigger asChild>
+          <Button
+            variant={all ? "ghost" : "secondary"}
+            size="icon"
+            className="relative size-9 shrink-0"
+            aria-label={
+              all
+                ? "Filter console relays"
+                : `Filter console relays, ${selected.size} active`
+            }
+          >
+            <RadioTower />
+            {!all ? (
+              <span
+                className="absolute top-1 right-1 size-1.5 bg-primary"
+                aria-hidden="true"
+              />
+            ) : null}
+          </Button>
+        </PopoverTrigger>
+      </ConsoleTooltip>
+      <PopoverContent
+        align="start"
+        side="bottom"
+        sideOffset={7}
+        className="w-56 p-1"
+      >
+        <ConsoleFilterMenuSummary
+          active={selected?.size ?? relays.length}
+          label="Relays"
+          total={relays.length}
+        />
+        <ConsoleLevelFilter
+          active={all}
+          label="All relays"
+          onClick={() => uiStore.toggleRelay("all", relayIds)}
+        />
+        <div className="my-1 border-t" />
+        {relays.map((relay) => (
+          <ConsoleLevelFilter
+            key={relay.id}
+            active={all || selected.has(relay.id)}
+            label={relay.label}
+            onClick={() => uiStore.toggleRelay(relay.id, relayIds)}
+          />
+        ))}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function ConsoleServiceMenu({ uiStore }: { uiStore: ConsoleUiStore }) {
+  const selected = React.useSyncExternalStore(
+    uiStore.subscribe,
+    uiStore.getServicesSnapshot,
+    uiStore.getServicesSnapshot
+  )
+  const all = selected === null
+
+  return (
+    <Popover>
+      <ConsoleTooltip content="Filter Service">
+        <PopoverTrigger asChild>
+          <Button
+            variant={all ? "ghost" : "secondary"}
+            size="icon"
+            className="relative size-9 shrink-0"
+            aria-label={
+              all
+                ? "Filter console services"
+                : `Filter console services, ${selected.size} active`
+            }
+          >
+            <Boxes />
+            {!all ? (
+              <span
+                className="absolute top-1 right-1 size-1.5 bg-primary"
+                aria-hidden="true"
+              />
+            ) : null}
+          </Button>
+        </PopoverTrigger>
+      </ConsoleTooltip>
+      <PopoverContent
+        align="start"
+        side="bottom"
+        sideOffset={7}
+        className="w-52 p-1"
+      >
+        <ConsoleFilterMenuSummary
+          active={selected?.size ?? consoleServices.length}
+          label="Services"
+          total={consoleServices.length}
+        />
+        <ConsoleLevelFilter
+          active={all}
+          label="All services"
+          onClick={() => uiStore.toggleService("all")}
+        />
+        <div className="my-1 border-t" />
+        {consoleServices.map((service) => (
+          <ConsoleLevelFilter
+            key={service}
+            active={all || selected.has(service)}
+            label={service === "coredns" ? "CoreDNS" : "Tailscale"}
+            onClick={() => uiStore.toggleService(service)}
+          />
+        ))}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function ConsoleFilterMenuSummary({
+  active,
+  label,
+  total,
+}: {
+  active: number
+  label: string
+  total: number
+}) {
+  return (
+    <div className="flex items-center justify-between border-b px-2 py-2">
+      <p className="text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+        {label}
+      </p>
+      <span className="font-mono text-[9px] text-muted-foreground/75 tabular-nums">
+        {active}/{total}
+      </span>
+    </div>
   )
 }
 

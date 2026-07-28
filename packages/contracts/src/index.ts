@@ -307,9 +307,7 @@ export const relayTailscaleInstallSchema = z
   })
   .strict()
 
-export const relayTailscaleStackIdSchema = z
-  .string()
-  .regex(/^[a-f0-9]{40}$/u)
+export const relayTailscaleStackIdSchema = z.string().regex(/^[a-f0-9]{40}$/u)
 
 export const relayTailscaleStackBindingInputSchema = z
   .object({
@@ -769,6 +767,7 @@ export const relayConsoleLineSchema = z.object({
   id: z.string().min(1),
   timestamp: z.string().datetime().nullable(),
   level: relayConsoleLevelSchema,
+  service: z.enum(["tailscale", "coredns"]).optional(),
   text: z.string(),
   segments: z.array(relayConsoleSegmentSchema).optional(),
 })

@@ -379,7 +379,6 @@ const TailscaleTableRow = React.memo(function TailscaleTableRow({
                   <Link
                     to="/server/$serverId/network"
                     params={{ serverId: routeId }}
-                    preload="intent"
                   >
                     <Settings2 />
                   </Link>

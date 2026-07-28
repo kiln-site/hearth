@@ -3,6 +3,7 @@ import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query"
 import { Check, Monitor, Moon, Pencil, Sun } from "lucide-react"
 
 import { ColorPicker } from "@workspace/ui/components/color-picker"
+import { Switch } from "@workspace/ui/components/switch"
 import { cn } from "@workspace/ui/lib/utils"
 
 import { enqueueAppearancePersistence } from "@/lib/appearance-persistence"
@@ -346,8 +347,9 @@ export const AppearanceSettingsPage = React.memo(
 
           {settings.canManageAppearanceDefault ? (
             <SettingRow label="Default for new users">
-              <DefaultForNewUsersSwitch
-                initialChecked={settings.defaultForNewUsers}
+              <Switch
+                aria-label="Default for new users"
+                defaultChecked={settings.defaultForNewUsers}
                 onCheckedChange={settings.updateDefaultForNewUsers}
               />
             </SettingRow>
@@ -654,51 +656,6 @@ const ModeButton = React.memo(function ModeButton({
     >
       <Icon className="size-3.5" aria-hidden="true" />
       <span>{label}</span>
-    </button>
-  )
-})
-
-/*
- * This switch owns its visual state so changing the platform default does not
- * re-render the appearance form. The parent callback only updates persistence
- * and query-cache fields excluded by the active UI selectors.
- */
-const DefaultForNewUsersSwitch = React.memo(function DefaultForNewUsersSwitch({
-  initialChecked,
-  onCheckedChange,
-}: {
-  initialChecked: boolean
-  onCheckedChange: (checked: boolean) => void
-}) {
-  const [checked, setChecked] = React.useState(initialChecked)
-  const checkedRef = React.useRef(initialChecked)
-  const toggle = React.useCallback(() => {
-    const next = !checkedRef.current
-    checkedRef.current = next
-    setChecked(next)
-    onCheckedChange(next)
-  }, [onCheckedChange])
-
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label="Default for new users"
-      onClick={toggle}
-      className={cn(
-        "relative h-7 w-12 border transition-[background-color,border-color,box-shadow] outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
-        checked
-          ? "border-primary bg-primary"
-          : "border-input bg-muted-foreground/20"
-      )}
-    >
-      <span
-        className={cn(
-          "absolute top-0.5 left-0.5 size-[22px] bg-background shadow-sm transition-transform",
-          checked ? "translate-x-5" : "translate-x-0"
-        )}
-      />
     </button>
   )
 })

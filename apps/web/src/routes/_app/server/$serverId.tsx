@@ -43,7 +43,11 @@ export const Route = createFileRoute("/_app/server/$serverId")({
       throw redirectToServerList(instance.shortId)
     }
 
-    if (params.serverId !== routeIdentifier) {
+    // Relay-qualified links are already unambiguous. Rewriting one while its
+    // client transition is resolving can start a second transition for the
+    // same instance and lock the router.
+    const alreadyRelayQualified = params.serverId === instance.routeId
+    if (!alreadyRelayQualified && params.serverId !== routeIdentifier) {
       const segments = location.pathname.split("/")
       segments[2] = encodeURIComponent(routeIdentifier)
       throw redirect({

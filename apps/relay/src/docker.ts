@@ -1320,7 +1320,9 @@ export class DockerDriver {
     if (instance.brickId !== builtinTailscaleBrickId) {
       return [{ component: null, container: discovered.container }]
     }
-    const companionName = this.#resources.tailscaleStackDnsContainer(instance.id)
+    const companionName = this.#resources.tailscaleStackDnsContainer(
+      instance.id
+    )
     const inspected = await command("docker", ["inspect", companionName]).catch(
       () => null
     )
@@ -1578,6 +1580,7 @@ function roundPercent(value: number): number {
 export interface ParsedConsoleLine {
   level: RelayConsoleLevel
   segments?: Array<RelayConsoleSegment>
+  service?: "coredns" | "tailscale"
   text: string
   timestamp: string | null
 }
@@ -1660,6 +1663,7 @@ function prefixConsoleLine(
   return {
     ...line,
     segments: undefined,
+    service: component,
     text: `[${component}] ${line.text}`,
   }
 }

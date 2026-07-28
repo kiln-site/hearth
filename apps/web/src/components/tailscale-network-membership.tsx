@@ -24,12 +24,12 @@ import {
   DialogTitle,
 } from "@workspace/ui/components/dialog"
 import { Input } from "@workspace/ui/components/input"
+import { Switch } from "@workspace/ui/components/switch"
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
-import { cn } from "@workspace/ui/lib/utils"
 
 import {
   WorkspaceDataTable,
@@ -193,30 +193,32 @@ export function GameServerTailscaleSection({
           {errorMessage(save.error)}
         </p>
       ) : null}
-      <JoinNetworkDialog
-        networks={available}
-        open={joining}
-        pending={save.isPending}
-        server={server}
-        onOpenChange={setJoining}
-        onJoin={async (stack, hostname, authKey) => {
-          await save.mutateAsync({
-            authKey,
-            bindings: [
-              ...stack.bindings,
-              {
-                address: "",
-                hostname,
-                instanceId: server.id,
-                relayId: server.relayId,
-                relayName: server.relayName,
-              },
-            ],
-            stack,
-          })
-          setJoining(false)
-        }}
-      />
+      {joining ? (
+        <JoinNetworkDialog
+          networks={available}
+          open
+          pending={save.isPending}
+          server={server}
+          onOpenChange={setJoining}
+          onJoin={async (stack, hostname, authKey) => {
+            await save.mutateAsync({
+              authKey,
+              bindings: [
+                ...stack.bindings,
+                {
+                  address: "",
+                  hostname,
+                  instanceId: server.id,
+                  relayId: server.relayId,
+                  relayName: server.relayName,
+                },
+              ],
+              stack,
+            })
+            setJoining(false)
+          }}
+        />
+      ) : null}
     </section>
   )
 }
@@ -452,10 +454,10 @@ const TailscaleMembershipRow = React.memo(function TailscaleMembershipRow({
           </div>
         </WorkspaceTableCell>
         <WorkspaceTableCell className="text-center">
-          <NetworkToggle
+          <Switch
             checked={Boolean(binding)}
             disabled={pending || !hostname.trim()}
-            label={`${binding ? "Disconnect" : "Connect"} ${server.name}`}
+            aria-label={`${binding ? "Disconnect" : "Connect"} ${server.name}`}
             onCheckedChange={(checked) => {
               if (!checked) {
                 void onSave(
@@ -473,13 +475,15 @@ const TailscaleMembershipRow = React.memo(function TailscaleMembershipRow({
           />
         </WorkspaceTableCell>
       </tr>
-      <AuthKeyDialog
-        networkName={stack.name}
-        open={authOpen}
-        pending={pending}
-        onOpenChange={setAuthOpen}
-        onSubmit={enable}
-      />
+      {authOpen ? (
+        <AuthKeyDialog
+          networkName={stack.name}
+          open
+          pending={pending}
+          onOpenChange={setAuthOpen}
+          onSubmit={enable}
+        />
+      ) : null}
     </>
   )
 })
@@ -552,13 +556,6 @@ const JoinNetworkDialog = React.memo(function JoinNetworkDialog({
       (deployment) => deployment.relayId === server.relayId
     )
   )
-
-  React.useEffect(() => {
-    if (!open) return
-    setSelectedId(networks[0]?.id ?? "")
-    setHostname(defaultTailscaleHostname(server))
-    setAuthKey("")
-  }, [networks, open, server])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -660,10 +657,6 @@ const AuthKeyDialog = React.memo(function AuthKeyDialog({
 }) {
   const [authKey, setAuthKey] = React.useState("")
 
-  React.useEffect(() => {
-    if (open) setAuthKey("")
-  }, [open])
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
@@ -704,42 +697,6 @@ const AuthKeyDialog = React.memo(function AuthKeyDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
-})
-
-const NetworkToggle = React.memo(function NetworkToggle({
-  checked,
-  disabled,
-  label,
-  onCheckedChange,
-}: {
-  checked: boolean
-  disabled: boolean
-  label: string
-  onCheckedChange: (checked: boolean) => void
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      disabled={disabled}
-      onClick={() => onCheckedChange(!checked)}
-      className={cn(
-        "relative inline-flex h-5 w-9 items-center rounded-full border transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50",
-        checked
-          ? "border-primary bg-primary"
-          : "border-border bg-muted-foreground/20"
-      )}
-    >
-      <span
-        className={cn(
-          "block size-3.5 rounded-full bg-background shadow-sm transition-transform",
-          checked ? "translate-x-[1.1rem]" : "translate-x-0.5"
-        )}
-      />
-    </button>
   )
 })
 

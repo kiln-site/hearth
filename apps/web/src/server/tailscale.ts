@@ -126,11 +126,47 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
     const current = await currentDeploymentsPromise
     const currentForStack = current.filter((deployment) => deployment.id === id)
     if (grouped.size === 0) {
-      await removeDeployments(currentForStack, relayById)
-      await invalidateRelaySnapshots(
-        currentForStack.map(({ relayId }) => relayId)
+      const [anchor, ...removed] = currentForStack
+      if (!anchor) {
+        throw new Error("Select at least one server to create this network")
+      }
+      const relay = relayById.get(anchor.relayId)
+      if (!relay) throw new Error("The network's node is unavailable")
+      relayTailscaleStackSchema.parse(
+        await relayRpc(
+          relay,
+          "relay.tailscale.stack.apply",
+          {
+            bindings: [],
+            domain: data.domain,
+            hostname: deploymentHostname(data.name, relay.name, relay.id),
+            id,
+            name: data.name,
+          },
+          240_000
+        )
       )
-      return []
+      const synchronized = relayTailscaleStackSchema.parse(
+        await relayRpc(
+          relay,
+          "relay.tailscale.stack.dns",
+          { id, records: [] },
+          60_000
+        )
+      )
+      await removeDeployments(removed, relayById)
+      await invalidateRelaySnapshots([
+        anchor.relayId,
+        ...removed.map(({ relayId }) => relayId),
+      ])
+      return groupTailscaleDeployments([
+        ...current.filter((deployment) => deployment.id !== id),
+        {
+          ...synchronized,
+          relayId: anchor.relayId,
+          relayName: relay.name,
+        },
+      ])
     }
 
     const applied = await Promise.all(

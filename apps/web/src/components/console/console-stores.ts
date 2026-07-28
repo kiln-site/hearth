@@ -13,10 +13,15 @@ export const consoleLevels: Array<RelayConsoleLevel> = [
   "trace",
 ]
 
+export const consoleServices = ["tailscale", "coredns"] as const
+export type ConsoleService = (typeof consoleServices)[number]
+
 export interface ConsoleFilterSnapshot {
   levels: Set<RelayConsoleLevel>
   query: string
   redactSensitive: boolean
+  relayIds: Set<string> | null
+  services: Set<ConsoleService> | null
 }
 
 export interface ConsoleUiStore {
@@ -26,6 +31,8 @@ export interface ConsoleUiStore {
   getLineSelectedSnapshot: (lineId: string) => boolean
   getQuerySnapshot: () => string
   getRedactSensitiveSnapshot: () => boolean
+  getRelayIdsSnapshot: () => Set<string> | null
+  getServicesSnapshot: () => Set<ConsoleService> | null
   getSelectedSnapshot: () => Set<string>
   getSelectedText: () => string
   getShowTimestampsSnapshot: () => boolean
@@ -34,6 +41,8 @@ export interface ConsoleUiStore {
   setQuery: (query: string) => void
   subscribe: (listener: () => void) => () => void
   toggleLevel: (level: RelayConsoleLevel | "all") => void
+  toggleRelay: (relayId: string, availableIds: Array<string>) => void
+  toggleService: (service: ConsoleService | "all") => void
   toggleLine: (line: RelayConsoleLine, index: number, shift: boolean) => void
   toggleRedactSensitive: () => void
   toggleShowTimestamps: () => void
@@ -54,6 +63,15 @@ export interface ConsoleStreamStore {
   getSnapshot: () => ConsoleStreamSnapshot
   setSnapshot: (snapshot: ConsoleStreamSnapshot) => void
   subscribe: (listener: () => void) => () => void
+}
+
+export interface ConsoleAggregateStreamStore extends ConsoleStreamStore {
+  removeSource: (sourceId: string) => void
+  setSourceSnapshot: (
+    sourceId: string,
+    relay: { id: string; name: string },
+    snapshot: ConsoleStreamSnapshot
+  ) => void
 }
 
 export function createConsoleStreamStore(): ConsoleStreamStore {
@@ -94,6 +112,8 @@ export function createConsoleUiStore(): ConsoleUiStore {
   let query = ""
   let levels = new Set(consoleLevels)
   let redactSensitive = true
+  let relayIds: Set<string> | null = null
+  let services: Set<ConsoleService> | null = null
   let showTimestamps = false
   let wrapLines = true
   let selected = new Set<string>()
@@ -103,13 +123,15 @@ export function createConsoleUiStore(): ConsoleUiStore {
     levels,
     query,
     redactSensitive,
+    relayIds,
+    services,
   }
   const listeners = new Set<() => void>()
   const notify = () => {
     for (const listener of listeners) listener()
   }
   const updateFilterSnapshot = () => {
-    filterSnapshot = { levels, query, redactSensitive }
+    filterSnapshot = { levels, query, redactSensitive, relayIds, services }
     notify()
   }
 
@@ -125,6 +147,8 @@ export function createConsoleUiStore(): ConsoleUiStore {
     getLineSelectedSnapshot: (lineId) => selected.has(lineId),
     getQuerySnapshot: () => query,
     getRedactSensitiveSnapshot: () => redactSensitive,
+    getRelayIdsSnapshot: () => relayIds,
+    getServicesSnapshot: () => services,
     getSelectedSnapshot: () => selected,
     getSelectedText: () => {
       const lines: Array<string> = []
@@ -165,6 +189,22 @@ export function createConsoleUiStore(): ConsoleUiStore {
       }
       updateFilterSnapshot()
     },
+    toggleRelay: (relayId, availableIds) => {
+      if (relayId === "all") {
+        relayIds = null
+      } else if (relayIds === null) {
+        relayIds = new Set([relayId])
+      } else {
+        const next = new Set(relayIds)
+        if (next.has(relayId)) next.delete(relayId)
+        else next.add(relayId)
+        relayIds =
+          next.size === 0 || next.size === new Set(availableIds).size
+            ? null
+            : next
+      }
+      updateFilterSnapshot()
+    },
     toggleLine: (line, index, shift) => {
       const next = new Set(selected)
       if (shift && lastSelected !== null) {
@@ -191,6 +231,114 @@ export function createConsoleUiStore(): ConsoleUiStore {
     toggleWrapLines: () => {
       wrapLines = !wrapLines
       notify()
+    },
+    toggleService: (service) => {
+      if (service === "all") {
+        services = null
+      } else if (services === null) {
+        services = new Set([service])
+      } else {
+        const next = new Set(services)
+        if (next.has(service)) next.delete(service)
+        else next.add(service)
+        services =
+          next.size === 0 || next.size === consoleServices.length ? null : next
+      }
+      updateFilterSnapshot()
+    },
+  }
+}
+
+export function createConsoleAggregateStreamStore(
+  instanceId: string
+): ConsoleAggregateStreamStore {
+  const sources = new Map<
+    string,
+    {
+      relay: { id: string; name: string }
+      snapshot: ConsoleStreamSnapshot
+    }
+  >()
+  const store = createConsoleStreamStore()
+
+  const update = () => {
+    const values = [...sources.values()]
+    const snapshots = values.map(({ snapshot }) => snapshot)
+    const lines = values
+      .flatMap(({ relay, snapshot }) =>
+        (snapshot.consoleData?.lines ?? []).map((line) => ({
+          ...line,
+          id: `${relay.id}:${line.id}`,
+          relayId: relay.id,
+          relayName: relay.name,
+        }))
+      )
+      .sort((left, right) =>
+        (left.timestamp ?? "").localeCompare(right.timestamp ?? "")
+      )
+      .slice(-5_008)
+    const connection = snapshots.some(
+      (snapshot) => snapshot.connection === "live"
+    )
+      ? "live"
+      : snapshots.some((snapshot) => snapshot.connection === "reconnecting")
+        ? "reconnecting"
+        : snapshots.some((snapshot) => snapshot.connection === "opening")
+          ? "opening"
+          : "unavailable"
+    const transports = new Set(
+      snapshots.flatMap((snapshot) =>
+        snapshot.transport ? [snapshot.transport] : []
+      )
+    )
+    const transportSnapshot = snapshots.find((snapshot) => snapshot.transport)
+    store.setSnapshot({
+      connection,
+      consoleData:
+        values.length === 0
+          ? null
+          : {
+              instanceId,
+              lines,
+              startedAt: null,
+              truncated: snapshots.some(
+                (snapshot) => snapshot.consoleData?.truncated
+              ),
+            },
+      error:
+        connection === "unavailable"
+          ? (snapshots.find((snapshot) => snapshot.error)?.error ??
+            "No Tailscale nodes are available.")
+          : null,
+      loading:
+        values.length === 0 ||
+        (lines.length === 0 && snapshots.some((snapshot) => snapshot.loading)),
+      transport:
+        transports.size === 1 ? (transportSnapshot?.transport ?? null) : null,
+      transportMessage:
+        transports.size === 1
+          ? (transportSnapshot?.transportMessage ?? null)
+          : null,
+    })
+  }
+
+  return {
+    ...store,
+    removeSource: (sourceId) => {
+      if (!sources.delete(sourceId)) return
+      update()
+    },
+    setSourceSnapshot: (sourceId, relay, snapshot) => {
+      const current = sources.get(sourceId)
+      if (
+        current?.relay.id === relay.id &&
+        current.relay.name === relay.name &&
+        current.snapshot === snapshot
+      ) {
+        return
+      }
+      sources.set(sourceId, { relay, snapshot })
+      update()
     },
   }
 }
