@@ -1,5 +1,10 @@
 import * as React from "react"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  useSuspenseQuery,
+} from "@tanstack/react-query"
 import {
   AlertTriangle,
   CheckCircle2,
@@ -31,12 +36,39 @@ import {
   useInstanceRelayConnected,
 } from "@/components/instance-workspace-context"
 import {
+  GameServerTailscaleSection,
+  TailscaleNetworkMembershipPage,
+} from "@/components/tailscale-network-membership"
+import { accessCapabilitiesQueryOptions } from "@/lib/query-options"
+import {
   getInstanceWebRoutes,
   performRelayAction,
   updateInstanceWebRoutes,
 } from "@/server/relay"
 
 export function InstanceNetworkPage() {
+  const instance = useInstanceIdentity()
+  const { data: isPlatformAdmin } = useSuspenseQuery({
+    ...accessCapabilitiesQueryOptions(),
+    select: (capabilities) => capabilities.isPlatformAdmin,
+  })
+
+  if (instance.implementation.toLowerCase() === "tailscale") {
+    return isPlatformAdmin ? (
+      <TailscaleNetworkMembershipPage stackId={instance.id} />
+    ) : (
+      <div className="grid min-h-0 flex-1 place-items-center bg-background/55">
+        <p className="text-sm text-muted-foreground">
+          Platform administrator access is required to configure this network.
+        </p>
+      </div>
+    )
+  }
+
+  return <WebRoutesNetworkPage showTailscale={isPlatformAdmin} />
+}
+
+function WebRoutesNetworkPage({ showTailscale }: { showTailscale: boolean }) {
   const instance = useInstanceIdentity()
   const permissions = useInstancePermissions()
   const relayConnected = useInstanceRelayConnected()
@@ -103,6 +135,9 @@ export function InstanceNetworkPage() {
   return (
     <main className="min-h-0 flex-1 overflow-y-auto bg-background/55 p-4 sm:p-6">
       <div className="mx-auto max-w-4xl space-y-4">
+        {showTailscale ? (
+          <GameServerTailscaleSection server={instance} />
+        ) : null}
         <header className="border border-border/80 bg-card/55 p-4">
           <div className="flex items-start gap-3">
             <div className="grid size-9 shrink-0 place-items-center border border-primary/25 bg-primary/10 text-primary">

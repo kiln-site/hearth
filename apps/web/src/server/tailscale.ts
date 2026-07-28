@@ -22,32 +22,25 @@ import type { PersistedRelay } from "@/lib/relay-registry"
 import { listPersistedRelays } from "@/lib/relay-registry"
 import { requireAuthenticatedUser } from "@/server/auth"
 import { runAppEffect } from "@/effect/runtime"
-import type {
-  RelaySnapshot,
-  RelayTailscaleStack,
-} from "@workspace/contracts"
+import type { RelaySnapshot, RelayTailscaleStack } from "@workspace/contracts"
 
-const stackBindingInputSchema = z
-  .object({
-    hostname: relayTailscaleSubdomainSchema,
-    instanceId: z.string().regex(/^[a-f0-9]{40}$/u),
-    relayId: relayIdSchema,
-  })
-  .strict()
+const stackBindingInputSchema = z.strictObject({
+  hostname: relayTailscaleSubdomainSchema,
+  instanceId: z.string().regex(/^[a-f0-9]{40}$/u),
+  relayId: relayIdSchema,
+})
 
-const saveTailscaleStackSchema = z
-  .object({
-    authKey: relayTailscaleInstallSchema.shape.authKey.optional(),
-    bindings: z.array(stackBindingInputSchema).max(4_096),
-    domain: relayTailscaleDomainSchema,
-    id: relayTailscaleStackIdSchema.optional(),
-    name: relayInstanceNameSchema,
-  })
-  .strict()
+const saveTailscaleStackSchema = z.strictObject({
+  authKey: relayTailscaleInstallSchema.shape.authKey.optional(),
+  bindings: z.array(stackBindingInputSchema).max(4_096),
+  domain: relayTailscaleDomainSchema,
+  id: relayTailscaleStackIdSchema.optional(),
+  name: relayInstanceNameSchema,
+})
 
-const removeTailscaleStackSchema = z
-  .object({ id: relayTailscaleStackIdSchema })
-  .strict()
+const removeTailscaleStackSchema = z.strictObject({
+  id: relayTailscaleStackIdSchema,
+})
 
 export interface TailscaleDeployment extends RelayTailscaleStack {
   relayId: string
@@ -79,7 +72,9 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
   .validator(saveTailscaleStackSchema)
   .handler(async ({ data }) => {
     await requireTailscaleAdministrator()
-    const relays = (await listPersistedRelays()).filter((relay) => relay.enabled)
+    const relays = (await listPersistedRelays()).filter(
+      (relay) => relay.enabled
+    )
     const relayById = new Map(relays.map((relay) => [relay.id, relay]))
     const id = data.id ?? randomBytes(32).toString("hex").slice(0, 40)
     const duplicateHostname = data.bindings.find(
@@ -129,12 +124,12 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
     }
 
     const current = await currentDeploymentsPromise
-    const currentForStack = current.filter(
-      (deployment) => deployment.id === id
-    )
+    const currentForStack = current.filter((deployment) => deployment.id === id)
     if (grouped.size === 0) {
       await removeDeployments(currentForStack, relayById)
-      await invalidateRelaySnapshots(currentForStack.map(({ relayId }) => relayId))
+      await invalidateRelaySnapshots(
+        currentForStack.map(({ relayId }) => relayId)
+      )
       return []
     }
 
@@ -207,15 +202,15 @@ export const removeTailscaleStack = createServerFn({ method: "POST" })
   .validator(removeTailscaleStackSchema)
   .handler(async ({ data }) => {
     await requireTailscaleAdministrator()
-    const relays = (await listPersistedRelays()).filter((relay) => relay.enabled)
+    const relays = (await listPersistedRelays()).filter(
+      (relay) => relay.enabled
+    )
     const relayById = new Map(relays.map((relay) => [relay.id, relay]))
     const deployments = (await loadTailscaleDeployments(relays)).filter(
       (deployment) => deployment.id === data.id
     )
     await removeDeployments(deployments, relayById)
-    await invalidateRelaySnapshots(
-      deployments.map(({ relayId }) => relayId)
-    )
+    await invalidateRelaySnapshots(deployments.map(({ relayId }) => relayId))
     return { removed: true }
   })
 

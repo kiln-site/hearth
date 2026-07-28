@@ -555,10 +555,7 @@ const InstanceTabNavigation = React.memo(function InstanceTabNavigation({
 }) {
   const items = isTailscale
     ? instanceItems.filter(
-        (item) =>
-          item.value !== "startup" &&
-          item.value !== "network" &&
-          item.value !== "info"
+        (item) => item.value !== "startup" && item.value !== "info"
       )
     : instanceItems
   return items.map((item) => (
