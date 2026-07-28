@@ -9,6 +9,7 @@ import {
 } from "@/server/access"
 import { getBrickCatalog, getInstanceStartup } from "@/server/bricks"
 import { getUiPreferences } from "@/server/preferences"
+import { reconcilePendingPowerSnapshot } from "@/lib/instance-power-state"
 import {
   getRelayConnectionState,
   getRelayFile,
@@ -105,7 +106,10 @@ export function relayConnectionQueryOptions(queryClient: QueryClient) {
         // Each router owns one QueryClient per SSR request or browser session.
         // Prime that same client from the connection's canonical snapshot so
         // snapshot consumers do not make a second Relay request.
-        queryClient.setQueryData(queryKeys.relay.snapshot, connection.snapshot)
+        queryClient.setQueryData(
+          queryKeys.relay.snapshot,
+          reconcilePendingPowerSnapshot(connection.snapshot)
+        )
       }
       return connection
     },
@@ -124,7 +128,8 @@ export function relayConnectionQueryOptions(queryClient: QueryClient) {
 export function relaySnapshotQueryOptions() {
   return queryOptions({
     queryKey: queryKeys.relay.snapshot,
-    queryFn: () => getRelaySnapshot(),
+    queryFn: async () =>
+      reconcilePendingPowerSnapshot(await getRelaySnapshot()),
     staleTime: connectedRelayPollDelayMs,
   })
 }

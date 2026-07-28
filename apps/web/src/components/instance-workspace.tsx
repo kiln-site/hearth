@@ -51,6 +51,12 @@ import type {
 } from "@/components/instance-workspace-context"
 import { WorkspaceFrame } from "@/components/workspace-frame"
 import { roleHasPermission } from "@/lib/permissions"
+import {
+  beginPendingPowerAction,
+  finishPendingPowerAction,
+  reconcilePendingPowerInstance,
+  type ServerAction,
+} from "@/lib/instance-power-state"
 import { openRelayResourceStream } from "@/lib/relay-resource-stream"
 import {
   RESOURCE_HISTORY_WINDOW_MS,
@@ -202,6 +208,10 @@ function RelayResourceStreamController({
               event.history,
               event.instance.resources
             )
+            const streamedInstance = reconcilePendingPowerInstance(
+              instance.relayId,
+              event.instance
+            )
             queryClient.setQueryData<RelayFleetSnapshot>(
               queryKeys.relay.snapshot,
               (snapshot) =>
@@ -211,7 +221,7 @@ function RelayResourceStreamController({
                       instances: snapshot.instances.map((current) =>
                         current.id === event.instance.id &&
                         current.relayId === instance.relayId
-                          ? { ...current, ...event.instance }
+                          ? { ...current, ...streamedInstance }
                           : current
                       ),
                     }
@@ -247,8 +257,6 @@ function RelayResourceStreamController({
 
   return null
 }
-
-type ServerAction = "start" | "stop" | "restart" | "kill"
 
 function InstanceWorkspaceHeader() {
   const [error, setError] = React.useState<string | null>(null)
@@ -701,8 +709,11 @@ function InstancePowerControls({
   const handleAction = React.useCallback(
     async (nextAction: ServerAction) => {
       if (!relayConnected) return
-      const optimisticState: RelayObservedState =
-        nextAction === "start" ? "starting" : "stopping"
+      const pendingPowerAction = beginPendingPowerAction(
+        instance.relayId,
+        instance.id,
+        nextAction
+      )
       const previousSnapshot = queryClient.getQueryData<RelayFleetSnapshot>(
         queryKeys.relay.snapshot
       )
@@ -716,7 +727,7 @@ function InstancePowerControls({
             snapshot,
             instance.id,
             instance.relayId,
-            optimisticState,
+            pendingPowerAction.phase,
             nextAction === "start" ? null : undefined
           )
       )
@@ -746,6 +757,7 @@ function InstancePowerControls({
         }
         onError(cause instanceof Error ? cause.message : "Relay action failed")
       } finally {
+        finishPendingPowerAction(instance.relayId, instance.id)
         setAction(null)
       }
     },
