@@ -120,6 +120,18 @@ export function reconcilePendingPowerState(
       const starting: PendingPowerAction = { ...pending, phase: "starting" }
       return { pending: starting, observedState: "starting" }
     }
+    if (
+      incoming === "running" &&
+      incomingStartedAt !== null &&
+      incomingStartedAt !== pending.initialStartedAt
+    ) {
+      const running: PendingPowerAction = {
+        ...pending,
+        phase: "running",
+        terminalStartedAt: incomingStartedAt,
+      }
+      return { pending: running, observedState: "running" }
+    }
     if (incoming === "failed") {
       const failed: PendingPowerAction = {
         ...pending,

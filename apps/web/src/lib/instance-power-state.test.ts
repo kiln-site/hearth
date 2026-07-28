@@ -106,7 +106,7 @@ describe("pending instance power state", () => {
     }
   })
 
-  it("rejects pre-restart running snapshots from the old container session", () => {
+  it("accepts a replacement running snapshot when restart skips starting", () => {
     const relayId = "relay"
     const previous = relayInstanceSchema.parse({
       id: "c".repeat(40),
@@ -146,14 +146,26 @@ describe("pending instance power state", () => {
 
     try {
       expect(
-        reconcilePendingPowerInstance(relayId, replacement).observedState
-      ).toBe("starting")
-      expect(
         reconcilePendingPowerInstance(relayId, previous).observedState
-      ).toBe("starting")
+      ).toBe("stopping")
       expect(reconcilePendingPowerInstance(relayId, ready).observedState).toBe(
         "running"
       )
+      expect(
+        reconcilePendingPowerInstance(relayId, previous).observedState
+      ).toBe("running")
+      expect(reconcilePendingPowerInstance(relayId, ready).observedState).toBe(
+        "running"
+      )
+      expect(
+        reconcilePendingPowerInstance(relayId, {
+          ...previous,
+          desiredState: "stopped",
+          observedState: "stopped",
+          startedAt: null,
+          status: "Exited (143)",
+        }).observedState
+      ).toBe("stopped")
     } finally {
       finishPendingPowerAction(relayId, previous.id)
     }
@@ -201,6 +213,10 @@ describe("pending instance power state", () => {
       reconcilePendingPowerState(stopping, "running", previousStartedAt)
         .observedState
     ).toBe("stopping")
+    expect(
+      reconcilePendingPowerState(stopping, "running", replacementStartedAt)
+        .observedState
+    ).toBe("running")
     expect(replacement.observedState).toBe("starting")
     expect(
       reconcilePendingPowerState(
