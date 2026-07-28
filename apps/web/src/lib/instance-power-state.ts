@@ -6,7 +6,9 @@ export type ServerAction = "start" | "stop" | "restart" | "kill"
 
 export interface PendingPowerAction {
   action: ServerAction
+  initialStartedAt: string | null
   phase: "starting" | "stopping" | "running" | "stopped" | "failed"
+  terminalStartedAt: string | null
 }
 
 const pendingPowerActions = new Map<string, PendingPowerAction>()
@@ -14,9 +16,10 @@ const pendingPowerActions = new Map<string, PendingPowerAction>()
 export function beginPendingPowerAction(
   relayId: string,
   instanceId: string,
-  action: ServerAction
+  action: ServerAction,
+  initialStartedAt: string | null = null
 ): PendingPowerAction {
-  const pending = initialPendingPowerAction(action)
+  const pending = initialPendingPowerAction(action, initialStartedAt)
   pendingPowerActions.set(powerActionKey(relayId, instanceId), pending)
   return pending
 }
@@ -33,8 +36,20 @@ export function reconcilePendingPowerInstance<T extends RelayInstance>(
   const pending = pendingPowerActions.get(key)
   if (!pending) return instance
 
-  const reconciled = reconcilePendingPowerState(pending, instance.observedState)
-  pendingPowerActions.set(key, reconciled.pending)
+  const reconciled = reconcilePendingPowerState(
+    pending,
+    instance.observedState,
+    instance.startedAt
+  )
+  const terminalConfirmed =
+    isTerminalPowerPhase(pending.phase) &&
+    instance.observedState === pending.phase &&
+    instance.startedAt === pending.terminalStartedAt
+  if (terminalConfirmed) {
+    pendingPowerActions.delete(key)
+  } else {
+    pendingPowerActions.set(key, reconciled.pending)
+  }
   return reconciled.observedState === instance.observedState
     ? instance
     : { ...instance, observedState: reconciled.observedState }
@@ -53,32 +68,36 @@ export function reconcilePendingPowerSnapshot(
 }
 
 export function initialPendingPowerAction(
-  action: ServerAction
+  action: ServerAction,
+  initialStartedAt: string | null = null
 ): PendingPowerAction {
   return {
     action,
+    initialStartedAt,
     phase: action === "start" ? "starting" : "stopping",
+    terminalStartedAt: null,
   }
 }
 
 export function reconcilePendingPowerState(
   pending: PendingPowerAction,
-  incoming: RelayObservedState
+  incoming: RelayObservedState,
+  incomingStartedAt: string | null = null
 ): {
   pending: PendingPowerAction
   observedState: RelayObservedState
 } {
-  if (
-    pending.phase === "running" ||
-    pending.phase === "stopped" ||
-    pending.phase === "failed"
-  ) {
+  if (isTerminalPowerPhase(pending.phase)) {
     return { pending, observedState: pending.phase }
   }
 
   if (pending.action === "stop" || pending.action === "kill") {
     if (incoming === "stopped" || incoming === "failed") {
-      const completed = { ...pending, phase: incoming }
+      const completed: PendingPowerAction = {
+        ...pending,
+        phase: incoming,
+        terminalStartedAt: incomingStartedAt,
+      }
       return { pending: completed, observedState: incoming }
     }
     return { pending, observedState: "stopping" }
@@ -86,7 +105,11 @@ export function reconcilePendingPowerState(
 
   if (pending.action === "start") {
     if (incoming === "running" || incoming === "failed") {
-      const completed = { ...pending, phase: incoming }
+      const completed: PendingPowerAction = {
+        ...pending,
+        phase: incoming,
+        terminalStartedAt: incomingStartedAt,
+      }
       return { pending: completed, observedState: incoming }
     }
     return { pending, observedState: "starting" }
@@ -94,21 +117,40 @@ export function reconcilePendingPowerState(
 
   if (pending.phase === "stopping") {
     if (incoming === "starting") {
-      const starting = { ...pending, phase: "starting" as const }
+      const starting: PendingPowerAction = { ...pending, phase: "starting" }
       return { pending: starting, observedState: "starting" }
     }
     if (incoming === "failed") {
-      const failed = { ...pending, phase: "failed" as const }
+      const failed: PendingPowerAction = {
+        ...pending,
+        phase: "failed",
+        terminalStartedAt: incomingStartedAt,
+      }
       return { pending: failed, observedState: "failed" }
     }
     return { pending, observedState: "stopping" }
   }
 
+  if (
+    incoming === "running" &&
+    (incomingStartedAt === null ||
+      incomingStartedAt === pending.initialStartedAt)
+  ) {
+    return { pending, observedState: "starting" }
+  }
   if (incoming === "running" || incoming === "failed") {
-    const completed = { ...pending, phase: incoming }
+    const completed: PendingPowerAction = {
+      ...pending,
+      phase: incoming,
+      terminalStartedAt: incomingStartedAt,
+    }
     return { pending: completed, observedState: incoming }
   }
   return { pending, observedState: "starting" }
+}
+
+function isTerminalPowerPhase(phase: PendingPowerAction["phase"]) {
+  return phase === "running" || phase === "stopped" || phase === "failed"
 }
 
 function powerActionKey(relayId: string, instanceId: string) {

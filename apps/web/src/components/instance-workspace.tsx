@@ -713,16 +713,17 @@ function InstancePowerControls({
   const handleAction = React.useCallback(
     async (nextAction: ServerAction) => {
       if (!relayConnected) return
-      const pendingPowerAction = beginPendingPowerAction(
-        instance.relayId,
-        instance.id,
-        nextAction
-      )
       const previousSnapshot = queryClient.getQueryData<RelayFleetSnapshot>(
         queryKeys.relay.snapshot
       )
       const previousInstance = previousSnapshot?.instances.find(
         (item) => item.id === instance.id && item.relayId === instance.relayId
+      )
+      const pendingPowerAction = beginPendingPowerAction(
+        instance.relayId,
+        instance.id,
+        nextAction,
+        previousInstance?.startedAt ?? null
       )
       queryClient.setQueryData<RelayFleetSnapshot>(
         queryKeys.relay.snapshot,
@@ -746,6 +747,7 @@ function InstancePowerControls({
           },
         })
       } catch (cause) {
+        finishPendingPowerAction(instance.relayId, instance.id)
         if (previousInstance) {
           queryClient.setQueryData<RelayFleetSnapshot>(
             queryKeys.relay.snapshot,
@@ -761,7 +763,6 @@ function InstancePowerControls({
         }
         onError(cause instanceof Error ? cause.message : "Relay action failed")
       } finally {
-        finishPendingPowerAction(instance.relayId, instance.id)
         setAction(null)
       }
     },
