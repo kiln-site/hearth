@@ -154,22 +154,8 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
       id,
       name: data.name,
     }
-    if (grouped.size === 0) {
-      if (!definition && currentForStack.length === 0) {
-        throw new Error("Select at least one server to create this network")
-      }
-      await saveTailscaleNetworkDefinition(nextDefinition)
-      await removeDeployments(currentForStack, relayById)
-      await invalidateRelaySnapshots(
-        currentForStack.map(({ relayId }) => relayId)
-      )
-      return {
-        stacks: groupTailscaleDeployments(
-          current.filter((deployment) => deployment.id !== id),
-          replaceTailscaleNetworkDefinition(definitions, nextDefinition)
-        ),
-        unavailableRelays: [],
-      }
+    if (grouped.size === 0 && !definition && currentForStack.length === 0) {
+      throw new Error("Select at least one server to create this network")
     }
 
     const desired = [...grouped.entries()]
@@ -234,7 +220,6 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
     const removed = currentForStack.filter(
       ({ relayId }) => !desiredRelayIds.has(relayId)
     )
-    await removeDeployments(removed, relayById)
     await saveTailscaleNetworkDefinition(nextDefinition)
     await invalidateRelaySnapshots([
       ...desiredRelayIds,

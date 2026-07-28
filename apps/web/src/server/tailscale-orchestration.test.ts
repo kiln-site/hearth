@@ -109,7 +109,10 @@ describe("Tailscale deployment orchestration", () => {
 
   it("restores every node after a DNS synchronization failure", async () => {
     const restored: Array<string> = []
-    const current = [deployment("relay-a", "old"), deployment("relay-b", "old")]
+    const current = [
+      deployment("relay-a", "old"),
+      deployment("relay-b", "old"),
+    ]
 
     await expect(
       applyTailscaleDeploymentPlan({
@@ -138,6 +141,73 @@ describe("Tailscale deployment orchestration", () => {
     ).rejects.toThrow("DNS failed")
 
     expect(restored.sort()).toEqual(["relay-a", "relay-b"])
+  })
+
+  it("restores retained nodes when removing a leaving node fails", async () => {
+    const applyRevisions: Array<string> = []
+    const removed: Array<string> = []
+    const synchronized: Array<string> = []
+    const current = [
+      deployment("relay-a", "old"),
+      deployment("relay-b", "old"),
+    ]
+
+    await expect(
+      applyTailscaleDeploymentPlan({
+        current,
+        desired: [target("relay-a")],
+        domain: "test",
+        id: "a".repeat(40),
+        name: "Test network",
+        operations: {
+          apply: async (desired, input) => {
+            const revision =
+              input.bindings[0]?.hostname === "old" ? "restored" : "changed"
+            applyRevisions.push(revision)
+            return deployment(desired.relayId, revision)
+          },
+          remove: async (value) => {
+            removed.push(value.relayId)
+            throw new Error("remove failed")
+          },
+          syncDns: async (value) => {
+            synchronized.push(`${value.relayId}:${value.revision}`)
+            return value
+          },
+        },
+      })
+    ).rejects.toThrow("remove failed")
+
+    expect(applyRevisions).toEqual(["changed", "restored"])
+    expect(removed).toEqual(["relay-b"])
+    expect(synchronized).toEqual([
+      "relay-a:changed",
+      "relay-a:old",
+      "relay-b:old",
+    ])
+  })
+
+  it("removes every current node when the desired network is empty", async () => {
+    const removed: Array<string> = []
+    const current = [deployment("relay-a", "old"), deployment("relay-b", "old")]
+
+    const result = await applyTailscaleDeploymentPlan({
+      current,
+      desired: [],
+      domain: "test",
+      id: "a".repeat(40),
+      name: "Test network",
+      operations: {
+        apply: async (desired) => deployment(desired.relayId, "changed"),
+        remove: async (value) => {
+          removed.push(value.relayId)
+        },
+        syncDns: async (value) => value,
+      },
+    })
+
+    expect(result).toEqual([])
+    expect(removed).toEqual(["relay-a", "relay-b"])
   })
 })
 

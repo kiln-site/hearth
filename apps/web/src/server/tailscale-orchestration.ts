@@ -62,6 +62,10 @@ export async function applyTailscaleDeploymentPlan<
   const previousByRelay = new Map(
     current.map((deployment) => [deployment.relayId, deployment])
   )
+  const desiredRelayIds = new Set(desired.map(({ relayId }) => relayId))
+  const removed = current.filter(
+    ({ relayId }) => !desiredRelayIds.has(relayId)
+  )
   const applied: Array<TDeployment> = []
 
   try {
@@ -94,6 +98,10 @@ export async function applyTailscaleDeploymentPlan<
       if (result.status === "rejected") throw result.reason
       synchronized.push(result.value)
     }
+
+    // Keep removals inside the same compensation boundary as applies and DNS.
+    // If one fails, the catch below restores every retained node that changed.
+    await runSequentially(removed, operations.remove)
     return synchronized
   } catch (cause) {
     const rollbackFailures = await rollbackTailscaleDeploymentPlan(
