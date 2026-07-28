@@ -42,6 +42,7 @@ import { requireAuthenticatedUser } from "@/server/auth"
 import {
   applyTailscaleDeploymentPlan,
   type DesiredTailscaleDeployment,
+  type TailscaleDeploymentOperations,
 } from "@/server/tailscale-orchestration"
 import type { RelaySnapshot, RelayTailscaleStack } from "@workspace/contracts"
 
@@ -377,40 +378,7 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
       domain: data.domain,
       id,
       name: data.name,
-      operations: {
-        apply: async (target, input) => {
-          const relay = relayById.get(target.relayId)
-          if (!relay) throw new Error("The network's node is unavailable")
-          const stack = relayTailscaleStackSchema.parse(
-            await relayRpc(relay, "relay.tailscale.stack.apply", input, 240_000)
-          )
-          return {
-            ...stack,
-            relayId: target.relayId,
-            relayName: target.relayName,
-          }
-        },
-        remove: async (deployment, mode) => {
-          await removeDeployment(deployment, relayById, mode)
-        },
-        syncDns: async (deployment, records) => {
-          const relay = relayById.get(deployment.relayId)
-          if (!relay) throw new Error("The network's node is unavailable")
-          const stack = relayTailscaleStackSchema.parse(
-            await relayRpc(
-              relay,
-              "relay.tailscale.stack.dns",
-              { id, records },
-              60_000
-            )
-          )
-          return {
-            ...stack,
-            relayId: deployment.relayId,
-            relayName: deployment.relayName,
-          }
-        },
-      },
+      operations: tailscaleDeploymentOperations(id, relayById),
       beforeFinalize: async (deployments) => {
         if (integrationCredential && definition?.integration) {
           try {
@@ -441,11 +409,36 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
         try {
           await saveTailscaleNetworkDefinition(nextDefinition)
         } catch (cause) {
-          if (integrationCredential && definition) {
-            await restoreTailscaleControlPlane(
-              integrationCredential,
-              definition,
-              currentForStack
+          let domainOwnerAfterConflict: TailscaleNetworkDefinition | null = null
+          try {
+            if (integrationCredential && definition) {
+              await restoreTailscaleControlPlane(
+                integrationCredential,
+                definition,
+                currentForStack
+              )
+            }
+            if (
+              integrationCredential &&
+              definition?.domain !== nextDefinition.domain
+            ) {
+              domainOwnerAfterConflict =
+                await reconcileTailscaleDomainAfterDefinitionFailure(
+                  integrationCredential,
+                  nextDefinition,
+                  relays
+                )
+            }
+          } catch (recoveryCause) {
+            throw new Error(
+              `${errorMessage(cause)}. Tailscale DNS recovery also failed: ${errorMessage(recoveryCause)}`,
+              { cause: recoveryCause }
+            )
+          }
+          if (domainOwnerAfterConflict) {
+            throw new Error(
+              `Network TLD .${nextDefinition.domain} is already used by ${domainOwnerAfterConflict.name}`,
+              { cause }
             )
           }
           throw cause
@@ -498,15 +491,7 @@ export const removeTailscaleStack = createServerFn({ method: "POST" })
       domain: definition?.domain ?? fallback?.domain ?? "test",
       id: data.id,
       name: definition?.name ?? fallback?.name ?? "Tailscale network",
-      operations: {
-        apply: async () => {
-          throw new Error("A removed Tailscale network cannot add a node")
-        },
-        remove: async (deployment, mode) => {
-          await removeDeployment(deployment, relayById, mode)
-        },
-        syncDns: async (deployment) => deployment,
-      },
+      operations: tailscaleDeploymentOperations(data.id, relayById),
       beforeFinalize: async () => {
         if (credential && definition) {
           try {
@@ -672,6 +657,46 @@ async function loadTailscaleDeployments(
     unavailableRelays: results.flatMap((result) =>
       result.unavailableRelay ? [result.unavailableRelay] : []
     ),
+  }
+}
+
+function tailscaleDeploymentOperations(
+  id: string,
+  relayById: ReadonlyMap<string, PersistedRelay>
+): TailscaleDeploymentOperations<TailscaleDeployment> {
+  return {
+    apply: async (target, input) => {
+      const relay = relayById.get(target.relayId)
+      if (!relay) throw new Error("The network's node is unavailable")
+      const stack = relayTailscaleStackSchema.parse(
+        await relayRpc(relay, "relay.tailscale.stack.apply", input, 240_000)
+      )
+      return {
+        ...stack,
+        relayId: target.relayId,
+        relayName: target.relayName,
+      }
+    },
+    remove: async (deployment, mode) => {
+      await removeDeployment(deployment, relayById, mode)
+    },
+    syncDns: async (deployment, records) => {
+      const relay = relayById.get(deployment.relayId)
+      if (!relay) throw new Error("The network's node is unavailable")
+      const stack = relayTailscaleStackSchema.parse(
+        await relayRpc(
+          relay,
+          "relay.tailscale.stack.dns",
+          { id, records },
+          60_000
+        )
+      )
+      return {
+        ...stack,
+        relayId: deployment.relayId,
+        relayName: deployment.relayName,
+      }
+    },
   }
 }
 
@@ -869,7 +894,51 @@ async function restoreTailscaleControlPlane(
       credential,
       tailscaleOverviewForDeployments(definition, deployments)
     )
-  ).catch(() => undefined)
+  )
+}
+
+async function reconcileTailscaleDomainAfterDefinitionFailure(
+  credential: TailscaleOAuthCredential,
+  failedDefinition: TailscaleNetworkDefinition,
+  relays: ReadonlyArray<PersistedRelay>
+): Promise<TailscaleNetworkDefinition | null> {
+  // The losing request may already have replaced this split-DNS entry. Clear
+  // it on that tailnet before restoring whichever network actually won the
+  // database uniqueness race.
+  await runAppEffect(
+    "tailscale.controlPlane.domain.clearAfterDefinitionFailure",
+    syncTailscaleControlPlaneEffect(
+      credential,
+      tailscaleOverviewForDeployments(failedDefinition, [])
+    )
+  )
+
+  const [definitions, current] = await Promise.all([
+    loadTailscaleNetworkDefinitions(),
+    loadTailscaleDeployments(relays),
+  ])
+  requireCompleteTailscaleDeploymentList(current.unavailableRelays)
+  const owner =
+    definitions.find(
+      (definition) =>
+        definition.id !== failedDefinition.id &&
+        definition.domain === failedDefinition.domain
+    ) ?? null
+  if (!owner) return null
+
+  const ownerCredential = owner.integration
+    ? await loadTailscaleNetworkCredential(owner.id)
+    : credential
+  await synchronizeTailscaleControlPlane(
+    ownerCredential,
+    tailscaleOverviewForDeployments(
+      owner,
+      current.deployments.filter(
+        (deployment) => deployment.id === owner.id
+      )
+    )
+  )
+  return owner
 }
 
 function errorMessage(cause: unknown): string {

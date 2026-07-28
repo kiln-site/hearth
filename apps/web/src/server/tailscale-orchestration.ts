@@ -28,7 +28,7 @@ export interface DesiredTailscaleDeployment {
 
 export type TailscaleRemovalMode = "commit" | "prepare" | "rollback"
 
-interface TailscaleDeploymentOperations<
+export interface TailscaleDeploymentOperations<
   TDeployment extends TailscaleDeploymentState,
 > {
   apply: (
@@ -77,6 +77,7 @@ export async function applyTailscaleDeploymentPlan<
   const removed = current.filter(({ relayId }) => !desiredRelayIds.has(relayId))
   const applied: Array<TDeployment> = []
   const preparedRemovals: Array<TDeployment> = []
+  let synchronized: Array<TDeployment> = []
   const newTargetCount = desired.filter(
     ({ relayId }) => !previousByRelay.has(relayId)
   ).length
@@ -116,7 +117,7 @@ export async function applyTailscaleDeploymentPlan<
     const syncResults = await Promise.allSettled(
       applied.map((deployment) => operations.syncDns(deployment, records))
     )
-    const synchronized: Array<TDeployment> = []
+    synchronized = []
     for (const result of syncResults) {
       if (result.status === "rejected") throw result.reason
       synchronized.push(result.value)
@@ -129,25 +130,6 @@ export async function applyTailscaleDeploymentPlan<
       await operations.remove(deployment, "prepare")
     })
     await beforeFinalize?.(synchronized)
-
-    // Cleanup is deliberately delayed until the desired state is durable.
-    // A failed commit leaves the prepared deployment discoverable so the next
-    // save can retry it without credentials or an inconsistent live stack.
-    const cleanupResults = await Promise.allSettled(
-      preparedRemovals.map((deployment) =>
-        operations.remove(deployment, "commit")
-      )
-    )
-    for (const [index, result] of cleanupResults.entries()) {
-      if (result.status === "rejected") {
-        const deployment = preparedRemovals[index]
-        console.error(
-          `Could not finalize Tailscale removal on ${deployment?.relayName ?? "Unknown Relay"}`,
-          result.reason
-        )
-      }
-    }
-    return synchronized
   } catch (cause) {
     const rollbackFailures = await rollbackTailscaleDeploymentPlan(
       current,
@@ -166,6 +148,46 @@ export async function applyTailscaleDeploymentPlan<
         cause,
       }
     )
+  }
+
+  // Cleanup starts only after the desired state is durable. It is retried and
+  // reported separately because rolling back here would disagree with the
+  // already-finalized database and Tailscale control plane.
+  const cleanupResults = await Promise.allSettled(
+    preparedRemovals.map((deployment) =>
+      commitRemovalWithRetry(deployment, operations)
+    )
+  )
+  const cleanupFailures = cleanupResults.flatMap((result, index) =>
+    result.status === "rejected"
+      ? [
+          rollbackFailure(
+            preparedRemovals[index]?.relayName ?? "Unknown Relay",
+            result.reason
+          ),
+        ]
+      : []
+  )
+  if (cleanupFailures.length > 0) {
+    throw new Error(
+      `Tailscale network was updated, but Relay cleanup failed after 3 attempts: ${cleanupFailures.join("; ")}. Retry the change to finish cleanup.`
+    )
+  }
+  return synchronized
+}
+
+async function commitRemovalWithRetry<
+  TDeployment extends TailscaleDeploymentState,
+>(
+  deployment: TDeployment,
+  operations: TailscaleDeploymentOperations<TDeployment>,
+  attempt = 1
+): Promise<void> {
+  try {
+    await operations.remove(deployment, "commit")
+  } catch (cause) {
+    if (attempt >= 3) throw cause
+    await commitRemovalWithRetry(deployment, operations, attempt + 1)
   }
 }
 

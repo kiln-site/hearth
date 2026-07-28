@@ -269,6 +269,68 @@ describe("Tailscale deployment orchestration", () => {
     ])
   })
 
+  it("retries a transient removal commit before reporting success", async () => {
+    const removals: Array<string> = []
+    let commitAttempts = 0
+    const current = [deployment("relay-a", "old")]
+
+    const result = await applyTailscaleDeploymentPlan({
+      current,
+      desired: [],
+      domain: "test",
+      id: "a".repeat(40),
+      name: "Test network",
+      operations: {
+        apply: async (desired) => deployment(desired.relayId, "changed"),
+        remove: async (value, mode) => {
+          removals.push(`${value.relayId}:${mode}`)
+          if (mode === "commit" && commitAttempts++ < 2) {
+            throw new Error("temporary cleanup failure")
+          }
+        },
+        syncDns: async (value) => value,
+      },
+    })
+
+    expect(result).toEqual([])
+    expect(removals).toEqual([
+      "relay-a:prepare",
+      "relay-a:commit",
+      "relay-a:commit",
+      "relay-a:commit",
+    ])
+  })
+
+  it("reports a final removal failure without rolling back durable state", async () => {
+    const removals: Array<string> = []
+    const current = [deployment("relay-a", "old")]
+
+    await expect(
+      applyTailscaleDeploymentPlan({
+        current,
+        desired: [],
+        domain: "test",
+        id: "a".repeat(40),
+        name: "Test network",
+        operations: {
+          apply: async (desired) => deployment(desired.relayId, "changed"),
+          remove: async (value, mode) => {
+            removals.push(`${value.relayId}:${mode}`)
+            if (mode === "commit") throw new Error("cleanup unavailable")
+          },
+          syncDns: async (value) => value,
+        },
+      })
+    ).rejects.toThrow("Relay cleanup failed after 3 attempts")
+
+    expect(removals).toEqual([
+      "relay-a:prepare",
+      "relay-a:commit",
+      "relay-a:commit",
+      "relay-a:commit",
+    ])
+  })
+
   it("restores earlier removals when a later removal cannot be prepared", async () => {
     const removals: Array<string> = []
     const current = [deployment("relay-a", "old"), deployment("relay-b", "old")]
@@ -300,6 +362,43 @@ describe("Tailscale deployment orchestration", () => {
       "relay-a:rollback",
     ])
   })
+
+  it("restores replicated DNS when finalizing a whole-network removal fails", async () => {
+    const synchronized = new Map<string, Array<string>>()
+    const current = [
+      deployment("relay-a", "old", "10.165.55.10"),
+      deployment("relay-b", "old", "10.165.55.11"),
+    ]
+
+    await expect(
+      applyTailscaleDeploymentPlan({
+        current,
+        desired: [],
+        domain: "test",
+        id: "a".repeat(40),
+        name: "Test network",
+        operations: {
+          apply: async (desired) => deployment(desired.relayId, "changed"),
+          remove: async () => undefined,
+          syncDns: async (value, records) => {
+            synchronized.set(
+              value.relayId,
+              records.map(({ address }) => address)
+            )
+            return value
+          },
+        },
+        beforeFinalize: async () => {
+          throw new Error("control-plane cleanup failed")
+        },
+      })
+    ).rejects.toThrow("control-plane cleanup failed")
+
+    expect([...synchronized.entries()]).toEqual([
+      ["relay-a", ["10.165.55.10", "10.165.55.11"]],
+      ["relay-b", ["10.165.55.10", "10.165.55.11"]],
+    ])
+  })
 })
 
 function target(relayId: string): DesiredTailscaleDeployment {
@@ -311,11 +410,15 @@ function target(relayId: string): DesiredTailscaleDeployment {
   }
 }
 
-function deployment(relayId: string, revision: string): TestDeployment {
+function deployment(
+  relayId: string,
+  revision: string,
+  address = "10.165.55.10"
+): TestDeployment {
   return {
     bindings: [
       {
-        address: "10.165.55.10",
+        address,
         hostname: revision === "old" ? "old" : `new-${relayId}`,
         instanceId: relayId,
       },
