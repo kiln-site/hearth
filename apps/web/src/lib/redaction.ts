@@ -1,7 +1,18 @@
 export type SensitiveTextRedaction = {
   from: number
+  groupFrom: number
   to: number
   replacement: string
+}
+
+export type SensitiveTextRedactionRange = {
+  from: number
+  to: number
+}
+
+export type RedactedSensitiveText = {
+  redactions: Array<SensitiveTextRedactionRange>
+  text: string
 }
 
 export function findSensitiveTextRedactions(
@@ -16,6 +27,7 @@ export function findSensitiveTextRedactions(
     for (const segment of match[0].matchAll(/\d+/gu)) {
       redactions.push({
         from: start + segment.index,
+        groupFrom: start,
         to: start + segment.index + segment[0].length,
         replacement: "***",
       })
@@ -33,6 +45,7 @@ export function findSensitiveTextRedactions(
     for (const segment of candidate.matchAll(/[a-f\d]+/giu)) {
       redactions.push({
         from: start + segment.index,
+        groupFrom: start,
         to: start + segment.index + segment[0].length,
         replacement: "*".repeat(segment[0].length),
       })
@@ -43,16 +56,35 @@ export function findSensitiveTextRedactions(
 }
 
 export function redactSensitiveText(value: string): string {
-  const redactions = findSensitiveTextRedactions(value)
-  if (!redactions.length) return value
+  return redactSensitiveTextWithRanges(value).text
+}
+
+export function redactSensitiveTextWithRanges(
+  value: string
+): RedactedSensitiveText {
+  const segments = findSensitiveTextRedactions(value)
+  if (!segments.length) return { redactions: [], text: value }
 
   let cursor = 0
   let redacted = ""
-  for (const segment of redactions) {
+  let activeGroupFrom: number | null = null
+  const redactions: Array<SensitiveTextRedactionRange> = []
+  for (const segment of segments) {
     if (segment.from < cursor) continue
     redacted += value.slice(cursor, segment.from)
+    const replacementFrom = redacted.length
     redacted += segment.replacement
+    const activeRedaction = redactions.at(-1)
+    if (activeRedaction && activeGroupFrom === segment.groupFrom) {
+      activeRedaction.to = redacted.length
+    } else {
+      redactions.push({ from: replacementFrom, to: redacted.length })
+      activeGroupFrom = segment.groupFrom
+    }
     cursor = segment.to
   }
-  return redacted + value.slice(cursor)
+  return {
+    redactions,
+    text: redacted + value.slice(cursor),
+  }
 }

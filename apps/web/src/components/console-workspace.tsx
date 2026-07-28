@@ -63,7 +63,10 @@ import {
   completeDirectRelayCommand,
   sendDirectRelayCommand,
 } from "@/lib/relay-console-command"
-import { redactSensitiveText } from "@/lib/redaction"
+import {
+  redactSensitiveTextWithRanges,
+  type SensitiveTextRedactionRange,
+} from "@/lib/redaction"
 import {
   queryKeys,
   relaySnapshotQueryOptions,
@@ -99,6 +102,10 @@ interface CommandCompletions {
     label: string
     value: string
   }>
+}
+
+type ConsoleDisplayLine = RelayConsoleLine & {
+  sensitiveTextRedactions?: Array<SensitiveTextRedactionRange>
 }
 
 export function ConsoleWorkspace({
@@ -331,11 +338,12 @@ const ConsoleLogViewportController = React.memo(
     )
     const filteredLines = React.useMemo(() => {
       const normalizedQuery = filters.query.trim().toLowerCase()
-      const filtered: Array<RelayConsoleLine> = []
+      const filtered: Array<ConsoleDisplayLine> = []
       for (const line of consoleData?.lines ?? []) {
-        const text = filters.redactSensitive
-          ? redactSensitiveText(line.text)
-          : line.text
+        const redacted = filters.redactSensitive
+          ? redactSensitiveTextWithRanges(line.text)
+          : null
+        const text = redacted?.text ?? line.text
         const source = line as RelayConsoleLine & {
           relayId?: string
           service?: ConsoleService
@@ -356,7 +364,14 @@ const ConsoleLogViewportController = React.memo(
           (!normalizedQuery || text.toLowerCase().includes(normalizedQuery))
         ) {
           filtered.push(
-            text === line.text ? line : { ...line, text, segments: undefined }
+            !redacted?.redactions.length
+              ? line
+              : {
+                  ...line,
+                  text,
+                  segments: undefined,
+                  sensitiveTextRedactions: redacted.redactions,
+                }
           )
         }
       }
@@ -1008,7 +1023,7 @@ function ConsoleTimestampButton({ uiStore }: { uiStore: ConsoleUiStore }) {
 interface ConsoleLogViewportProps {
   active: boolean
   consoleData: RelayConsole | null
-  filteredLines: Array<RelayConsoleLine>
+  filteredLines: Array<ConsoleDisplayLine>
   snapshot: ConsoleStreamSnapshot
   uiStore: ConsoleUiStore
 }
@@ -1245,7 +1260,7 @@ const ConsoleLogRow = React.memo(function ConsoleLogRow({
   wrapLines,
 }: {
   index: number
-  line: RelayConsoleLine
+  line: ConsoleDisplayLine
   measureElement: (element: Element | null) => void
   query: string
   showTimestamps: boolean
@@ -1877,10 +1892,15 @@ function formatTimestamp(timestamp: string | null): string {
 }
 
 function renderConsoleText(
-  line: Pick<RelayConsoleLine, "segments" | "text">,
+  line: Pick<
+    ConsoleDisplayLine,
+    "segments" | "sensitiveTextRedactions" | "text"
+  >,
   query: string
 ): React.ReactNode {
-  if (!line.segments?.length) return renderConsoleTextPart(line.text, query)
+  if (!line.segments?.length) {
+    return renderConsoleTextPart(line.text, query, line.sensitiveTextRedactions)
+  }
   let offset = 0
   return line.segments.map((segment) => {
     const start = offset
@@ -1908,34 +1928,44 @@ function consoleSegmentStyle(
   }
 }
 
-function renderConsoleTextPart(text: string, query: string): React.ReactNode {
-  const redactedPattern = /(\*{3}(?:\.\*{3}){3}|(?=[*:]*\*)[*:]{2,})/gu
-  let offset = 0
-  return text.split(redactedPattern).map((part) => {
-    const start = offset
-    offset += part.length
-    const isRedacted =
-      /^\*{3}(?:\.\*{3}){3}$/u.test(part) || /^(?=[*:]*\*)[*:]{2,}$/u.test(part)
+function renderConsoleTextPart(
+  text: string,
+  query: string,
+  redactions: ReadonlyArray<SensitiveTextRedactionRange> = []
+): React.ReactNode {
+  if (redactions.length === 0) return renderConsoleSegment(text, query)
 
-    if (isRedacted) {
-      return (
-        <span
-          key={`redacted-${start}`}
-          tabIndex={0}
-          title="IP address redacted"
-          aria-label="IP address redacted"
-          className="cursor-help text-muted-foreground/75 transition-colors hover:text-foreground/85 focus-visible:ring-1 focus-visible:ring-ring/40 focus-visible:outline-none"
-        >
-          {part}
-        </span>
+  let cursor = 0
+  const rendered: Array<React.ReactNode> = []
+  for (const redaction of redactions) {
+    if (redaction.from > cursor) {
+      rendered.push(
+        <React.Fragment key={`text-${cursor}`}>
+          {renderConsoleSegment(text.slice(cursor, redaction.from), query)}
+        </React.Fragment>
       )
     }
-    return (
-      <React.Fragment key={`text-${start}`}>
-        {renderConsoleSegment(part, query)}
+    rendered.push(
+      <span
+        key={`redacted-${redaction.from}`}
+        tabIndex={0}
+        title="IP address redacted"
+        aria-label="IP address redacted"
+        className="cursor-help text-muted-foreground/75 transition-colors hover:text-foreground/85 focus-visible:ring-1 focus-visible:ring-ring/40 focus-visible:outline-none"
+      >
+        {text.slice(redaction.from, redaction.to)}
+      </span>
+    )
+    cursor = redaction.to
+  }
+  if (cursor < text.length) {
+    rendered.push(
+      <React.Fragment key={`text-${cursor}`}>
+        {renderConsoleSegment(text.slice(cursor), query)}
       </React.Fragment>
     )
-  })
+  }
+  return rendered
 }
 
 function renderConsoleSegment(text: string, query: string): React.ReactNode {
