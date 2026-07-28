@@ -71,6 +71,7 @@ interface DockerInspect {
         IPAddress?: string
       }
     >
+    Ports?: DockerPortBindings
   }
   State: {
     ExitCode: number
@@ -141,6 +142,31 @@ interface DockerStats {
       tx_bytes?: number
     }
   >
+}
+
+export type DockerPortBindings = Record<
+  string,
+  Array<{ HostIp?: string; HostPort?: string }> | null | undefined
+>
+
+export function dockerPublishedPort(
+  bindings: DockerPortBindings | undefined,
+  containerPort: number | undefined,
+  protocol: "tcp" | "udp" | undefined
+): number | undefined {
+  if (!containerPort || !protocol) return undefined
+  const candidates = bindings?.[`${containerPort}/${protocol}`] ?? []
+  for (const candidate of candidates) {
+    const port = Number(candidate.HostPort)
+    if (Number.isInteger(port) && port >= 1 && port <= 65_535) return port
+  }
+  return undefined
+}
+
+export function publicConnectAddress(host: string, port: number): string {
+  const formattedHost =
+    host.includes(":") && !host.startsWith("[") ? `[${host}]` : host
+  return `${formattedHost}:${port}`
 }
 
 interface ResourceCacheEntry {
@@ -342,6 +368,7 @@ export class DockerDriver {
 
       return {
         ...config,
+        brickSupportsSrv: config.brickSupportsSrv ?? false,
         containerId: container.Id.slice(0, 12),
         desiredState,
         observedState: powerState.observedState,
@@ -1657,6 +1684,21 @@ export class DockerDriver {
         ? brickNetworkMode
         : undefined
     const primaryPort = Number(labels["kiln.brick.primary-port"])
+    const primaryProtocol =
+      labels["kiln.brick.primary-port-protocol"] === "tcp" ||
+      labels["kiln.brick.primary-port-protocol"] === "udp"
+        ? labels["kiln.brick.primary-port-protocol"]
+        : undefined
+    const publicPort = dockerPublishedPort(
+      container.NetworkSettings?.Ports,
+      Number.isInteger(primaryPort) ? primaryPort : undefined,
+      primaryProtocol
+    )
+    const publicHost = labels["kiln.instance.public-host"]
+    const tailscale = relayInstanceTailscaleSchema.parse({
+      enabled: labels["kiln.instance.tailscale-enabled"] === "true",
+      subdomain: labels["kiln.instance.tailscale-subdomain"],
+    })
     const implementation = titleCase(validBrickId ?? parsed?.[1] ?? name)
     const version =
       labels["kiln.instance.version"] ??
@@ -1691,17 +1733,18 @@ export class DockerDriver {
         primaryPort <= 65_535
           ? primaryPort
           : undefined,
-      brickPrimaryPortProtocol:
-        labels["kiln.brick.primary-port-protocol"] === "tcp" ||
-        labels["kiln.brick.primary-port-protocol"] === "udp"
-          ? labels["kiln.brick.primary-port-protocol"]
-          : undefined,
+      brickPrimaryPortProtocol: primaryProtocol,
+      brickSupportsSrv: labels["kiln.brick.supports-srv"] === "true",
       brickSource: labels["kiln.brick.source"],
       connectAddress:
-        labels["kiln.instance.hostname"] ??
-        (this.#config.connectPort === 25_565
-          ? host
-          : `${host}:${this.#config.connectPort}`),
+        tailscale.enabled && labels["kiln.instance.hostname"]
+          ? labels["kiln.instance.hostname"]
+          : publicHost && publicPort
+            ? publicConnectAddress(publicHost, publicPort)
+            : (labels["kiln.instance.hostname"] ??
+              (this.#config.connectPort === 25_565
+                ? host
+                : `${host}:${this.#config.connectPort}`)),
       directory: relativeDirectory,
       game:
         labels["kiln.instance.game"] ??
@@ -1710,12 +1753,11 @@ export class DockerDriver {
       implementation,
       javaVersion: imageTag,
       name,
+      publicHost,
+      publicPort,
       shortId: id.slice(0, 8),
       service,
-      tailscale: relayInstanceTailscaleSchema.parse({
-        enabled: labels["kiln.instance.tailscale-enabled"] === "true",
-        subdomain: labels["kiln.instance.tailscale-subdomain"],
-      }),
+      tailscale,
       variables: parseBrickVariablesLabel(labels["kiln.brick.variables"]),
       limits: {
         diskBytes: diskLimitBytes,

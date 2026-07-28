@@ -10,6 +10,7 @@ export interface RelayInstanceConfig {
   brickNetworkMode?: "direct" | "minecraft-backend" | "minecraft-proxy"
   brickPrimaryPort?: number
   brickPrimaryPortProtocol?: "tcp" | "udp"
+  brickSupportsSrv?: boolean
   brickSource?: string
   connectAddress: string
   directory: string
@@ -23,6 +24,8 @@ export interface RelayInstanceConfig {
     memoryBytes: number
   }
   name: string
+  publicHost?: string
+  publicPort?: number
   service: string
   tailscale: RelayInstanceTailscale
   variables?: Record<string, boolean | number | string>

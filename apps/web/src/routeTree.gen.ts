@@ -33,6 +33,7 @@ import { Route as ApiHealthRouteImport } from './routes/api.health'
 import { Route as ApiSentryCheckRouteImport } from './routes/api.sentry-check'
 import { Route as AppInfraIndexRouteImport } from './routes/_app.infra.index'
 import { Route as AppInfraDatabasesRouteImport } from './routes/_app.infra.databases'
+import { Route as AppInfraDomainsRouteImport } from './routes/_app.infra.domains'
 import { Route as AppInfraRelaysRouteImport } from './routes/_app.infra.relays'
 import { Route as AppInfraServersRouteImport } from './routes/_app.infra.servers'
 import { Route as AppInfraSetupRouteImport } from './routes/_app.infra.setup'
@@ -173,6 +174,11 @@ const AppInfraDatabasesRoute = AppInfraDatabasesRouteImport.update({
   path: '/databases',
   getParentRoute: () => AppInfraRoute,
 } as any)
+const AppInfraDomainsRoute = AppInfraDomainsRouteImport.update({
+  id: '/domains',
+  path: '/domains',
+  getParentRoute: () => AppInfraRoute,
+} as any)
 const AppInfraRelaysRoute = AppInfraRelaysRouteImport.update({
   id: '/relays',
   path: '/relays',
@@ -301,6 +307,7 @@ export interface FileRoutesByFullPath {
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
   '/infra/databases': typeof AppInfraDatabasesRoute
+  '/infra/domains': typeof AppInfraDomainsRoute
   '/infra/relays': typeof AppInfraRelaysRoute
   '/infra/servers': typeof AppInfraServersRoute
   '/infra/setup': typeof AppInfraSetupRoute
@@ -344,6 +351,7 @@ export interface FileRoutesByTo {
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
   '/infra/databases': typeof AppInfraDatabasesRoute
+  '/infra/domains': typeof AppInfraDomainsRoute
   '/infra/relays': typeof AppInfraRelaysRoute
   '/infra/servers': typeof AppInfraServersRoute
   '/infra/setup': typeof AppInfraSetupRoute
@@ -390,6 +398,7 @@ export interface FileRoutesById {
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
   '/_app/infra/databases': typeof AppInfraDatabasesRoute
+  '/_app/infra/domains': typeof AppInfraDomainsRoute
   '/_app/infra/relays': typeof AppInfraRelaysRoute
   '/_app/infra/servers': typeof AppInfraServersRoute
   '/_app/infra/setup': typeof AppInfraSetupRoute
@@ -437,6 +446,7 @@ export interface FileRouteTypes {
     | '/api/health'
     | '/api/sentry-check'
     | '/infra/databases'
+    | '/infra/domains'
     | '/infra/relays'
     | '/infra/servers'
     | '/infra/setup'
@@ -480,6 +490,7 @@ export interface FileRouteTypes {
     | '/api/health'
     | '/api/sentry-check'
     | '/infra/databases'
+    | '/infra/domains'
     | '/infra/relays'
     | '/infra/servers'
     | '/infra/setup'
@@ -525,6 +536,7 @@ export interface FileRouteTypes {
     | '/api/health'
     | '/api/sentry-check'
     | '/_app/infra/databases'
+    | '/_app/infra/domains'
     | '/_app/infra/relays'
     | '/_app/infra/servers'
     | '/_app/infra/setup'
@@ -739,6 +751,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppInfraDatabasesRouteImport
       parentRoute: typeof AppInfraRoute
     }
+    '/_app/infra/domains': {
+      id: '/_app/infra/domains'
+      path: '/domains'
+      fullPath: '/infra/domains'
+      preLoaderRoute: typeof AppInfraDomainsRouteImport
+      parentRoute: typeof AppInfraRoute
+    }
     '/_app/infra/relays': {
       id: '/_app/infra/relays'
       path: '/relays'
@@ -884,6 +903,7 @@ declare module '@tanstack/react-router' {
 
 interface AppInfraRouteChildren {
   AppInfraDatabasesRoute: typeof AppInfraDatabasesRoute
+  AppInfraDomainsRoute: typeof AppInfraDomainsRoute
   AppInfraRelaysRoute: typeof AppInfraRelaysRoute
   AppInfraServersRoute: typeof AppInfraServersRoute
   AppInfraSetupRoute: typeof AppInfraSetupRoute
@@ -893,6 +913,7 @@ interface AppInfraRouteChildren {
 
 const AppInfraRouteChildren: AppInfraRouteChildren = {
   AppInfraDatabasesRoute: AppInfraDatabasesRoute,
+  AppInfraDomainsRoute: AppInfraDomainsRoute,
   AppInfraRelaysRoute: AppInfraRelaysRoute,
   AppInfraServersRoute: AppInfraServersRoute,
   AppInfraSetupRoute: AppInfraSetupRoute,

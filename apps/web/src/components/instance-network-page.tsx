@@ -8,6 +8,7 @@ import {
 import {
   AlertTriangle,
   CheckCircle2,
+  Copy,
   Globe2,
   LoaderCircle,
   Plus,
@@ -39,7 +40,13 @@ import {
   GameServerTailscaleSection,
   TailscaleNetworkMembershipPage,
 } from "@/components/tailscale-network-membership"
-import { accessCapabilitiesQueryOptions } from "@/lib/query-options"
+import {
+  accessCapabilitiesQueryOptions,
+  instanceDomainQueryOptions,
+  queryKeys,
+} from "@/lib/query-options"
+import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
+import { setInstanceVanity } from "@/server/domains"
 import {
   getInstanceWebRoutes,
   performRelayAction,
@@ -142,6 +149,10 @@ function WebRoutesNetworkPage({ showTailscale }: { showTailscale: boolean }) {
   return (
     <main className="min-h-0 flex-1 overflow-y-auto bg-background/55 p-4 sm:p-6">
       <div className="mx-auto max-w-4xl space-y-4">
+        <ManagedGameAddressSection
+          canWrite={permissions.networkWrite}
+          instance={instance}
+        />
         {showTailscale ? (
           <GameServerTailscaleSection server={instance} />
         ) : null}
@@ -236,6 +247,176 @@ function WebRoutesNetworkPage({ showTailscale }: { showTailscale: boolean }) {
     </main>
   )
 }
+
+const ManagedGameAddressSection = React.memo(
+  function ManagedGameAddressSection({
+    canWrite,
+    instance,
+  }: {
+    canWrite: boolean
+    instance: InstanceWorkspaceInstance
+  }) {
+    const queryClient = useQueryClient()
+    const queryOptions = instanceDomainQueryOptions(
+      instance.relayId,
+      instance.id
+    )
+    const domain = useQuery(queryOptions)
+    const assignment = domain.data?.assignment
+    const update = useMutation({
+      mutationFn: (vanityLabel: string) =>
+        setInstanceVanity({
+          data: {
+            instanceId: instance.id,
+            relayId: instance.relayId,
+            vanityLabel,
+          },
+        }),
+      onSuccess: async (next) => {
+        queryClient.setQueryData(queryOptions.queryKey, {
+          assignment: next,
+          managedDomain: next.domain,
+        })
+        await Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.relay.connection,
+          }),
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.relay.snapshot,
+          }),
+        ])
+        showToast({
+          message: "Game server address updated",
+          type: "success",
+        })
+      },
+    })
+    const copyAddress = React.useCallback(() => {
+      const address = assignment?.address ?? instance.connectAddress
+      void navigator.clipboard.writeText(address)
+      showToast({ message: "Server address copied", type: "success" })
+    }, [assignment?.address, instance.connectAddress])
+
+    return (
+      <section className="border border-border/80 bg-card/55">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/70 p-4">
+          <div className="flex items-start gap-3">
+            <div className="grid size-9 shrink-0 place-items-center border border-primary/25 bg-primary/10 text-primary">
+              <Globe2 className="size-4" />
+            </div>
+            <div>
+              <h1 className="font-heading text-lg font-semibold tracking-tight">
+                Game server address
+              </h1>
+              <p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted-foreground">
+                The public endpoint players use to join this server.
+              </p>
+            </div>
+          </div>
+          {assignment?.supportsSrv ? (
+            <span className="border border-emerald-400/25 bg-emerald-400/8 px-2 py-1 font-mono text-[9px] text-emerald-300 uppercase">
+              SRV · no port required
+            </span>
+          ) : null}
+        </div>
+
+        <div className="space-y-4 p-4">
+          {domain.isLoading ? (
+            <div className="flex h-14 items-center gap-2 text-xs text-muted-foreground">
+              <LoaderCircle className="size-4 animate-spin text-primary" />
+              Reading managed address
+            </div>
+          ) : domain.error ? (
+            <p className="text-xs text-destructive">
+              {errorMessage(domain.error)}
+            </p>
+          ) : (
+            <>
+              <div className="flex min-w-0 items-stretch border border-border/80 bg-background/55">
+                <code className="min-w-0 flex-1 truncate px-3 py-2.5 text-sm text-foreground">
+                  {assignment?.address ?? instance.connectAddress}
+                </code>
+                <Button
+                  aria-label="Copy game server address"
+                  className="h-auto rounded-none border-y-0 border-r-0"
+                  onClick={copyAddress}
+                  type="button"
+                  variant="outline"
+                >
+                  <Copy />
+                  Copy
+                </Button>
+              </div>
+
+              {assignment ? (
+                <p className="font-mono text-[10px] text-muted-foreground">
+                  Direct fallback · {assignment.directAddress}
+                </p>
+              ) : domain.data?.managedDomain ? (
+                <p className="text-[11px] text-muted-foreground">
+                  This server predates automatic domain provisioning. Assign an
+                  available name below.
+                </p>
+              ) : (
+                <p className="text-[11px] text-muted-foreground">
+                  The platform administrator has not enabled managed domains.
+                  The Relay address remains ready to use.
+                </p>
+              )}
+
+              {canWrite && domain.data?.managedDomain ? (
+                <form
+                  className="border-t border-border/70 pt-4"
+                  action={(form) => {
+                    update.mutate(String(form.get("vanityLabel") ?? ""))
+                  }}
+                >
+                  <label className="text-[11px] font-medium">
+                    Custom address
+                    <div className="mt-1.5 flex">
+                      <Input
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        className="rounded-r-none"
+                        defaultValue={assignment?.vanityLabel ?? ""}
+                        maxLength={63}
+                        name="vanityLabel"
+                        placeholder="my-server"
+                        required
+                      />
+                      <span className="flex max-w-[45%] items-center border-y border-r border-border bg-muted/35 px-3 font-mono text-xs text-muted-foreground">
+                        .{domain.data.managedDomain}
+                      </span>
+                      <Button
+                        className="rounded-l-none"
+                        disabled={update.isPending}
+                        type="submit"
+                      >
+                        {update.isPending ? (
+                          <LoaderCircle className="animate-spin" />
+                        ) : (
+                          <CheckCircle2 />
+                        )}
+                        {assignment ? "Save" : "Assign"}
+                      </Button>
+                    </div>
+                  </label>
+                  {assignment?.lastError || update.error ? (
+                    <p className="mt-2 text-xs text-destructive">
+                      {update.error
+                        ? errorMessage(update.error)
+                        : assignment?.lastError}
+                    </p>
+                  ) : null}
+                </form>
+              ) : null}
+            </>
+          )}
+        </div>
+      </section>
+    )
+  }
+)
 
 function RouteForm({
   disabled,

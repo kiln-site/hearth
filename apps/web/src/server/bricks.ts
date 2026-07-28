@@ -27,6 +27,7 @@ import {
   writeRelayCache,
 } from "@/lib/relay-client"
 import { requireAuthenticatedUser } from "@/server/auth"
+import { provisionInstanceDomainBestEffort } from "@/server/domains"
 
 const relayInputSchema = z.object({ relayId: relayIdSchema })
 const createInputSchema = relayCreateInstanceSchema.extend({
@@ -103,6 +104,7 @@ export const createBrickInstance = createServerFn({ method: "POST" })
         360_000
       )
     )
+    await provisionInstanceDomainBestEffort(instance, relay.id)
     await runAppEffect(
       "relay.snapshot.invalidate",
       invalidateRelayCache(relayCachePolicy.snapshot(relay.id))

@@ -41,6 +41,7 @@ import {
   ResourceNotFoundError,
 } from "@/effect/errors"
 import { runAppEffect } from "@/effect/runtime"
+import { applyManagedDomainAddressesEffect } from "@/server/domains"
 import {
   cachedRelayFallbackJsonEffect,
   cachedRelayJsonEffect,
@@ -178,7 +179,7 @@ export const getRelayConnectionState = createServerFn({
   const connectedCount = entries.filter(
     (entry) => entry.status === "connected"
   ).length
-  const snapshot = mergeRelaySnapshots(entries)
+  const snapshot = await mergeRelaySnapshots(entries)
   const relay = publicFleetRelay(relays, connectedCount)
   if (connectedCount === 0) {
     return {
@@ -751,13 +752,13 @@ async function authorizedFleetSnapshot(
   return mergeRelaySnapshots(entries)
 }
 
-function mergeRelaySnapshots(
+async function mergeRelaySnapshots(
   entries: Array<{
     relay: PersistedRelay
     snapshot: Awaited<ReturnType<typeof authorizeRelaySnapshot>> | null
     status: RelayReachability
   }>
-): RelayFleetSnapshot {
+): Promise<RelayFleetSnapshot> {
   const instances = entries.flatMap(({ relay, snapshot, status }) =>
     (snapshot?.instances ?? []).map((instance) => ({
       ...instance,
@@ -765,6 +766,14 @@ function mergeRelaySnapshots(
       relayName: relay.name,
       relayStatus: status,
     }))
+  )
+  const routedInstances = instances.map((instance) => ({
+    ...instance,
+    routeId: relayInstanceRouteId(instance.relayId, instance.shortId),
+  }))
+  const managedInstances = await runAppEffect(
+    "domains.assignments.apply",
+    applyManagedDomainAddressesEffect(routedInstances)
   )
   return {
     nodes: entries.flatMap(({ relay, snapshot, status }) =>
@@ -779,10 +788,7 @@ function mergeRelaySnapshots(
           ]
         : []
     ),
-    instances: instances.map((instance) => ({
-      ...instance,
-      routeId: relayInstanceRouteId(instance.relayId, instance.shortId),
-    })),
+    instances: managedInstances,
   }
 }
 

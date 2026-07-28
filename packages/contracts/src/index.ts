@@ -105,6 +105,7 @@ export const brickRecipeSchema = z
       .object({
         mode: z.enum(["minecraft-backend", "minecraft-proxy", "direct"]),
         primaryPort: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/u),
+        supportsSrv: z.boolean().default(false),
         hostname: z.string().min(1).max(256).optional(),
         ports: z
           .array(
@@ -603,7 +604,10 @@ export const relayInstanceSchema = z.object({
     .optional(),
   brickPrimaryPort: z.number().int().min(1).max(65_535).optional(),
   brickPrimaryPortProtocol: z.enum(["tcp", "udp"]).optional(),
+  brickSupportsSrv: z.boolean().default(false),
   brickSource: brickSourceSchema.optional(),
+  publicHost: z.string().min(1).max(253).optional(),
+  publicPort: z.number().int().min(1).max(65_535).optional(),
   tailscale: relayInstanceTailscaleSchema.default({ enabled: false }),
   variables: brickVariableValuesSchema.optional(),
   managedByRelay: z.boolean().default(false),

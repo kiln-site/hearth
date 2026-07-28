@@ -8,6 +8,7 @@ import {
   getInvitationPreview,
 } from "@/server/access"
 import { getBrickCatalog, getInstanceStartup } from "@/server/bricks"
+import { getDomainSettings, getInstanceDomain } from "@/server/domains"
 import { getUiPreferences } from "@/server/preferences"
 import { reconcilePendingPowerSnapshot } from "@/lib/instance-power-state"
 import {
@@ -43,6 +44,11 @@ export const queryKeys = {
     overview: ["access", "overview"] as const,
   },
   bricks: ["bricks", "catalog"] as const,
+  domains: {
+    instance: (relayId: string, instanceId: string) =>
+      ["domains", "instances", relayId, instanceId] as const,
+    settings: ["domains", "settings"] as const,
+  },
   relay: {
     all: ["relay"] as const,
     connection: ["relay", "connection"] as const,
@@ -203,6 +209,25 @@ export function brickCatalogQueryOptions() {
   return queryOptions({
     queryKey: queryKeys.bricks,
     queryFn: () => getBrickCatalog(),
+  })
+}
+
+export function domainSettingsQueryOptions() {
+  return queryOptions({
+    queryKey: queryKeys.domains.settings,
+    queryFn: () => getDomainSettings(),
+  })
+}
+
+export function instanceDomainQueryOptions(
+  relayId: string,
+  instanceId: string
+) {
+  return queryOptions({
+    queryKey: queryKeys.domains.instance(relayId, instanceId),
+    queryFn: () => getInstanceDomain({ data: { instanceId, relayId } }),
+    retry: false,
+    staleTime: 10_000,
   })
 }
 

@@ -71,6 +71,16 @@ const recipe: BrickRecipe = brickRecipeSchema.parse({
 })
 
 describe("Brick recipes", () => {
+  it("defaults SRV support off and accepts an explicit opt-in", () => {
+    expect(recipe.network.supportsSrv).toBe(false)
+    expect(
+      brickRecipeSchema.parse({
+        ...recipe,
+        network: { ...recipe.network, supportsSrv: true },
+      }).network.supportsSrv
+    ).toBe(true)
+  })
+
   it("resolves defaults, overrides, resources, and literal templates", () => {
     const resolved = resolveBrick(recipe, { memory: "4G" })
     expect(resolved.values).toEqual({

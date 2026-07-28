@@ -61,6 +61,44 @@ CREATE TABLE IF NOT EXISTS kiln_tailscale_network (
   UNIQUE KEY kiln_tailscale_network_domain_unique (domain)
 );
 
+CREATE TABLE IF NOT EXISTS kiln_domain_integration (
+  id VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+  provider ENUM('cloudflare') NOT NULL,
+  domain VARCHAR(253) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  zone_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  zone_name VARCHAR(253) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  api_token_ciphertext TEXT NOT NULL,
+  blacklist_patterns JSON NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  last_verified_at TIMESTAMP(3) NULL,
+  last_error VARCHAR(512) NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
+);
+
+CREATE TABLE IF NOT EXISTS kiln_instance_domain (
+  relay_id CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  instance_id CHAR(40) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  integration_id VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  vanity_label VARCHAR(63) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  domain VARCHAR(253) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  public_host VARCHAR(253) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  public_port SMALLINT UNSIGNED NOT NULL,
+  supports_srv BOOLEAN NOT NULL DEFAULT FALSE,
+  srv_service VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  srv_protocol ENUM('tcp', 'udp') NULL,
+  address_record_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  address_record_type ENUM('A', 'AAAA', 'CNAME') NULL,
+  srv_record_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  status ENUM('pending', 'active', 'error') NOT NULL DEFAULT 'pending',
+  last_error VARCHAR(512) NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (relay_id, instance_id),
+  UNIQUE KEY kiln_instance_domain_vanity_unique (domain, vanity_label),
+  KEY kiln_instance_domain_status_idx (status, updated_at)
+);
+
 CREATE TABLE IF NOT EXISTS kiln_file_activity (
   relay_id CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   instance_id CHAR(40) NOT NULL,
