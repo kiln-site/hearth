@@ -50,7 +50,7 @@ export const relayFetchEffect = Effect.fn("relay.fetch")(function* (
   relay: RelayEndpoint,
   path: string,
   init?: RequestInit,
-  timeoutMs = 10_000
+  timeoutMs?: number
 ) {
   const response = yield* Effect.tryPromise({
     try: () =>

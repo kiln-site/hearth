@@ -68,6 +68,7 @@ export function relayControlDeadlineMs(
   if (operation === "relay.tailscale.stack.apply") return 240_000
   if (operation === "relay.tailscale.stack.remove") return 120_000
   if (operation === "hearth.tailscale.instance.detach") return 60_000
+  if (operation === "instance.delete") return 360_000
   if (operation === "instance.logs.share") return 60_000
   if (
     operation === "instance.create" ||
@@ -166,6 +167,7 @@ export const RelayControlClientMessageSchema = Schema.Union([
 export const RelayControlServerMessageSchema = Schema.Union([
   RelayAuthChallengeSchema,
   RelayAuthReadySchema,
+  RelayControlCancelSchema,
   RelayControlResponseSchema,
   RelayControlErrorSchema,
   RelayControlEventSchema,

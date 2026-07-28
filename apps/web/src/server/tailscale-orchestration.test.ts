@@ -501,6 +501,48 @@ describe("Tailscale deployment orchestration", () => {
       },
     ])
   })
+
+  it("restores peer DNS when a server deletion prepare is cancelled", async () => {
+    const controller = new AbortController()
+    const calls: Array<{ addresses: Array<string>; relayId: string }> = []
+    const current = [
+      deployment("relay-a", "old", "10.165.55.10"),
+      deployment("relay-b", "old", "10.165.55.11"),
+      deployment("relay-c", "old", "10.165.55.12"),
+    ]
+
+    await expect(
+      synchronizeInstanceDeletionDns({
+        current,
+        instanceId: "relay-a",
+        mode: "prepare",
+        operations: {
+          syncDns: async (value, records) => {
+            calls.push({
+              addresses: records.map(({ address }) => address),
+              relayId: value.relayId,
+            })
+            if (calls.length === 1) controller.abort()
+            return value
+          },
+        },
+        relayId: "relay-a",
+        signal: controller.signal,
+        stackIds: ["a".repeat(40)],
+      })
+    ).rejects.toThrow("cancelled")
+
+    expect(calls).toEqual([
+      {
+        addresses: ["10.165.55.11", "10.165.55.12"],
+        relayId: "relay-b",
+      },
+      {
+        addresses: ["10.165.55.10", "10.165.55.11", "10.165.55.12"],
+        relayId: "relay-b",
+      },
+    ])
+  })
 })
 
 function target(relayId: string): DesiredTailscaleDeployment {

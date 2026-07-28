@@ -29,8 +29,10 @@ export async function synchronizeTailscaleInstanceDeletion(
     relayId: string
     stackIds: ReadonlyArray<string>
   },
-  relayRpc: RelayRpc
+  relayRpc: RelayRpc,
+  signal?: AbortSignal
 ): Promise<void> {
+  throwIfTailscalePrepareCancelled(input.mode, signal)
   const relays = (await listPersistedRelays()).filter((relay) => relay.enabled)
   const relayById = new Map(relays.map((relay) => [relay.id, relay]))
   if (!relayById.has(input.relayId)) {
@@ -59,12 +61,14 @@ export async function synchronizeTailscaleInstanceDeletion(
       { cause }
     )
   })
+  throwIfTailscalePrepareCancelled(input.mode, signal)
   const current = results.flat()
   const operations: Pick<
     TailscaleDeploymentOperations<TailscaleDeletionDeployment>,
     "syncDns"
   > = {
     syncDns: async (deployment, records) => {
+      throwIfTailscalePrepareCancelled(input.mode, signal)
       const relay = relayById.get(deployment.relayId)
       if (!relay) throw new Error("The network's Relay is unavailable")
       const synchronized = relayTailscaleStackSchema.parse(
@@ -89,6 +93,16 @@ export async function synchronizeTailscaleInstanceDeletion(
     mode: input.mode,
     operations,
     relayId: input.relayId,
+    signal,
     stackIds: input.stackIds,
   })
+}
+
+function throwIfTailscalePrepareCancelled(
+  mode: "prepare" | "rollback",
+  signal?: AbortSignal
+): void {
+  if (mode === "prepare" && signal?.aborted) {
+    throw new Error("Tailscale DNS preparation was cancelled")
+  }
 }

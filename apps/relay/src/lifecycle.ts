@@ -1759,19 +1759,20 @@ export class LifecycleDriver {
         "Hearth must synchronize peer Tailscale DNS before deleting this server"
       )
     }
-    if (affectedStackIds.length > 0) {
-      await synchronizeTailscaleDns?.({
-        mode: "prepare",
-        stackIds: affectedStackIds,
-      })
-    }
-
+    let tailscalePrepareAttempted = false
     let detachedStacks: Array<{
       next: RelayTailscaleStackConfig
       previous: RelayTailscaleStackConfig
       records: Array<{ address: string; hostname: string }>
     }> = []
     try {
+      if (affectedStackIds.length > 0) {
+        tailscalePrepareAttempted = true
+        await synchronizeTailscaleDns?.({
+          mode: "prepare",
+          stackIds: affectedStackIds,
+        })
+      }
       detachedStacks = await this.#detachInstanceFromTailscaleStacks(instance)
       await command("docker", ["stop", "--time", "30", instance.service], {
         timeout: 45_000,
@@ -1782,7 +1783,7 @@ export class LifecycleDriver {
     } catch (cause) {
       const rollbackFailures =
         await this.#restoreInstanceTailscaleStacks(detachedStacks)
-      if (affectedStackIds.length > 0) {
+      if (tailscalePrepareAttempted) {
         try {
           await synchronizeTailscaleDns?.({
             mode: "rollback",

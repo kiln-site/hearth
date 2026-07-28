@@ -51,6 +51,7 @@ export async function synchronizeInstanceDeletionDns<
   mode,
   operations,
   relayId,
+  signal,
   stackIds,
 }: {
   current: ReadonlyArray<TDeployment>
@@ -58,8 +59,10 @@ export async function synchronizeInstanceDeletionDns<
   mode: "prepare" | "rollback"
   operations: Pick<TailscaleDeploymentOperations<TDeployment>, "syncDns">
   relayId: string
+  signal?: AbortSignal
   stackIds: ReadonlyArray<string>
 }): Promise<void> {
+  throwIfPrepareCancelled(mode, signal)
   const requestedStackIds = new Set(stackIds)
   const deploymentsByStack = new Map<string, Array<TDeployment>>()
   for (const deployment of current) {
@@ -75,6 +78,7 @@ export async function synchronizeInstanceDeletionDns<
     targets: Array<TDeployment>
   }> = []
   for (const stackId of requestedStackIds) {
+    throwIfPrepareCancelled(mode, signal)
     const deployments = deploymentsByStack.get(stackId)
     if (!deployments?.length) {
       throw new Error(`Tailscale network ${stackId.slice(0, 8)} is unavailable`)
@@ -151,11 +155,13 @@ export async function synchronizeInstanceDeletionDns<
   try {
     await runSequentially(plans, (plan) =>
       runSequentially(plan.targets, async (deployment) => {
+        throwIfPrepareCancelled(mode, signal)
         const updated = await operations.syncDns(deployment, plan.records)
         synchronized.push({
           deployment: updated,
           previousRecords: plan.previousRecords,
         })
+        throwIfPrepareCancelled(mode, signal)
       })
     )
   } catch (cause) {
@@ -185,6 +191,15 @@ export async function synchronizeInstanceDeletionDns<
       }`,
       { cause }
     )
+  }
+}
+
+function throwIfPrepareCancelled(
+  mode: "prepare" | "rollback",
+  signal?: AbortSignal
+): void {
+  if (mode === "prepare" && signal?.aborted) {
+    throw new Error("Tailscale DNS preparation was cancelled")
   }
 }
 

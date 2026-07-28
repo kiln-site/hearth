@@ -38,6 +38,9 @@ describe("Relay control timeouts", () => {
     expect(relayControlRequestTimeoutMs(request, 10_000_000)).toBe(
       relayControlDeadlineMs("relay.update.apply")
     )
+    expect(relayControlDeadlineMs("instance.delete")).toBeGreaterThan(
+      relayControlDeadlineMs("hearth.tailscale.instance.detach") + 135_000
+    )
     expect(
       relayControlRequestTimeoutMs({ ...request, timeoutMs: 0 }, 10_000_000)
     ).toBeNull()
@@ -209,6 +212,34 @@ describe("Relay control socket", () => {
       await expect(reverseResult).resolves.toEqual([
         { clientId: client.id, payload: { allowed: true } },
       ])
+
+      const cancelledReverseResult = control.requestClients(
+        "hearth.tailscale.instance.detach",
+        { mode: "prepare" },
+        10
+      )
+      const cancelledReverseRequest = await inbox.next()
+      expect(cancelledReverseRequest.type).toBe("request")
+      const reverseCancel = await inbox.next()
+      expect(reverseCancel.type).toBe("cancel")
+      if (
+        cancelledReverseRequest.type === "request" &&
+        reverseCancel.type === "cancel"
+      ) {
+        expect(reverseCancel.replyTo).toBe(cancelledReverseRequest.id)
+        socket.send(
+          JSON.stringify({
+            code: "request_cancelled",
+            id: randomBytes(12).toString("hex"),
+            message: "DNS prepare was rolled back",
+            replyTo: cancelledReverseRequest.id,
+            retryable: false,
+            type: "error",
+            v: 1,
+          })
+        )
+      }
+      await expect(cancelledReverseResult).resolves.toEqual([])
 
       blockClientLookup = true
       const request = {

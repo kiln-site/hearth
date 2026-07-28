@@ -63,7 +63,9 @@ export async function relayRpc(
   relay: RelayEndpoint,
   operation: RelayControlOperation,
   payload: unknown,
-  timeoutMs = 10_000
+  timeoutMs = operation === "instance.delete"
+    ? relayControlDeadlineMs(operation)
+    : 10_000
 ): Promise<unknown> {
   const effectiveRelay = relayControlEndpoint(relay)
   let connection = connections.get(relay.id)
@@ -113,6 +115,7 @@ class RelayConnection {
       timer: ReturnType<typeof setTimeout>
     }
   >()
+  #reverseInFlight = new Map<string, AbortController>()
   #hasPushedSnapshot = false
   #pushedSnapshot: unknown = null
   #eventSequence = 0
@@ -199,6 +202,7 @@ class RelayConnection {
     this.#reconnectTimer = null
     this.#socket?.close(1000, "Hearth connection closed")
     this.#socket = null
+    this.#abortReverseRequests()
     this.#rejectPending(new Error("Relay connection closed"))
     this.#setState("disconnected", null)
   }
@@ -324,6 +328,7 @@ class RelayConnection {
             `Relay connection closed (${code}${reason.length ? `: ${reason.toString()}` : ""})`
           )
           this.#socket = null
+          this.#abortReverseRequests()
           this.#rejectPending(error)
           this.#setState("unreachable", error.message)
           this.#attempt += 1
@@ -390,18 +395,33 @@ class RelayConnection {
       pending.reject(new Error(message.message))
       return
     }
+    if (message.type === "cancel") {
+      this.#reverseInFlight.get(message.replyTo)?.abort()
+      return
+    }
     if (message.type === "request") {
-      await this.#handleRelayRequest(message)
+      const controller = new AbortController()
+      this.#reverseInFlight.set(message.id, controller)
+      try {
+        await this.#handleRelayRequest(message, controller)
+      } finally {
+        this.#reverseInFlight.delete(message.id)
+      }
     }
   }
 
-  async #handleRelayRequest(request: RelayControlRequest): Promise<void> {
+  async #handleRelayRequest(
+    request: RelayControlRequest,
+    controller: AbortController
+  ): Promise<void> {
     const socket = this.#socket
     if (!socket || socket.readyState !== WebSocket.OPEN) return
     let timer: ReturnType<typeof setTimeout> | null = null
     try {
       const duration = relayControlRequestTimeoutMs(request, Date.now())
       if (duration === null) throw new Error("Relay request timeout is invalid")
+      timer = setTimeout(() => controller.abort(), duration)
+      timer.unref()
       if (request.operation === "hearth.tailscale.instance.detach") {
         const input = tailscaleInstanceDetachSchema.parse(request.payload)
         const { synchronizeTailscaleInstanceDeletion } =
@@ -411,8 +431,10 @@ class RelayConnection {
             ...input,
             relayId: this.#relay.id,
           },
-          relayRpc
+          relayRpc,
+          controller.signal
         )
+        throwIfRelayRequestCancelled(controller.signal)
         socket.send(
           JSON.stringify({
             id: randomUUID(),
@@ -433,11 +455,15 @@ class RelayConnection {
         throw new Error("SFTP username is required")
       }
       const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(
+        if (controller.signal.aborted) {
+          reject(new RelayRequestTimeoutError("Relay request timed out"))
+          return
+        }
+        controller.signal.addEventListener(
+          "abort",
           () => reject(new RelayRequestTimeoutError("Relay request timed out")),
-          duration
+          { once: true }
         )
-        timer.unref()
       })
       const authorizationRequest = resolveSftpAuthorization(
         this.#relay.id,
@@ -457,8 +483,9 @@ class RelayConnection {
       )
     } catch (cause) {
       const error = asError(cause)
-      const timedOut = error instanceof RelayRequestTimeoutError
-      if (!timedOut) {
+      const cancelled =
+        controller.signal.aborted || error instanceof RelayRequestTimeoutError
+      if (!cancelled) {
         Sentry.captureException(error, {
           tags: {
             "kiln.operation": request.operation,
@@ -468,7 +495,7 @@ class RelayConnection {
       }
       socket.send(
         JSON.stringify({
-          code: timedOut ? "request_cancelled" : "hearth_operation_failed",
+          code: cancelled ? "request_cancelled" : "hearth_operation_failed",
           id: randomUUID(),
           message: error.message,
           replyTo: request.id,
@@ -488,6 +515,13 @@ class RelayConnection {
       pending.reject(cause)
     }
     this.#pending.clear()
+  }
+
+  #abortReverseRequests(): void {
+    for (const controller of this.#reverseInFlight.values()) {
+      controller.abort()
+    }
+    this.#reverseInFlight.clear()
   }
 
   #setState(status: RelayConnectionStatus, lastError: string | null): void {
@@ -520,6 +554,12 @@ function formatHost(hostname: string): string {
 
 function asError(cause: unknown): Error {
   return cause instanceof Error ? cause : new Error("Relay connection failed")
+}
+
+function throwIfRelayRequestCancelled(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw new RelayRequestTimeoutError("Relay request was cancelled")
+  }
 }
 
 function objectRecord(value: unknown): Readonly<Record<string, unknown>> {

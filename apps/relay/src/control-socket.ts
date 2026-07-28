@@ -511,14 +511,44 @@ function authenticateSocket(
     }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        reversePending.delete(id)
-        reject(new Error(`Hearth request timed out after ${duration}ms`))
+        const pending = reversePending.get(id)
+        if (!pending) return
+        send(socket, {
+          id: randomUUID(),
+          replyTo: id,
+          type: "cancel",
+          v: 1,
+        })
+        pending.timer = setTimeout(
+          () => {
+            reversePending.delete(id)
+            reject(
+              new Error(
+                `Hearth request timed out after ${duration}ms and did not confirm cancellation`
+              )
+            )
+          },
+          reverseRequestCancellationGraceMs(operation, duration)
+        )
+        pending.timer.unref()
       }, duration)
       timer.unref()
       reversePending.set(id, { reject, resolve, timer })
       send(socket, request)
     })
   }
+}
+
+function reverseRequestCancellationGraceMs(
+  operation: RelayControlOperation,
+  duration: number
+): number {
+  if (operation === "hearth.tailscale.instance.detach") {
+    // A cancelled prepare may be inside one 60s peer RPC, then needs one
+    // additional peer-RPC window to restore every node already changed.
+    return Math.min(130_000, duration * 2 + 1_000)
+  }
+  return 1_000
 }
 
 function isAuditedMutation(operation: RelayControlOperation): boolean {
