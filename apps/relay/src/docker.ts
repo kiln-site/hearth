@@ -187,6 +187,20 @@ export function publicConnectAddress(host: string, port: number): string {
   return `${formattedHost}:${port}`
 }
 
+export function instancePublicHost(input: {
+  discoveredPublicIp?: string | null
+  gameHost: string
+  instanceHost?: string
+  relayHost: string
+}): string {
+  return (
+    input.gameHost.trim() ||
+    input.instanceHost?.trim() ||
+    input.discoveredPublicIp?.trim() ||
+    input.relayHost.trim()
+  )
+}
+
 export function instanceConnectAddress(input: {
   discoveredPublicIp?: string | null
   gameHost?: string
@@ -1769,13 +1783,12 @@ export class DockerDriver {
         validPrimaryPort,
         primaryProtocol
       )
-    const publicHost =
-      labels["kiln.instance.public-host"]?.trim() ||
-      (this.#config.gameHostSource === "configured"
-        ? this.#config.gameHost
-        : null) ||
-      this.#config.discoveredPublicIp ||
-      this.#config.advertisedHost
+    const publicHost = instancePublicHost({
+      discoveredPublicIp: this.#config.discoveredPublicIp,
+      gameHost: this.#config.gameHost,
+      instanceHost: labels["kiln.instance.public-host"],
+      relayHost: this.#config.advertisedHost,
+    })
     const tailscale = relayInstanceTailscaleSchema.parse({
       enabled: labels["kiln.instance.tailscale-enabled"] === "true",
       subdomain: labels["kiln.instance.tailscale-subdomain"],

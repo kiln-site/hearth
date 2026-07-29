@@ -4,6 +4,7 @@ import {
   dockerPublishedHostPorts,
   dockerPublishedPort,
   instanceConnectAddress,
+  instancePublicHost,
   publicConnectAddress,
 } from "./docker.js"
 
@@ -81,6 +82,17 @@ describe("Docker public game ports", () => {
         relayHost: "relay.example.com",
       })
     ).toBe("relay.example.com:49172")
+  })
+
+  it("uses the Relay's live game host ahead of a stale container label", () => {
+    expect(
+      instancePublicHost({
+        discoveredPublicIp: "203.0.113.5",
+        gameHost: "203.0.113.6",
+        instanceHost: "203.0.113.4",
+        relayHost: "relay.example.com",
+      })
+    ).toBe("203.0.113.6")
   })
 
   it("always prefers Tailscale and reports an unavailable endpoint", () => {
