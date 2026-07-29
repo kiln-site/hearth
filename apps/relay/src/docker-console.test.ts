@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test"
 import {
   dockerLogSinceArguments,
   matchingReadyLogLine,
+  observedSessionReadyAt,
   parseConsoleLine,
 } from "./docker.js"
 
@@ -60,6 +61,26 @@ describe("Docker console parsing", () => {
     expect(matchingReadyLogLine(lines, [")! For help, type "])?.timestamp).toBe(
       "2026-07-25T17:59:12.000000000Z"
     )
+  })
+
+  it("restores a rediscovered running session at its container start", () => {
+    const startedAt = "2026-07-25T17:59:03.000000000Z"
+    const relayRestartedAt = Date.parse("2026-07-25T20:00:00.000Z")
+
+    expect(
+      observedSessionReadyAt(undefined, startedAt, false, relayRestartedAt)
+    ).toBe(startedAt)
+    expect(
+      observedSessionReadyAt(
+        "2026-07-25T17:59:12.000000000Z",
+        startedAt,
+        false,
+        relayRestartedAt
+      )
+    ).toBe("2026-07-25T17:59:12.000000000Z")
+    expect(
+      observedSessionReadyAt(undefined, startedAt, true, relayRestartedAt)
+    ).toBe("2026-07-25T20:00:00.000Z")
   })
 
   it.each([

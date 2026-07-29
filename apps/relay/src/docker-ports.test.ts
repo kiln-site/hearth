@@ -1,6 +1,11 @@
-import { describe, expect, it } from "vite-plus/test"
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test"
+
+const commandMock = vi.hoisted(() => vi.fn())
+
+vi.mock("./command.js", () => ({ command: commandMock }))
 
 import {
+  containerPortListening,
   dockerPublishedHostPorts,
   dockerPublishedPort,
   instanceConnectAddress,
@@ -115,6 +120,10 @@ describe("Docker public game ports", () => {
 })
 
 describe("container port readiness", () => {
+  beforeEach(() => {
+    commandMock.mockReset()
+  })
+
   it("recognizes listening IPv4 and IPv6 sockets", () => {
     const procNetTcp = [
       "sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt",
@@ -134,5 +143,36 @@ describe("container port readiness", () => {
         25_565
       )
     ).toBe(false)
+  })
+
+  it("accepts an IPv4 listener without requiring /proc/net/tcp6", async () => {
+    commandMock.mockResolvedValueOnce({
+      stderr: "",
+      stdout: "0: 00000000:63DD 00000000:0000 0A 00000000:00000000",
+    })
+
+    await expect(containerPortListening("container-id", 25_565)).resolves.toBe(
+      true
+    )
+    expect(commandMock).toHaveBeenCalledOnce()
+    expect(commandMock).toHaveBeenCalledWith(
+      "docker",
+      ["exec", "container-id", "cat", "/proc/net/tcp"],
+      { timeout: 2_000 }
+    )
+  })
+
+  it("returns an IPv4 result when /proc/net/tcp6 is absent", async () => {
+    commandMock
+      .mockResolvedValueOnce({
+        stderr: "",
+        stdout:
+          "sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt",
+      })
+      .mockRejectedValueOnce(new Error("/proc/net/tcp6 is absent"))
+
+    await expect(containerPortListening("container-id", 25_565)).resolves.toBe(
+      false
+    )
   })
 })

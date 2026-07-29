@@ -448,7 +448,12 @@ export class DockerDriver {
         (!readySession || readySession.startedAt !== containerStartedAt)
       ) {
         this.#readySessions.set(config.id, {
-          readyAt: readyAt.get(config.id) ?? new Date().toISOString(),
+          readyAt: observedSessionReadyAt(
+            readyAt.get(config.id),
+            containerStartedAt,
+            transition !== undefined,
+            now
+          ),
           startedAt: containerStartedAt,
         })
       } else if (
@@ -1298,12 +1303,7 @@ export class DockerDriver {
       return this.#startupLogReady(instance, container)
     }
     const ready = await this.#primaryPortReady(instance, container)
-    return ready === undefined
-      ? undefined
-      : {
-          ready,
-          ...(ready ? { readyAt: new Date().toISOString() } : {}),
-        }
+    return ready === undefined ? undefined : { ready }
   }
 
   async #startupLogReady(
@@ -1995,17 +1995,27 @@ function tcpPortOpen(host: string, port: number): Promise<boolean> {
   })
 }
 
-async function containerPortListening(
+export async function containerPortListening(
   containerId: string,
   port: number
 ): Promise<boolean | undefined> {
+  const ipv4 = await containerNetworkSockets(containerId, "/proc/net/tcp")
+  if (ipv4 !== undefined && procNetTcpHasListener(ipv4, port)) return true
+
+  const ipv6 = await containerNetworkSockets(containerId, "/proc/net/tcp6")
+  if (ipv6 !== undefined && procNetTcpHasListener(ipv6, port)) return true
+  return ipv4 === undefined && ipv6 === undefined ? undefined : false
+}
+
+async function containerNetworkSockets(
+  containerId: string,
+  path: "/proc/net/tcp" | "/proc/net/tcp6"
+): Promise<string | undefined> {
   try {
-    const output = await command(
-      "docker",
-      ["exec", containerId, "cat", "/proc/net/tcp", "/proc/net/tcp6"],
-      { timeout: 2_000 }
-    )
-    return procNetTcpHasListener(output.stdout, port)
+    const output = await command("docker", ["exec", containerId, "cat", path], {
+      timeout: 2_000,
+    })
+    return output.stdout
   } catch {
     return undefined
   }
@@ -2155,6 +2165,18 @@ export interface ParsedConsoleLine {
   service?: "coredns" | "tailscale"
   text: string
   timestamp: string | null
+}
+
+export function observedSessionReadyAt(
+  detectedReadyAt: string | undefined,
+  startedAt: string,
+  transitionActive: boolean,
+  now = Date.now()
+): string {
+  if (detectedReadyAt) return detectedReadyAt
+  // A rediscovered session has no trustworthy historical probe time. Keep its
+  // marker anchored to Docker's stable session start instead of inventing one.
+  return transitionActive ? new Date(now).toISOString() : startedAt
 }
 
 export function matchingReadyLogLine(

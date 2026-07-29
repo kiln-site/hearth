@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test"
 
 import {
+  consoleStateLine,
   initialConsoleStateLines,
   isConsoleStateLine,
   mergeConsoleHistory,
@@ -79,6 +80,29 @@ describe("console lifecycle lines", () => {
       "Server is running",
       "Player joined",
     ])
+  })
+
+  it("inserts a live running transition at its readiness timestamp", () => {
+    const current = [
+      {
+        id: "before-ready",
+        level: "info" as const,
+        text: "Preparing spawn",
+        timestamp: "2026-07-28T19:57:14.000Z",
+      },
+      {
+        id: "after-ready",
+        level: "info" as const,
+        text: "Player joined",
+        timestamp: "2026-07-28T19:57:20.000Z",
+      },
+    ]
+
+    expect(
+      mergeConsoleHistory(current, [consoleStateLine("running", readyAt)]).map(
+        (line) => line.text
+      )
+    ).toEqual(["Preparing spawn", "Server is running", "Player joined"])
   })
 
   it("does not invent a running transition while the server is stopping", () => {

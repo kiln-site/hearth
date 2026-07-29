@@ -2145,7 +2145,7 @@ function useRelayConsoleStream(
     }
     commitConsole({
       ...current,
-      lines: [...current.lines, line],
+      lines: mergeConsoleHistory(current.lines, [line]),
     })
   }, [commitConsole, instanceId, runtime?.observedState, runtime?.readyAt])
 
