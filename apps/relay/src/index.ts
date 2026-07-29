@@ -33,7 +33,11 @@ import type {
 
 import { BrickCatalog } from "./bricks.js"
 import { attachBrowserSocket } from "./browser-socket.js"
-import { discoverRelayAdvertisedHost, loadConfig } from "./config.js"
+import {
+  discoverRelayAdvertisedHost,
+  discoverRelayGameHost,
+  loadConfig,
+} from "./config.js"
 import { attachControlSocket } from "./control-socket.js"
 import { DockerDriver } from "./docker.js"
 import { FilesystemDriver } from "./files.js"
@@ -85,6 +89,12 @@ if (advertisedHostSource !== "configured") {
   )
   console.warn(
     "The inferred Relay endpoint is unverified and may be unusable behind NAT, inside Docker, or when an origin address should remain hidden. Set KILN_RELAY_HOST explicitly after checking reachability."
+  )
+}
+const gameHostSource = await discoverRelayGameHost(config)
+if (gameHostSource === "public_ip") {
+  console.info(
+    `KILN_RELAY_GAME_HOST=public-ip; discovered ${config.gameHost} from public DNS for game traffic.`
   )
 }
 await mkdir(config.rootDirectory, { recursive: true })

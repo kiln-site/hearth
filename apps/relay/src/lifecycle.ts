@@ -1591,7 +1591,7 @@ export class LifecycleDriver {
       "--label",
       `kiln.instance.game=${definition.metadata.game}`,
       "--label",
-      `kiln.instance.public-host=${this.#config.advertisedHost}`,
+      `kiln.instance.public-host=${this.#config.gameHost}`,
       "--label",
       `kiln.instance.directory=${id}`,
       "--label",

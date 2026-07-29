@@ -35,6 +35,7 @@ export interface RelayInstanceConfig {
 
 export type RelayTlsMode = "development" | "external" | "managed"
 export type RelayProxyMode = "coolify" | "hearth" | "none" | "traefik"
+export type RelayGameHostSource = "configured" | "public_ip" | "relay"
 
 export interface RelayConfig {
   advertisedHost: string
@@ -51,6 +52,8 @@ export interface RelayConfig {
   directPublicPort: number
   dockerSocket: string
   dataDirectory: string
+  gameHost: string
+  gameHostSource: RelayGameHostSource
   host: string
   installationId: string | null
   managedLabel: string
@@ -95,6 +98,16 @@ export function loadConfig(
     (coolifyPublicOrigin ? new URL(coolifyPublicOrigin).hostname : null) ||
     hostname() ||
     "localhost"
+  const configuredGameHost = environment.KILN_RELAY_GAME_HOST?.trim()
+  const gameHostSource: RelayGameHostSource = !configuredGameHost
+    ? "relay"
+    : configuredGameHost.toLowerCase() === "public-ip"
+      ? "public_ip"
+      : "configured"
+  const gameHost =
+    configuredGameHost && configuredGameHost.toLowerCase() !== "public-ip"
+      ? configuredGameHost
+      : advertisedHost
   const directPublicPort = parsePort(
     environment,
     "KILN_RELAY_PUBLIC_PORT",
@@ -146,6 +159,8 @@ export function loadConfig(
     directPublicPort,
     dockerSocket: "/var/run/docker.sock",
     dataDirectory,
+    gameHost,
+    gameHostSource,
     host: environment.KILN_RELAY_BIND_HOST?.trim() || "0.0.0.0",
     installationId,
     managedLabel: "kiln.relay.managed=true",
@@ -286,6 +301,7 @@ export async function discoverRelayAdvertisedHost(
     const address = await withTimeout(discover(), 2_000)
     if (!address) return "hostname"
     config.advertisedHost = address
+    if (config.gameHostSource === "relay") config.gameHost = address
     config.directBrowserOrigin = relayBrowserOrigin(
       config.tlsMode,
       address,
@@ -300,6 +316,29 @@ export async function discoverRelayAdvertisedHost(
     return "public_ip"
   } catch {
     return "hostname"
+  }
+}
+
+export async function discoverRelayGameHost(
+  config: RelayConfig,
+  discover: () => Promise<string> = discoverPublicIp
+): Promise<RelayGameHostSource> {
+  if (config.gameHostSource === "relay") {
+    config.gameHost = config.advertisedHost
+    return "relay"
+  }
+  if (config.gameHostSource === "configured") return "configured"
+
+  try {
+    const address = await withTimeout(discover(), 2_000)
+    if (!address) throw new Error("Public DNS returned no address")
+    config.gameHost = address
+    return "public_ip"
+  } catch (cause) {
+    throw new Error(
+      "KILN_RELAY_GAME_HOST=public-ip could not discover a public IPv4 address",
+      { cause }
+    )
   }
 }
 

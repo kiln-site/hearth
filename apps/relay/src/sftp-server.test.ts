@@ -355,6 +355,8 @@ function testConfig(dataDirectory: string): RelayConfig {
     directBrowserOrigin: "https://127.0.0.1:4100",
     directPublicPort: 4100,
     dockerSocket: "/var/run/docker.sock",
+    gameHost: "127.0.0.1",
+    gameHostSource: "relay",
     host: "127.0.0.1",
     installationId: null,
     managedLabel: "kiln.relay.managed=true",
