@@ -224,7 +224,10 @@ export const loadInstanceDomainAssignmentsEffect = Effect.fn(
 
 export const loadUsedVanityLabelsEffect = Effect.fn(
   "domains.assignments.usedLabels"
-)(function* (domain: string) {
+)(function* (
+  domain: string,
+  exclude?: { instanceId: string; relayId: string }
+) {
   const database = yield* Database
   const rows = yield* database.queryRows<
     RowDataPacket & { vanity_label: string }
@@ -232,8 +235,10 @@ export const loadUsedVanityLabelsEffect = Effect.fn(
     "domains.assignments.usedLabels",
     `SELECT vanity_label
        FROM ${databaseTable("instance_domain")}
-      WHERE domain = ?`,
-    [domain]
+      WHERE domain = ?${
+        exclude ? "\n        AND NOT (relay_id = ? AND instance_id = ?)" : ""
+      }`,
+    exclude ? [domain, exclude.relayId, exclude.instanceId] : [domain]
   )
   return new Set(rows.map((row) => row.vanity_label))
 })
@@ -328,6 +333,48 @@ export const updateInstanceDomainLabelEffect = Effect.fn(
         SET vanity_label = ?, status = 'active', last_error = NULL
       WHERE relay_id = ? AND instance_id = ?`,
     [input.vanityLabel, input.relayId, input.instanceId]
+  )
+})
+
+export const updateInstanceDomainEndpointEffect = Effect.fn(
+  "domains.assignment.updateEndpoint"
+)(function* (input: {
+  addressRecordType: "A" | "AAAA" | "CNAME"
+  instanceId: string
+  publicHost: string
+  publicPort: number
+  relayId: string
+}) {
+  const database = yield* Database
+  yield* database.execute(
+    "domains.assignment.updateEndpoint",
+    `UPDATE ${databaseTable("instance_domain")}
+        SET public_host = ?,
+            public_port = ?,
+            address_record_type = ?,
+            status = 'active',
+            last_error = NULL
+      WHERE relay_id = ? AND instance_id = ?`,
+    [
+      input.publicHost,
+      input.publicPort,
+      input.addressRecordType,
+      input.relayId,
+      input.instanceId,
+    ]
+  )
+})
+
+export const recordInstanceDomainSyncErrorEffect = Effect.fn(
+  "domains.assignment.recordSyncError"
+)(function* (relayId: string, instanceId: string, message: string) {
+  const database = yield* Database
+  yield* database.execute(
+    "domains.assignment.recordSyncError",
+    `UPDATE ${databaseTable("instance_domain")}
+        SET last_error = ?
+      WHERE relay_id = ? AND instance_id = ?`,
+    [message.slice(0, 512), relayId, instanceId]
   )
 })
 

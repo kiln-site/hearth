@@ -7,6 +7,11 @@ export interface ManagedDomainAddress {
   vanityLabel: string
 }
 
+export interface ManagedDomainEndpoint {
+  publicHost: string
+  publicPort: number
+}
+
 export function domainHasActiveSrvRecord(
   assignment: ManagedDomainAddress
 ): boolean {
@@ -24,6 +29,19 @@ export function managedDomainConnectAddress(
   return domainHasActiveSrvRecord(assignment)
     ? hostname
     : hostPortAddress(hostname, assignment.publicPort)
+}
+
+export function managedDomainEndpointMatches(
+  assignment: ManagedDomainEndpoint,
+  endpoint: {
+    publicHost?: string
+    publicPort?: number
+  }
+): boolean {
+  return (
+    assignment.publicHost === endpoint.publicHost &&
+    assignment.publicPort === endpoint.publicPort
+  )
 }
 
 export function hostPortAddress(hostname: string, port: number): string {

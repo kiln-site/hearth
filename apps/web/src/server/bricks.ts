@@ -216,6 +216,7 @@ export const updateInstanceStartup = createServerFn({ method: "POST" })
         360_000
       )
     )
+    await provisionInstanceDomainBestEffort(instance, relay.id)
     await runAppEffect(
       "relay.snapshot.invalidate",
       invalidateRelayCache(relayCachePolicy.snapshot(relay.id))

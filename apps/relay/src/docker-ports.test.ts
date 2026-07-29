@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test"
 
 import {
+  dockerPublishedHostPorts,
   dockerPublishedPort,
   instanceConnectAddress,
   publicConnectAddress,
@@ -31,6 +32,20 @@ describe("Docker public game ports", () => {
         "tcp"
       )
     ).toBeUndefined()
+  })
+
+  it("collects host ports for the requested protocol across all bindings", () => {
+    const bindings = {
+      "19132/udp": [{ HostIp: "0.0.0.0", HostPort: "30001" }],
+      "25565/tcp": [
+        { HostIp: "0.0.0.0", HostPort: "30000" },
+        { HostIp: "::", HostPort: "30000" },
+      ],
+      "8080/tcp": [{ HostPort: "not-a-port" }],
+    }
+
+    expect([...dockerPublishedHostPorts(bindings, "tcp")]).toEqual([30_000])
+    expect([...dockerPublishedHostPorts(bindings, "udp")]).toEqual([30_001])
   })
 
   it("formats IPv4, hostnames, and IPv6 connect addresses", () => {

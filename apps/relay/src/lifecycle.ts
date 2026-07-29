@@ -1548,7 +1548,7 @@ export class LifecycleDriver {
     const publicPort =
       input.publicPort ??
       primaryPort.host ??
-      this.#reserveGamePort(id, primaryPort.protocol, existing)
+      (await this.#reserveGamePort(id, primaryPort.protocol, existing))
     const variablesLabel = JSON.stringify(resolved.values)
     const arguments_ = [
       "container",
@@ -1742,12 +1742,12 @@ export class LifecycleDriver {
     return created
   }
 
-  #reserveGamePort(
+  async #reserveGamePort(
     instanceId: string,
     protocol: "tcp" | "udp",
     existing: ReadonlyArray<RelayInstance>
-  ): number {
-    const unavailable = new Set<number>()
+  ): Promise<number> {
+    const unavailable = await this.#docker.publishedHostPorts(protocol)
     const pendingPrefix = `${protocol}:`
     for (const key of this.#pendingGamePorts) {
       if (!key.startsWith(pendingPrefix)) continue

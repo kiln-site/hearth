@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test"
 import {
   domainHasActiveSrvRecord,
   managedDomainConnectAddress,
+  managedDomainEndpointMatches,
   type ManagedDomainAddress,
 } from "@/lib/domain-address"
 
@@ -31,5 +32,26 @@ describe("managed domain connect addresses", () => {
     expect(
       managedDomainConnectAddress({ ...assignment, supportsSrv: false })
     ).toBe("ember-falls.kiln.site:31337")
+  })
+
+  it("only matches the Relay endpoint recorded in Cloudflare", () => {
+    const endpoint = {
+      publicHost: "relay.example.com",
+      publicPort: assignment.publicPort,
+    }
+
+    expect(managedDomainEndpointMatches(endpoint, endpoint)).toBe(true)
+    expect(
+      managedDomainEndpointMatches(endpoint, {
+        ...endpoint,
+        publicHost: "new-relay.example.com",
+      })
+    ).toBe(false)
+    expect(
+      managedDomainEndpointMatches(endpoint, {
+        ...endpoint,
+        publicPort: 31_338,
+      })
+    ).toBe(false)
   })
 })

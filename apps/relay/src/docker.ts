@@ -164,6 +164,23 @@ export function dockerPublishedPort(
   return undefined
 }
 
+export function dockerPublishedHostPorts(
+  bindings: DockerPortBindings | undefined,
+  protocol: "tcp" | "udp"
+): Set<number> {
+  const ports = new Set<number>()
+  for (const [containerPort, candidates] of Object.entries(bindings ?? {})) {
+    if (!containerPort.endsWith(`/${protocol}`)) continue
+    for (const candidate of candidates ?? []) {
+      const port = Number(candidate.HostPort)
+      if (Number.isInteger(port) && port >= 1 && port <= 65_535) {
+        ports.add(port)
+      }
+    }
+  }
+  return ports
+}
+
 export function publicConnectAddress(host: string, port: number): string {
   const formattedHost =
     host.includes(":") && !host.startsWith("[") ? `[${host}]` : host
@@ -423,6 +440,34 @@ export class DockerDriver {
       matchesInstanceId(item.config, id)
     )
     return found?.config ?? null
+  }
+
+  async publishedHostPorts(protocol: "tcp" | "udp"): Promise<Set<number>> {
+    const idsResult = await command("docker", [
+      "container",
+      "ls",
+      "--all",
+      "--format",
+      "{{.ID}}",
+    ])
+    const ids = idsResult.stdout.split("\n").filter(Boolean)
+    if (ids.length === 0) return new Set()
+
+    const inspectResult = await command("docker", ["inspect", ...ids])
+    const containers = JSON.parse(inspectResult.stdout) as Array<DockerInspect>
+    const ports = new Set<number>()
+    for (const container of containers) {
+      const bindings = [
+        container.HostConfig?.PortBindings,
+        container.NetworkSettings?.Ports,
+      ]
+      for (const source of bindings) {
+        for (const port of dockerPublishedHostPorts(source, protocol)) {
+          ports.add(port)
+        }
+      }
+    }
+    return ports
   }
 
   resourceHistory(instanceId: string): Array<RelayInstanceResources> {

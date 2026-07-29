@@ -22,8 +22,10 @@ import {
   loadInstanceDomainAssignmentEffect,
   loadUsedVanityLabelsEffect,
   recordInstanceDomainErrorEffect,
+  recordInstanceDomainSyncErrorEffect,
   reserveInstanceDomainAssignmentEffect,
   saveCloudflareIntegrationEffect,
+  updateInstanceDomainEndpointEffect,
   updateInstanceDomainLabelEffect,
   type CloudflareIntegrationCredential,
   type InstanceDomainAssignment,
@@ -40,6 +42,7 @@ import {
   domainHasActiveSrvRecord,
   hostPortAddress,
   managedDomainConnectAddress,
+  managedDomainEndpointMatches,
 } from "@/lib/domain-address"
 import {
   validateBlacklistPatterns,
@@ -71,7 +74,14 @@ const managedDomainAddressCachePolicy: CachePolicy = {
   name: "Managed domain addresses",
   ttlMs: 30_000,
 }
-const managedDomainAddressMapSchema = z.record(z.string(), z.string())
+const managedDomainAddressMapSchema = z.record(
+  z.string(),
+  z.object({
+    address: z.string(),
+    publicHost: z.string(),
+    publicPort: z.number().int().min(1).max(65_535),
+  })
+)
 const invalidateManagedDomainAddressesEffect = invalidateCached(
   managedDomainAddressCachePolicy
 )
@@ -221,8 +231,7 @@ export const applyManagedDomainAddressesEffect = Effect.fn(
     ...instance,
     connectAddress: instance.tailscale.enabled
       ? instance.connectAddress
-      : (addresses[assignmentKey(instance.relayId, instance.id)] ??
-        instance.connectAddress),
+      : managedAddressForInstance(addresses, instance),
   }))
 })
 
@@ -236,7 +245,11 @@ export const loadManagedDomainAddressesEffect = Effect.fn(
         Object.fromEntries(
           assignments.map((assignment) => [
             assignmentKey(assignment.relayId, assignment.instanceId),
-            managedDomainConnectAddress(assignment),
+            {
+              address: managedDomainConnectAddress(assignment),
+              publicHost: assignment.publicHost,
+              publicPort: assignment.publicPort,
+            },
           ])
         )
       )
@@ -257,11 +270,25 @@ const provisionInstanceDomainEffect = Effect.fn("domains.instance.provision")(
       instance.relayId,
       instance.id
     )
-    if (existing?.status === "active") return assignmentOverview(existing)
-    const candidates = generateVanityCandidates(credential.blacklistPatterns)
+    if (existing?.status === "active") {
+      if (managedDomainEndpointMatches(existing, instance)) {
+        return assignmentOverview(existing)
+      }
+      const synced = yield* syncVanityEndpointEffect(
+        credential,
+        existing,
+        instance
+      ).pipe(Effect.ensuring(invalidateManagedDomainAddressesEffect))
+      return assignmentOverview(synced)
+    }
+    const generated = generateVanityCandidates(credential.blacklistPatterns)
+    const candidates = existing
+      ? [...new Set([existing.vanityLabel, ...generated])]
+      : generated
     const vanityLabel = yield* availableVanityLabelEffect(
       credential,
-      candidates
+      candidates,
+      assignmentOwner(instance)
     )
     return yield* provisionVanityRecordsEffect(
       credential,
@@ -299,22 +326,29 @@ const setInstanceVanityEffect = Effect.fn("domains.instance.setVanity")(
       instance.id
     )
     if (!assignment || assignment.status !== "active") {
-      const available = yield* availableVanityLabelEffect(credential, [
-        vanityLabel,
-      ])
+      const available = yield* availableVanityLabelEffect(
+        credential,
+        [vanityLabel],
+        assignmentOwner(instance)
+      )
       return yield* provisionVanityRecordsEffect(
         credential,
         instance,
         available
       ).pipe(Effect.ensuring(invalidateManagedDomainAddressesEffect))
     }
-    if (assignment.vanityLabel === vanityLabel) {
-      return assignmentOverview(assignment)
+    const current = managedDomainEndpointMatches(assignment, instance)
+      ? assignment
+      : yield* syncVanityEndpointEffect(credential, assignment, instance).pipe(
+          Effect.ensuring(invalidateManagedDomainAddressesEffect)
+        )
+    if (current.vanityLabel === vanityLabel) {
+      return assignmentOverview(current)
     }
     yield* assertVanityAvailableEffect(credential, vanityLabel)
     return yield* renameVanityRecordsEffect(
       credential,
-      assignment,
+      current,
       vanityLabel
     ).pipe(Effect.ensuring(invalidateManagedDomainAddressesEffect))
   }
@@ -441,6 +475,81 @@ const provisionVanityRecordsEffect = Effect.fn(
   return assignmentOverview(assignment)
 })
 
+const syncVanityEndpointEffect = Effect.fn("domains.instance.syncEndpoint")(
+  function* (
+    credential: CloudflareIntegrationCredential,
+    assignment: InstanceDomainAssignment,
+    instance: RelayInstance & { relayId: string }
+  ) {
+    const addressRecordId = assignment.addressRecordId
+    const publicHost = instance.publicHost
+    const publicPort = instance.publicPort
+    if (!addressRecordId) {
+      return yield* domainFailure(
+        "The managed address is missing its Cloudflare record"
+      )
+    }
+    if (!publicHost || !publicPort) {
+      return yield* domainFailure("The Relay did not report a public endpoint")
+    }
+    const hostname = `${assignment.vanityLabel}.${assignment.domain}`
+    const address = cloudflareAddressRecord(hostname, publicHost)
+    const sync = Effect.gen(function* () {
+      yield* updateCloudflareAddressRecordEffect(
+        credential.apiToken,
+        credential.zoneId,
+        addressRecordId,
+        address,
+        assignment.instanceId
+      )
+      if (
+        assignment.supportsSrv &&
+        assignment.srvRecordId &&
+        assignment.srvService &&
+        assignment.srvProtocol
+      ) {
+        yield* updateCloudflareSrvRecordEffect(
+          credential.apiToken,
+          credential.zoneId,
+          assignment.srvRecordId,
+          srvRecordInput(
+            hostname,
+            publicPort,
+            assignment.srvService,
+            assignment.srvProtocol,
+            address.type === "CNAME" ? publicHost : hostname
+          ),
+          assignment.instanceId
+        )
+      }
+      yield* updateInstanceDomainEndpointEffect({
+        addressRecordType: address.type,
+        instanceId: assignment.instanceId,
+        publicHost,
+        publicPort,
+        relayId: assignment.relayId,
+      })
+      const updated = yield* loadInstanceDomainAssignmentEffect(
+        assignment.relayId,
+        assignment.instanceId
+      )
+      if (!updated) {
+        return yield* domainFailure("The vanity address disappeared")
+      }
+      return updated
+    })
+    return yield* sync.pipe(
+      Effect.tapError((error) =>
+        recordInstanceDomainSyncErrorEffect(
+          assignment.relayId,
+          assignment.instanceId,
+          error.message
+        ).pipe(Effect.catch(() => Effect.void))
+      )
+    )
+  }
+)
+
 const renameVanityRecordsEffect = Effect.fn("domains.instance.renameRecords")(
   function* (
     credential: CloudflareIntegrationCredential,
@@ -552,9 +661,10 @@ const rollbackVanityRenameEffect = Effect.fn("domains.instance.rollbackRename")(
 const availableVanityLabelEffect = Effect.fn("domains.instance.availableLabel")(
   function* (
     credential: CloudflareIntegrationCredential,
-    candidates: Array<string>
+    candidates: Array<string>,
+    owner?: { instanceId: string; relayId: string }
   ) {
-    const used = yield* loadUsedVanityLabelsEffect(credential.domain)
+    const used = yield* loadUsedVanityLabelsEffect(credential.domain, owner)
     for (const candidate of candidates) {
       if (
         used.has(candidate) ||
@@ -630,6 +740,26 @@ function assignmentOverview(
 
 function assignmentKey(relayId: string, instanceId: string): string {
   return `${relayId}:${instanceId}`
+}
+
+function assignmentOwner(instance: { id: string; relayId: string }): {
+  instanceId: string
+  relayId: string
+} {
+  return {
+    instanceId: instance.id,
+    relayId: instance.relayId,
+  }
+}
+
+function managedAddressForInstance(
+  addresses: z.infer<typeof managedDomainAddressMapSchema>,
+  instance: FleetRelayInstance
+): string {
+  const assignment = addresses[assignmentKey(instance.relayId, instance.id)]
+  return assignment && managedDomainEndpointMatches(assignment, instance)
+    ? assignment.address
+    : instance.connectAddress
 }
 
 async function assignedServerNames(
