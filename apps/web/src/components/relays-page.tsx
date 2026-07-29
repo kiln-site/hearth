@@ -1418,7 +1418,10 @@ function EditRelayDialog({
   })
   const updateName = useMutation({
     mutationFn: renameRelay,
-    onSuccess: (updatedRelay) => updateRelayCache(queryClient, [updatedRelay]),
+    onSuccess: async (updatedRelay) => {
+      updateRelayCache(queryClient, [updatedRelay])
+      await invalidateRelayRuntimeQueries(queryClient)
+    },
   })
   const updateProxy = useMutation({
     mutationFn: updateRelayProxy,

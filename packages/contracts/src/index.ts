@@ -401,6 +401,16 @@ export const relayProxyModeSchema = z.enum([
   "coolify",
 ])
 
+export const DEFAULT_RELAY_NAME = "K100"
+export const MAXIMUM_INITIAL_RELAY_NAME_LENGTH = 13
+
+export function truncateInitialRelayName(value: string): string {
+  return [...value.trim()]
+    .slice(0, MAXIMUM_INITIAL_RELAY_NAME_LENGTH)
+    .join("")
+    .trimEnd()
+}
+
 export const relayNameSchema = z.string().trim().min(1).max(120)
 
 export const relayConnectionSettingsSchema = z

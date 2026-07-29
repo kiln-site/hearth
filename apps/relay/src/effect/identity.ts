@@ -3,11 +3,14 @@ import {
   createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
-  randomBytes,
   randomUUID,
 } from "node:crypto"
 import { chmod, mkdir, open, readFile, rename, unlink } from "node:fs/promises"
 import { dirname, join } from "node:path"
+import {
+  DEFAULT_RELAY_NAME,
+  truncateInitialRelayName,
+} from "@workspace/contracts"
 import { Effect, Schema } from "effect"
 
 import { RelayIdentityError } from "./errors.js"
@@ -171,9 +174,8 @@ export function fingerprint(publicKeyPem: string): string {
 }
 
 function normalizeName(configuredName: string): string {
-  const name = configuredName.trim()
-  if (name && name !== "Kiln Relay") return name
-  return `K${randomBytes(2).toString("hex").slice(0, 3).toUpperCase()}`
+  const name = truncateInitialRelayName(configuredName)
+  return name || DEFAULT_RELAY_NAME
 }
 
 function writeFileAtomic(path: string, value: string, mode: number) {

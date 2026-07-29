@@ -1,7 +1,19 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { ensureDockerVolume } from "./dev-docker-helpers.mjs"
+import {
+  developmentRelayName,
+  ensureDockerVolume,
+} from "./dev-docker-helpers.mjs"
+
+test("creates stable 13-character development Relay names", () => {
+  const name = developmentRelayName("/workspace/feature")
+
+  assert.match(name, /^D001-[a-f0-9]{8}$/u)
+  assert.equal(name.length, 13)
+  assert.equal(name, developmentRelayName("/workspace/feature"))
+  assert.notEqual(name, developmentRelayName("/workspace/other-feature"))
+})
 
 test("accepts a volume created by another concurrent process", () => {
   const calls = []

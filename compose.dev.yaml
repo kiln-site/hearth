@@ -10,7 +10,7 @@ services:
     environment:
       NODE_ENV: development
       KILN_RELAY_TLS_MODE: managed
-      KILN_RELAY_NAME: ${KILN_RELAY_NAME:-L01}
+      KILN_RELAY_NAME: ${KILN_RELAY_NAME:-D001-localdev}
     command:
       - /bin/sh
       - -lc

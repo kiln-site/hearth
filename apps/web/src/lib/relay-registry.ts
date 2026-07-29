@@ -33,6 +33,7 @@ import {
   mapPairingTransportError,
 } from "@/lib/relay-pairing-errors"
 import { relayPairingOrigin } from "@/lib/relay-pairing-origin"
+import { relayNameForNewPairing } from "@/lib/relay-names"
 import { CredentialError, ResourceNotFoundError } from "@/effect/errors"
 import { runAppEffect } from "@/effect/runtime"
 import { databasePool } from "@/lib/database"
@@ -585,6 +586,12 @@ async function pairWithEnvelope(
     throw new Error("Relay repair returned a different Hearth client identity")
   }
 
+  const initialName = existing
+    ? response.relayName
+    : relayNameForNewPairing(
+        response.relayName,
+        (await listPersistedRelays()).map((relay) => relay.name)
+      )
   const encryptedPrivateKey = encryptPrivateKey(keys.privateKey)
   if (existing) {
     await databasePool.execute(
@@ -597,7 +604,7 @@ async function pairWithEnvelope(
               last_error = NULL
         WHERE id = ?`,
       [
-        response.relayName,
+        initialName,
         controlEndpoint.hostname,
         effectivePort(controlEndpoint),
         controlEndpoint.protocol === "wss:",
@@ -624,7 +631,7 @@ async function pairWithEnvelope(
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)`,
       [
         envelope.relayFingerprint,
-        response.relayName,
+        initialName,
         controlEndpoint.hostname,
         effectivePort(controlEndpoint),
         controlEndpoint.protocol === "wss:",
@@ -640,6 +647,12 @@ async function pairWithEnvelope(
     )
   }
   try {
+    if (!existing && initialName !== response.relayName) {
+      await renamePersistedRelay({
+        name: initialName,
+        relayId: envelope.relayFingerprint,
+      })
+    }
     return await checkPersistedRelay(envelope.relayFingerprint)
   } catch (cause) {
     if (!existing) {

@@ -5,18 +5,22 @@ import { assert, describe, it } from "@effect/vitest"
 import { Effect } from "effect"
 
 import { loadConfig } from "../config.js"
-import { loadOrCreateRelayIdentity } from "./identity.js"
+import { loadOrCreateRelayIdentity, renameRelayIdentity } from "./identity.js"
 
 describe("Relay identity", () => {
-  it.live("persists one identity and ignores later name seeds", () =>
+  it.live("persists renames and ignores later environment seeds", () =>
     withTemporaryDirectory((directory) =>
       Effect.gen(function* () {
-        const initial = yield* loadOrCreateRelayIdentity(
-          loadConfig({
-            KILN_RELAY_DATA_DIR: directory,
-            KILN_RELAY_NAME: "Relay Alpha",
-            NODE_ENV: "development",
-          })
+        const config = loadConfig({
+          KILN_RELAY_DATA_DIR: directory,
+          KILN_RELAY_NAME: "Relay Alpha",
+          NODE_ENV: "development",
+        })
+        const initial = yield* loadOrCreateRelayIdentity(config)
+        const renamed = yield* renameRelayIdentity(
+          config,
+          initial,
+          "Legacy Relay Name"
         )
         const restarted = yield* loadOrCreateRelayIdentity(
           loadConfig({
@@ -27,7 +31,8 @@ describe("Relay identity", () => {
         )
 
         assert.strictEqual(initial.fingerprint, restarted.fingerprint)
-        assert.strictEqual(restarted.name, "Relay Alpha")
+        assert.strictEqual(renamed.name, "Legacy Relay Name")
+        assert.strictEqual(restarted.name, "Legacy Relay Name")
         assert.strictEqual(initial.privateKeyPem, restarted.privateKeyPem)
 
         const privateKeyPath = join(
@@ -45,6 +50,31 @@ describe("Relay identity", () => {
           "BEGIN PRIVATE KEY"
         )
       })
+    )
+  )
+
+  it.live("defaults to K100 and truncates custom creation names", () =>
+    withTemporaryDirectory((defaultDirectory) =>
+      withTemporaryDirectory((customDirectory) =>
+        Effect.gen(function* () {
+          const defaultIdentity = yield* loadOrCreateRelayIdentity(
+            loadConfig({
+              KILN_RELAY_DATA_DIR: defaultDirectory,
+              NODE_ENV: "development",
+            })
+          )
+          const customIdentity = yield* loadOrCreateRelayIdentity(
+            loadConfig({
+              KILN_RELAY_DATA_DIR: customDirectory,
+              KILN_RELAY_NAME: "1234567890123extra",
+              NODE_ENV: "development",
+            })
+          )
+
+          assert.strictEqual(defaultIdentity.name, "K100")
+          assert.strictEqual(customIdentity.name, "1234567890123")
+        })
+      )
     )
   )
 })

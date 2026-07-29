@@ -1091,6 +1091,7 @@ async function executeControlRequest(
       )
       config.nodeName = relayIdentity.name
       config.nodeId = relayIdentity.fingerprint
+      await snapshotHub.refresh()
       await appendRelayAudit("relay.renamed", client.id, request.id, {
         name: relayIdentity.name,
       })

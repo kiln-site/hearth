@@ -3,7 +3,10 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
 import { spawnSync } from "node:child_process"
 
-import { ensureDockerVolume } from "./dev-docker-helpers.mjs"
+import {
+  developmentRelayName,
+  ensureDockerVolume,
+} from "./dev-docker-helpers.mjs"
 
 const command = process.argv[2] ?? "start"
 const initialDirectory = process.cwd()
@@ -45,7 +48,7 @@ const composeEnvironment = {
   KILN_INSTALLATION_ID: stack,
   KILN_RELAY_GAME_HOST: process.env.KILN_RELAY_GAME_HOST?.trim() || "localhost",
   KILN_RELAY_HOST: `relay.${stack}.orb.local`,
-  KILN_RELAY_NAME: primaryWorktree ? "L01" : stack,
+  KILN_RELAY_NAME: developmentRelayName(worktreeRoot),
   KILN_RELAY_PROXY: "none",
   KILN_RELAY_PUBLIC_PORT: "443",
   KILN_RELAY_RESOURCE_NAMESPACE: namespace,

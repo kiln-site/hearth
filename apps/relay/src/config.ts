@@ -174,7 +174,7 @@ export function loadConfig(
     mclogsApiUrl:
       environment.MCLOGS_API_URL?.trim() || "https://api.mclo.gs/1/log",
     nodeId: "kiln-relay",
-    nodeName: environment.KILN_RELAY_NAME?.trim() || hostname() || "Kiln Relay",
+    nodeName: environment.KILN_RELAY_NAME?.trim() || "",
     port,
     publicPort,
     projectDirectory: `${dataDirectory}/instances`,
