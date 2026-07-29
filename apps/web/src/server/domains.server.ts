@@ -1,6 +1,7 @@
 import type { RelayInstance } from "@workspace/contracts"
 import { relayInstanceSchema, relaySnapshotSchema } from "@workspace/contracts"
 import { Effect } from "effect"
+import { z } from "zod"
 
 import {
   cloudflareAddressRecord,
@@ -31,6 +32,11 @@ import { ExternalServiceError } from "@/effect/errors"
 import { runAppEffect } from "@/effect/runtime"
 import { isPlatformAdmin, requireRelayPermission } from "@/lib/access-control"
 import {
+  invalidateCached,
+  readThroughCache,
+  type CachePolicy,
+} from "@/lib/cache"
+import {
   domainHasActiveSrvRecord,
   hostPortAddress,
   managedDomainConnectAddress,
@@ -59,6 +65,16 @@ import type {
   ManagedDomainOverview,
   SetVanityInput,
 } from "@/server/domains"
+
+const managedDomainAddressCachePolicy: CachePolicy = {
+  key: "domains:assignments:active-addresses",
+  name: "Managed domain addresses",
+  ttlMs: 30_000,
+}
+const managedDomainAddressMapSchema = z.record(z.string(), z.string())
+const invalidateManagedDomainAddressesEffect = invalidateCached(
+  managedDomainAddressCachePolicy
+)
 
 export async function getDomainSettingsHandler() {
   await requireDomainAdministrator()
@@ -137,7 +153,7 @@ export async function configureDomainIntegrationHandler(
       enabled: data.enabled,
       zoneId: zone.id,
       zoneName: zone.name,
-    })
+    }).pipe(Effect.andThen(invalidateManagedDomainAddressesEffect))
   )
   return {
     integration: await runAppEffect(
@@ -200,20 +216,33 @@ export const applyManagedDomainAddressesEffect = Effect.fn(
   "domains.assignments.apply"
 )(function* (instances: Array<FleetRelayInstance>) {
   if (instances.length === 0) return instances
-  const assignments = yield* loadActiveInstanceDomainAssignmentsEffect()
-  const addresses = new Map(
-    assignments.map((assignment) => [
-      assignmentKey(assignment.relayId, assignment.instanceId),
-      managedDomainConnectAddress(assignment),
-    ])
-  )
+  const addresses = yield* loadManagedDomainAddressesEffect()
   return instances.map((instance) => ({
     ...instance,
     connectAddress: instance.tailscale.enabled
       ? instance.connectAddress
-      : (addresses.get(assignmentKey(instance.relayId, instance.id)) ??
+      : (addresses[assignmentKey(instance.relayId, instance.id)] ??
         instance.connectAddress),
   }))
+})
+
+export const loadManagedDomainAddressesEffect = Effect.fn(
+  "domains.assignments.cachedAddresses"
+)(function* () {
+  return yield* readThroughCache({
+    decode: managedDomainAddressMapSchema.parse,
+    load: loadActiveInstanceDomainAssignmentsEffect().pipe(
+      Effect.map((assignments) =>
+        Object.fromEntries(
+          assignments.map((assignment) => [
+            assignmentKey(assignment.relayId, assignment.instanceId),
+            managedDomainConnectAddress(assignment),
+          ])
+        )
+      )
+    ),
+    policy: managedDomainAddressCachePolicy,
+  })
 })
 
 const provisionInstanceDomainEffect = Effect.fn("domains.instance.provision")(
@@ -238,7 +267,7 @@ const provisionInstanceDomainEffect = Effect.fn("domains.instance.provision")(
       credential,
       instance,
       vanityLabel
-    )
+    ).pipe(Effect.ensuring(invalidateManagedDomainAddressesEffect))
   }
 )
 
@@ -277,13 +306,17 @@ const setInstanceVanityEffect = Effect.fn("domains.instance.setVanity")(
         credential,
         instance,
         available
-      )
+      ).pipe(Effect.ensuring(invalidateManagedDomainAddressesEffect))
     }
     if (assignment.vanityLabel === vanityLabel) {
       return assignmentOverview(assignment)
     }
     yield* assertVanityAvailableEffect(credential, vanityLabel)
-    return yield* renameVanityRecordsEffect(credential, assignment, vanityLabel)
+    return yield* renameVanityRecordsEffect(
+      credential,
+      assignment,
+      vanityLabel
+    ).pipe(Effect.ensuring(invalidateManagedDomainAddressesEffect))
   }
 )
 

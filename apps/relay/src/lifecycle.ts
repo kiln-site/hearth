@@ -1674,6 +1674,8 @@ export class LifecycleDriver {
     for (const [name, value] of Object.entries(resolved.environment)) {
       arguments_.push("--env", `${name}=${value}`)
     }
+    // Velocity routing is additive: every game Brick, including a backend,
+    // intentionally remains directly joinable through its assigned host port.
     if (definition.network.mode !== "direct") {
       arguments_.push(
         "--publish",
