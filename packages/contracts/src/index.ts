@@ -595,6 +595,7 @@ export const relayInstanceSchema = z.object({
   desiredState: relayDesiredStateSchema,
   observedState: relayObservedStateSchema,
   startedAt: z.string().datetime().nullable().default(null),
+  readyAt: z.string().datetime().nullable().default(null),
   containerId: z.string().nullable(),
   status: z.string(),
   brickId: brickIdSchema.optional(),

@@ -331,6 +331,10 @@ export class DockerDriver {
   readonly #consoleSizePending = new Map<string, Promise<void>>()
   readonly #diskUsageCache = new Map<string, DiskUsageCacheEntry>()
   readonly #powerTransitions = new Map<string, InstancePowerTransition>()
+  readonly #readySessions = new Map<
+    string,
+    { readonly readyAt: string; readonly startedAt: string }
+  >()
   #diskUsageQueue = Promise.resolve()
   #relayStartedAt: Promise<string | null> | undefined
   readonly #resourceCache = new Map<string, ResourceCacheEntry>()
@@ -367,6 +371,10 @@ export class DockerDriver {
       if (!activeInstanceIds.has(instanceId))
         this.#powerTransitions.delete(instanceId)
     }
+    for (const instanceId of this.#readySessions.keys()) {
+      if (!activeInstanceIds.has(instanceId))
+        this.#readySessions.delete(instanceId)
+    }
     await Promise.all(
       discovered.map(({ config, container }) =>
         config.managedByRelay
@@ -379,6 +387,14 @@ export class DockerDriver {
     await Promise.all(
       discovered.map(async ({ config, container }) => {
         const transition = this.#powerTransitions.get(config.id)
+        const readySession = this.#readySessions.get(config.id)
+        if (
+          readySession?.startedAt === container.State.StartedAt &&
+          container.State.Running
+        ) {
+          readiness.set(config.id, true)
+          return
+        }
         const startedAt = Date.parse(container.State.StartedAt)
         const startedRecently =
           Number.isFinite(startedAt) &&
@@ -416,6 +432,23 @@ export class DockerDriver {
       if (powerState.transitionComplete) {
         this.#powerTransitions.delete(config.id)
       }
+      const containerStartedAt = container.State.StartedAt
+      const readySession = this.#readySessions.get(config.id)
+      if (
+        powerState.observedState === "running" &&
+        (!readySession || readySession.startedAt !== containerStartedAt)
+      ) {
+        this.#readySessions.set(config.id, {
+          readyAt: new Date().toISOString(),
+          startedAt: containerStartedAt,
+        })
+      } else if (
+        powerState.observedState === "starting" &&
+        readySession?.startedAt !== containerStartedAt
+      ) {
+        this.#readySessions.delete(config.id)
+      }
+      const currentReadySession = this.#readySessions.get(config.id)
       const resources = this.#resourcesFor({ config, container })
 
       return {
@@ -425,6 +458,10 @@ export class DockerDriver {
         desiredState,
         observedState: powerState.observedState,
         startedAt: container.State.Running ? container.State.StartedAt : null,
+        readyAt:
+          currentReadySession?.startedAt === containerStartedAt
+            ? currentReadySession.readyAt
+            : null,
         status:
           powerState.observedState === "running"
             ? "Running"
@@ -1260,16 +1297,21 @@ export class DockerDriver {
     const addresses = Object.values(
       container.NetworkSettings?.Networks ?? {}
     ).flatMap(({ IPAddress: address }) => (address ? [address] : []))
-    if (addresses.length === 0) return undefined
-    const probe =
+    const minecraft =
       instance.brickNetworkMode === "minecraft-backend" ||
       instance.brickNetworkMode === "minecraft-proxy"
-        ? minecraftStatusReady
-        : tcpPortOpen
+    const probe = minecraft ? minecraftStatusReady : tcpPortOpen
     const attempts = await Promise.all(
       addresses.map((address) => probe(address, port))
     )
-    return attempts.some(Boolean)
+    if (attempts.some(Boolean)) return true
+
+    if (minecraft) {
+      const ready = await minecraftStatusReadyInContainer(container.Id, port)
+      if (ready !== undefined) return ready
+    }
+    const listening = await containerPortListening(container.Id, port)
+    return listening ?? (attempts.length > 0 ? false : undefined)
   }
 
   #resourcesFor(instance: DiscoveredInstance): RelayInstanceResources | null {
@@ -1892,21 +1934,72 @@ function tcpPortOpen(host: string, port: number): Promise<boolean> {
   })
 }
 
+async function containerPortListening(
+  containerId: string,
+  port: number
+): Promise<boolean | undefined> {
+  try {
+    const output = await command(
+      "docker",
+      ["exec", containerId, "cat", "/proc/net/tcp", "/proc/net/tcp6"],
+      { timeout: 2_000 }
+    )
+    return procNetTcpHasListener(output.stdout, port)
+  } catch {
+    return undefined
+  }
+}
+
+async function minecraftStatusReadyInContainer(
+  containerId: string,
+  port: number
+): Promise<boolean | undefined> {
+  const script = [
+    "if ! command -v bash >/dev/null 2>&1; then",
+    '  printf "unsupported"',
+    'elif bash -c \'exec 3<>/dev/tcp/127.0.0.1/"$1" || exit 1; printf "%b" "$2" >&3 || exit 1; IFS= read -r -N 1 -t 1 response <&3; test -n "$response"\' -- "$1" "$2"; then',
+    '  printf "ready"',
+    "else",
+    '  printf "waiting"',
+    "fi",
+  ].join("\n")
+  try {
+    const result = await command(
+      "docker",
+      [
+        "exec",
+        containerId,
+        "sh",
+        "-c",
+        script,
+        "--",
+        String(port),
+        bufferPrintfEscapes(minecraftStatusRequest(port)),
+      ],
+      { timeout: 2_000 }
+    )
+    const status = result.stdout.trim()
+    return status === "ready" ? true : status === "waiting" ? false : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export function procNetTcpHasListener(output: string, port: number): boolean {
+  const expectedPort = port.toString(16).toUpperCase().padStart(4, "0")
+  return output.split("\n").some((line) => {
+    const fields = line.trim().split(/\s+/u)
+    const localAddress = fields[1]
+    const state = fields[3]
+    return (
+      state === "0A" &&
+      localAddress?.slice(localAddress.lastIndexOf(":") + 1) === expectedPort
+    )
+  })
+}
+
 function minecraftStatusReady(host: string, port: number): Promise<boolean> {
-  const address = Buffer.from("localhost")
-  const handshakePayload = Buffer.concat([
-    Buffer.from([0]),
-    Buffer.from([0]),
-    encodeVarInt(address.length),
-    address,
-    Buffer.from([port >> 8, port & 0xff]),
-    Buffer.from([1]),
-  ])
-  const request = Buffer.concat([
-    encodeVarInt(handshakePayload.length),
-    handshakePayload,
-    Buffer.from([1, 0]),
-  ])
+  const request = minecraftStatusRequest(port)
 
   return new Promise((resolvePromise) => {
     const socket = new Socket()
@@ -1925,6 +2018,30 @@ function minecraftStatusReady(host: string, port: number): Promise<boolean> {
     socket.once("timeout", () => settle(false))
     socket.connect(port, host)
   })
+}
+
+function minecraftStatusRequest(port: number): Buffer {
+  const address = Buffer.from("localhost")
+  const handshakePayload = Buffer.concat([
+    Buffer.from([0]),
+    Buffer.from([0]),
+    encodeVarInt(address.length),
+    address,
+    Buffer.from([port >> 8, port & 0xff]),
+    Buffer.from([1]),
+  ])
+  const request = Buffer.concat([
+    encodeVarInt(handshakePayload.length),
+    handshakePayload,
+    Buffer.from([1, 0]),
+  ])
+  return request
+}
+
+function bufferPrintfEscapes(value: Buffer): string {
+  return [...value]
+    .map((byte) => `\\x${byte.toString(16).padStart(2, "0")}`)
+    .join("")
 }
 
 function encodeVarInt(value: number): Buffer {

@@ -3,16 +3,82 @@ import { describe, expect, it } from "vite-plus/test"
 import {
   initialConsoleStateLines,
   isConsoleStateLine,
+  mergeConsoleHistory,
+  mergeConsoleStateLines,
   shouldRecordConsoleStateTransition,
 } from "./console-lifecycle"
 
 const startedAt = "2026-07-28T19:57:00.000Z"
+const readyAt = "2026-07-28T19:57:15.000Z"
 
 describe("console lifecycle lines", () => {
   it("shows starting and running for a ready server", () => {
     expect(
-      initialConsoleStateLines(startedAt, "running").map((line) => line.text)
+      initialConsoleStateLines(startedAt, "running", readyAt).map(
+        (line) => line.text
+      )
     ).toEqual(["Server is starting", "Server is running"])
+  })
+
+  it("places a restored running transition where Relay observed readiness", () => {
+    const lines = [
+      {
+        id: "before-ready",
+        level: "info" as const,
+        text: "Preparing spawn",
+        timestamp: "2026-07-28T19:57:14.000Z",
+      },
+      {
+        id: "after-ready",
+        level: "info" as const,
+        text: "Player joined",
+        timestamp: "2026-07-28T19:57:20.000Z",
+      },
+    ]
+
+    expect(
+      mergeConsoleStateLines(lines, startedAt, "running", readyAt).map(
+        (line) => line.text
+      )
+    ).toEqual([
+      "Server is starting",
+      "Preparing spawn",
+      "Server is running",
+      "Player joined",
+    ])
+  })
+
+  it("keeps restored history around lifecycle transitions", () => {
+    const current = mergeConsoleStateLines(
+      [
+        {
+          id: "newest",
+          level: "info" as const,
+          text: "Player joined",
+          timestamp: "2026-07-28T19:57:20.000Z",
+        },
+      ],
+      startedAt,
+      "running",
+      readyAt
+    )
+    const history = [
+      {
+        id: "older",
+        level: "info" as const,
+        text: "Preparing spawn",
+        timestamp: "2026-07-28T19:57:14.000Z",
+      },
+    ]
+
+    expect(
+      mergeConsoleHistory(current, history).map((line) => line.text)
+    ).toEqual([
+      "Server is starting",
+      "Preparing spawn",
+      "Server is running",
+      "Player joined",
+    ])
   })
 
   it("does not invent a running transition while the server is stopping", () => {
