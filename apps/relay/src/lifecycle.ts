@@ -69,6 +69,23 @@ const TAILSCALE_STACK_MEMORY_BYTES = 64 * 1024 * 1024
 const TAILSCALE_STACK_FORWARD_CHAIN = "KILN-TAILSCALE"
 const TAILSCALE_STACK_SUBNET_COUNT = 64 * 256
 
+export function nextManagedGamePort(input: {
+  end: number
+  instanceId: string
+  start: number
+  unavailable: ReadonlySet<number>
+}): number {
+  const size = input.end - input.start + 1
+  const preferred =
+    createHash("sha256").update(input.instanceId).digest().readUInt32BE(0) %
+    size
+  for (let offset = 0; offset < size; offset += 1) {
+    const port = input.start + ((preferred + offset) % size)
+    if (!input.unavailable.has(port)) return port
+  }
+  throw new Error(`No game ports are available in ${input.start}-${input.end}`)
+}
+
 export function tailscaleStackFirewallRules(
   bindings: ReadonlyArray<
     Pick<RelayTailscaleStackConfig["bindings"][number], "address">
@@ -184,6 +201,7 @@ export class LifecycleDriver {
   #edgeReconciliationTimer: NodeJS.Timeout | null = null
   #hostDataDirectoryPromise: Promise<string> | null = null
   #listenerMode: RelayProxySettings["mode"] | null = null
+  readonly #pendingGamePorts = new Set<string>()
   readonly #tailscaleConfigs = new Map<string, RelayTailscaleStackConfig>()
   #tailscaleConfigsDiscovered = false
   readonly #tailscaleFirewallGenerations = new Map<string, string>()
@@ -1525,6 +1543,12 @@ export class LifecycleDriver {
       )
     }
 
+    const generatedPublicPort =
+      input.publicPort === undefined && primaryPort.host === undefined
+    const publicPort =
+      input.publicPort ??
+      primaryPort.host ??
+      this.#reserveGamePort(id, primaryPort.protocol, existing)
     const variablesLabel = JSON.stringify(resolved.values)
     const arguments_ = [
       "container",
@@ -1653,7 +1677,7 @@ export class LifecycleDriver {
     if (definition.network.mode !== "direct") {
       arguments_.push(
         "--publish",
-        `${input.publicPort ?? primaryPort.host ?? 0}:${primaryPort.container}/${primaryPort.protocol}`
+        `${publicPort}:${primaryPort.container}/${primaryPort.protocol}`
       )
     }
     if (definition.network.mode === "direct") {
@@ -1662,7 +1686,7 @@ export class LifecycleDriver {
           "--publish",
           `${
             port.name === definition.network.primaryPort
-              ? (input.publicPort ?? port.host ?? 0)
+              ? publicPort
               : (port.host ?? 0)
           }:${port.container}/${port.protocol}`
         )
@@ -1700,6 +1724,10 @@ export class LifecycleDriver {
         await rm(directory, { recursive: true, force: true })
       }
       throw error
+    } finally {
+      if (generatedPublicPort) {
+        this.#pendingGamePorts.delete(`${primaryPort.protocol}:${publicPort}`)
+      }
     }
 
     const created = (await this.#docker.inspectInstances()).find(
@@ -1710,6 +1738,36 @@ export class LifecycleDriver {
         "Docker created the instance but Relay could not discover it"
       )
     return created
+  }
+
+  #reserveGamePort(
+    instanceId: string,
+    protocol: "tcp" | "udp",
+    existing: ReadonlyArray<RelayInstance>
+  ): number {
+    const unavailable = new Set<number>()
+    const pendingPrefix = `${protocol}:`
+    for (const key of this.#pendingGamePorts) {
+      if (!key.startsWith(pendingPrefix)) continue
+      unavailable.add(Number(key.slice(pendingPrefix.length)))
+    }
+    for (const instance of existing) {
+      if (
+        instance.publicPort &&
+        instance.brickPrimaryPortProtocol === protocol
+      ) {
+        unavailable.add(instance.publicPort)
+      }
+    }
+    const { end, start } = this.#config.gamePortRange
+    const port = nextManagedGamePort({
+      end,
+      instanceId,
+      start,
+      unavailable,
+    })
+    this.#pendingGamePorts.add(`${protocol}:${port}`)
+    return port
   }
 
   async #assertAllocationAvailable(input: {

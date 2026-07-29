@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test"
 
-import { dockerPublishedPort, publicConnectAddress } from "./docker.js"
+import {
+  dockerPublishedPort,
+  instanceConnectAddress,
+  publicConnectAddress,
+} from "./docker.js"
 
 describe("Docker public game ports", () => {
   it("discovers Docker's assigned primary host port", () => {
@@ -38,6 +42,43 @@ describe("Docker public game ports", () => {
     )
     expect(publicConnectAddress("2001:db8::5", 49_172)).toBe(
       "[2001:db8::5]:49172"
+    )
+  })
+
+  it("resolves game addresses without the legacy generated hostname", () => {
+    expect(
+      instanceConnectAddress({
+        gameHost: "games.example.com",
+        publicPort: 49_172,
+        relayHost: "relay.example.com",
+      })
+    ).toBe("games.example.com:49172")
+    expect(
+      instanceConnectAddress({
+        discoveredPublicIp: "203.0.113.5",
+        publicPort: 49_172,
+        relayHost: "relay.example.com",
+      })
+    ).toBe("203.0.113.5:49172")
+    expect(
+      instanceConnectAddress({
+        publicPort: 49_172,
+        relayHost: "relay.example.com",
+      })
+    ).toBe("relay.example.com:49172")
+  })
+
+  it("always prefers Tailscale and reports an unavailable endpoint", () => {
+    expect(
+      instanceConnectAddress({
+        gameHost: "games.example.com",
+        publicPort: 49_172,
+        relayHost: "relay.example.com",
+        tailscaleHost: "paper.kiln.test",
+      })
+    ).toBe("paper.kiln.test")
+    expect(instanceConnectAddress({})).toBe(
+      "Error: Relay did not report a connection address"
     )
   })
 })

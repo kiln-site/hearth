@@ -13,6 +13,7 @@ import {
   coreDnsHostnamePattern,
   discoverExternalTraefikContainer,
   LifecycleDriver,
+  nextManagedGamePort,
   recoveryRouteLabels,
   routeLabelsRequireRestart,
   allocateTailscaleBindingAddress,
@@ -32,6 +33,34 @@ import {
   traefikStaticConfiguration,
   velocityForcedHosts,
 } from "./lifecycle.js"
+
+describe("managed game ports", () => {
+  it("assigns a stable available port and probes past collisions", () => {
+    const range = {
+      end: 30_002,
+      instanceId: "a".repeat(40),
+      start: 30_000,
+    }
+    const preferred = nextManagedGamePort({
+      ...range,
+      unavailable: new Set(),
+    })
+    const next = nextManagedGamePort({
+      ...range,
+      unavailable: new Set([preferred]),
+    })
+
+    expect(preferred).toBeGreaterThanOrEqual(range.start)
+    expect(preferred).toBeLessThanOrEqual(range.end)
+    expect(next).not.toBe(preferred)
+    expect(() =>
+      nextManagedGamePort({
+        ...range,
+        unavailable: new Set([30_000, 30_001, 30_002]),
+      })
+    ).toThrow("No game ports are available")
+  })
+})
 
 describe("external Traefik discovery", () => {
   it.each(["none", "hearth", "traefik"] as const)(

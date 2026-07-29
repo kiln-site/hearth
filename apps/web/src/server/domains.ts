@@ -44,6 +44,17 @@ export interface InstanceDomainOverview {
   vanityLabel: string
 }
 
+export interface ManagedDomainOverview {
+  address: string
+  instanceId: string
+  port: number
+  relayId: string
+  relayName: string
+  serverName: string
+  status: "active" | "error" | "pending"
+  supportsSrv: boolean
+}
+
 export const getDomainSettings = createServerFn({ method: "GET" }).handler(() =>
   getDomainSettingsHandler()
 )

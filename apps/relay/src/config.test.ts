@@ -16,9 +16,25 @@ describe("loadConfig", () => {
     expect(config.port).toBe(4100)
     expect(config.publicPort).toBe(4100)
     expect(config.sftpPort).toBe(2022)
+    expect(config.gamePortRange).toEqual({ end: 39_999, start: 30_000 })
     expect(config.tlsMode).toBe("development")
     expect(config.sftpDevAuthentication).toBe(true)
     expect(config.mclogsApiUrl).toBe("https://api.mclo.gs/1/log")
+  })
+
+  it("validates the managed game port range", () => {
+    expect(
+      loadConfig({
+        KILN_RELAY_GAME_PORT_RANGE: "42000-42999",
+        NODE_ENV: "development",
+      }).gamePortRange
+    ).toEqual({ end: 42_999, start: 42_000 })
+    expect(() =>
+      loadConfig({
+        KILN_RELAY_GAME_PORT_RANGE: "43000-42000",
+        NODE_ENV: "development",
+      })
+    ).toThrow("must be an ascending port range")
   })
 
   it("uses an independent advertised port", () => {

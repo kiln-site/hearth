@@ -210,6 +210,18 @@ export const loadActiveInstanceDomainAssignmentsEffect = Effect.fn(
   return rows.map(domainAssignment)
 })
 
+export const loadInstanceDomainAssignmentsEffect = Effect.fn(
+  "domains.assignments.all"
+)(function* () {
+  const database = yield* Database
+  const rows = yield* database.queryRows<InstanceDomainRow>(
+    "domains.assignments.all",
+    `${instanceDomainSelect}
+      ORDER BY domain, vanity_label`
+  )
+  return rows.map(domainAssignment)
+})
+
 export const loadUsedVanityLabelsEffect = Effect.fn(
   "domains.assignments.usedLabels"
 )(function* (domain: string) {

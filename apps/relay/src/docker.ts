@@ -57,6 +57,7 @@ interface DockerInspect {
   Id: string
   HostConfig?: {
     Memory?: number
+    PortBindings?: DockerPortBindings
   }
   Mounts: Array<{
     Destination: string
@@ -167,6 +168,28 @@ export function publicConnectAddress(host: string, port: number): string {
   const formattedHost =
     host.includes(":") && !host.startsWith("[") ? `[${host}]` : host
   return `${formattedHost}:${port}`
+}
+
+export function instanceConnectAddress(input: {
+  discoveredPublicIp?: string | null
+  gameHost?: string
+  publicPort?: number
+  relayHost?: string
+  tailscaleHost?: string
+}): string {
+  const tailscaleHost = input.tailscaleHost?.trim()
+  if (tailscaleHost) return tailscaleHost
+
+  const publicHost =
+    input.gameHost?.trim() ||
+    input.discoveredPublicIp?.trim() ||
+    input.relayHost?.trim()
+  if (publicHost && input.publicPort) {
+    return publicConnectAddress(publicHost, input.publicPort)
+  }
+  const relayHost = input.relayHost?.trim()
+  if (relayHost) return relayHost
+  return "Error: Relay did not report a connection address"
 }
 
 interface ResourceCacheEntry {
@@ -1689,12 +1712,27 @@ export class DockerDriver {
       labels["kiln.brick.primary-port-protocol"] === "udp"
         ? labels["kiln.brick.primary-port-protocol"]
         : undefined
-    const publicPort = dockerPublishedPort(
-      container.NetworkSettings?.Ports,
-      Number.isInteger(primaryPort) ? primaryPort : undefined,
-      primaryProtocol
-    )
-    const publicHost = labels["kiln.instance.public-host"]
+    const validPrimaryPort = Number.isInteger(primaryPort)
+      ? primaryPort
+      : undefined
+    const publicPort =
+      dockerPublishedPort(
+        container.NetworkSettings?.Ports,
+        validPrimaryPort,
+        primaryProtocol
+      ) ??
+      dockerPublishedPort(
+        container.HostConfig?.PortBindings,
+        validPrimaryPort,
+        primaryProtocol
+      )
+    const publicHost =
+      labels["kiln.instance.public-host"]?.trim() ||
+      (this.#config.gameHostSource === "configured"
+        ? this.#config.gameHost
+        : null) ||
+      this.#config.discoveredPublicIp ||
+      this.#config.advertisedHost
     const tailscale = relayInstanceTailscaleSchema.parse({
       enabled: labels["kiln.instance.tailscale-enabled"] === "true",
       subdomain: labels["kiln.instance.tailscale-subdomain"],
@@ -1719,10 +1757,6 @@ export class DockerDriver {
       )
     }
     const id = rawId.toLowerCase()
-    const host = parsed
-      ? `${version}.${implementation.toLowerCase()}.${this.#config.connectDomain}`
-      : `${implementation.toLowerCase()}.${this.#config.connectDomain}`
-
     return {
       brickFormat: labels["kiln.brick.format"],
       brickId: validBrickId,
@@ -1736,15 +1770,15 @@ export class DockerDriver {
       brickPrimaryPortProtocol: primaryProtocol,
       brickSupportsSrv: labels["kiln.brick.supports-srv"] === "true",
       brickSource: labels["kiln.brick.source"],
-      connectAddress:
-        tailscale.enabled && labels["kiln.instance.hostname"]
+      connectAddress: instanceConnectAddress({
+        discoveredPublicIp: this.#config.discoveredPublicIp,
+        gameHost: publicHost,
+        publicPort,
+        relayHost: this.#config.advertisedHost,
+        tailscaleHost: tailscale.enabled
           ? labels["kiln.instance.hostname"]
-          : publicHost && publicPort
-            ? publicConnectAddress(publicHost, publicPort)
-            : (labels["kiln.instance.hostname"] ??
-              (this.#config.connectPort === 25_565
-                ? host
-                : `${host}:${this.#config.connectPort}`)),
+          : undefined,
+      }),
       directory: relativeDirectory,
       game:
         labels["kiln.instance.game"] ??

@@ -17,6 +17,7 @@ import {
   loadActiveInstanceDomainAssignmentsEffect,
   loadCloudflareIntegrationCredentialEffect,
   loadDomainIntegrationEffect,
+  loadInstanceDomainAssignmentsEffect,
   loadInstanceDomainAssignmentEffect,
   loadUsedVanityLabelsEffect,
   recordInstanceDomainErrorEffect,
@@ -36,7 +37,11 @@ import {
 import type { FleetRelayInstance } from "@/lib/relay-fleet"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import { listPersistedRelays } from "@/lib/relay-registry"
-import { relayJsonEffect } from "@/lib/relay-client"
+import {
+  cachedRelayJsonEffect,
+  relayCachePolicy,
+  relayJsonEffect,
+} from "@/lib/relay-client"
 import { requireAuthenticatedUser } from "@/server/auth"
 import {
   defaultSrvService,
@@ -46,21 +51,41 @@ import type {
   ConfigureDomainInput,
   InstanceDomainInput,
   InstanceDomainOverview,
+  ManagedDomainOverview,
   SetVanityInput,
 } from "@/server/domains"
 
 export async function getDomainSettingsHandler() {
   await requireDomainAdministrator()
-  const [integration, assignments] = await Promise.all([
+  const [integration, assignments, relays] = await Promise.all([
     runAppEffect("domains.integration.load", loadDomainIntegrationEffect()),
     runAppEffect(
-      "domains.assignments.active",
-      loadActiveInstanceDomainAssignmentsEffect()
+      "domains.assignments.all",
+      loadInstanceDomainAssignmentsEffect()
     ),
+    listPersistedRelays(),
   ])
+  const relayNames = new Map(relays.map((relay) => [relay.id, relay.name]))
+  const serverNames = await assignedServerNames(assignments, relays)
+  const managedDomains = assignments.map(
+    (assignment): ManagedDomainOverview => ({
+      address: assignmentConnectAddress(assignment),
+      instanceId: assignment.instanceId,
+      port: assignment.publicPort,
+      relayId: assignment.relayId,
+      relayName: relayNames.get(assignment.relayId) ?? "Unknown Relay",
+      serverName:
+        serverNames.get(
+          assignmentKey(assignment.relayId, assignment.instanceId)
+        ) ?? assignment.instanceId.slice(0, 8),
+      status: assignment.status,
+      supportsSrv: assignment.supportsSrv,
+    })
+  )
   return {
     integration,
-    managedServerCount: assignments.length,
+    managedDomains,
+    managedServerCount: managedDomains.length,
   }
 }
 
@@ -178,9 +203,10 @@ export const applyManagedDomainAddressesEffect = Effect.fn(
   )
   return instances.map((instance) => ({
     ...instance,
-    connectAddress:
-      addresses.get(assignmentKey(instance.relayId, instance.id)) ??
-      instance.connectAddress,
+    connectAddress: instance.tailscale.enabled
+      ? instance.connectAddress
+      : (addresses.get(assignmentKey(instance.relayId, instance.id)) ??
+        instance.connectAddress),
   }))
 })
 
@@ -578,6 +604,48 @@ function connectAddress(hostname: string, port: number): string {
 
 function assignmentKey(relayId: string, instanceId: string): string {
   return `${relayId}:${instanceId}`
+}
+
+async function assignedServerNames(
+  assignments: Array<InstanceDomainAssignment>,
+  relays: Array<PersistedRelay>
+): Promise<Map<string, string>> {
+  const assignedRelayIds = new Set(
+    assignments.map((assignment) => assignment.relayId)
+  )
+  const assignedRelays: Array<PersistedRelay> = []
+  for (const relay of relays) {
+    if (relay.enabled && assignedRelayIds.has(relay.id)) {
+      assignedRelays.push(relay)
+    }
+  }
+  const snapshots = await Promise.all(
+    assignedRelays.map(async (relay) => {
+      try {
+        const snapshot = await runAppEffect(
+          "relay.snapshot.domains",
+          cachedRelayJsonEffect({
+            decode: relaySnapshotSchema.parse,
+            fallbackOnError: true,
+            path: "/v1/snapshot",
+            policy: relayCachePolicy.snapshot(relay.id),
+            relay,
+          })
+        )
+        return { relayId: relay.id, snapshot }
+      } catch {
+        return null
+      }
+    })
+  )
+  const serverNames = new Map<string, string>()
+  for (const entry of snapshots) {
+    if (!entry) continue
+    for (const instance of entry.snapshot.instances) {
+      serverNames.set(assignmentKey(entry.relayId, instance.id), instance.name)
+    }
+  }
+  return serverNames
 }
 
 async function requireDomainAdministrator() {
