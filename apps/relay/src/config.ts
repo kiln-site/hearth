@@ -2,7 +2,10 @@ import { readFileSync } from "node:fs"
 import { Resolver } from "node:dns/promises"
 import { hostname } from "node:os"
 
-import type { RelayInstanceTailscale } from "@workspace/contracts"
+import type {
+  BrickReadiness,
+  RelayInstanceTailscale,
+} from "@workspace/contracts"
 
 export interface RelayInstanceConfig {
   brickFormat?: string
@@ -10,6 +13,7 @@ export interface RelayInstanceConfig {
   brickNetworkMode?: "direct" | "minecraft-backend" | "minecraft-proxy"
   brickPrimaryPort?: number
   brickPrimaryPortProtocol?: "tcp" | "udp"
+  brickReadiness?: BrickReadiness
   brickSupportsSrv?: boolean
   brickSource?: string
   connectAddress: string

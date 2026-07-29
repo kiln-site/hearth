@@ -81,7 +81,7 @@ import {
   tailscaleStacksQueryOptions,
 } from "@/lib/query-options"
 import {
-  selectInstanceObservedState,
+  selectInstanceContainerRunning,
   selectInstanceRelayConnected,
 } from "@/lib/relay-selectors"
 import {
@@ -1338,19 +1338,19 @@ const ConsoleCommandBar = React.memo(function ConsoleCommandBar({
   instance: InstanceWorkspaceInstance
 }) {
   const relayConnected = useInstanceRelayConnected()
-  const selectObservedState = React.useMemo(
-    () => selectInstanceObservedState(instance.id, instance.relayId),
+  const selectContainerRunning = React.useMemo(
+    () => selectInstanceContainerRunning(instance.id, instance.relayId),
     [instance.id, instance.relayId]
   )
-  const { data: observedState } = useQuery({
+  const { data: containerRunning = false } = useQuery({
     ...relaySnapshotQueryOptions(),
-    select: selectObservedState,
+    select: selectContainerRunning,
   })
   const command = useConsoleCommand(
     instance.id,
     instance.relayId,
     active,
-    observedState === "running",
+    containerRunning,
     relayConnected
   )
 

@@ -534,7 +534,6 @@ function ServerPowerControls({
     action === "start" ||
     action === "stop" ||
     action === "restart" ||
-    isStarting ||
     isStopping
   const startUnavailable =
     !relayConnected || powerIsOn || isStopping || action !== null
@@ -567,7 +566,7 @@ function ServerPowerControls({
         ) : (
           <Play />
         )}
-        {action === "start" || isStarting
+        {action === "start"
           ? "Starting"
           : action === "stop" || action === "restart" || isStopping
             ? "Stopping"

@@ -1627,6 +1627,12 @@ export class LifecycleDriver {
       "--volume",
       `${hostDirectory}:${definition.runtime.storage.mount}`,
     ]
+    if (definition.readiness) {
+      arguments_.push(
+        "--label",
+        `kiln.brick.readiness=${JSON.stringify(definition.readiness)}`
+      )
+    }
     if (hostname) {
       const privatePort =
         definition.network.mode === "minecraft-proxy"

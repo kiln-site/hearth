@@ -68,9 +68,16 @@ const recipe: BrickRecipe = brickRecipeSchema.parse({
     hostname: "{{ brick.id }}",
     ports: [{ name: "game", container: 7777, protocol: "udp" }],
   },
+  readiness: {
+    logs: [" Server ready "],
+  },
 })
 
 describe("Brick recipes", () => {
+  it("normalizes literal startup readiness logs", () => {
+    expect(recipe.readiness?.logs).toEqual(["Server ready"])
+  })
+
   it("defaults SRV support off and accepts an explicit opt-in", () => {
     expect(recipe.network.supportsSrv).toBe(false)
     expect(

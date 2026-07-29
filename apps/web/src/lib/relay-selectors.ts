@@ -264,6 +264,19 @@ export function selectInstanceObservedState(
     )?.observedState ?? null
 }
 
+export function selectInstanceContainerRunning(
+  instanceId: string,
+  relayId?: string
+) {
+  return (snapshot: RelayFleetSnapshot) =>
+    snapshot.instances.some(
+      (instance) =>
+        instance.id === instanceId &&
+        (!relayId || instance.relayId === relayId) &&
+        instance.startedAt !== null
+    )
+}
+
 export function findRelayInstance<
   T extends { id: string; name: string; routeId?: string; shortId: string },
 >(instances: Array<T>, identifier: string | null | undefined): T | undefined {

@@ -22,6 +22,7 @@ import type {
 } from "@workspace/contracts"
 import {
   builtinTailscaleBrickId,
+  brickReadinessSchema,
   brickVariableValuesSchema,
   DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
   MINIMUM_INSTANCE_DISK_LIMIT_BYTES,
@@ -233,6 +234,11 @@ interface DiskUsageCacheEntry {
   usedBytes: number | null
 }
 
+interface InstanceReadiness {
+  ready: boolean
+  readyAt?: string
+}
+
 // Docker TTY logs contain ANSI/control bytes. Cursor-editing frames are removed,
 // while SGR color and emphasis are retained as safe, structured segments.
 /* eslint-disable no-control-regex */
@@ -384,6 +390,7 @@ export class DockerDriver {
     )
     const now = Date.now()
     const readiness = new Map<string, boolean>()
+    const readyAt = new Map<string, string>()
     await Promise.all(
       discovered.map(async ({ config, container }) => {
         const transition = this.#powerTransitions.get(config.id)
@@ -409,8 +416,10 @@ export class DockerDriver {
         ) {
           return
         }
-        const ready = await this.#primaryPortReady(config, container)
-        if (ready !== undefined) readiness.set(config.id, ready)
+        const result = await this.#instanceReady(config, container)
+        if (!result) return
+        readiness.set(config.id, result.ready)
+        if (result.readyAt) readyAt.set(config.id, result.readyAt)
       })
     )
 
@@ -439,7 +448,7 @@ export class DockerDriver {
         (!readySession || readySession.startedAt !== containerStartedAt)
       ) {
         this.#readySessions.set(config.id, {
-          readyAt: new Date().toISOString(),
+          readyAt: readyAt.get(config.id) ?? new Date().toISOString(),
           startedAt: containerStartedAt,
         })
       } else if (
@@ -1281,6 +1290,54 @@ export class DockerDriver {
     })
   }
 
+  async #instanceReady(
+    instance: RelayInstanceConfig,
+    container: DockerInspect
+  ): Promise<InstanceReadiness | undefined> {
+    if (instance.brickReadiness) {
+      return this.#startupLogReady(instance, container)
+    }
+    const ready = await this.#primaryPortReady(instance, container)
+    return ready === undefined
+      ? undefined
+      : {
+          ready,
+          ...(ready ? { readyAt: new Date().toISOString() } : {}),
+        }
+  }
+
+  async #startupLogReady(
+    instance: RelayInstanceConfig,
+    container: DockerInspect
+  ): Promise<InstanceReadiness | undefined> {
+    try {
+      const result = await command(
+        "docker",
+        [
+          "logs",
+          "--timestamps",
+          ...dockerLogSinceArguments(container.State.StartedAt),
+          "--tail",
+          "1000",
+          container.Id,
+        ],
+        { timeout: 2_000 }
+      )
+      const match = matchingReadyLogLine(
+        parseConsoleOutput(result),
+        instance.brickReadiness?.logs ?? []
+      )
+      return match
+        ? {
+            ready: true,
+            readyAt: match.timestamp ?? new Date().toISOString(),
+          }
+        : { ready: false }
+    } catch {
+      return undefined
+    }
+  }
+
   async #primaryPortReady(
     instance: RelayInstanceConfig,
     container: DockerInspect
@@ -1814,6 +1871,9 @@ export class DockerDriver {
     const validPrimaryPort = Number.isInteger(primaryPort)
       ? primaryPort
       : undefined
+    const brickReadiness = parseBrickReadinessLabel(
+      labels["kiln.brick.readiness"]
+    )
     const publicPort =
       dockerPublishedPort(
         container.NetworkSettings?.Ports,
@@ -1866,6 +1926,7 @@ export class DockerDriver {
           ? primaryPort
           : undefined,
       brickPrimaryPortProtocol: primaryProtocol,
+      brickReadiness,
       brickSupportsSrv: labels["kiln.brick.supports-srv"] === "true",
       brickSource: labels["kiln.brick.source"],
       connectAddress: instanceConnectAddress({
@@ -2071,6 +2132,15 @@ function parseBrickVariablesLabel(
   }
 }
 
+function parseBrickReadinessLabel(value: string | undefined) {
+  if (!value) return undefined
+  try {
+    return brickReadinessSchema.parse(JSON.parse(value))
+  } catch {
+    return undefined
+  }
+}
+
 function percentOf(used: number, total: number): number {
   return total > 0 ? (used / total) * 100 : 0
 }
@@ -2085,6 +2155,15 @@ export interface ParsedConsoleLine {
   service?: "coredns" | "tailscale"
   text: string
   timestamp: string | null
+}
+
+export function matchingReadyLogLine(
+  lines: ReadonlyArray<ParsedConsoleLine>,
+  fragments: ReadonlyArray<string>
+): ParsedConsoleLine | undefined {
+  return lines.find((line) =>
+    fragments.some((fragment) => line.text.includes(fragment))
+  )
 }
 
 export function parseConsoleLine(value: string): ParsedConsoleLine | null {

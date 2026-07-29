@@ -12,6 +12,7 @@ import {
   relayInstanceRouteIdentifier,
   resolveCanonicalRelayInstance,
   resolveRelayInstance,
+  selectInstanceContainerRunning,
   selectInstanceRelayConnected,
   selectInstanceRuntime,
   selectInstanceSettings,
@@ -100,6 +101,18 @@ describe("Relay render selectors", () => {
     expect(before?.resources?.cpu.percent).toBe(1)
     expect(after?.resources?.cpu.percent).toBe(2)
     expect(after?.resources?.sampledAt).not.toBe(before?.resources?.sampledAt)
+  })
+
+  it("treats a starting container as available for console input", () => {
+    const snapshot = snapshotWithCpu(1)
+    snapshot.instances = snapshot.instances.map((item) => ({
+      ...item,
+      observedState: "starting",
+    }))
+
+    expect(
+      selectInstanceContainerRunning(instance.id, "relay-one")(snapshot)
+    ).toBe(true)
   })
 
   it("keeps sidebar identity stable while route availability changes", () => {

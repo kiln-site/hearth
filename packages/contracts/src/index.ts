@@ -49,6 +49,12 @@ export const brickVariableSchema = z
   })
   .strict()
 
+export const brickReadinessSchema = z
+  .object({
+    logs: z.array(z.string().trim().min(1).max(256)).min(1).max(8),
+  })
+  .strict()
+
 export const brickRecipeSchema = z
   .object({
     format: z.literal("kiln.brick/v1"),
@@ -101,6 +107,7 @@ export const brickRecipeSchema = z
           .strict(),
       })
       .strict(),
+    readiness: brickReadinessSchema.optional(),
     network: z
       .object({
         mode: z.enum(["minecraft-backend", "minecraft-proxy", "direct"]),
@@ -922,6 +929,7 @@ export type RelayDesiredState = z.infer<typeof relayDesiredStateSchema>
 export type BrickId = z.infer<typeof brickIdSchema>
 export type BrickVariableValue = z.infer<typeof brickVariableValueSchema>
 export type BrickVariable = z.infer<typeof brickVariableSchema>
+export type BrickReadiness = z.infer<typeof brickReadinessSchema>
 export type BrickRecipe = z.infer<typeof brickRecipeSchema>
 export type BrickCatalogDocument = z.infer<typeof brickCatalogDocumentSchema>
 export type Brick = z.infer<typeof brickSchema>

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test"
 
-import { dockerLogSinceArguments, parseConsoleLine } from "./docker.js"
+import {
+  dockerLogSinceArguments,
+  matchingReadyLogLine,
+  parseConsoleLine,
+} from "./docker.js"
 
 describe("Docker console parsing", () => {
   it("limits every log target to its current container session", () => {
@@ -41,6 +45,21 @@ describe("Docker console parsing", () => {
       text: "Green Bold Plain",
       timestamp: "2026-07-25T17:59:03.000000000Z",
     })
+  })
+
+  it("finds the first literal startup completion log after formatting", () => {
+    const lines = [
+      parseConsoleLine(
+        "2026-07-25T17:59:03.000000000Z \u001b[33mPreparing level world\u001b[0m"
+      ),
+      parseConsoleLine(
+        '2026-07-25T17:59:12.000000000Z \u001b[32mDone (9.0s)! For help, type "help"\u001b[0m'
+      ),
+    ].filter((line) => line !== null)
+
+    expect(matchingReadyLogLine(lines, [")! For help, type "])?.timestamp).toBe(
+      "2026-07-25T17:59:12.000000000Z"
+    )
   })
 
   it.each([
