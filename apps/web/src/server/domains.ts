@@ -39,6 +39,7 @@ export interface InstanceDomainOverview {
   directAddress: string
   domain: string
   lastError: string | null
+  srvActive: boolean
   status: "active" | "error" | "pending"
   supportsSrv: boolean
   vanityLabel: string
@@ -51,6 +52,7 @@ export interface ManagedDomainOverview {
   relayId: string
   relayName: string
   serverName: string
+  srvActive: boolean
   status: "active" | "error" | "pending"
   supportsSrv: boolean
 }

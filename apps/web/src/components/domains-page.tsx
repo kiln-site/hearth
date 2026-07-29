@@ -468,13 +468,13 @@ const ManagedDomainRow = React.memo(function ManagedDomainRow({
       <WorkspaceTableCell className="hidden md:table-cell">
         <span
           className={
-            domain.supportsSrv
+            domain.srvActive
               ? "inline-flex items-center gap-1 text-[9px] text-emerald-300"
               : "text-[9px] text-muted-foreground"
           }
         >
-          {domain.supportsSrv ? <Check className="size-3" /> : null}
-          {domain.supportsSrv ? "Yes" : "No"}
+          {domain.srvActive ? <Check className="size-3" /> : null}
+          {domain.srvActive ? "Active" : domain.supportsSrv ? "Not set" : "No"}
         </span>
       </WorkspaceTableCell>
       <WorkspaceTableCell>

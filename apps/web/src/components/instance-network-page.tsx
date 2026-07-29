@@ -313,7 +313,7 @@ const ManagedGameAddressSection = React.memo(
               </p>
             </div>
           </div>
-          {assignment?.supportsSrv ? (
+          {assignment?.srvActive ? (
             <span className="border border-emerald-400/25 bg-emerald-400/8 px-2 py-1 font-mono text-[9px] text-emerald-300 uppercase">
               SRV · no port required
             </span>

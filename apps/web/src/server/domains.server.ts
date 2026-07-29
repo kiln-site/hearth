@@ -31,6 +31,11 @@ import { ExternalServiceError } from "@/effect/errors"
 import { runAppEffect } from "@/effect/runtime"
 import { isPlatformAdmin, requireRelayPermission } from "@/lib/access-control"
 import {
+  domainHasActiveSrvRecord,
+  hostPortAddress,
+  managedDomainConnectAddress,
+} from "@/lib/domain-address"
+import {
   validateBlacklistPatterns,
   vanityLabelAllowed,
 } from "@/lib/domain-schemas"
@@ -69,7 +74,7 @@ export async function getDomainSettingsHandler() {
   const serverNames = await assignedServerNames(assignments, relays)
   const managedDomains = assignments.map(
     (assignment): ManagedDomainOverview => ({
-      address: assignmentConnectAddress(assignment),
+      address: managedDomainConnectAddress(assignment),
       instanceId: assignment.instanceId,
       port: assignment.publicPort,
       relayId: assignment.relayId,
@@ -78,6 +83,7 @@ export async function getDomainSettingsHandler() {
         serverNames.get(
           assignmentKey(assignment.relayId, assignment.instanceId)
         ) ?? assignment.instanceId.slice(0, 8),
+      srvActive: domainHasActiveSrvRecord(assignment),
       status: assignment.status,
       supportsSrv: assignment.supportsSrv,
     })
@@ -198,7 +204,7 @@ export const applyManagedDomainAddressesEffect = Effect.fn(
   const addresses = new Map(
     assignments.map((assignment) => [
       assignmentKey(assignment.relayId, assignment.instanceId),
-      assignmentConnectAddress(assignment),
+      managedDomainConnectAddress(assignment),
     ])
   )
   return instances.map((instance) => ({
@@ -575,31 +581,18 @@ function assignmentOverview(
   assignment: InstanceDomainAssignment
 ): InstanceDomainOverview {
   return {
-    address: assignmentConnectAddress(assignment),
-    directAddress: connectAddress(assignment.publicHost, assignment.publicPort),
+    address: managedDomainConnectAddress(assignment),
+    directAddress: hostPortAddress(
+      assignment.publicHost,
+      assignment.publicPort
+    ),
     domain: assignment.domain,
     lastError: assignment.lastError,
+    srvActive: domainHasActiveSrvRecord(assignment),
     status: assignment.status,
     supportsSrv: assignment.supportsSrv,
     vanityLabel: assignment.vanityLabel,
   }
-}
-
-function assignmentConnectAddress(
-  assignment: InstanceDomainAssignment
-): string {
-  const hostname = `${assignment.vanityLabel}.${assignment.domain}`
-  return assignment.supportsSrv
-    ? hostname
-    : connectAddress(hostname, assignment.publicPort)
-}
-
-function connectAddress(hostname: string, port: number): string {
-  const host =
-    hostname.includes(":") && !hostname.startsWith("[")
-      ? `[${hostname}]`
-      : hostname
-  return `${host}:${port}`
 }
 
 function assignmentKey(relayId: string, instanceId: string): string {

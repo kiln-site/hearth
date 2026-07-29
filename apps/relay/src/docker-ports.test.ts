@@ -78,7 +78,10 @@ describe("Docker public game ports", () => {
       })
     ).toBe("paper.kiln.test")
     expect(instanceConnectAddress({})).toBe(
-      "Error: Relay did not report a connection address"
+      "Error: Relay did not report a published game port"
+    )
+    expect(instanceConnectAddress({ relayHost: "relay.example.com" })).toBe(
+      "Error: Relay did not report a published game port"
     )
   })
 })

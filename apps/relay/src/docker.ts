@@ -187,9 +187,7 @@ export function instanceConnectAddress(input: {
   if (publicHost && input.publicPort) {
     return publicConnectAddress(publicHost, input.publicPort)
   }
-  const relayHost = input.relayHost?.trim()
-  if (relayHost) return relayHost
-  return "Error: Relay did not report a connection address"
+  return "Error: Relay did not report a published game port"
 }
 
 interface ResourceCacheEntry {

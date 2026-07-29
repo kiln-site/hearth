@@ -413,17 +413,24 @@ function InstanceIdCopyButton({
 
 function InstanceAddressCopyButton({ address }: { address: string }) {
   const { copied, copy } = useCopyFeedback(address)
+  const addressError = address.startsWith("Error:") ? address : null
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
           type="button"
-          className={`flex min-w-0 flex-1 items-center gap-1 truncate font-mono transition-colors ${copied ? "text-emerald-400" : "text-primary/75 hover:text-primary"}`}
+          className={`flex min-w-0 flex-1 items-center gap-1 truncate font-mono transition-colors ${
+            addressError
+              ? "font-semibold text-destructive hover:text-destructive/80"
+              : copied
+                ? "text-emerald-400"
+                : "text-primary/75 hover:text-primary"
+          }`}
           aria-label={`Copy server address ${address}`}
           onClick={copy}
         >
-          <span className="truncate">{address}</span>
+          <span className="truncate">{addressError ? "ERROR" : address}</span>
           {copied ? (
             <Check className="size-3 shrink-0" />
           ) : (
@@ -432,7 +439,7 @@ function InstanceAddressCopyButton({ address }: { address: string }) {
         </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" sideOffset={6}>
-        {copied ? "Address copied" : "Copy server address"}
+        {addressError ?? (copied ? "Address copied" : "Copy server address")}
       </TooltipContent>
     </Tooltip>
   )
