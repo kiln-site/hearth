@@ -41,7 +41,7 @@ import {
   ResourceNotFoundError,
 } from "@/effect/errors"
 import { runAppEffect } from "@/effect/runtime"
-import { applyManagedDomainAddressesEffect } from "@/server/domains"
+import { applyManagedDomainAddressesEffect } from "@/server/domains.server"
 import {
   cachedRelayFallbackJsonEffect,
   cachedRelayJsonEffect,

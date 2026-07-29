@@ -20,6 +20,11 @@ import {
 import { domainSettingsQueryOptions, queryKeys } from "@/lib/query-options"
 import { configureDomainIntegration } from "@/server/domains"
 
+const verifiedDateFormatter = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+  timeZone: "UTC",
+})
+
 export function DomainsPage() {
   const queryClient = useQueryClient()
   const { data } = useSuspenseQuery(domainSettingsQueryOptions())
@@ -202,9 +207,9 @@ export function DomainsPage() {
                   label="Last verified"
                   value={
                     integration?.lastVerifiedAt
-                      ? new Date(
-                          integration.lastVerifiedAt
-                        ).toLocaleDateString()
+                      ? verifiedDateFormatter.format(
+                          new Date(integration.lastVerifiedAt)
+                        )
                       : "Never"
                   }
                 />

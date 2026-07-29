@@ -293,10 +293,19 @@ function requestCloudflareResult<TValue>(
         redirect: "follow",
         signal: AbortSignal.timeout(15_000),
       })
+      if (!response.ok) {
+        const payload = Schema.decodeUnknownSync(
+          cloudflareEnvelopeSchema(resultSchema)
+        )(await response.json())
+        const message = payload.errors?.map((error) => error.message).join("; ")
+        throw new Error(
+          message || `Cloudflare returned HTTP ${response.status}`
+        )
+      }
       const payload = Schema.decodeUnknownSync(
         cloudflareEnvelopeSchema(resultSchema)
       )(await response.json())
-      if (!response.ok || !payload.success || payload.result === undefined) {
+      if (!payload.success || payload.result === undefined) {
         const message = payload.errors?.map((error) => error.message).join("; ")
         throw new Error(
           message || `Cloudflare returned HTTP ${response.status}`

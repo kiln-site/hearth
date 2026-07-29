@@ -27,7 +27,7 @@ import {
   writeRelayCache,
 } from "@/lib/relay-client"
 import { requireAuthenticatedUser } from "@/server/auth"
-import { provisionInstanceDomainBestEffort } from "@/server/domains"
+import { provisionInstanceDomainBestEffort } from "@/server/domains.server"
 
 const relayInputSchema = z.object({ relayId: relayIdSchema })
 const createInputSchema = relayCreateInstanceSchema.extend({
