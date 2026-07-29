@@ -198,6 +198,18 @@ export const loadInstanceDomainAssignmentEffect = Effect.fn(
   return row ? domainAssignment(row) : null
 })
 
+export const deleteInstanceDomainAssignmentEffect = Effect.fn(
+  "domains.assignment.delete"
+)(function* (relayId: string, instanceId: string) {
+  const database = yield* Database
+  yield* database.execute(
+    "domains.assignment.delete",
+    `DELETE FROM ${databaseTable("instance_domain")}
+      WHERE relay_id = ? AND instance_id = ?`,
+    [relayId, instanceId]
+  )
+})
+
 export const loadActiveInstanceDomainAssignmentsEffect = Effect.fn(
   "domains.assignments.active"
 )(function* () {

@@ -16,6 +16,7 @@ import {
 } from "@/effect/cloudflare-api"
 import {
   activateInstanceDomainAssignmentEffect,
+  deleteInstanceDomainAssignmentEffect,
   loadActiveInstanceDomainAssignmentsEffect,
   loadCloudflareIntegrationCredentialEffect,
   loadDomainIntegrationEffect,
@@ -258,6 +259,56 @@ export const loadManagedDomainAddressesEffect = Effect.fn(
     ),
     policy: managedDomainAddressCachePolicy,
   })
+})
+
+export const deleteInstanceDomainEffect = Effect.fn("domains.instance.delete")(
+  function* (relayId: string, instanceId: string) {
+    const assignment = yield* loadInstanceDomainAssignmentEffect(
+      relayId,
+      instanceId
+    )
+    if (!assignment) return
+    const hasManagedRecords = Boolean(
+      assignment.addressRecordId || assignment.srvRecordId
+    )
+    const credential = hasManagedRecords
+      ? yield* loadCloudflareIntegrationCredentialEffect()
+      : null
+    yield* deleteManagedDomainAssignmentEffect(assignment, credential)
+  }
+)
+
+export const deleteManagedDomainAssignmentEffect = Effect.fn(
+  "domains.instance.deleteAssignment"
+)(function* (
+  assignment: InstanceDomainAssignment,
+  credential: CloudflareIntegrationCredential | null
+) {
+  const recordIds = [assignment.addressRecordId, assignment.srvRecordId].filter(
+    (recordId): recordId is string => recordId !== null
+  )
+  if (recordIds.length > 0 && !credential) {
+    return yield* domainFailure(
+      "Cloudflare credentials are required to remove this managed address"
+    )
+  }
+  if (credential) {
+    yield* Effect.all(
+      recordIds.map((recordId) =>
+        deleteCloudflareRecordEffect(
+          credential.apiToken,
+          credential.zoneId,
+          recordId
+        )
+      ),
+      { concurrency: "unbounded" }
+    )
+  }
+  yield* deleteInstanceDomainAssignmentEffect(
+    assignment.relayId,
+    assignment.instanceId
+  )
+  yield* invalidateManagedDomainAddressesEffect
 })
 
 const provisionInstanceDomainEffect = Effect.fn("domains.instance.provision")(

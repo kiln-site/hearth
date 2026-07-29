@@ -161,7 +161,11 @@ export function SettingsWorkspace({
         </div>
 
         {canDelete ? (
-          <ServerDangerZone instance={instance} onDeleted={onDeleted} />
+          <ServerDangerZone
+            instance={instance}
+            onDeleted={onDeleted}
+            relayConnected={relayConnected}
+          />
         ) : null}
       </div>
     </section>
@@ -171,9 +175,11 @@ export function SettingsWorkspace({
 function ServerDangerZone({
   instance,
   onDeleted,
+  relayConnected,
 }: {
   instance: InstanceSettingsInstance
   onDeleted: () => Promise<void> | void
+  relayConnected: boolean
 }) {
   const [open, setOpen] = React.useState(false)
 
@@ -190,8 +196,9 @@ function ServerDangerZone({
             </p>
             <h3 className="mt-1 text-sm font-semibold">Delete this server</h3>
             <p className="mt-1 max-w-2xl text-[10px] leading-4 text-muted-foreground">
-              Permanently remove the managed container and everything stored in
-              its server directory.
+              {relayConnected
+                ? "Permanently remove the managed container and everything stored in its server directory."
+                : "Reconnect this server's Relay before deleting the server."}
             </p>
           </div>
         </div>
@@ -203,6 +210,7 @@ function ServerDangerZone({
             type="button"
             variant="destructive"
             className="sm:shrink-0"
+            disabled={!relayConnected}
             onClick={() => setOpen(true)}
           >
             <Trash2 />

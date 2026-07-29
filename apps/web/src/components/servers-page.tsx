@@ -644,6 +644,7 @@ const ServerActions = React.memo(function ServerActions({
   routeIdentifier: string
   server: ServerListInstance
 }) {
+  const deleteEnabled = server.relayStatus === "connected"
   return (
     <div className="flex items-center justify-end gap-1">
       <ServerActionLink
@@ -676,6 +677,7 @@ const ServerActions = React.memo(function ServerActions({
               variant="ghost"
               aria-label={`Delete ${server.name}`}
               className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+              disabled={!deleteEnabled}
               onClick={() =>
                 onDelete({
                   id: server.id,
@@ -688,7 +690,7 @@ const ServerActions = React.memo(function ServerActions({
             </Button>
           </TooltipTrigger>
           <TooltipContent side="bottom" sideOffset={6}>
-            Delete
+            {deleteEnabled ? "Delete" : "Relay unavailable"}
           </TooltipContent>
         </Tooltip>
       ) : null}

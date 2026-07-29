@@ -2,7 +2,10 @@ import { assert, describe, it } from "@effect/vitest"
 import { Effect } from "effect"
 import { afterEach, vi } from "vite-plus/test"
 
-import { replaceCloudflareAddressRecordEffect } from "@/effect/cloudflare-api"
+import {
+  deleteCloudflareRecordEffect,
+  replaceCloudflareAddressRecordEffect,
+} from "@/effect/cloudflare-api"
 
 describe("Cloudflare DNS records", () => {
   afterEach(() => {
@@ -63,6 +66,29 @@ describe("Cloudflare DNS records", () => {
           },
         ],
       })
+    })
+  })
+
+  it.effect("treats an already-removed DNS record as deleted", () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json(
+        {
+          errors: [{ code: 81_044, message: "DNS Record does not exist." }],
+          success: false,
+        },
+        { status: 404 }
+      )
+    )
+    vi.stubGlobal("fetch", fetchMock)
+
+    return Effect.gen(function* () {
+      yield* deleteCloudflareRecordEffect(
+        "api-token",
+        "zone-id",
+        "missing-record"
+      )
+
+      assert.strictEqual(fetchMock.mock.calls.length, 1)
     })
   })
 })

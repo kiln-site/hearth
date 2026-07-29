@@ -271,7 +271,8 @@ export const deleteCloudflareRecordEffect = Effect.fn("cloudflare.dns.delete")(
       apiToken,
       `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`,
       Schema.Struct({ id: Schema.optionalKey(Schema.String) }),
-      { method: "DELETE" }
+      { method: "DELETE" },
+      { notFoundResult: {} }
     )
   }
 )
@@ -314,7 +315,10 @@ function requestCloudflareResult<TValue>(
   apiToken: string,
   path: string,
   resultSchema: Schema.Decoder<TValue>,
-  init?: RequestInit
+  init?: RequestInit,
+  options?: {
+    notFoundResult: TValue
+  }
 ): Effect.Effect<TValue, ExternalServiceError> {
   return Effect.tryPromise({
     try: async () => {
@@ -332,6 +336,13 @@ function requestCloudflareResult<TValue>(
         const payload = Schema.decodeUnknownSync(
           cloudflareEnvelopeSchema(resultSchema)
         )(await response.json())
+        if (
+          options &&
+          (response.status === 404 ||
+            payload.errors?.some((error) => error.code === 81_044))
+        ) {
+          return options.notFoundResult
+        }
         const message = payload.errors?.map((error) => error.message).join("; ")
         throw new Error(
           message || `Cloudflare returned HTTP ${response.status}`

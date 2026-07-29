@@ -1,7 +1,8 @@
 import { assert, describe, it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
-import { vi } from "vite-plus/test"
+import { afterEach, vi } from "vite-plus/test"
 import { relayInstanceSchema } from "@workspace/contracts"
+import type { ResultSetHeader } from "mysql2/promise"
 
 vi.hoisted(() => {
   process.env.DB_HOST ??= "127.0.0.1"
@@ -12,9 +13,14 @@ vi.hoisted(() => {
 
 import { AppCache } from "@/effect/cache"
 import { Database } from "@/effect/database"
+import type {
+  CloudflareIntegrationCredential,
+  InstanceDomainAssignment,
+} from "@/effect/domains"
 
 import {
   applyManagedDomainAddressesEffect,
+  deleteManagedDomainAssignmentEffect,
   loadManagedDomainAddressesEffect,
 } from "./domains.server"
 
@@ -127,10 +133,141 @@ describe("managed domain address cache", () => {
           routeId: `${relayId}-${instance.shortId}`,
         },
       ])
-      assert.strictEqual(
-        matched?.connectAddress,
-        "vanity.kiln.site:32001"
-      )
+      assert.strictEqual(matched?.connectAddress, "vanity.kiln.site:32001")
     }).pipe(Effect.provide(Layer.merge(cacheLayer, databaseLayer)))
   })
 })
+
+describe("managed domain deletion", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it.effect(
+    "removes Cloudflare records before releasing the assignment",
+    () => {
+      const events: Array<string> = []
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        events.push(`cloudflare:${String(input).split("/").at(-1)}`)
+        return Response.json({
+          errors: [],
+          result: { id: String(input).split("/").at(-1) },
+          success: true,
+        })
+      })
+      vi.stubGlobal("fetch", fetchMock)
+      const cacheLayer = Layer.succeed(AppCache)({
+        backend: "redis-protocol",
+        enabled: true,
+        get: () => Effect.succeed(undefined),
+        remove: () =>
+          Effect.sync(() => {
+            events.push("cache:remove")
+          }),
+        set: () => Effect.void,
+      })
+      const databaseLayer = Layer.succeed(Database)({
+        execute: (operation) =>
+          Effect.sync(() => {
+            events.push(`database:${operation}`)
+            return {} as ResultSetHeader
+          }),
+        queryRows: () => Effect.die("Unexpected database query"),
+        transaction: () => Effect.die("Unexpected database transaction"),
+      })
+
+      return Effect.gen(function* () {
+        yield* deleteManagedDomainAssignmentEffect(
+          testAssignment(),
+          testCredential()
+        )
+
+        assert.deepEqual(
+          events.slice(0, 2).sort(),
+          ["cloudflare:address-record", "cloudflare:srv-record"].sort()
+        )
+        assert.deepEqual(events.slice(2), [
+          "database:domains.assignment.delete",
+          "cache:remove",
+        ])
+      }).pipe(Effect.provide(Layer.merge(cacheLayer, databaseLayer)))
+    }
+  )
+
+  it.effect("keeps the assignment reserved when DNS teardown fails", () => {
+    let databaseWrites = 0
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            errors: [{ message: "Cloudflare is unavailable" }],
+            success: false,
+          },
+          { status: 503 }
+        )
+      )
+    )
+    const cacheLayer = Layer.succeed(AppCache)({
+      backend: "disabled",
+      enabled: false,
+      get: () => Effect.succeed(undefined),
+      remove: () => Effect.void,
+      set: () => Effect.void,
+    })
+    const databaseLayer = Layer.succeed(Database)({
+      execute: () =>
+        Effect.sync(() => {
+          databaseWrites += 1
+          return {} as ResultSetHeader
+        }),
+      queryRows: () => Effect.die("Unexpected database query"),
+      transaction: () => Effect.die("Unexpected database transaction"),
+    })
+
+    return Effect.gen(function* () {
+      const failure = yield* deleteManagedDomainAssignmentEffect(
+        testAssignment(),
+        testCredential()
+      ).pipe(Effect.flip)
+
+      assert.strictEqual(failure._tag, "ExternalServiceError")
+      assert.strictEqual(databaseWrites, 0)
+    }).pipe(Effect.provide(Layer.merge(cacheLayer, databaseLayer)))
+  })
+})
+
+function testAssignment(): InstanceDomainAssignment {
+  return {
+    addressRecordId: "address-record",
+    addressRecordType: "A",
+    domain: "kiln.site",
+    instanceId: "instance-one",
+    integrationId: "cloudflare",
+    lastError: null,
+    publicHost: "203.0.113.10",
+    publicPort: 25_565,
+    relayId: "relay-one",
+    srvProtocol: "tcp",
+    srvRecordId: "srv-record",
+    srvService: "minecraft",
+    status: "active",
+    supportsSrv: true,
+    vanityLabel: "play",
+  }
+}
+
+function testCredential(): CloudflareIntegrationCredential {
+  return {
+    apiToken: "api-token",
+    blacklistPatterns: [],
+    domain: "kiln.site",
+    enabled: true,
+    id: "cloudflare",
+    lastError: null,
+    lastVerifiedAt: null,
+    provider: "cloudflare",
+    zoneId: "zone-id",
+    zoneName: "kiln.site",
+  }
+}
