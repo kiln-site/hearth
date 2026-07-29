@@ -208,9 +208,24 @@ describe("Relay state", () => {
           occurredAt: 20,
           requestId: "request-2",
         })
-        const audits = yield* store.listAudits(1)
+        const audits = yield* store.listAudits({ limit: 1 })
         assert.lengthOf(audits, 1)
         assert.strictEqual(audits[0]?.id, "audit-2")
+      })
+    )
+
+    it.effect("filters security audit history by occurrence time", () =>
+      Effect.gen(function* () {
+        const store = yield* RelayStateStore
+        const audits = yield* store.listAudits({
+          from: 15,
+          limit: 20,
+          to: 25,
+        })
+        assert.deepStrictEqual(
+          audits.map((audit) => audit.id),
+          ["audit-2"]
+        )
       })
     )
 

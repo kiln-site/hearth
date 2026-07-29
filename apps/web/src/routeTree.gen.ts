@@ -25,7 +25,9 @@ import { Route as TwoFactorRouteImport } from './routes/two-factor'
 import { Route as XRouteImport } from './routes/x'
 import { Route as AppSplatRouteImport } from './routes/_app.$'
 import { Route as AppAccessRouteImport } from './routes/_app.access'
+import { Route as AppActivityRouteImport } from './routes/_app.activity'
 import { Route as AppInfraRouteImport } from './routes/_app.infra'
+import { Route as AppOperationsRouteImport } from './routes/_app.operations'
 import { Route as AppSecurityRouteImport } from './routes/_app.security'
 import { Route as AppServersRouteImport } from './routes/_app.servers'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
@@ -134,9 +136,19 @@ const AppAccessRoute = AppAccessRouteImport.update({
   path: '/access',
   getParentRoute: () => AppRoute,
 } as any)
+const AppActivityRoute = AppActivityRouteImport.update({
+  id: '/activity',
+  path: '/activity',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppInfraRoute = AppInfraRouteImport.update({
   id: '/infra',
   path: '/infra',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppOperationsRoute = AppOperationsRouteImport.update({
+  id: '/operations',
+  path: '/operations',
   getParentRoute: () => AppRoute,
 } as any)
 const AppSecurityRoute = AppSecurityRouteImport.update({
@@ -300,7 +312,9 @@ export interface FileRoutesByFullPath {
   '/x': typeof XRoute
   '/$': typeof AppSplatRoute
   '/access': typeof AppAccessRoute
+  '/activity': typeof AppActivityRoute
   '/infra': typeof AppInfraRouteWithChildren
+  '/operations': typeof AppOperationsRoute
   '/security': typeof AppSecurityRoute
   '/servers': typeof AppServersRoute
   '/settings': typeof AppSettingsRouteWithChildren
@@ -346,6 +360,8 @@ export interface FileRoutesByTo {
   '/x': typeof XRoute
   '/$': typeof AppSplatRoute
   '/access': typeof AppAccessRoute
+  '/activity': typeof AppActivityRoute
+  '/operations': typeof AppOperationsRoute
   '/security': typeof AppSecurityRoute
   '/servers': typeof AppServersRoute
   '/api/health': typeof ApiHealthRoute
@@ -391,7 +407,9 @@ export interface FileRoutesById {
   '/x': typeof XRoute
   '/_app/$': typeof AppSplatRoute
   '/_app/access': typeof AppAccessRoute
+  '/_app/activity': typeof AppActivityRoute
   '/_app/infra': typeof AppInfraRouteWithChildren
+  '/_app/operations': typeof AppOperationsRoute
   '/_app/security': typeof AppSecurityRoute
   '/_app/servers': typeof AppServersRoute
   '/_app/settings': typeof AppSettingsRouteWithChildren
@@ -439,7 +457,9 @@ export interface FileRouteTypes {
     | '/x'
     | '/$'
     | '/access'
+    | '/activity'
     | '/infra'
+    | '/operations'
     | '/security'
     | '/servers'
     | '/settings'
@@ -485,6 +505,8 @@ export interface FileRouteTypes {
     | '/x'
     | '/$'
     | '/access'
+    | '/activity'
+    | '/operations'
     | '/security'
     | '/servers'
     | '/api/health'
@@ -529,7 +551,9 @@ export interface FileRouteTypes {
     | '/x'
     | '/_app/$'
     | '/_app/access'
+    | '/_app/activity'
     | '/_app/infra'
+    | '/_app/operations'
     | '/_app/security'
     | '/_app/servers'
     | '/_app/settings'
@@ -695,11 +719,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppAccessRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/activity': {
+      id: '/_app/activity'
+      path: '/activity'
+      fullPath: '/activity'
+      preLoaderRoute: typeof AppActivityRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/infra': {
       id: '/_app/infra'
       path: '/infra'
       fullPath: '/infra'
       preLoaderRoute: typeof AppInfraRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/operations': {
+      id: '/_app/operations'
+      path: '/operations'
+      fullPath: '/operations'
+      preLoaderRoute: typeof AppOperationsRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/security': {
@@ -985,7 +1023,9 @@ const AppServerServerIdRouteWithChildren =
 interface AppRouteChildren {
   AppSplatRoute: typeof AppSplatRoute
   AppAccessRoute: typeof AppAccessRoute
+  AppActivityRoute: typeof AppActivityRoute
   AppInfraRoute: typeof AppInfraRouteWithChildren
+  AppOperationsRoute: typeof AppOperationsRoute
   AppSecurityRoute: typeof AppSecurityRoute
   AppServersRoute: typeof AppServersRoute
   AppSettingsRoute: typeof AppSettingsRouteWithChildren
@@ -995,7 +1035,9 @@ interface AppRouteChildren {
 const AppRouteChildren: AppRouteChildren = {
   AppSplatRoute: AppSplatRoute,
   AppAccessRoute: AppAccessRoute,
+  AppActivityRoute: AppActivityRoute,
   AppInfraRoute: AppInfraRouteWithChildren,
+  AppOperationsRoute: AppOperationsRoute,
   AppSecurityRoute: AppSecurityRoute,
   AppServersRoute: AppServersRoute,
   AppSettingsRoute: AppSettingsRouteWithChildren,

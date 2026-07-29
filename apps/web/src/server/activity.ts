@@ -1,0 +1,240 @@
+import { createServerFn } from "@tanstack/react-start"
+import { relayAuditRecordSchema, relayIdSchema } from "@workspace/contracts"
+import type { RowDataPacket } from "mysql2/promise"
+import { z } from "zod"
+
+import {
+  activityDateSchema,
+  activityLabelForAudit,
+  activityTypeForAudit,
+  auditInstanceId,
+  auditUserId,
+  scopeAllowsAudit,
+} from "@/lib/activity"
+import type { ActivityScope } from "@/lib/activity"
+import { isPlatformAdmin, listUserGrants } from "@/lib/access-control"
+import { databasePool } from "@/lib/database"
+import { databaseTable } from "@/lib/database-config"
+import { roleHasPermission } from "@/lib/permissions"
+import { listPersistedRelays } from "@/lib/relay-registry"
+import { requireAuthenticatedUser } from "@/server/auth"
+
+const activityRangeSchema = z
+  .object({
+    from: activityDateSchema.optional(),
+    to: activityDateSchema.optional(),
+  })
+  .strict()
+  .refine(
+    ({ from, to }) => from === undefined || to === undefined || from <= to,
+    "Activity start must be before its end"
+  )
+
+interface InstanceRow extends RowDataPacket {
+  display_name: string | null
+  instance_id: string
+  relay_id: string
+}
+
+interface UserRow extends RowDataPacket {
+  email: string
+  id: string
+  name: string
+}
+
+const systemActorId = "system"
+
+export const getActivity = createServerFn({ method: "GET" })
+  .validator(activityRangeSchema)
+  .handler(async ({ data }) => {
+    const user = await requireAuthenticatedUser()
+    const relays = (await listPersistedRelays()).filter(
+      (relay) => relay.enabled
+    )
+    const platformAdmin = isPlatformAdmin(user)
+    const grants = platformAdmin ? [] : await listUserGrants(user.id)
+    const scopes = new Map<string, ActivityScope>()
+
+    for (const relay of relays) {
+      if (platformAdmin) {
+        scopes.set(relay.id, {
+          allInstances: true,
+          instanceIds: new Set(),
+        })
+        continue
+      }
+      const relayGrants = grants.filter(
+        (grant) =>
+          grant.relayId === relay.id &&
+          roleHasPermission(grant.role, "instance.read")
+      )
+      const allInstances = relayGrants.some(
+        (grant) => grant.resourceType === "relay"
+      )
+      const instanceIds = new Set(
+        relayGrants.flatMap((grant) =>
+          grant.resourceType === "instance" ? [grant.resourceId] : []
+        )
+      )
+      if (allInstances || instanceIds.size > 0) {
+        scopes.set(relay.id, { allInstances, instanceIds })
+      }
+    }
+
+    const visibleRelays = relays.filter((relay) => scopes.has(relay.id))
+    const query = {
+      ...(data.from ? { from: dateStart(data.from) } : {}),
+      limit: 2_000,
+      ...(data.to ? { to: dateEnd(data.to) } : {}),
+    }
+    const results = await Promise.allSettled(
+      visibleRelays.map(async (relay) => {
+        const { relayRpc } = await import("@/lib/relay-connection")
+        const records = z
+          .array(relayAuditRecordSchema)
+          .parse(await relayRpc(relay, "relay.audit.list", query, 10_000))
+        return { records, relay }
+      })
+    )
+    const available = results.flatMap((result) =>
+      result.status === "fulfilled" ? [result.value] : []
+    )
+    const unavailableRelayIds = new Set(
+      results.flatMap((result, index) =>
+        result.status === "rejected" && visibleRelays[index]
+          ? [visibleRelays[index].id]
+          : []
+      )
+    )
+    const visibleAudits = available.flatMap(({ records, relay }) => {
+      const scope = scopes.get(relay.id)
+      if (!scope) return []
+      return records.flatMap((record) =>
+        scopeAllowsAudit(scope, record) ? [{ record, relay }] : []
+      )
+    })
+
+    const [instanceRows, userRows] = await Promise.all([
+      listActivityInstances(visibleRelays.map((relay) => relay.id)),
+      listActivityUsers(
+        visibleAudits.flatMap(({ record }) => {
+          const userId = auditUserId(record)
+          return userId ? [userId] : []
+        })
+      ),
+    ])
+    const instanceByKey = new Map(
+      instanceRows.map((instance) => [
+        instanceKey(instance.relay_id, instance.instance_id),
+        instance,
+      ])
+    )
+    const userById = new Map(userRows.map((actor) => [actor.id, actor]))
+
+    const entries = visibleAudits
+      .map(({ record, relay }) => {
+        const instanceId = auditInstanceId(record)
+        const instance = instanceId
+          ? instanceByKey.get(instanceKey(relay.id, instanceId))
+          : undefined
+        const actorId = auditUserId(record)
+        const actor = actorId ? userById.get(actorId) : undefined
+        return {
+          actor: actorId
+            ? {
+                email: actor?.email ?? null,
+                id: actorId,
+                name: actor?.name ?? "Former user",
+              }
+            : {
+                email: null,
+                id: systemActorId,
+                name: "Kiln system",
+              },
+          id: `${relay.id}:${record.id}`,
+          label: activityLabelForAudit(record),
+          occurredAt: record.occurredAt,
+          rawEvent: record.event,
+          relay: { id: relay.id, name: relay.name },
+          server: instanceId
+            ? {
+                id: instanceId,
+                name:
+                  instance?.display_name ?? `Server ${instanceId.slice(0, 8)}`,
+              }
+            : null,
+          type: activityTypeForAudit(record),
+        }
+      })
+      .sort((left, right) => right.occurredAt - left.occurredAt)
+
+    return {
+      entries,
+      relays: visibleRelays.map((relay) => ({
+        id: relay.id,
+        name: relay.name,
+        unavailable: unavailableRelayIds.has(relay.id),
+      })),
+      servers: instanceRows
+        .filter((instance) => {
+          const scope = scopes.get(instance.relay_id)
+          return (
+            scope?.allInstances === true ||
+            scope?.instanceIds.has(instance.instance_id) === true
+          )
+        })
+        .map((instance) => ({
+          id: instance.instance_id,
+          name:
+            instance.display_name ??
+            `Server ${instance.instance_id.slice(0, 8)}`,
+          relayId: instance.relay_id,
+        })),
+      truncatedRelayIds: available.flatMap(({ records, relay }) =>
+        records.length === 2_000 ? [relay.id] : []
+      ),
+    }
+  })
+
+async function listActivityInstances(
+  relayIds: Array<z.infer<typeof relayIdSchema>>
+): Promise<Array<InstanceRow>> {
+  if (relayIds.length === 0) return []
+  const [rows] = await databasePool.query<Array<InstanceRow>>(
+    `SELECT relay_id, instance_id, display_name
+       FROM ${databaseTable("instance")}
+      WHERE relay_id IN (?)
+      ORDER BY display_name ASC, instance_id ASC`,
+    [relayIds]
+  )
+  return rows
+}
+
+async function listActivityUsers(
+  userIds: Array<string>
+): Promise<Array<UserRow>> {
+  const uniqueIds = [...new Set(userIds)]
+  if (uniqueIds.length === 0) return []
+  const [rows] = await databasePool.query<Array<UserRow>>(
+    `SELECT id, name, email
+       FROM ${databaseTable("user")}
+      WHERE id IN (?)`,
+    [uniqueIds]
+  )
+  return rows
+}
+
+function instanceKey(relayId: string, instanceId: string): string {
+  return `${relayId}:${instanceId}`
+}
+
+function dateStart(value: string): number {
+  return Date.parse(`${value}T00:00:00.000Z`)
+}
+
+function dateEnd(value: string): number {
+  return Date.parse(`${value}T23:59:59.999Z`)
+}
+
+export type ActivityData = Awaited<ReturnType<typeof getActivity>>
+export type ActivityEntry = ActivityData["entries"][number]

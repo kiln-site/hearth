@@ -10,6 +10,7 @@ import {
   relayConsoleCommandSchema,
   relayConsoleCompletionInputSchema,
   relayConsoleShareInputSchema,
+  relayAuditQuerySchema,
   relayCreateInstanceSchema,
   relayInstanceActionSchema,
   relayInstanceNameSchema,
@@ -747,9 +748,7 @@ async function executeControlRequest(
     case "relay.audit.list":
       return runRelayEffect(
         "relay.control.audit.list",
-        startup.state.listAudits(
-          typeof payload.limit === "number" ? payload.limit : 50
-        )
+        startup.state.listAudits(relayAuditQuerySchema.parse(payload))
       )
     case "relay.pairing.create": {
       const role = relayClientRole(payload.role)

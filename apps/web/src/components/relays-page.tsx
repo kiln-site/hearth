@@ -7,6 +7,7 @@ import {
   useSuspenseQuery,
 } from "@tanstack/react-query"
 import type { QueryClient } from "@tanstack/react-query"
+import { Link } from "@tanstack/react-router"
 import {
   Check,
   CircleAlert,
@@ -298,10 +299,10 @@ const RelayToolbar = React.memo(function RelayToolbar({
         <Tooltip>
           <TooltipTrigger asChild>
             <Button asChild variant="outline" className="px-2 sm:px-2.5">
-              <a href="/operations" aria-label="Activity">
+              <Link to="/activity" aria-label="Activity">
                 <ListTodo />
                 <span className="hidden sm:inline">Activity</span>
-              </a>
+              </Link>
             </Button>
           </TooltipTrigger>
           <TooltipContent side="bottom" sideOffset={6}>

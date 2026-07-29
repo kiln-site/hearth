@@ -58,6 +58,12 @@ export interface RelayAuditInput {
 
 export interface RelayAuditRecord extends RelayAuditInput {}
 
+export interface RelayAuditQuery {
+  readonly from?: number
+  readonly limit: number
+  readonly to?: number
+}
+
 export interface RelayStoredWebRoute extends RelayInstanceWebRoute {
   readonly instanceId: string
 }
@@ -98,6 +104,17 @@ const RelayInvitationRowSchema = Schema.Struct({
 
 const StringArraySchema = Schema.Array(Schema.String)
 
+const RelayAuditDetailsSchema = Schema.Record(Schema.String, Schema.Unknown)
+
+const RelayAuditRowSchema = Schema.Struct({
+  clientId: Schema.NullOr(Schema.String),
+  detailsJson: Schema.String,
+  event: Schema.String,
+  id: Schema.String,
+  occurredAt: Schema.Number,
+  requestId: Schema.NullOr(Schema.String),
+})
+
 const RelayWebRouteRowSchema = Schema.Struct({
   hostname: Schema.String,
   id: Schema.String,
@@ -137,7 +154,7 @@ export class RelayStateStore extends Context.Service<
       RelayStateError
     >
     readonly listAudits: (
-      limit: number
+      query: RelayAuditQuery
     ) => Effect.Effect<ReadonlyArray<RelayAuditRecord>, RelayStateError>
     readonly listInvitations: (
       now: number
@@ -542,38 +559,85 @@ const makeRelayStateStore = Effect.gen(function* () {
           return yield* Effect.forEach(decoded, clientFromRow)
         })
       ),
-    listAudits: (limit) =>
+    listAudits: (query) =>
       run(
         "list_audits",
         Effect.gen(function* () {
-          const boundedLimit = Math.min(Math.max(Math.trunc(limit), 1), 200)
-          const rows = yield* sql<{
-            clientId: string | null
-            detailsJson: string
-            event: string
-            id: string
-            occurredAt: number
-            requestId: string | null
-          }>`
-            SELECT
-              id,
-              event,
-              client_id AS clientId,
-              request_id AS requestId,
-              details_json AS detailsJson,
-              occurred_at AS occurredAt
-            FROM relay_audit
-            ORDER BY occurred_at DESC
-            LIMIT ${boundedLimit}
-          `
-          return rows.map((row) => ({
-            clientId: row.clientId,
-            details: JSON.parse(row.detailsJson) as Record<string, unknown>,
-            event: row.event,
-            id: row.id,
-            occurredAt: row.occurredAt,
-            requestId: row.requestId,
-          }))
+          const boundedLimit = Math.min(
+            Math.max(Math.trunc(query.limit), 1),
+            2_000
+          )
+          const rows =
+            query.from !== undefined && query.to !== undefined
+              ? yield* sql<Record<string, unknown>>`
+                  SELECT
+                    id,
+                    event,
+                    client_id AS clientId,
+                    request_id AS requestId,
+                    details_json AS detailsJson,
+                    occurred_at AS occurredAt
+                  FROM relay_audit
+                  WHERE occurred_at >= ${query.from}
+                    AND occurred_at <= ${query.to}
+                  ORDER BY occurred_at DESC
+                  LIMIT ${boundedLimit}
+                `
+              : query.from !== undefined
+                ? yield* sql<Record<string, unknown>>`
+                    SELECT
+                      id,
+                      event,
+                      client_id AS clientId,
+                      request_id AS requestId,
+                      details_json AS detailsJson,
+                      occurred_at AS occurredAt
+                    FROM relay_audit
+                    WHERE occurred_at >= ${query.from}
+                    ORDER BY occurred_at DESC
+                    LIMIT ${boundedLimit}
+                  `
+                : query.to !== undefined
+                  ? yield* sql<Record<string, unknown>>`
+                      SELECT
+                        id,
+                        event,
+                        client_id AS clientId,
+                        request_id AS requestId,
+                        details_json AS detailsJson,
+                        occurred_at AS occurredAt
+                      FROM relay_audit
+                      WHERE occurred_at <= ${query.to}
+                      ORDER BY occurred_at DESC
+                      LIMIT ${boundedLimit}
+                    `
+                  : yield* sql<Record<string, unknown>>`
+                      SELECT
+                        id,
+                        event,
+                        client_id AS clientId,
+                        request_id AS requestId,
+                        details_json AS detailsJson,
+                        occurred_at AS occurredAt
+                      FROM relay_audit
+                      ORDER BY occurred_at DESC
+                      LIMIT ${boundedLimit}
+                    `
+          const decoded = yield* Schema.decodeUnknownEffect(
+            Schema.Array(RelayAuditRowSchema)
+          )(rows)
+          return yield* Effect.forEach(decoded, (row) =>
+            decodeAuditDetails(row.detailsJson).pipe(
+              Effect.map((details) => ({
+                clientId: row.clientId,
+                details,
+                event: row.event,
+                id: row.id,
+                occurredAt: row.occurredAt,
+                requestId: row.requestId,
+              }))
+            )
+          )
         })
       ),
     listInvitations: (now) =>
@@ -863,7 +927,14 @@ export function makeRelayStateLayer(filename: string) {
 
 function decodeJsonStringArray(value: string) {
   return Effect.try({
-    try: () => JSON.parse(value) as unknown,
+    try: (): unknown => JSON.parse(value),
     catch: (cause) => RelayStateError.make({ operation: "decode_json", cause }),
   }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(StringArraySchema)))
+}
+
+function decodeAuditDetails(value: string) {
+  return Effect.try({
+    try: (): unknown => JSON.parse(value),
+    catch: (cause) => RelayStateError.make({ operation: "decode_json", cause }),
+  }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(RelayAuditDetailsSchema)))
 }

@@ -666,15 +666,16 @@ function AccountNavigation({
     <SidebarFooter>
       <SidebarMenu>
         <SidebarMenuItem>
-          <SidebarMenuButton
-            tooltip={{ children: "Operations - Coming Soon", hidden: false }}
-            type="button"
-            aria-disabled="true"
-            tabIndex={-1}
-            className="text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
-          >
-            <ListTodo />
-            <span>Operations</span>
+          <SidebarMenuButton asChild tooltip="Activity">
+            <Link
+              to="/activity"
+              activeOptions={{ exact: true, includeSearch: false }}
+              activeProps={{ "data-active": true }}
+              preload="intent"
+            >
+              <ListTodo />
+              <span>Activity</span>
+            </Link>
           </SidebarMenuButton>
         </SidebarMenuItem>
         <SidebarMenuItem>

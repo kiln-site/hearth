@@ -5,6 +5,29 @@ export * from "./release-version.js"
 
 export const relayIdSchema = z.string().regex(/^[A-Za-z\d_-]{43}$/u)
 
+export const relayAuditQuerySchema = z
+  .object({
+    from: z.number().int().nonnegative().optional(),
+    limit: z.number().int().min(1).max(2_000).default(200),
+    to: z.number().int().nonnegative().optional(),
+  })
+  .strict()
+  .refine(
+    ({ from, to }) => from === undefined || to === undefined || from <= to,
+    "Audit start must be before its end"
+  )
+
+export const relayAuditRecordSchema = z
+  .object({
+    clientId: z.string().nullable(),
+    details: z.record(z.string(), z.unknown()),
+    event: z.string().min(1).max(120),
+    id: z.string().min(1),
+    occurredAt: z.number().int().nonnegative(),
+    requestId: z.string().nullable(),
+  })
+  .strict()
+
 export const relayObservedStateSchema = z
   .enum([
     "offline",
@@ -1001,6 +1024,8 @@ export type RelayFileActivityEntry = z.infer<
   typeof relayFileActivityEntrySchema
 >
 export type RelayFileActivity = z.infer<typeof relayFileActivitySchema>
+export type RelayAuditQuery = z.infer<typeof relayAuditQuerySchema>
+export type RelayAuditRecord = z.infer<typeof relayAuditRecordSchema>
 export type RelayInstanceAction = z.infer<typeof relayInstanceActionSchema>
 export type RelayConsoleLevel = z.infer<typeof relayConsoleLevelSchema>
 export type RelayConsoleSegment = z.infer<typeof relayConsoleSegmentSchema>

@@ -7,6 +7,7 @@ import {
   getAccessOverview,
   getInvitationPreview,
 } from "@/server/access"
+import { getActivity } from "@/server/activity"
 import { getBrickCatalog, getInstanceStartup } from "@/server/bricks"
 import { getDomainSettings, getInstanceDomain } from "@/server/domains"
 import { getUiPreferences } from "@/server/preferences"
@@ -43,6 +44,7 @@ export const queryKeys = {
     invitation: (token: string) => ["access", "invitation", token] as const,
     overview: ["access", "overview"] as const,
   },
+  activity: (from?: string, to?: string) => ["activity", { from, to }] as const,
   bricks: ["bricks", "catalog"] as const,
   domains: {
     instance: (relayId: string, instanceId: string) =>
@@ -152,6 +154,20 @@ export function accessOverviewQueryOptions() {
   return queryOptions({
     queryKey: queryKeys.access.overview,
     queryFn: () => getAccessOverview(),
+  })
+}
+
+export function activityQueryOptions(from?: string, to?: string) {
+  return queryOptions({
+    queryKey: queryKeys.activity(from, to),
+    queryFn: () =>
+      getActivity({
+        data: {
+          ...(from ? { from } : {}),
+          ...(to ? { to } : {}),
+        },
+      }),
+    staleTime: 10_000,
   })
 }
 

@@ -397,7 +397,7 @@ function authenticateSocket(
           .runEffect(
             options.state.appendAudit({
               clientId: currentClient.id,
-              details: { operation: request.operation },
+              details: auditDetailsForRequest(request),
               event: "control.mutation",
               id: randomUUID(),
               occurredAt: Date.now(),
@@ -575,6 +575,30 @@ function isAuditedMutation(operation: RelayControlOperation): boolean {
     operation === "instance.console.write" ||
     operation === "instance.network.routes.write"
   )
+}
+
+function auditDetailsForRequest(
+  request: RelayControlRequest
+): Readonly<Record<string, unknown>> {
+  const details: Record<string, unknown> = { operation: request.operation }
+  if (
+    !request.payload ||
+    typeof request.payload !== "object" ||
+    Array.isArray(request.payload)
+  ) {
+    return details
+  }
+  const payload = Object.fromEntries(Object.entries(request.payload))
+  if (typeof payload.instanceId === "string") {
+    details.instanceId = payload.instanceId
+  }
+  if (
+    request.operation === "instance.action" &&
+    typeof payload.action === "string"
+  ) {
+    details.action = payload.action
+  }
+  return details
 }
 
 function closeClientSockets(

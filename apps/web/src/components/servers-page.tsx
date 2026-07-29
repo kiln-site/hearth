@@ -366,19 +366,15 @@ const ActivityButton = React.memo(function ActivityButton() {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          disabled
-          aria-label="Server activity, coming soon"
-          className="px-2 sm:px-2.5"
-        >
-          <ListTodo />
-          <span className="hidden sm:inline">Activity</span>
+        <Button asChild variant="outline" className="px-2 sm:px-2.5">
+          <Link to="/activity" aria-label="Server activity">
+            <ListTodo />
+            <span className="hidden sm:inline">Activity</span>
+          </Link>
         </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom" sideOffset={6}>
-        Server activity is coming soon
+        Server activity
       </TooltipContent>
     </Tooltip>
   )
