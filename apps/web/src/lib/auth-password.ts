@@ -10,31 +10,43 @@ interface CredentialAccountRow extends RowDataPacket {
   password: string | null
 }
 
+interface AccountPasswordIdentity {
+  id: string
+  isDevelopmentBypass: boolean
+}
+
+const developmentBypassDeletePassword = "zzz"
+
 const passwordDidNotMatch = () =>
   AuthenticationError.make({
     message: "The account password did not match.",
   })
 
 export async function requireAccountPassword(
-  userId: string,
+  user: AccountPasswordIdentity,
   password: string
 ): Promise<void> {
   return runAppEffect(
     "auth.password.confirm",
-    requireAccountPasswordEffect(userId, password)
+    requireAccountPasswordEffect(user, password)
   )
 }
 
 export const requireAccountPasswordEffect = Effect.fn("auth.password.confirm")(
-  function* (userId: string, password: string) {
+  function* (user: AccountPasswordIdentity, password: string) {
+    if (user.isDevelopmentBypass) {
+      if (password === developmentBypassDeletePassword) return
+      return yield* passwordDidNotMatch()
+    }
+
     const database = yield* Database
     const accounts = yield* database.queryRows<CredentialAccountRow>(
       "auth.passwordAccount",
       `SELECT password
-       FROM ${databaseTable("account")}
+      FROM ${databaseTable("account")}
       WHERE userId = ? AND providerId = 'credential'
       LIMIT 1`,
-      [userId]
+      [user.id]
     )
     const hash = accounts.at(0)?.password
     if (!hash) return yield* passwordDidNotMatch()

@@ -269,7 +269,7 @@ export const deleteInstance = createServerFn({ method: "POST" })
       })
     }
     const { requireAccountPassword } = await import("@/lib/auth-password")
-    await requireAccountPassword(user.id, data.password)
+    await requireAccountPassword(user, data.password)
 
     const deleted = deleteInstanceResultSchema.parse(
       await relayRequestRaw(
