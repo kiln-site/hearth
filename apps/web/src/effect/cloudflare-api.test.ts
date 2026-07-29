@@ -74,9 +74,10 @@ describe("Cloudflare DNS records", () => {
       Response.json(
         {
           errors: [{ code: 81_044, message: "DNS Record does not exist." }],
+          result: null,
           success: false,
         },
-        { status: 404 }
+        { status: 400 }
       )
     )
     vi.stubGlobal("fetch", fetchMock)

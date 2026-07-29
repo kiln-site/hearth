@@ -24,7 +24,6 @@ import { z } from "zod"
 
 import {
   allowedInstanceIds,
-  deleteInstanceAccessEffect,
   requireRelayPermission,
 } from "@/lib/access-control"
 import {
@@ -46,6 +45,7 @@ import {
   applyManagedDomainAddressesEffect,
   deleteInstanceDomainEffect,
 } from "@/server/domains.server"
+import { finalizeInstanceDeletionEffect } from "@/server/instance-deletion-cleanup"
 import {
   cachedRelayFallbackJsonEffect,
   cachedRelayJsonEffect,
@@ -288,12 +288,8 @@ export const deleteInstance = createServerFn({ method: "POST" })
       )
     )
     await runAppEffect(
-      "relay.snapshot.invalidate",
-      invalidateRelayCache(relayCachePolicy.snapshot(relay.id))
-    )
-    await runAppEffect(
-      "access.deleteInstance",
-      deleteInstanceAccessEffect(relay.id, data.instanceId)
+      "instances.delete.finalize",
+      finalizeInstanceDeletionEffect(relay.id, data.instanceId)
     )
     return { ...deleted, relayId: relay.id }
   })

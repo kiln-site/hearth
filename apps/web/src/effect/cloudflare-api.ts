@@ -25,6 +25,11 @@ const CloudflareDnsRecordBatchSchema = Schema.Struct({
   posts: Schema.Array(CloudflareDnsRecordSchema),
 })
 
+const CloudflareErrorEnvelopeSchema = Schema.Struct({
+  errors: Schema.optionalKey(Schema.Array(CloudflareErrorSchema)),
+  success: Schema.Boolean,
+})
+
 const cloudflareEnvelopeSchema = <TValue>(result: Schema.Decoder<TValue>) =>
   Schema.Struct({
     errors: Schema.optionalKey(Schema.Array(CloudflareErrorSchema)),
@@ -333,9 +338,9 @@ function requestCloudflareResult<TValue>(
         signal: AbortSignal.timeout(15_000),
       })
       if (!response.ok) {
-        const payload = Schema.decodeUnknownSync(
-          cloudflareEnvelopeSchema(resultSchema)
-        )(await response.json())
+        const payload = Schema.decodeUnknownSync(CloudflareErrorEnvelopeSchema)(
+          await response.json()
+        )
         if (
           options &&
           (response.status === 404 ||
