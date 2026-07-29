@@ -28,6 +28,7 @@ export const accessPermissions = [
   "instance.console.write",
   "instance.files.read",
   "instance.files.write",
+  "instance.delete",
   "instance.power",
   "instance.settings",
   "instance.logs.share",

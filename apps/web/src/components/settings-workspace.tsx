@@ -13,12 +13,15 @@ import {
   Save,
   Server,
   Tags,
+  Trash2,
+  TriangleAlert,
 } from "lucide-react"
 
 import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
 
+import { ServerDeleteDialog } from "@/components/server-delete-dialog"
 import { queryKeys, replaceRelaySnapshotInstance } from "@/lib/query-options"
 import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 import type {
@@ -30,12 +33,16 @@ import { updateInstanceName } from "@/server/relay"
 export function SettingsWorkspace({
   instance,
   node,
+  canDelete,
   canRename,
+  onDeleted,
   relayConnected,
 }: {
   instance: InstanceSettingsInstance
   node: RelayNodeSummary
+  canDelete: boolean
   canRename: boolean
+  onDeleted: () => Promise<void> | void
   relayConnected: boolean
 }) {
   return (
@@ -152,8 +159,70 @@ export function SettingsWorkspace({
             kiln.relay.managed=true · kiln.server.id={instance.shortId}…
           </code>
         </div>
+
+        {canDelete ? (
+          <ServerDangerZone instance={instance} onDeleted={onDeleted} />
+        ) : null}
       </div>
     </section>
+  )
+}
+
+function ServerDangerZone({
+  instance,
+  onDeleted,
+}: {
+  instance: InstanceSettingsInstance
+  onDeleted: () => Promise<void> | void
+}) {
+  const [open, setOpen] = React.useState(false)
+
+  return (
+    <>
+      <div className="mt-8 overflow-hidden rounded-xl border border-destructive/25 bg-destructive/4">
+        <div className="flex items-start gap-3 border-b border-destructive/15 px-4 py-3.5">
+          <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg border border-destructive/20 bg-destructive/10 text-destructive">
+            <TriangleAlert className="size-4" />
+          </span>
+          <div className="min-w-0">
+            <p className="font-mono text-[9px] tracking-[0.16em] text-destructive uppercase">
+              Danger zone
+            </p>
+            <h3 className="mt-1 text-sm font-semibold">Delete this server</h3>
+            <p className="mt-1 max-w-2xl text-[10px] leading-4 text-muted-foreground">
+              Permanently remove the managed container and everything stored in
+              its server directory.
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-col gap-3 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+          <p className="font-mono text-[9px] text-muted-foreground">
+            {instance.id}
+          </p>
+          <Button
+            type="button"
+            variant="destructive"
+            className="sm:shrink-0"
+            onClick={() => setOpen(true)}
+          >
+            <Trash2 />
+            Delete server
+          </Button>
+        </div>
+      </div>
+      {open ? (
+        <ServerDeleteDialog
+          open
+          target={{
+            id: instance.id,
+            name: instance.name,
+            relayId: instance.relayId,
+          }}
+          onDeleted={onDeleted}
+          onOpenChange={setOpen}
+        />
+      ) : null}
+    </>
   )
 }
 

@@ -18,6 +18,7 @@ export const Route = createFileRoute("/_app/server/$serverId/info")({
 })
 
 function InfoRoute() {
+  const navigate = Route.useNavigate()
   const workspaceInstance = useInstanceIdentity()
   const permissions = useInstancePermissions()
   const relayConnected = useInstanceRelayConnected()
@@ -30,14 +31,20 @@ function InfoRoute() {
     ...relaySnapshotQueryOptions(),
     select: selectInfo,
   })
+  const returnToServers = React.useCallback(
+    () => navigate({ to: "/infra/servers" }),
+    [navigate]
+  )
   if (!data) return null
   return (
     <SettingsWorkspace
       key={`${data.instance.relayId}:${data.instance.id}`}
       instance={data.instance}
       node={data.node}
+      canDelete={permissions.deleteServer}
       canRename={permissions.settings}
       relayConnected={relayConnected}
+      onDeleted={returnToServers}
     />
   )
 }

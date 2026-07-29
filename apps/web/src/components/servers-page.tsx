@@ -6,12 +6,15 @@ import {
 } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import {
-  ArrowUpRight,
+  Folder,
   ListTodo,
+  Network,
   Plus,
   RefreshCw,
   Search,
   Server,
+  TerminalSquare,
+  Trash2,
   X,
 } from "lucide-react"
 
@@ -28,6 +31,10 @@ import {
   createAddServerDialogStore,
 } from "@/components/add-server-dialog"
 import type { AddServerDialogStore } from "@/components/add-server-dialog"
+import {
+  ServerDeleteDialog,
+  type ServerDeleteTarget,
+} from "@/components/server-delete-dialog"
 import { ServerTypeIcon } from "@/components/server-type-icon"
 import {
   WorkspaceDataTable,
@@ -39,10 +46,12 @@ import {
 } from "@/components/workspace-data-table"
 import type { WorkspaceTableSearchStore } from "@/components/workspace-data-table"
 import {
+  accessCapabilitiesQueryOptions,
   brickCatalogQueryOptions,
   relayConnectionQueryOptions,
   relaySnapshotQueryOptions,
 } from "@/lib/query-options"
+import { roleHasPermission } from "@/lib/permissions"
 import {
   selectRelayConfigured,
   selectServerListInstances,
@@ -51,6 +60,12 @@ import type { ServerListInstance } from "@/lib/relay-selectors"
 
 const emptyServers: Array<ServerListInstance> = []
 const minimumManualSyncFeedbackMs = 500
+
+interface ServerDeleteAccess {
+  all: boolean
+  instances: ReadonlySet<string>
+  relays: ReadonlySet<string>
+}
 
 export type ServerSearchStore = WorkspaceTableSearchStore
 
@@ -69,10 +84,38 @@ export const ServersPage = React.memo(function ServersPage({
 }) {
   const queryClient = useQueryClient()
   const [dialogStore] = React.useState(createAddServerDialogStore)
+  const [deleteTarget, setDeleteTarget] =
+    React.useState<ServerDeleteTarget | null>(null)
   const { data: relayConfigured } = useSuspenseQuery({
     ...relayConnectionQueryOptions(queryClient),
     select: selectRelayConfigured,
   })
+  const { data: capabilities } = useSuspenseQuery(
+    accessCapabilitiesQueryOptions()
+  )
+  const deleteAccess = React.useMemo<ServerDeleteAccess>(() => {
+    const instances = new Set<string>()
+    const relays = new Set<string>()
+    for (const grant of capabilities.grants) {
+      if (!roleHasPermission(grant.role, "instance.delete")) continue
+      if (
+        grant.resourceType === "relay" &&
+        grant.resourceId === grant.relayId
+      ) {
+        relays.add(grant.relayId)
+      } else if (grant.resourceType === "instance") {
+        instances.add(`${grant.relayId}:${grant.resourceId}`)
+      }
+    }
+    return {
+      all: capabilities.isPlatformAdmin,
+      instances,
+      relays,
+    }
+  }, [capabilities.grants, capabilities.isPlatformAdmin])
+  const openDelete = React.useCallback((target: ServerDeleteTarget) => {
+    setDeleteTarget(target)
+  }, [])
 
   React.useEffect(() => {
     if (canProvision) {
@@ -94,12 +137,24 @@ export const ServersPage = React.memo(function ServersPage({
         />
         <FilteredServerTableBoundary
           canProvision={canProvision}
+          deleteAccess={deleteAccess}
           dialogStore={dialogStore}
+          onDelete={openDelete}
           relayConfigured={relayConfigured}
           searchStore={searchStore}
         />
       </section>
       {canProvision ? <AddServerDialogHost store={dialogStore} /> : null}
+      {deleteTarget ? (
+        <ServerDeleteDialog
+          key={`${deleteTarget.relayId}:${deleteTarget.id}`}
+          open
+          target={deleteTarget}
+          onOpenChange={(open) => {
+            if (!open) setDeleteTarget(null)
+          }}
+        />
+      ) : null}
     </div>
   )
 })
@@ -174,7 +229,10 @@ const ServerToolbar = React.memo(function ServerToolbar({
         className={`${mobileSearchOpen ? "hidden sm:flex" : "flex"} ml-auto shrink-0 items-center gap-2`}
       >
         <ActivityButton />
-        <AddServerButton canProvision={canProvision} dialogStore={dialogStore} />
+        <AddServerButton
+          canProvision={canProvision}
+          dialogStore={dialogStore}
+        />
       </div>
     </div>
   )
@@ -357,12 +415,16 @@ const AddServerButton = React.memo(function AddServerButton({
 const ServerTableSearchBoundary = React.memo(
   function ServerTableSearchBoundary({
     canProvision,
+    deleteAccess,
     dialogStore,
+    onDelete,
     searchStore,
     servers,
   }: {
     canProvision: boolean
+    deleteAccess: ServerDeleteAccess
     dialogStore: AddServerDialogStore
+    onDelete: (target: ServerDeleteTarget) => void
     searchStore: ServerSearchStore
     servers: Array<ServerListInstance>
   }) {
@@ -377,6 +439,8 @@ const ServerTableSearchBoundary = React.memo(
       (server: ServerListInstance) => (
         <ServerTableRow
           canonical={shortIdCounts.get(server.shortId) === 1}
+          canDelete={canDeleteServer(deleteAccess, server)}
+          onDelete={onDelete}
           routeIdentifier={
             shortIdCounts.get(server.shortId) === 1
               ? server.shortId
@@ -385,7 +449,7 @@ const ServerTableSearchBoundary = React.memo(
           server={server}
         />
       ),
-      [shortIdCounts]
+      [deleteAccess, onDelete, shortIdCounts]
     )
     const renderEmpty = React.useCallback(
       (searchActive: boolean) => (
@@ -415,12 +479,16 @@ const ServerTableSearchBoundary = React.memo(
 const FilteredServerTableBoundary = React.memo(
   function FilteredServerTableBoundary({
     canProvision,
+    deleteAccess,
     dialogStore,
+    onDelete,
     relayConfigured,
     searchStore,
   }: {
     canProvision: boolean
+    deleteAccess: ServerDeleteAccess
     dialogStore: AddServerDialogStore
+    onDelete: (target: ServerDeleteTarget) => void
     relayConfigured: boolean
     searchStore: ServerSearchStore
   }) {
@@ -433,7 +501,9 @@ const FilteredServerTableBoundary = React.memo(
     return (
       <ServerTableSearchBoundary
         canProvision={canProvision}
+        deleteAccess={deleteAccess}
         dialogStore={dialogStore}
+        onDelete={onDelete}
         searchStore={searchStore}
         servers={servers}
       />
@@ -462,8 +532,8 @@ const ServerTableHead = React.memo(function ServerTableHead() {
       <WorkspaceTableHeading className="hidden w-[16%] md:table-cell">
         Version
       </WorkspaceTableHeading>
-      <WorkspaceTableHeading className="w-14 px-2 sm:w-24 sm:px-3">
-        Open
+      <WorkspaceTableHeading className="w-36 px-1 text-right sm:w-40 sm:px-3">
+        Actions
       </WorkspaceTableHeading>
     </WorkspaceTableHead>
   )
@@ -471,10 +541,14 @@ const ServerTableHead = React.memo(function ServerTableHead() {
 
 const ServerTableRow = React.memo(function ServerTableRow({
   canonical,
+  canDelete,
+  onDelete,
   routeIdentifier,
   server,
 }: {
   canonical: boolean
+  canDelete: boolean
+  onDelete: (target: ServerDeleteTarget) => void
   routeIdentifier: string
   server: ServerListInstance
 }) {
@@ -547,20 +621,115 @@ const ServerTableRow = React.memo(function ServerTableRow({
           </p>
         </div>
       </WorkspaceTableCell>
-      <WorkspaceTableCell className="px-2 sm:px-3">
-        <OpenServerButton routeIdentifier={routeIdentifier} server={server} />
+      <WorkspaceTableCell className="px-1 sm:px-3">
+        <ServerActions
+          canDelete={canDelete}
+          routeIdentifier={routeIdentifier}
+          server={server}
+          onDelete={onDelete}
+        />
       </WorkspaceTableCell>
     </tr>
   )
 })
 
-function OpenServerButton({
+const ServerActions = React.memo(function ServerActions({
+  canDelete,
+  onDelete,
   routeIdentifier,
   server,
 }: {
+  canDelete: boolean
+  onDelete: (target: ServerDeleteTarget) => void
   routeIdentifier: string
   server: ServerListInstance
 }) {
+  return (
+    <div className="flex items-center justify-end gap-1">
+      <ServerActionLink
+        icon={TerminalSquare}
+        label={`Open ${server.name} console`}
+        routeIdentifier={routeIdentifier}
+        tab="console"
+        tooltip="Console"
+      />
+      <ServerActionLink
+        icon={Folder}
+        label={`Open ${server.name} files`}
+        routeIdentifier={routeIdentifier}
+        tab="files"
+        tooltip="Files"
+      />
+      <ServerActionLink
+        icon={Network}
+        label={`Open ${server.name} network`}
+        routeIdentifier={routeIdentifier}
+        tab="network"
+        tooltip="Network"
+      />
+      {canDelete ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              aria-label={`Delete ${server.name}`}
+              className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+              onClick={() =>
+                onDelete({
+                  id: server.id,
+                  name: server.name,
+                  relayId: server.relayId,
+                })
+              }
+            >
+              <Trash2 />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" sideOffset={6}>
+            Delete
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
+    </div>
+  )
+})
+
+const ServerActionLink = React.memo(function ServerActionLink({
+  icon: Icon,
+  label,
+  routeIdentifier,
+  tab,
+  tooltip,
+}: {
+  icon: typeof TerminalSquare
+  label: string
+  routeIdentifier: string
+  tab: "console" | "files" | "network"
+  tooltip: string
+}) {
+  const link =
+    tab === "files" ? (
+      <Link
+        to="/server/$serverId/files/$"
+        params={{ serverId: routeIdentifier, _splat: "" }}
+        preload="intent"
+        aria-label={label}
+      >
+        <Icon />
+      </Link>
+    ) : (
+      <Link
+        to={`/server/$serverId/${tab}`}
+        params={{ serverId: routeIdentifier }}
+        preload="intent"
+        aria-label={label}
+      >
+        <Icon />
+      </Link>
+    )
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -570,20 +739,24 @@ function OpenServerButton({
           variant="ghost"
           className="text-muted-foreground hover:text-primary"
         >
-          <Link
-            to="/server/$serverId/console"
-            params={{ serverId: routeIdentifier }}
-            preload="intent"
-            aria-label={`Open ${server.name} console`}
-          >
-            <ArrowUpRight />
-          </Link>
+          {link}
         </Button>
       </TooltipTrigger>
-      <TooltipContent side="left" sideOffset={6}>
-        Open console
+      <TooltipContent side="bottom" sideOffset={6}>
+        {tooltip}
       </TooltipContent>
     </Tooltip>
+  )
+})
+
+function canDeleteServer(
+  access: ServerDeleteAccess,
+  server: ServerListInstance
+): boolean {
+  return (
+    access.all ||
+    access.relays.has(server.relayId) ||
+    access.instances.has(`${server.relayId}:${server.id}`)
   )
 }
 
