@@ -365,6 +365,31 @@ export const updateInstanceDomainEndpointEffect = Effect.fn(
   )
 })
 
+export const updateInstanceDomainAddressRecordEffect = Effect.fn(
+  "domains.assignment.updateAddressRecord"
+)(function* (input: {
+  addressRecordId: string
+  addressRecordType: "A" | "AAAA" | "CNAME"
+  instanceId: string
+  relayId: string
+}) {
+  const database = yield* Database
+  yield* database.execute(
+    "domains.assignment.updateAddressRecord",
+    `UPDATE ${databaseTable("instance_domain")}
+        SET address_record_id = ?,
+            address_record_type = ?,
+            last_error = NULL
+      WHERE relay_id = ? AND instance_id = ?`,
+    [
+      input.addressRecordId,
+      input.addressRecordType,
+      input.relayId,
+      input.instanceId,
+    ]
+  )
+})
+
 export const recordInstanceDomainSyncErrorEffect = Effect.fn(
   "domains.assignment.recordSyncError"
 )(function* (relayId: string, instanceId: string, message: string) {

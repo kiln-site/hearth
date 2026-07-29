@@ -9,6 +9,7 @@ import {
   createCloudflareAddressRecordEffect,
   createCloudflareSrvRecordEffect,
   deleteCloudflareRecordEffect,
+  replaceCloudflareAddressRecordEffect,
   resolveCloudflareZoneEffect,
   updateCloudflareAddressRecordEffect,
   updateCloudflareSrvRecordEffect,
@@ -25,6 +26,7 @@ import {
   recordInstanceDomainSyncErrorEffect,
   reserveInstanceDomainAssignmentEffect,
   saveCloudflareIntegrationEffect,
+  updateInstanceDomainAddressRecordEffect,
   updateInstanceDomainEndpointEffect,
   updateInstanceDomainLabelEffect,
   type CloudflareIntegrationCredential,
@@ -495,13 +497,29 @@ const syncVanityEndpointEffect = Effect.fn("domains.instance.syncEndpoint")(
     const hostname = `${assignment.vanityLabel}.${assignment.domain}`
     const address = cloudflareAddressRecord(hostname, publicHost)
     const sync = Effect.gen(function* () {
-      yield* updateCloudflareAddressRecordEffect(
-        credential.apiToken,
-        credential.zoneId,
-        addressRecordId,
-        address,
-        assignment.instanceId
-      )
+      if (assignment.addressRecordType === address.type) {
+        yield* updateCloudflareAddressRecordEffect(
+          credential.apiToken,
+          credential.zoneId,
+          addressRecordId,
+          address,
+          assignment.instanceId
+        )
+      } else {
+        const replacement = yield* replaceCloudflareAddressRecordEffect(
+          credential.apiToken,
+          credential.zoneId,
+          addressRecordId,
+          address,
+          assignment.instanceId
+        )
+        yield* updateInstanceDomainAddressRecordEffect({
+          addressRecordId: replacement.id,
+          addressRecordType: address.type,
+          instanceId: assignment.instanceId,
+          relayId: assignment.relayId,
+        })
+      }
       if (
         assignment.supportsSrv &&
         assignment.srvRecordId &&

@@ -21,6 +21,10 @@ const CloudflareDnsRecordSchema = Schema.Struct({
   type: Schema.String,
 })
 
+const CloudflareDnsRecordBatchSchema = Schema.Struct({
+  posts: Schema.Array(CloudflareDnsRecordSchema),
+})
+
 const cloudflareEnvelopeSchema = <TValue>(result: Schema.Decoder<TValue>) =>
   Schema.Struct({
     errors: Schema.optionalKey(Schema.Array(CloudflareErrorSchema)),
@@ -150,14 +154,7 @@ export const createCloudflareAddressRecordEffect = Effect.fn(
     apiToken,
     zoneId,
     undefined,
-    {
-      comment: `Managed by Kiln for server ${instanceId}`,
-      content: record.content,
-      name: record.name,
-      proxied: false,
-      ttl: 1,
-      type: record.type,
-    },
+    cloudflareAddressRecordBody(record, instanceId),
     "POST"
   )
 })
@@ -203,16 +200,40 @@ export const updateCloudflareAddressRecordEffect = Effect.fn(
     apiToken,
     zoneId,
     recordId,
-    {
-      comment: `Managed by Kiln for server ${instanceId}`,
-      content: record.content,
-      name: record.name,
-      proxied: false,
-      ttl: 1,
-      type: record.type,
-    },
+    cloudflareAddressRecordBody(record, instanceId),
     "PATCH"
   )
+})
+
+export const replaceCloudflareAddressRecordEffect = Effect.fn(
+  "cloudflare.dns.replaceAddress"
+)(function* (
+  apiToken: string,
+  zoneId: string,
+  recordId: string,
+  record: CloudflareAddressRecord,
+  instanceId: string
+) {
+  const result = yield* requestCloudflareResult(
+    apiToken,
+    `/zones/${encodeURIComponent(zoneId)}/dns_records/batch`,
+    CloudflareDnsRecordBatchSchema,
+    {
+      body: JSON.stringify({
+        deletes: [{ id: recordId }],
+        posts: [cloudflareAddressRecordBody(record, instanceId)],
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    }
+  )
+  const replacement = result.posts[0]
+  if (!replacement) {
+    return yield* cloudflareFailure(
+      "Cloudflare did not return the replacement DNS record"
+    )
+  }
+  return replacement
 })
 
 export const updateCloudflareSrvRecordEffect = Effect.fn(
@@ -273,6 +294,20 @@ function mutateCloudflareRecord(
       method,
     }
   )
+}
+
+function cloudflareAddressRecordBody(
+  record: CloudflareAddressRecord,
+  instanceId: string
+) {
+  return {
+    comment: `Managed by Kiln for server ${instanceId}`,
+    content: record.content,
+    name: record.name,
+    proxied: false,
+    ttl: 1,
+    type: record.type,
+  }
 }
 
 function requestCloudflareResult<TValue>(
