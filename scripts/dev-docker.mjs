@@ -43,6 +43,7 @@ const composeEnvironment = {
   ...process.env,
   KILN_DEV_ENV_FILE: environmentFile,
   KILN_INSTALLATION_ID: stack,
+  KILN_RELAY_GAME_HOST: process.env.KILN_RELAY_GAME_HOST?.trim() || "localhost",
   KILN_RELAY_HOST: `relay.${stack}.orb.local`,
   KILN_RELAY_NAME: primaryWorktree ? "L01" : stack,
   KILN_RELAY_PROXY: "none",
