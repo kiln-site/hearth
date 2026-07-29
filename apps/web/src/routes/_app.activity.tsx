@@ -3,22 +3,25 @@ import { z } from "zod"
 
 import { ActivityPage } from "@/components/activity-page"
 import type { ActivityFilters } from "@/components/activity-page"
-import { activityDateSchema, activityTypes } from "@/lib/activity"
+import { activityInstantSchema, activityTypes } from "@/lib/activity"
 import { activityQueryOptions } from "@/lib/query-options"
 import { pageTitle } from "@/lib/page-title"
 
 const activitySearchSchema = z
   .object({
-    from: activityDateSchema.optional(),
+    from: activityInstantSchema.optional(),
     q: z.string().max(160).optional(),
     relay: z.string().max(64).optional(),
     server: z.string().max(64).optional(),
-    to: activityDateSchema.optional(),
+    to: activityInstantSchema.optional(),
     type: z.enum(activityTypes).optional(),
     user: z.string().max(64).optional(),
   })
   .refine(
-    ({ from, to }) => from === undefined || to === undefined || from <= to,
+    ({ from, to }) =>
+      from === undefined ||
+      to === undefined ||
+      Date.parse(from) <= Date.parse(to),
     "Activity start must be before its end"
   )
 

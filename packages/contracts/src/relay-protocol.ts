@@ -118,6 +118,7 @@ export const RelayControlRequestSchema = Schema.Struct({
   id: Schema.String,
   operation: RelayControlOperationSchema,
   payload: Schema.Unknown,
+  subject: Schema.optionalKey(Schema.String),
   timeoutMs: Schema.optionalKey(Schema.Number),
   type: Schema.Literal("request"),
   v: Schema.Literal(1),

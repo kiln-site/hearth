@@ -50,7 +50,8 @@ export const relayFetchEffect = Effect.fn("relay.fetch")(function* (
   relay: RelayEndpoint,
   path: string,
   init?: RequestInit,
-  timeoutMs?: number
+  timeoutMs?: number,
+  subject?: string
 ) {
   const response = yield* Effect.tryPromise({
     try: () =>
@@ -66,7 +67,8 @@ export const relayFetchEffect = Effect.fn("relay.fetch")(function* (
             relay,
             request.operation,
             request.payload,
-            timeoutMs
+            timeoutMs,
+            subject
           )
           return new Response(JSON.stringify(payload), {
             headers: { "Content-Type": "application/json; charset=utf-8" },
@@ -105,9 +107,16 @@ export const relayJsonEffect = Effect.fn("relay.json")(function* <TResult>(
   path: string,
   decode: (input: unknown) => TResult,
   init?: RequestInit,
-  timeoutMs?: number
+  timeoutMs?: number,
+  subject?: string
 ) {
-  const response = yield* relayFetchEffect(relay, path, init, timeoutMs)
+  const response = yield* relayFetchEffect(
+    relay,
+    path,
+    init,
+    timeoutMs,
+    subject
+  )
   const body = yield* Effect.tryPromise({
     try: () => response.json(),
     catch: (cause) =>

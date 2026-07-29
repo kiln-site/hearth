@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test"
 import type { RelayAuditRecord } from "@workspace/contracts"
 
 import {
+  activityLocalRangeToUtc,
   activityLabelForAudit,
   activityTypeForAudit,
   scopeAllowsAudit,
@@ -53,5 +54,32 @@ describe("activity", () => {
     })
     expect(activityTypeForAudit(record)).toBe("power")
     expect(activityLabelForAudit(record)).toBe("Restarted a server")
+  })
+
+  it("converts local calendar days to exact UTC query bounds", () => {
+    const from = new Date(2026, 2, 7, 12)
+    const to = new Date(2026, 2, 9, 12)
+    const range = activityLocalRangeToUtc(from, to)
+    const start = new Date(range.from)
+    const end = new Date(range.to)
+
+    expect([
+      start.getFullYear(),
+      start.getMonth(),
+      start.getDate(),
+      start.getHours(),
+      start.getMinutes(),
+      start.getSeconds(),
+      start.getMilliseconds(),
+    ]).toEqual([2026, 2, 7, 0, 0, 0, 0])
+    expect([
+      end.getFullYear(),
+      end.getMonth(),
+      end.getDate(),
+      end.getHours(),
+      end.getMinutes(),
+      end.getSeconds(),
+      end.getMilliseconds(),
+    ]).toEqual([2026, 2, 9, 23, 59, 59, 999])
   })
 })

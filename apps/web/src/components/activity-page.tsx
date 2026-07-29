@@ -1,5 +1,6 @@
 import * as React from "react"
 import { useSuspenseQuery } from "@tanstack/react-query"
+import { Link } from "@tanstack/react-router"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import {
   CalendarDays,
@@ -30,9 +31,14 @@ import {
 } from "@workspace/ui/components/popover"
 import { useIsMobile } from "@workspace/ui/hooks/use-mobile"
 
-import { activityTypes, isActivityType } from "@/lib/activity"
+import {
+  activityLocalRangeToUtc,
+  activityTypes,
+  isActivityType,
+} from "@/lib/activity"
 import type { ActivityType } from "@/lib/activity"
 import { activityQueryOptions } from "@/lib/query-options"
+import { relayInstanceRouteId } from "@/lib/relay-fleet"
 import type { ActivityData, ActivityEntry } from "@/server/activity"
 
 export interface ActivityFilters {
@@ -65,20 +71,21 @@ const typeDetails: Record<
   system: { icon: FileClock, label: "System" },
 }
 
-const activityTimestamp = new Intl.DateTimeFormat("en-US", {
-  day: "2-digit",
+const activityTime = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
-  hour12: false,
   minute: "2-digit",
-  month: "short",
   second: "2-digit",
-  timeZone: "UTC",
 })
 
-const activityDay = new Intl.DateTimeFormat("en-US", {
+const activityDay = new Intl.DateTimeFormat(undefined, {
   day: "2-digit",
   month: "short",
-  timeZone: "UTC",
+  year: "numeric",
+})
+
+const activityShortDate = new Intl.DateTimeFormat(undefined, {
+  day: "numeric",
+  month: "short",
   year: "numeric",
 })
 
@@ -89,27 +96,11 @@ export const ActivityPage = React.memo(function ActivityPage({
   const { data } = useSuspenseQuery(
     activityQueryOptions(filters.from, filters.to)
   )
-  const [search, setSearch] = React.useState(filters.q ?? "")
-  const deferredSearch = React.useDeferredValue(search)
-  const searchTimer = React.useRef<number>(undefined)
-
-  React.useEffect(() => {
-    setSearch(filters.q ?? "")
-  }, [filters.q])
-
-  React.useEffect(
-    () => () => {
-      if (searchTimer.current !== undefined) {
-        window.clearTimeout(searchTimer.current)
-      }
-    },
-    []
-  )
 
   const actors = React.useMemo(() => activityActors(data), [data])
   const entries = React.useMemo(
-    () => filterActivity(data.entries, filters, deferredSearch),
-    [data.entries, deferredSearch, filters]
+    () => filterActivity(data.entries, filters, filters.q ?? ""),
+    [data.entries, filters]
   )
   const activeFilterCount = [
     filters.q,
@@ -120,19 +111,6 @@ export const ActivityPage = React.memo(function ActivityPage({
     filters.from,
     filters.to,
   ].filter(Boolean).length
-
-  const updateSearch = React.useCallback(
-    (value: string) => {
-      setSearch(value)
-      if (searchTimer.current !== undefined) {
-        window.clearTimeout(searchTimer.current)
-      }
-      searchTimer.current = window.setTimeout(() => {
-        onFiltersChange({ q: value.trim() || undefined })
-      }, 180)
-    },
-    [onFiltersChange]
-  )
 
   return (
     <div className="mx-auto flex h-[calc(100dvh-5.75rem)] min-h-[34rem] w-full max-w-[90rem] flex-col px-3 pb-3 sm:px-5 sm:pb-5">
@@ -147,7 +125,7 @@ export const ActivityPage = React.memo(function ActivityPage({
                 Audit trail
               </h1>
               <p className="truncate font-mono text-[9px] tracking-[0.08em] text-muted-foreground uppercase">
-                Permission-scoped · newest first · UTC
+                Permission-scoped · newest first · browser local time
               </p>
             </div>
           </div>
@@ -161,10 +139,8 @@ export const ActivityPage = React.memo(function ActivityPage({
           actors={actors}
           data={data}
           filters={filters}
-          search={search}
           activeFilterCount={activeFilterCount}
           onFiltersChange={onFiltersChange}
-          onSearchChange={updateSearch}
         />
 
         <ActivityStatus data={data} />
@@ -179,17 +155,13 @@ const ActivityFiltersToolbar = React.memo(function ActivityFiltersToolbar({
   actors,
   data,
   filters,
-  search,
   onFiltersChange,
-  onSearchChange,
 }: {
   activeFilterCount: number
   actors: Array<ActivityEntry["actor"]>
   data: ActivityData
   filters: ActivityFilters
-  search: string
   onFiltersChange: (change: Partial<ActivityFilters>) => void
-  onSearchChange: (value: string) => void
 }) {
   const relayNameById = React.useMemo(
     () => new Map(data.relays.map((relay) => [relay.id, relay.name])),
@@ -202,27 +174,11 @@ const ActivityFiltersToolbar = React.memo(function ActivityFiltersToolbar({
   return (
     <div className="border-b bg-background/15 p-3">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative min-w-[14rem] flex-1 sm:max-w-md">
-          <Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            type="search"
-            value={search}
-            onChange={(event) => onSearchChange(event.currentTarget.value)}
-            placeholder="Search actions, people, servers…"
-            aria-label="Search activity"
-            className="pr-8 pl-9 text-base md:text-sm"
-          />
-          {search ? (
-            <button
-              type="button"
-              aria-label="Clear activity search"
-              className="absolute top-1/2 right-2 grid size-6 -translate-y-1/2 place-items-center text-muted-foreground hover:text-foreground"
-              onClick={() => onSearchChange("")}
-            >
-              <X className="size-3.5" />
-            </button>
-          ) : null}
-        </div>
+        <ActivitySearch
+          key={filters.q ?? ""}
+          initialValue={filters.q ?? ""}
+          onFiltersChange={onFiltersChange}
+        />
 
         <ActivitySelect
           ariaLabel="Filter activity by type"
@@ -365,6 +321,63 @@ function ActivitySelect({
   )
 }
 
+const ActivitySearch = React.memo(function ActivitySearch({
+  initialValue,
+  onFiltersChange,
+}: {
+  initialValue: string
+  onFiltersChange: (change: Partial<ActivityFilters>) => void
+}) {
+  const [value, setValue] = React.useState(initialValue)
+  const searchTimer = React.useRef<number>(undefined)
+
+  React.useEffect(
+    () => () => {
+      if (searchTimer.current !== undefined) {
+        window.clearTimeout(searchTimer.current)
+      }
+    },
+    []
+  )
+
+  const update = React.useCallback(
+    (nextValue: string) => {
+      setValue(nextValue)
+      if (searchTimer.current !== undefined) {
+        window.clearTimeout(searchTimer.current)
+      }
+      searchTimer.current = window.setTimeout(() => {
+        onFiltersChange({ q: nextValue.trim() || undefined })
+      }, 180)
+    },
+    [onFiltersChange]
+  )
+
+  return (
+    <div className="relative min-w-[14rem] flex-1 sm:max-w-md">
+      <Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        type="search"
+        value={value}
+        onChange={(event) => update(event.currentTarget.value)}
+        placeholder="Search actions, people, servers…"
+        aria-label="Search activity"
+        className="pr-8 pl-9 text-base md:text-sm"
+      />
+      {value ? (
+        <button
+          type="button"
+          aria-label="Clear activity search"
+          className="absolute top-1/2 right-2 grid size-6 -translate-y-1/2 place-items-center text-muted-foreground hover:text-foreground"
+          onClick={() => update("")}
+        >
+          <X className="size-3.5" />
+        </button>
+      ) : null}
+    </div>
+  )
+})
+
 const ActivityDateRange = React.memo(function ActivityDateRange({
   from,
   to,
@@ -379,22 +392,28 @@ const ActivityDateRange = React.memo(function ActivityDateRange({
   const [range, setRange] = React.useState<
     { from: Date | undefined; to?: Date } | undefined
   >(() => selectedDateRange(from, to))
+  const maximumDate = React.useMemo(() => {
+    const date = new Date()
+    date.setHours(23, 59, 59, 999)
+    return date
+  }, [])
 
-  React.useEffect(() => {
-    if (!open) setRange(selectedDateRange(from, to))
-  }, [from, open, to])
+  const updateOpen = React.useCallback(
+    (nextOpen: boolean) => {
+      if (nextOpen) setRange(selectedDateRange(from, to))
+      setOpen(nextOpen)
+    },
+    [from, to]
+  )
 
   const apply = React.useCallback(() => {
     if (!range?.from || !range.to) return
     setOpen(false)
-    onChange({
-      from: formatDateValue(range.from),
-      to: formatDateValue(range.to),
-    })
+    onChange(activityLocalRangeToUtc(range.from, range.to))
   }, [onChange, range])
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={updateOpen}>
       <PopoverTrigger asChild>
         <Button
           type="button"
@@ -403,7 +422,9 @@ const ActivityDateRange = React.memo(function ActivityDateRange({
           className="justify-start font-normal data-[empty=true]:text-muted-foreground"
         >
           <CalendarDays />
-          <span className="max-w-44 truncate">{dateRangeLabel(from, to)}</span>
+          <span className="max-w-44 truncate" suppressHydrationWarning>
+            {dateRangeLabel(from, to)}
+          </span>
         </Button>
       </PopoverTrigger>
       <PopoverContent
@@ -430,7 +451,7 @@ const ActivityDateRange = React.memo(function ActivityDateRange({
             selected={range}
             onSelect={setRange}
             numberOfMonths={isMobile ? 1 : 2}
-            disabled={{ after: new Date() }}
+            disabled={{ after: maximumDate }}
           />
         </div>
         <div className="flex items-center justify-between gap-3 border-t bg-background/30 p-2">
@@ -527,12 +548,13 @@ function ActivityResults({
     <div className="relative min-h-0 flex-1">
       <div
         aria-hidden="true"
-        className="absolute inset-x-0 top-0 z-10 grid h-8 grid-cols-[5.5rem_minmax(0,1fr)] items-center border-b bg-card/95 px-3 font-mono text-[8px] tracking-[0.12em] text-muted-foreground uppercase backdrop-blur md:grid-cols-[8.5rem_minmax(0,1fr)_10rem] lg:grid-cols-[9rem_minmax(0,1fr)_minmax(10rem,14rem)_minmax(9rem,12rem)]"
+        className="absolute inset-x-0 top-0 z-10 grid h-8 grid-cols-[5.5rem_minmax(0,1fr)] items-center border-b bg-card/95 px-3 font-mono text-[8px] tracking-[0.12em] text-muted-foreground uppercase backdrop-blur md:grid-cols-[7rem_minmax(8rem,11rem)_minmax(8rem,10rem)_5.5rem_minmax(12rem,1fr)] lg:grid-cols-[8rem_minmax(10rem,14rem)_minmax(9rem,12rem)_6.5rem_minmax(15rem,1fr)]"
       >
-        <span>Time · UTC</span>
-        <span>Activity</span>
-        <span className="hidden lg:block">Context</span>
+        <span>Time</span>
+        <span className="hidden md:block">Where</span>
         <span className="hidden md:block">User</span>
+        <span className="hidden md:block">Type</span>
+        <span>Action</span>
       </div>
       <div
         ref={parentRef}
@@ -582,21 +604,43 @@ const ActivityRow = React.memo(function ActivityRow({
     <article
       ref={measureElement}
       data-index={index}
-      className="absolute top-0 left-0 grid w-full grid-cols-[5.5rem_minmax(0,1fr)] items-center border-b border-border/65 px-3 py-2.5 transition-colors hover:bg-accent/18 md:grid-cols-[8.5rem_minmax(0,1fr)_10rem] lg:grid-cols-[9rem_minmax(0,1fr)_minmax(10rem,14rem)_minmax(9rem,12rem)]"
+      className="absolute top-0 left-0 grid w-full grid-cols-[5.5rem_minmax(0,1fr)] items-center border-b border-border/65 px-3 py-2.5 transition-colors hover:bg-accent/18 md:grid-cols-[7rem_minmax(8rem,11rem)_minmax(8rem,10rem)_5.5rem_minmax(12rem,1fr)] lg:grid-cols-[8rem_minmax(10rem,14rem)_minmax(9rem,12rem)_6.5rem_minmax(15rem,1fr)]"
       style={{ transform: `translateY(${start}px)` }}
     >
       <time
         dateTime={date.toISOString()}
         className="pr-2 font-mono text-[9px] leading-4 text-muted-foreground"
       >
-        <span className="block md:hidden">{activityDay.format(date)}</span>
-        <span>{activityTimestamp.format(date).split(", ").at(-1)}</span>
-        <span className="hidden md:block">
-          {activityTimestamp.format(date).split(", ").at(0)}
+        <span className="block md:hidden" suppressHydrationWarning>
+          {activityDay.format(date)}
+        </span>
+        <span suppressHydrationWarning>{activityTime.format(date)}</span>
+        <span className="hidden md:block" suppressHydrationWarning>
+          {activityDay.format(date)}
         </span>
       </time>
 
-      <div className="flex min-w-0 items-start gap-2.5 pr-3">
+      <div className="hidden min-w-0 pr-3 md:block">
+        <ActivityWhereLink entry={entry} />
+        <p className="truncate font-mono text-[8px] text-muted-foreground">
+          {entry.server ? entry.relay.name : "Relay-wide"}
+        </p>
+      </div>
+
+      <div className="hidden min-w-0 pr-3 md:block">
+        <p className="truncate text-[11px] font-medium">{entry.actor.name}</p>
+        <p className="truncate font-mono text-[8px] text-muted-foreground">
+          {entry.actor.email ?? "service activity"}
+        </p>
+      </div>
+
+      <div className="hidden min-w-0 pr-3 md:block">
+        <span className="font-mono text-[9px] tracking-[0.06em] text-primary/80 uppercase">
+          {details.label}
+        </span>
+      </div>
+
+      <div className="flex min-w-0 items-start gap-2.5">
         <span className="mt-0.5 grid size-7 shrink-0 place-items-center border border-primary/18 bg-primary/7 text-primary/85">
           <Icon className="size-3.5" />
         </span>
@@ -604,35 +648,61 @@ const ActivityRow = React.memo(function ActivityRow({
           <p className="truncate text-xs font-medium text-foreground/95">
             {entry.label}
           </p>
-          <div className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[8px] tracking-[0.05em] text-muted-foreground uppercase">
+          <div className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[8px] tracking-[0.05em] text-muted-foreground uppercase md:hidden">
+            <ActivityWhereLink entry={entry} compact />
+            <span aria-hidden="true">·</span>
+            <span className="truncate">{entry.actor.name}</span>
+            <span aria-hidden="true">·</span>
             <span>{details.label}</span>
-            <span aria-hidden="true">/</span>
-            <span className="truncate lg:hidden">
-              {entry.server?.name ?? entry.relay.name}
-            </span>
-            <span className="truncate md:hidden">· {entry.actor.name}</span>
           </div>
         </div>
-      </div>
-
-      <div className="hidden min-w-0 pr-3 lg:block">
-        <p className="truncate text-[11px] font-medium">
-          {entry.server?.name ?? entry.relay.name}
-        </p>
-        <p className="truncate font-mono text-[8px] text-muted-foreground">
-          {entry.server ? entry.relay.name : "Relay-wide"}
-        </p>
-      </div>
-
-      <div className="hidden min-w-0 md:block">
-        <p className="truncate text-[11px] font-medium">{entry.actor.name}</p>
-        <p className="truncate font-mono text-[8px] text-muted-foreground">
-          {entry.actor.email ?? "service activity"}
-        </p>
       </div>
     </article>
   )
 })
+
+function ActivityWhereLink({
+  compact = false,
+  entry,
+}: {
+  compact?: boolean
+  entry: ActivityEntry
+}) {
+  const className = compact
+    ? "min-w-0 truncate text-muted-foreground hover:text-primary"
+    : "block truncate text-[11px] font-medium hover:text-primary"
+
+  if (entry.server) {
+    return (
+      <Link
+        to="/server/$serverId/console"
+        params={{
+          serverId: relayInstanceRouteId(
+            entry.relay.id,
+            entry.server.id.slice(0, 8)
+          ),
+        }}
+        preload="intent"
+        className={className}
+        aria-label={`Open ${entry.server.name}`}
+      >
+        {entry.server.name}
+      </Link>
+    )
+  }
+
+  return (
+    <Link
+      to="/infra/servers"
+      search={{ search: entry.relay.name }}
+      preload="intent"
+      className={className}
+      aria-label={`View servers on ${entry.relay.name}`}
+    >
+      {entry.relay.name}
+    </Link>
+  )
+}
 
 function activityActors(data: ActivityData): Array<ActivityEntry["actor"]> {
   return [
@@ -672,39 +742,23 @@ function selectedDateRange(
 ): { from: Date | undefined; to?: Date } | undefined {
   if (!from && !to) return undefined
   return {
-    from: from ? parseDateValue(from) : undefined,
-    ...(to ? { to: parseDateValue(to) } : {}),
+    from: from ? new Date(from) : undefined,
+    ...(to ? { to: new Date(to) } : {}),
   }
 }
 
-function parseDateValue(value: string): Date {
-  const [year, month, day] = value.split("-").map(Number)
-  return new Date(year ?? 0, (month ?? 1) - 1, day ?? 1, 12)
-}
-
-function formatDateValue(date: Date): string {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, "0")
-  const day = String(date.getDate()).padStart(2, "0")
-  return `${year}-${month}-${day}`
-}
-
 function formatShortDate(date: Date): string {
-  return new Intl.DateTimeFormat("en-US", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  }).format(date)
+  return activityShortDate.format(date)
 }
 
 function dateRangeLabel(from?: string, to?: string): string {
   if (!from && !to) return "All time"
   if (from && to) {
-    return `${formatShortDate(parseDateValue(from))} – ${formatShortDate(parseDateValue(to))}`
+    return `${formatShortDate(new Date(from))} – ${formatShortDate(new Date(to))}`
   }
   return from
-    ? `From ${formatShortDate(parseDateValue(from))}`
-    : `Through ${formatShortDate(parseDateValue(to ?? ""))}`
+    ? `From ${formatShortDate(new Date(from))}`
+    : `Through ${formatShortDate(new Date(to ?? ""))}`
 }
 
 function recentRange(days: number): { from: Date; to: Date } {

@@ -231,12 +231,17 @@ export const listPersistedRelaysEffect = Effect.fn("relays.list")(function* () {
   return rows.map(toPersistedRelay)
 })
 
-export async function pairPersistedRelay(pairingUri: string) {
+export async function pairPersistedRelay(pairingUri: string, subject: string) {
   const envelope = decodePairingUri(pairingUri)
-  return pairWithEnvelope(envelope, {
-    bootstrapProof: null,
-    token: envelope.token,
-  })
+  return pairWithEnvelope(
+    envelope,
+    {
+      bootstrapProof: null,
+      token: envelope.token,
+    },
+    undefined,
+    subject
+  )
 }
 
 export async function previewPairingUri(pairingUri: string) {
@@ -278,23 +283,35 @@ export async function getRelayAdministration(
   return { audits, clients, invitations, service: snapshot.relay }
 }
 
-export async function createRelayPairingInvitation(input: {
-  relayId: string
-  role: "full_access" | "read_only"
-}) {
+export async function createRelayPairingInvitation(
+  input: {
+    relayId: string
+    role: "full_access" | "read_only"
+  },
+  subject: string
+) {
   const [relay, { relayRpc }] = await Promise.all([
     requiredPersistedRelay(input.relayId),
     import("@/lib/relay-connection"),
   ])
   return pairingInvitationBundleSchema.parse(
-    await relayRpc(relay, "relay.pairing.create", { role: input.role }, 5_000)
+    await relayRpc(
+      relay,
+      "relay.pairing.create",
+      { role: input.role },
+      5_000,
+      subject
+    )
   )
 }
 
-export async function revokeRelayPairingInvitation(input: {
-  invitationId: string
-  relayId: string
-}): Promise<boolean> {
+export async function revokeRelayPairingInvitation(
+  input: {
+    invitationId: string
+    relayId: string
+  },
+  subject: string
+): Promise<boolean> {
   const [relay, { relayRpc }] = await Promise.all([
     requiredPersistedRelay(input.relayId),
     import("@/lib/relay-connection"),
@@ -306,20 +323,24 @@ export async function revokeRelayPairingInvitation(input: {
         relay,
         "relay.pairing.revoke",
         { invitationId: input.invitationId },
-        5_000
+        5_000,
+        subject
       )
     )
   return result.revoked
 }
 
-export async function updateRelayClientPolicy(input: {
-  actions?: ReadonlyArray<string>
-  clientId: string
-  name: string
-  relayId: string
-  role: "custom" | "full_access" | "read_only"
-  sourceCidrs: ReadonlyArray<string>
-}) {
+export async function updateRelayClientPolicy(
+  input: {
+    actions?: ReadonlyArray<string>
+    clientId: string
+    name: string
+    relayId: string
+    role: "custom" | "full_access" | "read_only"
+    sourceCidrs: ReadonlyArray<string>
+  },
+  subject: string
+) {
   const [relay, { relayRpc }] = await Promise.all([
     requiredPersistedRelay(input.relayId),
     import("@/lib/relay-connection"),
@@ -342,7 +363,8 @@ export async function updateRelayClientPolicy(input: {
           role: input.role,
           sourceCidrs: input.sourceCidrs,
         },
-        5_000
+        5_000,
+        subject
       )
     )
   if (response.updated && input.clientId === relay.clientId) {
@@ -356,10 +378,13 @@ export async function updateRelayClientPolicy(input: {
   return response
 }
 
-export async function revokeRelayClient(input: {
-  clientId: string
-  relayId: string
-}): Promise<boolean> {
+export async function revokeRelayClient(
+  input: {
+    clientId: string
+    relayId: string
+  },
+  subject: string
+): Promise<boolean> {
   const [relay, { relayRpc }] = await Promise.all([
     requiredPersistedRelay(input.relayId),
     import("@/lib/relay-connection"),
@@ -371,23 +396,35 @@ export async function revokeRelayClient(input: {
         relay,
         "relay.clients.revoke",
         { clientId: input.clientId },
-        5_000
+        5_000,
+        subject
       )
     )
   return response.revoked
 }
 
-export async function renamePersistedRelay(input: {
-  name: string
-  relayId: string
-}): Promise<PersistedRelay> {
+export async function renamePersistedRelay(
+  input: {
+    name: string
+    relayId: string
+  },
+  subject?: string
+): Promise<PersistedRelay> {
   const [relay, { relayRpc }] = await Promise.all([
     requiredPersistedRelay(input.relayId),
     import("@/lib/relay-connection"),
   ])
   const renamed = z
     .object({ id: z.string(), name: z.string().min(1).max(120) })
-    .parse(await relayRpc(relay, "relay.rename", { name: input.name }, 5_000))
+    .parse(
+      await relayRpc(
+        relay,
+        "relay.rename",
+        { name: input.name },
+        5_000,
+        subject
+      )
+    )
   await databasePool.execute(
     `UPDATE ${databaseTable("relay")} SET name = ? WHERE id = ?`,
     [renamed.name, relay.id]
@@ -480,7 +517,8 @@ export async function maintainPersistedRelayConnections(): Promise<void> {
 async function pairWithEnvelope(
   envelope: z.infer<typeof pairingEnvelopeSchema>,
   credential: { bootstrapProof: string | null; token: string | null },
-  enrollmentOrigin?: URL
+  enrollmentOrigin?: URL,
+  subject?: string
 ) {
   if (envelope.expiresAt <= Date.now()) {
     throw new Error("This Relay pairing invitation has expired")
@@ -648,10 +686,13 @@ async function pairWithEnvelope(
   }
   try {
     if (!existing && initialName !== response.relayName) {
-      await renamePersistedRelay({
-        name: initialName,
-        relayId: envelope.relayFingerprint,
-      })
+      await renamePersistedRelay(
+        {
+          name: initialName,
+          relayId: envelope.relayFingerprint,
+        },
+        subject
+      )
     }
     return await checkPersistedRelay(envelope.relayFingerprint)
   } catch (cause) {

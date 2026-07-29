@@ -52,11 +52,12 @@ const getContainerHostname = createServerOnlyFn(async () => {
   return hostname()
 })
 
-async function requirePlatformAdministrator(): Promise<void> {
+async function requirePlatformAdministrator() {
   const user = await requireAuthenticatedUser()
   if (!isPlatformAdmin(user)) {
     throw new Error("Platform administrator access required")
   }
+  return user
 }
 
 export const getUpdateOverview = createServerFn({ method: "GET" }).handler(
@@ -141,7 +142,7 @@ export const getUpdateOverview = createServerFn({ method: "GET" }).handler(
 export const startSystemUpdate = createServerFn({ method: "POST" })
   .validator(startUpdateSchema)
   .handler(async ({ data }) => {
-    await requirePlatformAdministrator()
+    const user = await requirePlatformAdministrator()
     const releases = await runAppEffect(
       "updates.latest-release",
       listKilnReleasesEffect()
@@ -192,7 +193,8 @@ export const startSystemUpdate = createServerFn({ method: "POST" })
           targetImage: immutableImage(component),
           version: updateTargetVersion(manifest),
         },
-        15 * 60_000
+        15 * 60_000,
+        user.id
       )
     )
     return { operation, relayId: target.id }

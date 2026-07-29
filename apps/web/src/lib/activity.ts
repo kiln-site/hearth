@@ -21,14 +21,7 @@ export function isActivityType(value: string): value is ActivityType {
   return activityTypeValues.has(value)
 }
 
-export const activityDateSchema = z.string().refine((value) => {
-  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false
-  const parsed = new Date(`${value}T00:00:00.000Z`)
-  return (
-    Number.isFinite(parsed.getTime()) &&
-    parsed.toISOString().slice(0, 10) === value
-  )
-}, "Invalid activity date")
+export const activityInstantSchema = z.iso.datetime()
 
 export interface ActivityScope {
   allInstances: boolean
@@ -48,6 +41,20 @@ export function scopeAllowsAudit(
   if (scope.allInstances) return true
   const instanceId = auditInstanceId(audit)
   return instanceId !== null && scope.instanceIds.has(instanceId)
+}
+
+export function activityLocalRangeToUtc(
+  from: Date,
+  to: Date
+): { from: string; to: string } {
+  const start = new Date(from)
+  start.setHours(0, 0, 0, 0)
+  const end = new Date(to)
+  end.setHours(23, 59, 59, 999)
+  return {
+    from: start.toISOString(),
+    to: end.toISOString(),
+  }
 }
 
 export function activityTypeForAudit(audit: RelayAuditRecord): ActivityType {

@@ -101,7 +101,8 @@ export const createBrickInstance = createServerFn({ method: "POST" })
           method: "POST",
           body: JSON.stringify(input),
         },
-        360_000
+        360_000,
+        user.id
       )
     )
     await provisionInstanceDomainBestEffort(instance, relay.id)
@@ -213,7 +214,8 @@ export const updateInstanceStartup = createServerFn({ method: "POST" })
           method: "PUT",
           body: JSON.stringify(input),
         },
-        360_000
+        360_000,
+        user.id
       )
     )
     await provisionInstanceDomainBestEffort(instance, relay.id)
@@ -257,7 +259,8 @@ export const configureBrickNetworking = createServerFn({ method: "POST" })
           method: "PUT",
           body: JSON.stringify(input),
         },
-        240_000
+        240_000,
+        user.id
       )
     )
     await runAppEffect(
@@ -279,10 +282,11 @@ async function requestRelay(
   relay: PersistedRelay,
   path: string,
   init?: RequestInit,
-  timeout = 15_000
+  timeout = 15_000,
+  subject?: string
 ): Promise<unknown> {
   return runAppEffect(
     "relay.json",
-    relayJsonEffect(relay, path, (input) => input, init, timeout)
+    relayJsonEffect(relay, path, (input) => input, init, timeout, subject)
   )
 }

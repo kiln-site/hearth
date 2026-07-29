@@ -18,10 +18,13 @@ import type {
   RelayControlServerMessage,
 } from "@workspace/contracts"
 
-import { attachControlSocket } from "./control-socket.js"
+import {
+  attachControlSocket,
+  auditDetailsForRequest,
+} from "./control-socket.js"
 import { fingerprint } from "./effect/identity.js"
 import { RelayStateStore } from "./effect/state.js"
-import type { RelayClientRecord } from "./effect/state.js"
+import type { RelayAuditInput, RelayClientRecord } from "./effect/state.js"
 
 describe("Relay control timeouts", () => {
   it("prefers relative timeouts and clamps them to the operation maximum", () => {
@@ -61,6 +64,28 @@ describe("Relay control timeouts", () => {
   })
 })
 
+describe("Relay control audit details", () => {
+  it("attributes mutations and scopes created instances from the result", () => {
+    const request: RelayControlRequest = {
+      deadline: Date.now() + 5_000,
+      id: "request",
+      operation: "instance.create",
+      payload: { name: "Survival" },
+      subject: "user-123",
+      timeoutMs: 5_000,
+      type: "request",
+      v: 1,
+    }
+    const instanceId = "a".repeat(40)
+
+    expect(auditDetailsForRequest(request, { id: instanceId })).toEqual({
+      instanceId,
+      operation: "instance.create",
+      subject: "user-123",
+    })
+  })
+})
+
 describe("Relay control socket", () => {
   it("authenticates a paired Hearth and executes an authorized request", async () => {
     const relayKeys = generateKeyPairSync("ed25519", {
@@ -86,8 +111,12 @@ describe("Relay control socket", () => {
     }
     let blockClientLookup = false
     let releaseClientLookup: (() => void) | undefined
+    const audits: Array<RelayAuditInput> = []
     const state = RelayStateStore.of({
-      appendAudit: () => Effect.void,
+      appendAudit: (input) =>
+        Effect.sync(() => {
+          audits.push(input)
+        }),
       createInvitation: () => Effect.void,
       findActiveInvitation: () => Effect.succeed(null),
       findClientById: (clientId) =>
@@ -352,13 +381,21 @@ describe("Relay control socket", () => {
           deadline: Date.now() + 120_000,
           id: randomBytes(12).toString("hex"),
           operation: "instance.network.routes.write",
-          payload: {},
+          payload: { instanceId: "a".repeat(40), routes: [] },
+          subject: "user-123",
           type: "request",
           v: 1,
         })
       )
       const routeMutation = await inbox.next()
       expect(routeMutation.type).toBe("response")
+      await expect
+        .poll(() => audits.at(-1)?.details)
+        .toEqual({
+          instanceId: "a".repeat(40),
+          operation: "instance.network.routes.write",
+          subject: "user-123",
+        })
       pushSnapshot?.({ instances: [{ id: "updated" }], node: {} })
       const pushed = await inbox.next()
       expect(pushed.type).toBe("event")

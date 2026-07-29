@@ -68,6 +68,7 @@ async function requireRelayAdministrator() {
   const user = await requireAuthenticatedUser()
   if (!isPlatformAdmin(user))
     throw new Error("Platform administrator access required")
+  return user
 }
 
 export const getRelays = createServerFn({ method: "GET" }).handler(async () => {
@@ -79,9 +80,9 @@ export const getRelays = createServerFn({ method: "GET" }).handler(async () => {
 export const addRelay = createServerFn({ method: "POST" })
   .validator(createRelaySchema)
   .handler(async ({ data }) => {
-    await requireRelayAdministrator()
+    const user = await requireRelayAdministrator()
     const { pairPersistedRelay } = await import("@/lib/relay-registry")
-    return pairPersistedRelay(data.pairingUri)
+    return pairPersistedRelay(data.pairingUri, user.id)
   })
 
 export const updateRelay = createServerFn({ method: "POST" })
@@ -136,43 +137,43 @@ export const getRelayAdministration = createServerFn({ method: "GET" })
 export const createRelayInvitation = createServerFn({ method: "POST" })
   .validator(pairingRoleSchema)
   .handler(async ({ data }) => {
-    await requireRelayAdministrator()
+    const user = await requireRelayAdministrator()
     const { createRelayPairingInvitation } =
       await import("@/lib/relay-registry")
-    return createRelayPairingInvitation(data)
+    return createRelayPairingInvitation(data, user.id)
   })
 
 export const revokeRelayInvitation = createServerFn({ method: "POST" })
   .validator(relayInvitationSchema)
   .handler(async ({ data }) => {
-    await requireRelayAdministrator()
+    const user = await requireRelayAdministrator()
     const { revokeRelayPairingInvitation } =
       await import("@/lib/relay-registry")
-    return { revoked: await revokeRelayPairingInvitation(data) }
+    return { revoked: await revokeRelayPairingInvitation(data, user.id) }
   })
 
 export const updateRelayClient = createServerFn({ method: "POST" })
   .validator(updateRelayClientSchema)
   .handler(async ({ data }) => {
-    await requireRelayAdministrator()
+    const user = await requireRelayAdministrator()
     const { updateRelayClientPolicy } = await import("@/lib/relay-registry")
-    return updateRelayClientPolicy(data)
+    return updateRelayClientPolicy(data, user.id)
   })
 
 export const revokeHearthClient = createServerFn({ method: "POST" })
   .validator(relayClientSchema)
   .handler(async ({ data }) => {
-    await requireRelayAdministrator()
+    const user = await requireRelayAdministrator()
     const { revokeRelayClient } = await import("@/lib/relay-registry")
-    return { revoked: await revokeRelayClient(data) }
+    return { revoked: await revokeRelayClient(data, user.id) }
   })
 
 export const renameRelay = createServerFn({ method: "POST" })
   .validator(renameRelaySchema)
   .handler(async ({ data }) => {
-    await requireRelayAdministrator()
+    const user = await requireRelayAdministrator()
     const { renamePersistedRelay } = await import("@/lib/relay-registry")
-    return renamePersistedRelay(data)
+    return renamePersistedRelay(data, user.id)
   })
 
 export const getRelayProxy = createServerFn({ method: "GET" })
@@ -195,7 +196,7 @@ export const getRelayProxy = createServerFn({ method: "GET" })
 export const updateRelayProxy = createServerFn({ method: "POST" })
   .validator(relayProxyInputSchema)
   .handler(async ({ data }) => {
-    await requireRelayAdministrator()
+    const user = await requireRelayAdministrator()
     const [{ listPersistedRelays }, { relayRpc }] = await Promise.all([
       import("@/lib/relay-registry"),
       import("@/lib/relay-connection"),
@@ -210,7 +211,7 @@ export const updateRelayProxy = createServerFn({ method: "POST" })
       traefikImage: data.traefikImage,
     })
     return relayProxyResponseSchema.parse(
-      await relayRpc(relay, "relay.proxy.write", settings, 240_000)
+      await relayRpc(relay, "relay.proxy.write", settings, 240_000, user.id)
     )
   })
 
@@ -234,7 +235,7 @@ export const getRelayTailscale = createServerFn({ method: "GET" })
 export const updateRelayTailscale = createServerFn({ method: "POST" })
   .validator(relayTailscaleInputSchema)
   .handler(async ({ data }) => {
-    await requireRelayAdministrator()
+    const user = await requireRelayAdministrator()
     const [{ listPersistedRelays }, { relayRpc }] = await Promise.all([
       import("@/lib/relay-registry"),
       import("@/lib/relay-connection"),
@@ -250,14 +251,14 @@ export const updateRelayTailscale = createServerFn({ method: "POST" })
       proxyPort: data.proxyPort,
     })
     return relayTailscaleOverviewSchema.parse(
-      await relayRpc(relay, "relay.tailscale.write", settings, 90_000)
+      await relayRpc(relay, "relay.tailscale.write", settings, 90_000, user.id)
     )
   })
 
 export const installRelayTailscale = createServerFn({ method: "POST" })
   .validator(relayTailscaleInstallInputSchema)
   .handler(async ({ data }) => {
-    await requireRelayAdministrator()
+    const user = await requireRelayAdministrator()
     const [{ listPersistedRelays }, { relayRpc }] = await Promise.all([
       import("@/lib/relay-registry"),
       import("@/lib/relay-connection"),
@@ -268,6 +269,6 @@ export const installRelayTailscale = createServerFn({ method: "POST" })
     if (!relay) throw new Error("Relay is not configured or is paused")
     const input = relayTailscaleInstallSchema.parse({ authKey: data.authKey })
     return relayTailscaleOverviewSchema.parse(
-      await relayRpc(relay, "relay.tailscale.install", input, 240_000)
+      await relayRpc(relay, "relay.tailscale.install", input, 240_000, user.id)
     )
   })

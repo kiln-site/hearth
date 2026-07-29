@@ -65,7 +65,8 @@ export async function relayRpc(
   payload: unknown,
   timeoutMs = operation === "instance.delete"
     ? relayControlDeadlineMs(operation)
-    : 10_000
+    : 10_000,
+  subject?: string
 ): Promise<unknown> {
   const effectiveRelay = relayControlEndpoint(relay)
   let connection = connections.get(relay.id)
@@ -84,7 +85,7 @@ export async function relayRpc(
     connection = new RelayConnection(effectiveRelay)
     connections.set(relay.id, connection)
   }
-  return connection.request(operation, payload, timeoutMs)
+  return connection.request(operation, payload, timeoutMs, subject)
 }
 
 export function relayConnectionState(relayId: string): RelayConnectionState {
@@ -147,7 +148,8 @@ class RelayConnection {
   async request(
     operation: RelayControlOperation,
     payload: unknown,
-    timeoutMs: number
+    timeoutMs: number,
+    subject?: string
   ): Promise<unknown> {
     await this.#connect()
     if (operation === "relay.snapshot" && this.#hasPushedSnapshot) {
@@ -169,6 +171,7 @@ class RelayConnection {
       id,
       operation,
       payload,
+      ...(subject ? { subject } : {}),
       timeoutMs: duration,
       type: "request",
       v: 1,
@@ -431,7 +434,8 @@ class RelayConnection {
             ...input,
             relayId: this.#relay.id,
           },
-          relayRpc,
+          (relay, operation, payload, timeoutMs) =>
+            relayRpc(relay, operation, payload, timeoutMs, request.subject),
           controller.signal
         )
         throwIfRelayRequestCancelled(controller.signal)

@@ -247,7 +247,9 @@ export const updateInstanceName = createServerFn({ method: "POST" })
         {
           body: JSON.stringify({ name: data.name }),
           method: "PUT",
-        }
+        },
+        undefined,
+        user.id
       )
     )
     await runAppEffect(
@@ -284,7 +286,8 @@ export const deleteInstance = createServerFn({ method: "POST" })
         relay,
         `/v1/instances/${encodeURIComponent(data.instanceId)}?deleteData=true`,
         { method: "DELETE" },
-        relayControlDeadlineMs("instance.delete")
+        relayControlDeadlineMs("instance.delete"),
+        user.id
       )
     )
     await runAppEffect(
@@ -431,7 +434,9 @@ export const saveRelayFile = createServerFn({ method: "POST" })
     const response = await relayFetch(
       relay,
       `/v1/instances/${encodeURIComponent(instanceId)}/file?path=${encodeURIComponent(path)}`,
-      { method: "PUT", body: JSON.stringify(input) }
+      { method: "PUT", body: JSON.stringify(input) },
+      undefined,
+      user.id
     )
     const file = relayFileContentSchema.parse(await response.json())
     await recordFileActivityBestEffort(
@@ -504,7 +509,8 @@ export const performRelayAction = createServerFn({ method: "POST" })
       relay,
       `/v1/instances/${encodeURIComponent(instanceId)}/actions`,
       { method: "POST", body: JSON.stringify({ action }) },
-      relayControlDeadlineMs("instance.action")
+      relayControlDeadlineMs("instance.action"),
+      user.id
     )
     const instance = relayInstanceSchema.parse(await response.json())
     await runAppEffect(
@@ -659,7 +665,7 @@ async function relayRequest(
     permission,
     instanceId,
   })
-  const response = await relayFetch(relay, path, init, timeoutMs)
+  const response = await relayFetch(relay, path, init, timeoutMs, user.id)
   return response.json()
 }
 
@@ -667,11 +673,12 @@ async function relayRequestRaw(
   relay: RelayEndpoint,
   path: string,
   init?: RequestInit,
-  timeoutMs?: number
+  timeoutMs?: number,
+  subject?: string
 ): Promise<unknown> {
   return runAppEffect(
     "relay.json",
-    relayJsonEffect(relay, path, (input) => input, init, timeoutMs)
+    relayJsonEffect(relay, path, (input) => input, init, timeoutMs, subject)
   )
 }
 
@@ -747,11 +754,12 @@ async function relayFetch(
   relay: RelayEndpoint,
   path: string,
   init?: RequestInit,
-  timeoutMs?: number
+  timeoutMs?: number,
+  subject?: string
 ): Promise<Response> {
   return runAppEffect(
     "relay.fetch",
-    relayFetchEffect(relay, path, init, timeoutMs)
+    relayFetchEffect(relay, path, init, timeoutMs, subject)
   )
 }
 

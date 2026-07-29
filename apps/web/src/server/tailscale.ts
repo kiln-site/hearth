@@ -246,7 +246,7 @@ export const syncTailscaleIntegration = createServerFn({ method: "POST" })
 export const saveTailscaleStack = createServerFn({ method: "POST" })
   .validator(saveTailscaleStackSchema)
   .handler(async ({ data }) => {
-    await requireTailscaleAdministrator()
+    const user = await requireTailscaleAdministrator()
     const relays = (await listPersistedRelays()).filter(
       (relay) => relay.enabled
     )
@@ -385,6 +385,7 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
       name: data.name,
       operations: tailscaleDeploymentOperations(
         relayById,
+        user.id,
         integrationCredential
           ? (deployment) =>
               removeTailscaleControlPlaneDevice(
@@ -481,7 +482,7 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
 export const removeTailscaleStack = createServerFn({ method: "POST" })
   .validator(removeTailscaleStackSchema)
   .handler(async ({ data }) => {
-    await requireTailscaleAdministrator()
+    const user = await requireTailscaleAdministrator()
     const relays = (await listPersistedRelays()).filter(
       (relay) => relay.enabled
     )
@@ -508,6 +509,7 @@ export const removeTailscaleStack = createServerFn({ method: "POST" })
       name: definition?.name ?? fallback?.name ?? "Tailscale network",
       operations: tailscaleDeploymentOperations(
         relayById,
+        user.id,
         credential
           ? (deployment) =>
               removeTailscaleControlPlaneDevice(credential, deployment)
@@ -537,6 +539,7 @@ async function requireTailscaleAdministrator() {
   if (!isPlatformAdmin(user)) {
     throw new Error("Platform administrator access required")
   }
+  return user
 }
 
 async function loadTailscaleStacks(): Promise<TailscaleStacksResult> {
@@ -673,6 +676,7 @@ async function loadTailscaleDeployments(
 
 function tailscaleDeploymentOperations(
   relayById: ReadonlyMap<string, PersistedRelay>,
+  subject: string,
   removeFromControlPlane?: (deployment: TailscaleDeployment) => Promise<void>
 ): TailscaleDeploymentOperations<TailscaleDeployment> {
   return {
@@ -680,7 +684,13 @@ function tailscaleDeploymentOperations(
       const relay = relayById.get(target.relayId)
       if (!relay) throw new Error("The network's node is unavailable")
       const stack = relayTailscaleStackSchema.parse(
-        await relayRpc(relay, "relay.tailscale.stack.apply", input, 240_000)
+        await relayRpc(
+          relay,
+          "relay.tailscale.stack.apply",
+          input,
+          240_000,
+          subject
+        )
       )
       return {
         ...stack,
@@ -698,6 +708,7 @@ function tailscaleDeploymentOperations(
         deployment,
         relayById,
         mode,
+        subject,
         controlPlaneDeviceRemoved
       )
     },
@@ -709,7 +720,8 @@ function tailscaleDeploymentOperations(
           relay,
           "relay.tailscale.stack.dns",
           { id: deployment.id, records },
-          60_000
+          60_000,
+          subject
         )
       )
       return {
@@ -725,6 +737,7 @@ async function removeDeployment(
   deployment: Pick<TailscaleDeployment, "id" | "relayId">,
   relayById: ReadonlyMap<string, PersistedRelay>,
   mode: "commit" | "prepare" | "rollback",
+  subject: string,
   controlPlaneDeviceRemoved = false
 ): Promise<void> {
   const relay = relayById.get(deployment.relayId)
@@ -733,7 +746,8 @@ async function removeDeployment(
     relay,
     "relay.tailscale.stack.remove",
     { controlPlaneDeviceRemoved, id: deployment.id, mode },
-    120_000
+    120_000,
+    subject
   )
 }
 

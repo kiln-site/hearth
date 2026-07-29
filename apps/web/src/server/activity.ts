@@ -4,7 +4,7 @@ import type { RowDataPacket } from "mysql2/promise"
 import { z } from "zod"
 
 import {
-  activityDateSchema,
+  activityInstantSchema,
   activityLabelForAudit,
   activityTypeForAudit,
   auditInstanceId,
@@ -20,13 +20,15 @@ import { listPersistedRelays } from "@/lib/relay-registry"
 import { requireAuthenticatedUser } from "@/server/auth"
 
 const activityRangeSchema = z
-  .object({
-    from: activityDateSchema.optional(),
-    to: activityDateSchema.optional(),
+  .strictObject({
+    from: activityInstantSchema.optional(),
+    to: activityInstantSchema.optional(),
   })
-  .strict()
   .refine(
-    ({ from, to }) => from === undefined || to === undefined || from <= to,
+    ({ from, to }) =>
+      from === undefined ||
+      to === undefined ||
+      Date.parse(from) <= Date.parse(to),
     "Activity start must be before its end"
   )
 
@@ -83,9 +85,9 @@ export const getActivity = createServerFn({ method: "GET" })
 
     const visibleRelays = relays.filter((relay) => scopes.has(relay.id))
     const query = {
-      ...(data.from ? { from: dateStart(data.from) } : {}),
+      ...(data.from ? { from: Date.parse(data.from) } : {}),
       limit: 2_000,
-      ...(data.to ? { to: dateEnd(data.to) } : {}),
+      ...(data.to ? { to: Date.parse(data.to) } : {}),
     }
     const results = await Promise.allSettled(
       visibleRelays.map(async (relay) => {
@@ -175,21 +177,23 @@ export const getActivity = createServerFn({ method: "GET" })
         name: relay.name,
         unavailable: unavailableRelayIds.has(relay.id),
       })),
-      servers: instanceRows
-        .filter((instance) => {
-          const scope = scopes.get(instance.relay_id)
-          return (
-            scope?.allInstances === true ||
-            scope?.instanceIds.has(instance.instance_id) === true
-          )
-        })
-        .map((instance) => ({
-          id: instance.instance_id,
-          name:
-            instance.display_name ??
-            `Server ${instance.instance_id.slice(0, 8)}`,
-          relayId: instance.relay_id,
-        })),
+      servers: instanceRows.flatMap((instance) => {
+        const scope = scopes.get(instance.relay_id)
+        const visible =
+          scope?.allInstances === true ||
+          scope?.instanceIds.has(instance.instance_id) === true
+        return visible
+          ? [
+              {
+                id: instance.instance_id,
+                name:
+                  instance.display_name ??
+                  `Server ${instance.instance_id.slice(0, 8)}`,
+                relayId: instance.relay_id,
+              },
+            ]
+          : []
+      }),
       truncatedRelayIds: available.flatMap(({ records, relay }) =>
         records.length === 2_000 ? [relay.id] : []
       ),
@@ -226,14 +230,6 @@ async function listActivityUsers(
 
 function instanceKey(relayId: string, instanceId: string): string {
   return `${relayId}:${instanceId}`
-}
-
-function dateStart(value: string): number {
-  return Date.parse(`${value}T00:00:00.000Z`)
-}
-
-function dateEnd(value: string): number {
-  return Date.parse(`${value}T23:59:59.999Z`)
 }
 
 export type ActivityData = Awaited<ReturnType<typeof getActivity>>
