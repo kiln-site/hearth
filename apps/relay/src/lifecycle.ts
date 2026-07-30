@@ -1491,9 +1491,11 @@ export class LifecycleDriver {
         "Configure this Tailscale network from Infrastructure → Tailscale"
       )
     }
-    if (existing.ports.length === 0) {
+    if (
+      !existing.ports.some((allocation) => allocation.kind === "primary")
+    ) {
       throw new Error(
-        "This server does not have managed port allocations. Recreate it before changing startup settings."
+        "This server does not have a recoverable primary port. Recreate it before changing startup settings."
       )
     }
     const recipe = input.recipe ?? existing.brickSource

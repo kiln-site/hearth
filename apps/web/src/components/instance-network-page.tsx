@@ -609,21 +609,23 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
                         </TooltipTrigger>
                         <TooltipContent>Edit allocation</TooltipContent>
                       </Tooltip>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            aria-label={`Remove ${allocation.name}`}
-                            disabled={disabled}
-                            onClick={() => onRemovePort(allocation)}
-                            size="icon-sm"
-                            type="button"
-                            variant="ghost"
-                          >
-                            <Trash2 />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Remove allocation</TooltipContent>
-                      </Tooltip>
+                      {allocation.kind === "custom" ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              aria-label={`Remove ${allocation.name}`}
+                              disabled={disabled}
+                              onClick={() => onRemovePort(allocation)}
+                              size="icon-sm"
+                              type="button"
+                              variant="ghost"
+                            >
+                              <Trash2 />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Remove allocation</TooltipContent>
+                        </Tooltip>
+                      ) : null}
                     </>
                   ) : null}
                 </div>

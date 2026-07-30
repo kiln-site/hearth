@@ -132,6 +132,55 @@ describe("instance port allocations", () => {
     ])
   })
 
+  it.each(["tcp", "udp"] as const)(
+    "recovers a main-era bare primary port using its %s companion label",
+    (protocol) => {
+      expect(
+        discoverPortAllocations({
+          bindings: {
+            [`25565/${protocol}`]: [{ HostPort: "32000" }],
+          },
+          labels: {
+            "kiln.brick.primary-port": "25565",
+            "kiln.brick.primary-port-protocol": protocol,
+          },
+        })
+      ).toEqual([
+        {
+          externalPort: 32_000,
+          id: "primary",
+          internalPort: 25_565,
+          kind: "primary",
+          name: "Game server port",
+          protocol,
+        },
+      ])
+    }
+  )
+
+  it("prefers an explicit primary-port suffix over the companion label", () => {
+    expect(
+      discoverPortAllocations({
+        bindings: {
+          "25565/tcp": [{ HostPort: "32000" }],
+        },
+        labels: {
+          "kiln.brick.primary-port": "25565/tcp",
+          "kiln.brick.primary-port-protocol": "udp",
+        },
+      })
+    ).toEqual([
+      {
+        externalPort: 32_000,
+        id: "primary",
+        internalPort: 25_565,
+        kind: "primary",
+        name: "Game server port",
+        protocol: "tcp",
+      },
+    ])
+  })
+
   it("reads the aggregate format once so the next boot can replace it", () => {
     expect(
       discoverPortAllocations({
@@ -170,6 +219,17 @@ describe("instance port allocations", () => {
     const desired = portAllocationContainerLabels(allocations)
     expect(portLabelsRequireRestart(desired, desired)).toBe(false)
     expect(portLabelsRequireRestart({}, desired)).toBe(true)
+    expect(
+      portLabelsRequireRestart(
+        {
+          "kiln.brick.primary-port": "25565",
+          "kiln.brick.primary-port-protocol": "tcp",
+        },
+        {
+          "kiln.brick.primary-port": "25565/tcp",
+        }
+      )
+    ).toBe(true)
     expect(
       portLabelsRequireRestart(
         {

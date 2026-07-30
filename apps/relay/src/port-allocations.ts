@@ -141,7 +141,10 @@ function recoverablePortMetadata(
     return legacy
   }
 
-  const primary = parsePrimaryPortLabel(labels[PRIMARY_PORT_LABEL])
+  const primary = parsePrimaryPortLabel(
+    labels[PRIMARY_PORT_LABEL],
+    labels[LEGACY_PRIMARY_PORT_PROTOCOL_LABEL]
+  )
   const routes = Object.entries(labels)
     .filter(([label]) => label.startsWith(INSTANCE_CUSTOM_ROUTE_LABEL_PREFIX))
     .flatMap(([label, value]): Array<RecoverablePortMetadata> => {
@@ -175,7 +178,8 @@ function recoverablePortMetadata(
 }
 
 function parsePrimaryPortLabel(
-  label: string | undefined
+  label: string | undefined,
+  legacyProtocolLabel: string | undefined
 ): RecoverablePortMetadata | undefined {
   const match = label?.match(/^(\d{1,5})(?:\/(tcp|udp))?$/u)
   if (!match) return undefined
@@ -192,7 +196,12 @@ function parsePrimaryPortLabel(
     internalPort,
     kind: "primary",
     name: "Game server port",
-    protocol: match[2] === "tcp" || match[2] === "udp" ? match[2] : "both",
+    protocol:
+      match[2] === "tcp" || match[2] === "udp"
+        ? match[2]
+        : legacyProtocolLabel === "tcp" || legacyProtocolLabel === "udp"
+          ? legacyProtocolLabel
+          : "both",
   }
 }
 
