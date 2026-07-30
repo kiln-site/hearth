@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-query"
 import {
   AlertTriangle,
+  Cable,
   CheckCircle2,
   Copy,
   Globe2,
@@ -44,8 +45,12 @@ import {
   accessCapabilitiesQueryOptions,
   instanceDomainQueryOptions,
   queryKeys,
+  relaySnapshotQueryOptions,
+  replaceRelaySnapshotInstance,
 } from "@/lib/query-options"
+import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
+import { selectInstanceObservedState } from "@/lib/relay-selectors"
 import { setInstanceVanity } from "@/server/domains"
 import {
   getInstanceWebRoutes,
@@ -150,8 +155,10 @@ function WebRoutesNetworkPage({ showTailscale }: { showTailscale: boolean }) {
     <main className="min-h-0 flex-1 overflow-y-auto bg-background/55 p-4 sm:p-6">
       <div className="mx-auto max-w-4xl space-y-4">
         <ManagedGameAddressSection
+          canPower={permissions.power}
           canWrite={permissions.networkWrite}
           instance={instance}
+          relayConnected={relayConnected}
         />
         {showTailscale ? (
           <GameServerTailscaleSection server={instance} />
@@ -250,19 +257,36 @@ function WebRoutesNetworkPage({ showTailscale }: { showTailscale: boolean }) {
 
 const ManagedGameAddressSection = React.memo(
   function ManagedGameAddressSection({
+    canPower,
     canWrite,
     instance,
+    relayConnected,
   }: {
+    canPower: boolean
     canWrite: boolean
     instance: InstanceWorkspaceInstance
+    relayConnected: boolean
   }) {
     const queryClient = useQueryClient()
+    const selectObservedState = React.useMemo(
+      () => selectInstanceObservedState(instance.id, instance.relayId),
+      [instance.id, instance.relayId]
+    )
+    const { data: observedState } = useQuery({
+      ...relaySnapshotQueryOptions(),
+      select: selectObservedState,
+    })
     const queryOptions = instanceDomainQueryOptions(
       instance.relayId,
       instance.id
     )
     const domain = useQuery(queryOptions)
     const assignment = domain.data?.assignment
+    const addressError = instance.connectAddress.startsWith("Error:")
+      ? instance.connectAddress
+      : null
+    const addressUnavailable =
+      instance.requiresNetworkUpgrade || addressError !== null
     const update = useMutation({
       mutationFn: (vanityLabel: string) =>
         setInstanceVanity({
@@ -291,11 +315,50 @@ const ManagedGameAddressSection = React.memo(
         })
       },
     })
+    const networkUpgrade = useMutation({
+      mutationFn: () =>
+        performRelayAction({
+          data: {
+            action: observedState === "stopped" ? "start" : "restart",
+            instanceId: instance.id,
+            relayId: instance.relayId,
+          },
+        }),
+      onSuccess: async (updated) => {
+        queryClient.setQueryData<RelayFleetSnapshot>(
+          queryKeys.relay.snapshot,
+          (snapshot) => replaceRelaySnapshotInstance(snapshot, updated)
+        )
+        await Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: queryOptions.queryKey,
+          }),
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.relay.connection,
+          }),
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.relay.snapshot,
+          }),
+        ])
+        showToast({
+          message: "Dedicated server address is ready",
+          type: "success",
+        })
+      },
+    })
+    const upgradingUnavailable =
+      !canPower ||
+      !relayConnected ||
+      observedState === undefined ||
+      observedState === "starting" ||
+      observedState === "stopping" ||
+      networkUpgrade.isPending
     const copyAddress = React.useCallback(() => {
+      if (addressUnavailable) return
       const address = assignment?.address ?? instance.connectAddress
       void navigator.clipboard.writeText(address)
       showToast({ message: "Server address copied", type: "success" })
-    }, [assignment?.address, instance.connectAddress])
+    }, [addressUnavailable, assignment?.address, instance.connectAddress])
 
     return (
       <section className="border border-border/80 bg-card/55">
@@ -332,13 +395,74 @@ const ManagedGameAddressSection = React.memo(
             </p>
           ) : (
             <>
+              {instance.requiresNetworkUpgrade ? (
+                <div className="border border-amber-400/25 bg-amber-400/6">
+                  <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex min-w-0 items-start gap-3">
+                      <div className="grid size-8 shrink-0 place-items-center border border-amber-300/25 bg-amber-300/8 text-amber-300">
+                        <Cable className="size-4" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-amber-100">
+                          Networking upgrade required
+                        </p>
+                        <p className="mt-1 max-w-xl text-[11px] leading-relaxed text-amber-100/65">
+                          This server predates dedicated game ports. Kiln will
+                          preserve its files and settings, assign a unique port,
+                          and restore the previous container if the upgrade
+                          fails.
+                        </p>
+                      </div>
+                    </div>
+                    {canPower ? (
+                      <Button
+                        className="shrink-0 border-amber-300/30 text-amber-100 hover:bg-amber-300/10 hover:text-amber-50"
+                        disabled={upgradingUnavailable}
+                        onClick={() => networkUpgrade.mutate()}
+                        size="sm"
+                        type="button"
+                        variant="outline"
+                      >
+                        {networkUpgrade.isPending ? (
+                          <LoaderCircle className="animate-spin" />
+                        ) : (
+                          <RotateCw />
+                        )}
+                        {networkUpgrade.isPending
+                          ? "Upgrading"
+                          : observedState === "stopped"
+                            ? "Start & upgrade"
+                            : "Restart & upgrade"}
+                      </Button>
+                    ) : null}
+                  </div>
+                  {networkUpgrade.error ? (
+                    <p className="border-t border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                      {errorMessage(networkUpgrade.error)}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="flex min-w-0 items-stretch border border-border/80 bg-background/55">
-                <code className="min-w-0 flex-1 truncate px-3 py-2.5 text-sm text-foreground">
-                  {assignment?.address ?? instance.connectAddress}
+                <code
+                  className={`min-w-0 flex-1 truncate px-3 py-2.5 text-sm ${
+                    instance.requiresNetworkUpgrade
+                      ? "text-amber-200/75"
+                      : addressError
+                        ? "font-semibold text-destructive"
+                        : "text-foreground"
+                  }`}
+                >
+                  {instance.requiresNetworkUpgrade
+                    ? "Dedicated address pending"
+                    : addressError
+                      ? "ERROR"
+                      : (assignment?.address ?? instance.connectAddress)}
                 </code>
                 <Button
                   aria-label="Copy game server address"
                   className="h-auto rounded-none border-y-0 border-r-0"
+                  disabled={addressUnavailable}
                   onClick={copyAddress}
                   type="button"
                   variant="outline"
@@ -348,7 +472,14 @@ const ManagedGameAddressSection = React.memo(
                 </Button>
               </div>
 
-              {assignment ? (
+              {instance.requiresNetworkUpgrade ? (
+                <p className="text-[11px] text-amber-100/65">
+                  The address will appear here after the next successful start
+                  or restart.
+                </p>
+              ) : addressError ? (
+                <p className="text-[11px] text-destructive">{addressError}</p>
+              ) : assignment ? (
                 <p className="font-mono text-[10px] text-muted-foreground">
                   Direct fallback · {assignment.directAddress}
                 </p>
@@ -364,7 +495,7 @@ const ManagedGameAddressSection = React.memo(
                 </p>
               )}
 
-              {canWrite && domain.data?.managedDomain ? (
+              {canWrite && domain.data?.managedDomain && !addressUnavailable ? (
                 <form
                   className="border-t border-border/70 pt-4"
                   action={(form) => {

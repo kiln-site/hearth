@@ -46,7 +46,7 @@ import {
 } from "@workspace/contracts"
 import type { BrickCatalog } from "./bricks.js"
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
-import type { DockerDriver } from "./docker.js"
+import type { DockerDriver, DockerPublishedPortUpgrade } from "./docker.js"
 import { INSTANCE_STOP_TIMEOUT_SECONDS } from "./power-state.js"
 import {
   relayOwnerLabel,
@@ -1271,6 +1271,15 @@ export class LifecycleDriver {
       (action === "start" || action === "restart")
     ) {
       const desiredLabels = this.#containerWebRouteLabels(routes, settings)
+      if (instance.requiresNetworkUpgrade) {
+        return this.#upgradeInstanceNetworking(
+          instance,
+          routes,
+          settings,
+          desiredLabels,
+          action
+        )
+      }
       const labels = await containerLabels(instance.service)
       if (routeLabelsRequireRestart(labels, routes, desiredLabels)) {
         const usesExternalEdge =
@@ -1289,6 +1298,69 @@ export class LifecycleDriver {
       }
     }
     return this.#docker.runAction(instance, action)
+  }
+
+  async #upgradeInstanceNetworking(
+    instance: RelayInstanceConfig,
+    routes: ReadonlyArray<RelayInstanceWebRoute>,
+    settings: RelayProxySettings,
+    routeLabels: Readonly<Record<string, string>>,
+    action: "start" | "restart"
+  ): Promise<RelayInstance> {
+    const recipe = instance.brickSource
+    if (!recipe) {
+      throw new Error(
+        `Cannot ${action} ${instance.name}: its legacy container is missing its Brick recipe source`
+      )
+    }
+    const definition = await this.#bricks.recipe(recipe)
+    const primaryPort = definition.network.ports.find(
+      (port) => port.name === definition.network.primaryPort
+    )
+    if (!primaryPort) {
+      throw new Error(
+        `Cannot ${action} ${instance.name}: its Brick recipe has no primary network port`
+      )
+    }
+    const existing = await this.#docker.inspectInstances()
+    const generatedPublicPort =
+      instance.publicPort === undefined && primaryPort.host === undefined
+    const publicPort =
+      instance.publicPort ??
+      primaryPort.host ??
+      (await this.#reserveGamePort(instance.id, primaryPort.protocol, existing))
+    const usesExternalEdge =
+      settings.mode === "none" || settings.mode === "coolify"
+    if (usesExternalEdge && routes.length > 0) {
+      await this.#ensureEdgeNetwork()
+    }
+    const upgrade: DockerPublishedPortUpgrade = {
+      containerPort: primaryPort.container,
+      hostPort: publicPort,
+      labels: {
+        "kiln.brick.network-mode": definition.network.mode,
+        "kiln.brick.primary-port": String(primaryPort.container),
+        "kiln.brick.primary-port-protocol": primaryPort.protocol,
+        "kiln.brick.supports-srv": String(definition.network.supportsSrv),
+        "kiln.instance.public-host": this.#config.gameHost,
+      },
+      protocol: primaryPort.protocol,
+    }
+    try {
+      return await this.#docker.recreateOwnedInstance(
+        instance,
+        routeLabels,
+        usesExternalEdge && routes.length > 0
+          ? this.#resources.edgeNetwork
+          : null,
+        action,
+        upgrade
+      )
+    } finally {
+      if (generatedPublicPort) {
+        this.#pendingGamePorts.delete(`${primaryPort.protocol}:${publicPort}`)
+      }
+    }
   }
 
   async #writeProxySettings(settings: RelayProxySettings): Promise<void> {

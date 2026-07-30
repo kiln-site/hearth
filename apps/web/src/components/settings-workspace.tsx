@@ -356,16 +356,27 @@ function CopyAddressCard({ instance }: { instance: InstanceSettingsInstance }) {
       <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
         {instance.game === "Palworld"
           ? "Direct UDP endpoint on the Relay node."
-          : "Routed through Velocity and the existing CoreDNS wildcard."}
+          : "Dedicated game endpoint published by the Relay node."}
       </p>
-      <CopyAddressControl address={instance.connectAddress} />
+      <CopyAddressControl
+        address={instance.connectAddress}
+        requiresNetworkUpgrade={instance.requiresNetworkUpgrade}
+      />
     </div>
   )
 }
 
-function CopyAddressControl({ address }: { address: string }) {
+function CopyAddressControl({
+  address,
+  requiresNetworkUpgrade,
+}: {
+  address: string
+  requiresNetworkUpgrade: boolean
+}) {
   const [copied, setCopied] = React.useState(false)
   const resetTimer = React.useRef<number | null>(null)
+  const addressError = address.startsWith("Error:") ? address : null
+  const unavailable = requiresNetworkUpgrade || addressError !== null
   React.useEffect(
     () => () => {
       if (resetTimer.current) window.clearTimeout(resetTimer.current)
@@ -374,6 +385,7 @@ function CopyAddressControl({ address }: { address: string }) {
   )
 
   async function copyAddress() {
+    if (unavailable) return
     await navigator.clipboard.writeText(address)
     setCopied(true)
     if (resetTimer.current) window.clearTimeout(resetTimer.current)
@@ -384,27 +396,71 @@ function CopyAddressControl({ address }: { address: string }) {
     <>
       <button
         type="button"
-        className="group mt-5 flex w-full items-center justify-between rounded-lg border border-primary/25 bg-primary/7 px-3 py-3 text-left transition-[background-color,border-color,box-shadow] outline-none hover:border-primary/40 hover:bg-primary/12 focus-visible:border-ring/70 focus-visible:ring-2 focus-visible:ring-ring/35"
+        aria-disabled={unavailable}
+        className={`group mt-5 flex w-full items-center justify-between rounded-lg border px-3 py-3 text-left transition-[background-color,border-color,box-shadow] outline-none focus-visible:border-ring/70 focus-visible:ring-2 focus-visible:ring-ring/35 ${
+          requiresNetworkUpgrade
+            ? "border-amber-400/25 bg-amber-400/6"
+            : addressError
+              ? "border-destructive/25 bg-destructive/5"
+              : "border-primary/25 bg-primary/7 hover:border-primary/40 hover:bg-primary/12"
+        }`}
         onClick={copyAddress}
       >
         <span>
-          <span className="block font-mono text-[9px] tracking-wider text-primary uppercase">
+          <span
+            className={`block font-mono text-[9px] tracking-wider uppercase ${
+              requiresNetworkUpgrade
+                ? "text-amber-300"
+                : addressError
+                  ? "text-destructive"
+                  : "text-primary"
+            }`}
+          >
             Server address
           </span>
-          <span className="mt-1 block font-mono text-sm font-semibold">
-            {address}
+          <span
+            className={`mt-1 block font-mono text-sm font-semibold ${
+              requiresNetworkUpgrade
+                ? "text-amber-100"
+                : addressError
+                  ? "text-destructive"
+                  : ""
+            }`}
+          >
+            {requiresNetworkUpgrade
+              ? "UPGRADE REQUIRED"
+              : addressError
+                ? "ERROR"
+                : address}
           </span>
         </span>
         <span className="grid size-8 place-items-center rounded-md bg-background/70 text-muted-foreground group-hover:text-foreground">
-          {copied ? (
+          {unavailable ? (
+            <TriangleAlert
+              className={`size-4 ${
+                requiresNetworkUpgrade ? "text-amber-300" : "text-destructive"
+              }`}
+            />
+          ) : copied ? (
             <Check className="size-4 text-emerald-400" />
           ) : (
             <Copy className="size-4" />
           )}
         </span>
       </button>
-      <p className="mt-3 font-mono text-[9px] text-muted-foreground/75">
-        {copied ? "Address copied to clipboard" : "Click to copy"}
+      <p
+        className={`mt-3 font-mono text-[9px] ${
+          requiresNetworkUpgrade
+            ? "text-amber-200/70"
+            : addressError
+              ? "text-destructive"
+              : "text-muted-foreground/75"
+        }`}
+      >
+        {requiresNetworkUpgrade
+          ? "Restart this server from Network to assign its dedicated address"
+          : (addressError ??
+            (copied ? "Address copied to clipboard" : "Click to copy"))}
       </p>
     </>
   )

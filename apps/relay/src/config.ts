@@ -30,6 +30,7 @@ export interface RelayInstanceConfig {
   name: string
   publicHost?: string
   publicPort?: number
+  requiresNetworkUpgrade?: boolean
   service: string
   tailscale: RelayInstanceTailscale
   variables?: Record<string, boolean | number | string>

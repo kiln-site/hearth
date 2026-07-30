@@ -8,8 +8,10 @@ import {
   containerPortListening,
   dockerPublishedHostPorts,
   dockerPublishedPort,
+  dockerPublishedPrimaryPort,
   instanceConnectAddress,
   instancePublicHost,
+  managedInstanceRequiresNetworkUpgrade,
   procNetTcpHasListener,
   publicConnectAddress,
 } from "./docker.js"
@@ -37,6 +39,31 @@ describe("Docker public game ports", () => {
         { "25565/tcp": [{ HostPort: "not-a-port" }] },
         25_565,
         "tcp"
+      )
+    ).toBeUndefined()
+  })
+
+  it("recovers the protocol from an unambiguous legacy binding", () => {
+    expect(
+      dockerPublishedPrimaryPort(
+        {
+          "25565/tcp": [
+            { HostIp: "0.0.0.0", HostPort: "30000" },
+            { HostIp: "::", HostPort: "30000" },
+          ],
+        },
+        25_565,
+        undefined
+      )
+    ).toEqual({ port: 30_000, protocol: "tcp" })
+    expect(
+      dockerPublishedPrimaryPort(
+        {
+          "25565/tcp": [{ HostPort: "30000" }],
+          "25565/udp": [{ HostPort: "30001" }],
+        },
+        25_565,
+        undefined
       )
     ).toBeUndefined()
   })
@@ -116,6 +143,37 @@ describe("Docker public game ports", () => {
     expect(instanceConnectAddress({ relayHost: "relay.example.com" })).toBe(
       "Error: Relay did not report a published game port"
     )
+  })
+
+  it("only offers migration for recoverable Relay-managed game servers", () => {
+    expect(
+      managedInstanceRequiresNetworkUpgrade({
+        brickId: "fabric",
+        brickSource: "https://example.com/fabric.kiln-brick.json",
+        managedByRelay: true,
+      })
+    ).toBe(true)
+    expect(
+      managedInstanceRequiresNetworkUpgrade({
+        brickId: "fabric",
+        brickSource: "https://example.com/fabric.kiln-brick.json",
+        managedByRelay: true,
+        publicPort: 30_000,
+      })
+    ).toBe(false)
+    expect(
+      managedInstanceRequiresNetworkUpgrade({
+        brickId: "tailscale",
+        brickSource: "builtin:tailscale",
+        managedByRelay: true,
+      })
+    ).toBe(false)
+    expect(
+      managedInstanceRequiresNetworkUpgrade({
+        brickId: "fabric",
+        managedByRelay: true,
+      })
+    ).toBe(false)
   })
 })
 

@@ -31,6 +31,7 @@ export type ServerListInstance = Pick<
   | "implementation"
   | "name"
   | "observedState"
+  | "requiresNetworkUpgrade"
   | "shortId"
   | "version"
 > & {
@@ -48,6 +49,7 @@ export type InstanceWorkspaceInstance = Pick<
   | "implementation"
   | "javaVersion"
   | "name"
+  | "requiresNetworkUpgrade"
   | "service"
   | "shortId"
   | "version"
@@ -72,6 +74,7 @@ export type InstanceSettingsInstance = Pick<
   | "implementation"
   | "javaVersion"
   | "name"
+  | "requiresNetworkUpgrade"
   | "service"
   | "shortId"
   | "version"
@@ -127,6 +130,7 @@ export function selectServerListInstances(
     implementation: instance.implementation,
     name: instance.name,
     observedState: instance.observedState,
+    requiresNetworkUpgrade: instance.requiresNetworkUpgrade,
     relayId: instance.relayId,
     relayName: instance.relayName,
     relayStatus: instance.relayStatus,
@@ -178,6 +182,7 @@ export function selectInstanceWorkspaceInstance(identifier: string) {
       name: instance.name,
       relayId: instance.relayId,
       relayName: instance.relayName,
+      requiresNetworkUpgrade: instance.requiresNetworkUpgrade,
       routeId: instance.routeId,
       service: instance.service,
       shortId: instance.shortId,
@@ -236,6 +241,7 @@ export function selectInstanceSettings(instanceId: string, relayId?: string) {
         javaVersion: instance.javaVersion,
         name: instance.name,
         relayId: instance.relayId,
+        requiresNetworkUpgrade: instance.requiresNetworkUpgrade,
         service: instance.service,
         shortId: instance.shortId,
         version: instance.version,

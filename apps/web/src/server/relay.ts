@@ -44,6 +44,7 @@ import { runAppEffect } from "@/effect/runtime"
 import {
   applyManagedDomainAddressesEffect,
   deleteInstanceDomainEffect,
+  provisionInstanceDomainBestEffort,
 } from "@/server/domains.server"
 import { finalizeInstanceDeletionEffect } from "@/server/instance-deletion-cleanup"
 import {
@@ -513,6 +514,9 @@ export const performRelayAction = createServerFn({ method: "POST" })
       user.id
     )
     const instance = relayInstanceSchema.parse(await response.json())
+    if (action === "start" || action === "restart") {
+      await provisionInstanceDomainBestEffort(instance, relay.id)
+    }
     await runAppEffect(
       "relay.snapshot.invalidate",
       invalidateRelayCache(relayCachePolicy.snapshot(relay.id))

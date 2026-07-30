@@ -654,6 +654,7 @@ export const relayInstanceSchema = z.object({
   brickSource: brickSourceSchema.optional(),
   publicHost: z.string().min(1).max(253).optional(),
   publicPort: z.number().int().min(1).max(65_535).optional(),
+  requiresNetworkUpgrade: z.boolean().default(false),
   tailscale: relayInstanceTailscaleSchema.default({ enabled: false }),
   variables: brickVariableValuesSchema.optional(),
   managedByRelay: z.boolean().default(false),
