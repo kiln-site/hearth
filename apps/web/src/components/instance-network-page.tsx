@@ -575,7 +575,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
       </WorkspaceTableHead>
       <tbody className="divide-y divide-border/70">
         <tr className="hover:bg-muted/10">
-          <WorkspaceTableCell className="border-y border-l border-primary/55">
+          <WorkspaceTableCell>
             <div className="flex min-w-0 items-center gap-2.5">
               <RouteRowIcon
                 canRestart={canRestart}
@@ -606,12 +606,12 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
               </span>
             </div>
           </WorkspaceTableCell>
-          <WorkspaceTableCell className="border-y border-primary/55">
+          <WorkspaceTableCell>
             <span className="font-mono text-xs text-foreground">
               {displayedPrimaryPort?.internalPort ?? "—"}
             </span>
           </WorkspaceTableCell>
-          <WorkspaceTableCell className="border-y border-primary/55">
+          <WorkspaceTableCell>
             <PublicAddressCopy
               address={
                 instance.publicHost && primaryPort
@@ -625,7 +625,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
               prominent
             />
           </WorkspaceTableCell>
-          <WorkspaceTableCell className="border-y border-r border-primary/55 px-2">
+          <WorkspaceTableCell className="px-2">
             <div className="flex justify-end">
               {canWrite ? (
                 <Tooltip>
@@ -1232,6 +1232,7 @@ function AddNetworkRouteDialog({
   )
   const [protocol, setProtocol] =
     React.useState<RelayInstancePortProtocol>("tcp")
+  const [internalPort, setInternalPort] = React.useState<string | null>(null)
   const portLease = usePortLease({
     enabled: routeType === "port" && canAddPort && !webRoute,
     instanceId,
@@ -1373,6 +1374,8 @@ function AddNetworkRouteDialog({
                     placeholder="24454"
                     required
                     type="number"
+                    value={internalPort ?? portLease.portValue}
+                    onChange={(event) => setInternalPort(event.target.value)}
                   />
                 </label>
                 <label className="block space-y-1.5 text-[11px] font-medium">
@@ -1523,6 +1526,9 @@ function PortAllocationDialog({
   const [protocol, setProtocol] = React.useState<RelayInstancePortProtocol>(
     allocation?.protocol ?? pendingPrimaryPort?.protocol ?? "tcp"
   )
+  const [internalPort, setInternalPort] = React.useState<string | null>(
+    pendingPrimaryPort ? String(pendingPrimaryPort.internalPort) : null
+  )
   const portLease = usePortLease({
     enabled: open && recoveringPrimary,
     instanceId,
@@ -1610,17 +1616,23 @@ function PortAllocationDialog({
             <label className="block space-y-1.5 text-[11px] font-medium">
               Internal Port
               <Input
-                defaultValue={
-                  allocation?.internalPort ??
-                  pendingPrimaryPort?.internalPort ??
-                  (recoveringPrimary ? 25_565 : undefined)
-                }
+                defaultValue={allocation?.internalPort}
                 max={65_535}
                 min={1}
                 name="internalPort"
                 placeholder="24454"
                 required
                 type="number"
+                value={
+                  recoveringPrimary
+                    ? (internalPort ?? portLease.portValue)
+                    : undefined
+                }
+                onChange={
+                  recoveringPrimary
+                    ? (event) => setInternalPort(event.target.value)
+                    : undefined
+                }
               />
             </label>
             <label className="block space-y-1.5 text-[11px] font-medium">
