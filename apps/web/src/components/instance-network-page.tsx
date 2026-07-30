@@ -537,18 +537,15 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
 }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[46rem] table-fixed border-collapse text-left">
+      <table className="w-full min-w-[40rem] table-fixed border-collapse text-left">
         <WorkspaceTableHead>
-          <WorkspaceTableHeading className="w-[28%]">
+          <WorkspaceTableHeading className="w-[27%]">
             Name
           </WorkspaceTableHeading>
-          <WorkspaceTableHeading className="w-[12%]">
-            Protocol
-          </WorkspaceTableHeading>
-          <WorkspaceTableHeading className="w-[16%]">
+          <WorkspaceTableHeading className="w-[15%]">
             Internal port
           </WorkspaceTableHeading>
-          <WorkspaceTableHeading className="w-[16%]">
+          <WorkspaceTableHeading className="w-[15%]">
             Public port
           </WorkspaceTableHeading>
           <WorkspaceTableHeading>Public address</WorkspaceTableHeading>
@@ -565,16 +562,14 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
             return (
               <tr key={allocation.id} className="hover:bg-muted/10">
                 <WorkspaceTableCell>
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span className="truncate text-xs font-medium">
+                  <div className="min-w-0">
+                    <span className="block truncate text-xs font-medium">
                       {allocation.name}
                     </span>
+                    <span className="mt-0.5 block font-mono text-[9px] text-muted-foreground uppercase">
+                      {allocation.protocol}
+                    </span>
                   </div>
-                </WorkspaceTableCell>
-                <WorkspaceTableCell>
-                  <span className="font-mono text-[10px] text-muted-foreground uppercase">
-                    {allocation.protocol}
-                  </span>
                 </WorkspaceTableCell>
                 <WorkspaceTableCell>
                   <span className="font-mono text-xs text-foreground">
@@ -646,17 +641,11 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
                     <span className="block truncate text-xs font-medium">
                       {route.hostname}
                     </span>
-                    {route.path ? (
-                      <span className="mt-0.5 block truncate font-mono text-[9px] text-muted-foreground">
-                        {route.path}
-                      </span>
-                    ) : null}
+                    <span className="mt-0.5 block truncate font-mono text-[9px] text-muted-foreground">
+                      <span className="uppercase">HTTPS</span>
+                      {route.path ? ` · ${route.path}` : ""}
+                    </span>
                   </div>
-                </WorkspaceTableCell>
-                <WorkspaceTableCell>
-                  <span className="font-mono text-[10px] text-muted-foreground uppercase">
-                    HTTPS
-                  </span>
                 </WorkspaceTableCell>
                 <WorkspaceTableCell>
                   <span className="font-mono text-xs text-foreground">
