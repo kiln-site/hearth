@@ -585,6 +585,10 @@ export function auditDetailsForRequest(
   result: unknown
 ): Readonly<Record<string, unknown>> {
   const details: Record<string, unknown> = { operation: request.operation }
+  const permission = actionForRequest(request)
+  if (permission) {
+    details.permission = permission
+  }
   if (request.subject) {
     details.subject = request.subject
   }

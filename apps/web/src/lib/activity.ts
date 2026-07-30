@@ -179,6 +179,76 @@ export function activityLabelForAudit(audit: RelayAuditRecord): string {
   return humanizeEvent(operation ?? audit.event)
 }
 
+export function activityPermissionForAudit(
+  audit: RelayAuditRecord
+): string | null {
+  if (typeof audit.details.permission === "string") {
+    return audit.details.permission
+  }
+
+  if (audit.event === "browser.console.write") {
+    return "instance.console.write"
+  }
+  if (audit.event === "browser.file.upload") {
+    return "instance.files.upload"
+  }
+  if (audit.event === "browser.file.download") {
+    return "instance.files.download"
+  }
+  if (audit.event === "system.update_started") return "relay.update"
+  if (audit.event === "invitation.created") return "relay.pairing.create"
+  if (audit.event === "invitation.revoked") return "relay.pairing.revoke"
+  if (audit.event === "client.policy_changed") return "relay.clients.update"
+  if (audit.event === "client.revoked") return "relay.clients.revoke"
+  if (audit.event === "relay.renamed") return "relay.rename"
+
+  const operation = auditOperation(audit)
+  if (operation === "relay.update.apply") return "relay.update"
+  if (operation === "relay.rename") return "relay.rename"
+  if (operation === "relay.networking.write") return "relay.configure"
+  if (
+    operation === "relay.tailscale.install" ||
+    operation === "relay.tailscale.write" ||
+    operation === "relay.proxy.write"
+  ) {
+    return "relay.configure"
+  }
+  if (operation === "relay.tailscale.stack.apply") return "instance.create"
+  if (operation === "relay.tailscale.stack.dns") {
+    return "instance.network.write"
+  }
+  if (operation === "relay.tailscale.stack.remove") return "instance.delete"
+  if (
+    operation === "relay.pairing.create" ||
+    operation === "relay.pairing.revoke" ||
+    operation === "relay.clients.update" ||
+    operation === "relay.clients.revoke" ||
+    operation === "instance.create" ||
+    operation === "instance.rename" ||
+    operation === "instance.delete" ||
+    operation === "instance.files.write" ||
+    operation === "instance.console.write" ||
+    operation === "instance.network.routes.write"
+  ) {
+    return operation === "instance.network.routes.write"
+      ? "instance.network.write"
+      : operation
+  }
+  if (operation === "instance.startup.write") return "instance.create"
+  if (operation === "instance.action") {
+    const action = audit.details.action
+    if (
+      action === "start" ||
+      action === "stop" ||
+      action === "restart" ||
+      action === "kill"
+    ) {
+      return `instance.power.${action}`
+    }
+  }
+  return null
+}
+
 export function auditUserId(audit: RelayAuditRecord): string | null {
   return typeof audit.details.subject === "string"
     ? audit.details.subject

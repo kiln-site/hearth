@@ -437,7 +437,11 @@ async function auditBrowserConsoleWrite(
     await options.runEffect(
       options.state.appendAudit({
         clientId: capability.issuer,
-        details: { instanceId, subject: capability.subject },
+        details: {
+          instanceId,
+          permission: "instance.console.write",
+          subject: capability.subject,
+        },
         event: "browser.console.write",
         id: randomUUID(),
         occurredAt: Date.now(),
@@ -818,6 +822,10 @@ async function auditBrowserTransfer(
           instanceId: authentication.instanceId,
           method,
           outcome,
+          permission:
+            method === "PUT"
+              ? "instance.files.upload"
+              : "instance.files.download",
           subject: authentication.subject,
         },
         event:

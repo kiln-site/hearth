@@ -81,6 +81,7 @@ describe("Relay control audit details", () => {
     expect(auditDetailsForRequest(request, { id: instanceId })).toEqual({
       instanceId,
       operation: "instance.create",
+      permission: "instance.create",
       subject: "user-123",
     })
   })
@@ -394,6 +395,7 @@ describe("Relay control socket", () => {
         .toEqual({
           instanceId: "a".repeat(40),
           operation: "instance.network.routes.write",
+          permission: "instance.network.write",
           subject: "user-123",
         })
       pushSnapshot?.({ instances: [{ id: "updated" }], node: {} })

@@ -6,6 +6,7 @@ import { z } from "zod"
 import {
   activityInstantSchema,
   activityLabelForAudit,
+  activityPermissionForAudit,
   activityTypeForAudit,
   auditInstanceId,
   auditUserId,
@@ -156,6 +157,7 @@ export const getActivity = createServerFn({ method: "GET" })
           id: `${relay.id}:${record.id}`,
           label: activityLabelForAudit(record),
           occurredAt: record.occurredAt,
+          permission: activityPermissionForAudit(record),
           rawEvent: record.event,
           relay: { id: relay.id, name: relay.name },
           server: instanceId

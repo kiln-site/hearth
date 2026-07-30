@@ -4,6 +4,7 @@ import type { RelayAuditRecord } from "@workspace/contracts"
 import {
   activityLocalRangeToUtc,
   activityLabelForAudit,
+  activityPermissionForAudit,
   activityTypeForAudit,
   scopeAllowsAudit,
 } from "@/lib/activity"
@@ -54,6 +55,19 @@ describe("activity", () => {
     })
     expect(activityTypeForAudit(record)).toBe("power")
     expect(activityLabelForAudit(record)).toBe("Restarted a server")
+    expect(activityPermissionForAudit(record)).toBe("instance.power.restart")
+  })
+
+  it("uses the recorded permission when the audit provides one", () => {
+    const record = audit(
+      {
+        instanceId: "instance-1",
+        permission: "instance.console.write",
+      },
+      "browser.console.write"
+    )
+
+    expect(activityPermissionForAudit(record)).toBe("instance.console.write")
   })
 
   it("converts local calendar days to exact UTC query bounds", () => {

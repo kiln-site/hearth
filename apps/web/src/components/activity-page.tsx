@@ -15,7 +15,6 @@ import {
   RefreshCw,
   Search,
   Server,
-  ShieldCheck,
   TerminalSquare,
   UserRound,
   X,
@@ -115,26 +114,6 @@ export const ActivityPage = React.memo(function ActivityPage({
   return (
     <div className="mx-auto flex h-[calc(100dvh-5.75rem)] min-h-[34rem] w-full max-w-[90rem] flex-col px-3 pb-3 sm:px-5 sm:pb-5">
       <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card/45 [contain:paint]">
-        <header className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b bg-background/35 px-3 py-2.5">
-          <div className="flex min-w-0 items-center gap-2.5">
-            <span className="grid size-8 shrink-0 place-items-center border border-primary/25 bg-primary/8 text-primary">
-              <ShieldCheck className="size-4" />
-            </span>
-            <div className="min-w-0">
-              <h1 className="text-sm font-semibold tracking-[-0.01em]">
-                Audit trail
-              </h1>
-              <p className="truncate font-mono text-[9px] tracking-[0.08em] text-muted-foreground uppercase">
-                Permission-scoped · newest first · browser local time
-              </p>
-            </div>
-          </div>
-          <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-            {entries.length.toLocaleString()} of{" "}
-            {data.entries.length.toLocaleString()} events
-          </span>
-        </header>
-
         <ActivityFiltersToolbar
           actors={actors}
           data={data}
@@ -548,12 +527,11 @@ function ActivityResults({
     <div className="relative min-h-0 flex-1">
       <div
         aria-hidden="true"
-        className="absolute inset-x-0 top-0 z-10 grid h-8 grid-cols-[5.5rem_minmax(0,1fr)] items-center border-b bg-card/95 px-3 font-mono text-[8px] tracking-[0.12em] text-muted-foreground uppercase backdrop-blur md:grid-cols-[7rem_minmax(8rem,11rem)_minmax(8rem,10rem)_5.5rem_minmax(12rem,1fr)] lg:grid-cols-[8rem_minmax(10rem,14rem)_minmax(9rem,12rem)_6.5rem_minmax(15rem,1fr)]"
+        className="absolute inset-x-0 top-0 z-10 grid h-8 grid-cols-[5.5rem_minmax(0,1fr)] items-center border-b bg-card/95 px-3 font-mono text-[8px] tracking-[0.12em] text-muted-foreground uppercase backdrop-blur md:grid-cols-[7rem_minmax(8rem,11rem)_minmax(8rem,10rem)_minmax(12rem,1fr)] lg:grid-cols-[8rem_minmax(10rem,14rem)_minmax(9rem,12rem)_minmax(15rem,1fr)]"
       >
         <span>Time</span>
         <span className="hidden md:block">Where</span>
         <span className="hidden md:block">User</span>
-        <span className="hidden md:block">Type</span>
         <span>Action</span>
       </div>
       <div
@@ -604,7 +582,7 @@ const ActivityRow = React.memo(function ActivityRow({
     <article
       ref={measureElement}
       data-index={index}
-      className="absolute top-0 left-0 grid w-full grid-cols-[5.5rem_minmax(0,1fr)] items-center border-b border-border/65 px-3 py-2.5 transition-colors hover:bg-accent/18 md:grid-cols-[7rem_minmax(8rem,11rem)_minmax(8rem,10rem)_5.5rem_minmax(12rem,1fr)] lg:grid-cols-[8rem_minmax(10rem,14rem)_minmax(9rem,12rem)_6.5rem_minmax(15rem,1fr)]"
+      className="absolute top-0 left-0 grid w-full grid-cols-[5.5rem_minmax(0,1fr)] items-center border-b border-border/65 px-3 py-2.5 transition-colors hover:bg-accent/18 md:grid-cols-[7rem_minmax(8rem,11rem)_minmax(8rem,10rem)_minmax(12rem,1fr)] lg:grid-cols-[8rem_minmax(10rem,14rem)_minmax(9rem,12rem)_minmax(15rem,1fr)]"
       style={{ transform: `translateY(${start}px)` }}
     >
       <time
@@ -634,12 +612,6 @@ const ActivityRow = React.memo(function ActivityRow({
         </p>
       </div>
 
-      <div className="hidden min-w-0 pr-3 md:block">
-        <span className="font-mono text-[9px] tracking-[0.06em] text-primary/80 uppercase">
-          {details.label}
-        </span>
-      </div>
-
       <div className="flex min-w-0 items-start gap-2.5">
         <span className="mt-0.5 grid size-7 shrink-0 place-items-center border border-primary/18 bg-primary/7 text-primary/85">
           <Icon className="size-3.5" />
@@ -648,12 +620,26 @@ const ActivityRow = React.memo(function ActivityRow({
           <p className="truncate text-xs font-medium text-foreground/95">
             {entry.label}
           </p>
-          <div className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[8px] tracking-[0.05em] text-muted-foreground uppercase md:hidden">
+          <p className="mt-1 truncate font-mono text-[8px] text-primary/80">
+            <span className="tracking-[0.06em] uppercase">{details.label}</span>
+            {entry.permission ? (
+              <>
+                <span
+                  aria-hidden="true"
+                  className="px-1 text-muted-foreground"
+                >
+                  /
+                </span>
+                <code className="text-muted-foreground">
+                  {entry.permission}
+                </code>
+              </>
+            ) : null}
+          </p>
+          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 font-mono text-[8px] tracking-[0.05em] text-muted-foreground uppercase md:hidden">
             <ActivityWhereLink entry={entry} compact />
             <span aria-hidden="true">·</span>
             <span className="truncate">{entry.actor.name}</span>
-            <span aria-hidden="true">·</span>
-            <span>{details.label}</span>
           </div>
         </div>
       </div>
