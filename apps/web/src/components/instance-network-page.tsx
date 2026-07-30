@@ -489,14 +489,19 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
       </WorkspaceTableHead>
       <tbody className="divide-y divide-border/70">
         {primaryPort ? (
-          <tr className="bg-background/25 hover:bg-muted/10">
+          <tr className="bg-primary/[0.04] hover:bg-primary/[0.065]">
             <WorkspaceTableCell>
               <div className="flex min-w-0 items-center gap-2.5">
                 <RouteRowIcon kind="port" />
                 <div className="min-w-0">
-                  <span className="block truncate text-xs font-medium">
-                    Game server port
-                  </span>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-xs font-medium">
+                      Game server port
+                    </span>
+                    <span className="shrink-0 border border-primary/25 bg-primary/8 px-1.5 py-0.5 font-mono text-[8px] leading-none tracking-[0.08em] text-primary uppercase">
+                      Primary
+                    </span>
+                  </div>
                   <span className="mt-0.5 block font-mono text-[9px] text-muted-foreground uppercase">
                     {primaryPort.protocol}
                   </span>
@@ -548,7 +553,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
         {primaryPort && hasAdditionalRoutes ? (
           <tr aria-hidden="true">
             <td
-              className="h-2 border-y border-border/70 bg-muted/15 p-0"
+              className="h-3 border-y border-border/70 bg-muted/25 p-0"
               colSpan={4}
             />
           </tr>
