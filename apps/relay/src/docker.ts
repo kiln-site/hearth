@@ -339,7 +339,7 @@ export class DockerDriver {
   readonly #powerTransitions = new Map<string, InstancePowerTransition>()
   readonly #readySessions = new Map<
     string,
-    { readonly readyAt: string; readonly startedAt: string }
+    { readonly readyAt: string | null; readonly startedAt: string }
   >()
   #diskUsageQueue = Promise.resolve()
   #relayStartedAt: Promise<string | null> | undefined
@@ -450,7 +450,6 @@ export class DockerDriver {
         this.#readySessions.set(config.id, {
           readyAt: observedSessionReadyAt(
             readyAt.get(config.id),
-            containerStartedAt,
             transition !== undefined,
             now
           ),
@@ -2169,14 +2168,13 @@ export interface ParsedConsoleLine {
 
 export function observedSessionReadyAt(
   detectedReadyAt: string | undefined,
-  startedAt: string,
   transitionActive: boolean,
   now = Date.now()
-): string {
+): string | null {
   if (detectedReadyAt) return detectedReadyAt
-  // A rediscovered session has no trustworthy historical probe time. Keep its
-  // marker anchored to Docker's stable session start instead of inventing one.
-  return transitionActive ? new Date(now).toISOString() : startedAt
+  // A rediscovered session has no trustworthy historical probe time. Keep it
+  // unknown so restored console history does not place readiness at startup.
+  return transitionActive ? new Date(now).toISOString() : null
 }
 
 export function matchingReadyLogLine(

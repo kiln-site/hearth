@@ -63,23 +63,21 @@ describe("Docker console parsing", () => {
     )
   })
 
-  it("restores a rediscovered running session at its container start", () => {
-    const startedAt = "2026-07-25T17:59:03.000000000Z"
+  it("keeps rediscovered readiness unknown without an observed transition", () => {
     const relayRestartedAt = Date.parse("2026-07-25T20:00:00.000Z")
 
     expect(
-      observedSessionReadyAt(undefined, startedAt, false, relayRestartedAt)
-    ).toBe(startedAt)
+      observedSessionReadyAt(undefined, false, relayRestartedAt)
+    ).toBeNull()
     expect(
       observedSessionReadyAt(
         "2026-07-25T17:59:12.000000000Z",
-        startedAt,
         false,
         relayRestartedAt
       )
     ).toBe("2026-07-25T17:59:12.000000000Z")
     expect(
-      observedSessionReadyAt(undefined, startedAt, true, relayRestartedAt)
+      observedSessionReadyAt(undefined, true, relayRestartedAt)
     ).toBe("2026-07-25T20:00:00.000Z")
   })
 

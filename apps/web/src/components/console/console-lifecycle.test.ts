@@ -49,6 +49,34 @@ describe("console lifecycle lines", () => {
     ])
   })
 
+  it("keeps unknown restored readiness after console history", () => {
+    const lines = [
+      {
+        id: "startup-log",
+        level: "info" as const,
+        text: "Preparing spawn",
+        timestamp: "2026-07-28T19:57:14.000Z",
+      },
+      {
+        id: "latest-log",
+        level: "info" as const,
+        text: "Player joined",
+        timestamp: "2026-07-28T19:57:20.000Z",
+      },
+    ]
+
+    expect(
+      mergeConsoleStateLines(lines, startedAt, "running").map(
+        (line) => line.text
+      )
+    ).toEqual([
+      "Server is starting",
+      "Preparing spawn",
+      "Player joined",
+      "Server is running",
+    ])
+  })
+
   it("keeps restored history around lifecycle transitions", () => {
     const current = mergeConsoleStateLines(
       [
