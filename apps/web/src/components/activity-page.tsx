@@ -1,5 +1,5 @@
 import * as React from "react"
-import { useSuspenseQuery } from "@tanstack/react-query"
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import {
@@ -28,6 +28,11 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@workspace/ui/components/popover"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@workspace/ui/components/tooltip"
 import { useIsMobile } from "@workspace/ui/hooks/use-mobile"
 
 import {
@@ -87,6 +92,8 @@ const activityShortDate = new Intl.DateTimeFormat(undefined, {
   month: "short",
   year: "numeric",
 })
+
+const minimumActivitySyncFeedbackMs = 500
 
 export const ActivityPage = React.memo(function ActivityPage({
   filters,
@@ -153,6 +160,7 @@ const ActivityFiltersToolbar = React.memo(function ActivityFiltersToolbar({
   return (
     <div className="border-b bg-background/15 p-3">
       <div className="flex flex-wrap items-center gap-2">
+        <ActivitySyncButton from={filters.from} to={filters.to} />
         <ActivitySearch
           key={filters.q ?? ""}
           initialValue={filters.q ?? ""}
@@ -266,6 +274,76 @@ const ActivityFiltersToolbar = React.memo(function ActivityFiltersToolbar({
         ) : null}
       </div>
     </div>
+  )
+})
+
+const ActivitySyncButton = React.memo(function ActivitySyncButton({
+  from,
+  to,
+}: {
+  from?: string
+  to?: string
+}) {
+  const { fetchStatus, refetch } = useQuery({
+    ...activityQueryOptions(from, to),
+    notifyOnChangeProps: ["fetchStatus"],
+  })
+  const [manualSyncing, setManualSyncing] = React.useState(false)
+  const manualSyncingRef = React.useRef(false)
+  const feedbackTimeoutRef = React.useRef<number>(undefined)
+  const mountedRef = React.useRef(true)
+  const syncing = manualSyncing || fetchStatus === "fetching"
+
+  React.useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (feedbackTimeoutRef.current !== undefined) {
+        window.clearTimeout(feedbackTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  const syncActivity = React.useCallback(() => {
+    if (manualSyncingRef.current) return
+    manualSyncingRef.current = true
+    setManualSyncing(true)
+    const startedAt = performance.now()
+
+    void refetch().finally(() => {
+      if (!mountedRef.current) return
+      const elapsed = performance.now() - startedAt
+      const remaining = Math.max(
+        0,
+        minimumActivitySyncFeedbackMs - elapsed
+      )
+      feedbackTimeoutRef.current = window.setTimeout(() => {
+        manualSyncingRef.current = false
+        setManualSyncing(false)
+        feedbackTimeoutRef.current = undefined
+      }, remaining)
+    })
+  }, [refetch])
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          size="icon"
+          variant="outline"
+          aria-label="Sync activity"
+          aria-busy={syncing}
+          disabled={syncing}
+          onClick={syncActivity}
+        >
+          <RefreshCw className={syncing ? "animate-spin" : ""} />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>
+        Sync activity
+      </TooltipContent>
+    </Tooltip>
   )
 })
 
