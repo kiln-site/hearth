@@ -1491,15 +1491,24 @@ export class LifecycleDriver {
           continue
         }
         if (existing) {
-          if (existing.protocol !== input.protocol) {
-            throw new Error(
-              `The ${existing.name} protocol cannot be changed after allocation`
+          const previousProtocols = new Set(portProtocols(existing.protocol))
+          const addedProtocols = portProtocols(input.protocol).filter(
+            (protocol) => !previousProtocols.has(protocol)
+          )
+          if (addedProtocols.length > 0) {
+            await this.#reservePublishedPortProtocols(
+              existing.externalPort,
+              addedProtocols
             )
+            for (const protocol of addedProtocols) {
+              pending.push({ port: existing.externalPort, protocol })
+            }
           }
           allocations.push({
             ...existing,
             internalPort: input.internalPort,
             name: input.name,
+            protocol: input.protocol,
           })
           continue
         }
@@ -2129,6 +2138,26 @@ export class LifecycleDriver {
     return this.#withGamePortLock(() => {
       this.#pruneExpiredPortLeases(Date.now())
       return this.#reserveGamePortUnlocked(instanceId, protocol, existing)
+    })
+  }
+
+  async #reservePublishedPortProtocols(
+    port: number,
+    protocols: ReadonlyArray<"tcp" | "udp">
+  ): Promise<void> {
+    await this.#withGamePortLock(async () => {
+      for (const protocol of protocols) {
+        const key = `${protocol}:${port}`
+        if (
+          this.#pendingGamePorts.has(key) ||
+          (await this.#docker.publishedHostPorts(protocol)).has(port)
+        ) {
+          throw new Error(`Public port ${port}/${protocol} is already in use`)
+        }
+      }
+      for (const protocol of protocols) {
+        this.#pendingGamePorts.add(`${protocol}:${port}`)
+      }
     })
   }
 

@@ -125,6 +125,98 @@ describe("instance port lifecycle", () => {
     )
   })
 
+  it("updates an existing allocation protocol when the added binding is available", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "kiln-port-protocol-"))
+    temporaryDirectories.push(dataDirectory)
+    const config = loadConfig({
+      KILN_RELAY_DATA_DIR: dataDirectory,
+      KILN_RELAY_GAME_PORT_RANGE: "32123-32123",
+      KILN_RELAY_PROXY: "hearth",
+      KILN_RELAY_RESOURCE_NAMESPACE: "port-protocol-test",
+      NODE_ENV: "test",
+    })
+    const primary = {
+      externalPort: 32_123,
+      id: "primary",
+      internalPort: 25_565,
+      kind: "primary",
+      name: "Default Server",
+      protocol: "tcp",
+    } satisfies RelayInstancePortAllocation
+    const instance = relayInstanceSchema.parse({
+      brickNetworkMode: "direct",
+      connectAddress: "protocol.test:32123",
+      containerId: "protocol-container",
+      desiredState: "stopped",
+      directory: "e".repeat(40),
+      game: "Minecraft",
+      id: "e".repeat(40),
+      implementation: "Paper",
+      javaVersion: "21",
+      managedByRelay: true,
+      name: "Protocol server",
+      observedState: "stopped",
+      ports: [primary],
+      publicHost: "protocol.test",
+      publicPort: 32_123,
+      service: "kiln-protocol",
+      shortId: "eeeeeeee",
+      startedAt: null,
+      status: "created",
+      version: "1.21.11",
+    })
+    const updatedPrimary = {
+      ...primary,
+      protocol: "both",
+    } satisfies RelayInstancePortAllocation
+    const recreateOwnedInstance = vi.fn(
+      async (): Promise<RelayInstance> => ({
+        ...instance,
+        ports: [updatedPrimary],
+      })
+    )
+    const publishedHostPorts = vi.fn(async () => new Set<number>())
+    const docker = {
+      inspectInstances: vi.fn(async () => [instance]),
+      publishedHostPorts,
+      recreateOwnedInstance,
+    } as unknown as DockerDriver
+    commandMock.mockRejectedValue(new Error("container not found"))
+    const lifecycle = new LifecycleDriver(config, docker, {} as BrickCatalog)
+
+    const updated = await lifecycle.updateInstancePorts(
+      instance.id,
+      [
+        {
+          id: "primary",
+          internalPort: 25_565,
+          name: "Default Server",
+          protocol: "both",
+        },
+      ],
+      []
+    )
+
+    expect(updated.ports).toEqual([updatedPrimary])
+    expect(publishedHostPorts).toHaveBeenCalledWith("udp")
+    expect(recreateOwnedInstance).toHaveBeenCalledWith(
+      instance,
+      expect.any(Object),
+      null,
+      "stop",
+      {
+        bindings: {
+          "25565/tcp": [{ HostIp: "", HostPort: "32123" }],
+          "25565/udp": [{ HostIp: "", HostPort: "32123" }],
+        },
+        labels: {
+          "kiln.brick.primary-port": "25565",
+          "kiln.traefik.service.port": "25565",
+        },
+      }
+    )
+  })
+
   it("reclaims abandoned port leases and releases closed ones", async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-07-30T12:00:00.000Z"))
