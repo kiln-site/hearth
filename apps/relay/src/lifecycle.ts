@@ -19,6 +19,8 @@ import { directoryApparentSize } from "./disk-usage.js"
 import type {
   RelayCreateInstance,
   RelayInstance,
+  RelayInstancePortAllocation,
+  RelayInstancePortInput,
   RelayInstanceTailscale,
   RelayInstanceWebRoute,
   RelayInstanceWebRouteState,
@@ -46,7 +48,12 @@ import {
 } from "@workspace/contracts"
 import type { BrickCatalog } from "./bricks.js"
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
-import type { DockerDriver, DockerPublishedPortUpgrade } from "./docker.js"
+import type { DockerDriver } from "./docker.js"
+import {
+  dockerPortBindingsForAllocations,
+  INSTANCE_PORT_ALLOCATIONS_LABEL,
+  portAllocationMetadataLabel,
+} from "./port-allocations.js"
 import { INSTANCE_STOP_TIMEOUT_SECONDS } from "./power-state.js"
 import {
   relayOwnerLabel,
@@ -1271,15 +1278,6 @@ export class LifecycleDriver {
       (action === "start" || action === "restart")
     ) {
       const desiredLabels = this.#containerWebRouteLabels(routes, settings)
-      if (instance.requiresNetworkUpgrade) {
-        return this.#upgradeInstanceNetworking(
-          instance,
-          routes,
-          settings,
-          desiredLabels,
-          action
-        )
-      }
       const labels = await containerLabels(instance.service)
       if (routeLabelsRequireRestart(labels, routes, desiredLabels)) {
         const usesExternalEdge =
@@ -1300,69 +1298,6 @@ export class LifecycleDriver {
     return this.#docker.runAction(instance, action)
   }
 
-  async #upgradeInstanceNetworking(
-    instance: RelayInstanceConfig,
-    routes: ReadonlyArray<RelayInstanceWebRoute>,
-    settings: RelayProxySettings,
-    routeLabels: Readonly<Record<string, string>>,
-    action: "start" | "restart"
-  ): Promise<RelayInstance> {
-    const recipe = instance.brickSource
-    if (!recipe) {
-      throw new Error(
-        `Cannot ${action} ${instance.name}: its legacy container is missing its Brick recipe source`
-      )
-    }
-    const definition = await this.#bricks.recipe(recipe)
-    const primaryPort = definition.network.ports.find(
-      (port) => port.name === definition.network.primaryPort
-    )
-    if (!primaryPort) {
-      throw new Error(
-        `Cannot ${action} ${instance.name}: its Brick recipe has no primary network port`
-      )
-    }
-    const existing = await this.#docker.inspectInstances()
-    const generatedPublicPort =
-      instance.publicPort === undefined && primaryPort.host === undefined
-    const publicPort =
-      instance.publicPort ??
-      primaryPort.host ??
-      (await this.#reserveGamePort(instance.id, primaryPort.protocol, existing))
-    const usesExternalEdge =
-      settings.mode === "none" || settings.mode === "coolify"
-    if (usesExternalEdge && routes.length > 0) {
-      await this.#ensureEdgeNetwork()
-    }
-    const upgrade: DockerPublishedPortUpgrade = {
-      containerPort: primaryPort.container,
-      hostPort: publicPort,
-      labels: {
-        "kiln.brick.network-mode": definition.network.mode,
-        "kiln.brick.primary-port": String(primaryPort.container),
-        "kiln.brick.primary-port-protocol": primaryPort.protocol,
-        "kiln.brick.supports-srv": String(definition.network.supportsSrv),
-        "kiln.instance.public-host": this.#config.gameHost,
-      },
-      protocol: primaryPort.protocol,
-    }
-    try {
-      return await this.#docker.recreateOwnedInstance(
-        instance,
-        routeLabels,
-        usesExternalEdge && routes.length > 0
-          ? this.#resources.edgeNetwork
-          : null,
-        action,
-        upgrade
-      )
-    } finally {
-      if (generatedPublicPort) {
-        this.#pendingGamePorts.delete(`${primaryPort.protocol}:${publicPort}`)
-      }
-    }
-  }
-
   async #writeProxySettings(settings: RelayProxySettings): Promise<void> {
     await mkdir(this.#config.dataDirectory, { recursive: true })
     await writeFile(
@@ -1370,6 +1305,135 @@ export class LifecycleDriver {
       `${JSON.stringify(settings, null, 2)}\n`,
       { mode: 0o600 }
     )
+  }
+
+  async updateInstancePorts(
+    instanceId: string,
+    requested: ReadonlyArray<RelayInstancePortInput>,
+    routes: ReadonlyArray<RelayInstanceWebRoute>
+  ): Promise<RelayInstance> {
+    const inspected = await this.#docker.inspectInstances()
+    const instance = inspected.find((candidate) => candidate.id === instanceId)
+    if (!instance) throw new Error("Instance not found")
+    if (!instance.managedByRelay) {
+      throw new Error(
+        "Relay can only configure ports for containers it created"
+      )
+    }
+    if (instance.brickId === builtinTailscaleBrickId) {
+      throw new Error(
+        "Configure this Tailscale network from Infrastructure → Tailscale"
+      )
+    }
+    const existingById = new Map(
+      instance.ports.map((allocation) => [allocation.id, allocation])
+    )
+    const systemAllocations = instance.ports.filter(
+      (allocation) => allocation.kind !== "custom"
+    )
+    if (
+      !systemAllocations.some((allocation) => allocation.kind === "primary")
+    ) {
+      throw new Error(
+        "This server does not have a managed primary port. Recreate it before allocating ports."
+      )
+    }
+    for (const allocation of systemAllocations) {
+      if (!requested.some((input) => input.id === allocation.id)) {
+        throw new Error(`${allocation.name} is required by this server`)
+      }
+    }
+
+    const pending: Array<{ port: number; protocol: "tcp" | "udp" }> = []
+    const allocations: Array<RelayInstancePortAllocation> = []
+    try {
+      for (const input of requested) {
+        const existing = input.id ? existingById.get(input.id) : undefined
+        if (input.id && !existing) {
+          throw new Error(`Port allocation ${input.id} no longer exists`)
+        }
+        if (existing) {
+          if (existing.protocol !== input.protocol) {
+            throw new Error(
+              `The ${existing.name} protocol cannot be changed after allocation`
+            )
+          }
+          allocations.push({
+            ...existing,
+            internalPort: input.internalPort,
+            name: input.name,
+          })
+          continue
+        }
+
+        const externalPort = await this.#reserveGamePort(
+          instance.id,
+          input.protocol,
+          inspected
+        )
+        pending.push({ port: externalPort, protocol: input.protocol })
+        let id = randomBytes(4).toString("hex")
+        while (
+          existingById.has(id) ||
+          allocations.some((allocation) => allocation.id === id)
+        ) {
+          id = randomBytes(4).toString("hex")
+        }
+        allocations.push({
+          externalPort,
+          id,
+          internalPort: input.internalPort,
+          kind: "custom",
+          name: input.name,
+          protocol: input.protocol,
+        })
+      }
+
+      const primary = allocations.find(
+        (allocation) => allocation.kind === "primary"
+      )
+      if (!primary) throw new Error("The primary game port is required")
+      const settings = await this.proxySettings()
+      const routeLabels = this.#containerWebRouteLabels(routes, settings)
+      const usesExternalEdge =
+        settings.mode === "none" || settings.mode === "coolify"
+      if (usesExternalEdge && routes.length > 0) {
+        await this.#ensureEdgeNetwork()
+      }
+      const updated = await this.#docker.recreateOwnedInstance(
+        instance,
+        routeLabels,
+        usesExternalEdge && routes.length > 0
+          ? this.#resources.edgeNetwork
+          : null,
+        instance.desiredState === "running" ? "restart" : "stop",
+        {
+          bindings: dockerPortBindingsForAllocations(allocations),
+          labels: {
+            [INSTANCE_PORT_ALLOCATIONS_LABEL]:
+              portAllocationMetadataLabel(allocations),
+            "kiln.brick.primary-port": String(primary.internalPort),
+            "kiln.brick.primary-port-protocol": primary.protocol,
+            "kiln.traefik.service.port": String(primary.internalPort),
+          },
+        }
+      )
+      const networking = await this.networking()
+      if (networking?.enabled) {
+        await this.#refreshCoreDnsConfiguration(networking)
+      }
+      await this.#refreshTailscaleDns()
+      if (updated.brickNetworkMode === "minecraft-backend") {
+        await this.#refreshVelocityConfigurations(networking)
+      }
+      return updated
+    } finally {
+      for (const allocation of pending) {
+        this.#pendingGamePorts.delete(
+          `${allocation.protocol}:${allocation.port}`
+        )
+      }
+    }
   }
 
   async createInstance(input: RelayCreateInstance): Promise<RelayInstance> {
@@ -1384,7 +1448,6 @@ export class LifecycleDriver {
       grandfatheredDiskLimitBytes: 0,
       id,
       prepareDirectory: true,
-      publicPort: undefined,
       recipe: input.recipe,
       start: input.start,
       tailscale: input.tailscale ?? { enabled: false },
@@ -1404,6 +1467,11 @@ export class LifecycleDriver {
     if (existing.brickId === builtinTailscaleBrickId) {
       throw new Error(
         "Configure this Tailscale network from Infrastructure → Tailscale"
+      )
+    }
+    if (existing.ports.length === 0) {
+      throw new Error(
+        "This server does not have managed port allocations. Recreate it before changing startup settings."
       )
     }
     const recipe = input.recipe ?? existing.brickSource
@@ -1461,7 +1529,7 @@ export class LifecycleDriver {
         grandfatheredDiskLimitBytes: existing.limits.diskBytes,
         id: existing.id,
         prepareDirectory: false,
-        publicPort: existing.publicPort,
+        ports: existing.ports,
         recipe,
         start: input.start,
         tailscale,
@@ -1480,7 +1548,7 @@ export class LifecycleDriver {
     grandfatheredDiskLimitBytes: number
     id: string
     prepareDirectory: boolean
-    publicPort: number | undefined
+    ports?: ReadonlyArray<RelayInstancePortAllocation>
     recipe: string
     start: boolean
     tailscale: RelayInstanceTailscale
@@ -1615,12 +1683,42 @@ export class LifecycleDriver {
       )
     }
 
-    const generatedPublicPort =
-      input.publicPort === undefined && primaryPort.host === undefined
-    const publicPort =
-      input.publicPort ??
-      primaryPort.host ??
-      (await this.#reserveGamePort(id, primaryPort.protocol, existing))
+    const reservedPorts: Array<{
+      port: number
+      protocol: "tcp" | "udp"
+    }> = []
+    const portAllocations: Array<RelayInstancePortAllocation> = input.ports
+      ? [...input.ports]
+      : []
+    if (portAllocations.length === 0) {
+      const publishedPorts =
+        definition.network.mode === "direct"
+          ? definition.network.ports
+          : [primaryPort]
+      for (const port of publishedPorts) {
+        const externalPort =
+          port.host ??
+          (await this.#reserveGamePort(id, port.protocol, existing))
+        if (port.host === undefined) {
+          reservedPorts.push({ port: externalPort, protocol: port.protocol })
+        }
+        const primary = port.name === definition.network.primaryPort
+        portAllocations.push({
+          externalPort,
+          id: primary ? "primary" : `brick-${port.name}`,
+          internalPort: port.container,
+          kind: primary ? "primary" : "brick",
+          name: port.name.replaceAll("-", " "),
+          protocol: port.protocol,
+        })
+      }
+    }
+    const primaryAllocation = portAllocations.find(
+      (allocation) => allocation.kind === "primary"
+    )
+    if (!primaryAllocation) {
+      throw new Error("Managed server port allocations require a primary port")
+    }
     const variablesLabel = JSON.stringify(resolved.values)
     const arguments_ = [
       "container",
@@ -1669,15 +1767,15 @@ export class LifecycleDriver {
       "--label",
       `kiln.brick.network-mode=${definition.network.mode}`,
       "--label",
-      `kiln.brick.primary-port=${primaryPort.container}`,
+      `kiln.brick.primary-port=${primaryAllocation.internalPort}`,
       "--label",
-      `kiln.brick.primary-port-protocol=${primaryPort.protocol}`,
+      `kiln.brick.primary-port-protocol=${primaryAllocation.protocol}`,
       "--label",
       `kiln.brick.supports-srv=${definition.network.supportsSrv}`,
       "--label",
       "kiln.traefik.managed=true",
       "--label",
-      `kiln.traefik.service.port=${primaryPort.container}`,
+      `kiln.traefik.service.port=${primaryAllocation.internalPort}`,
       "--label",
       `kiln.instance.name=${defaultInstanceName}`,
       "--label",
@@ -1696,6 +1794,8 @@ export class LifecycleDriver {
       `kiln.instance.disk-bytes=${input.diskLimitBytes}`,
       "--label",
       `kiln.instance.mount=${definition.runtime.storage.mount}`,
+      "--label",
+      `${INSTANCE_PORT_ALLOCATIONS_LABEL}=${portAllocationMetadataLabel(portAllocations)}`,
       "--volume",
       `${hostDirectory}:${definition.runtime.storage.mount}`,
     ]
@@ -1712,7 +1812,7 @@ export class LifecycleDriver {
             networking?.proxyPort ??
             this.#config.connectPort)
           : definition.network.mode === "direct"
-            ? primaryPort.container
+            ? primaryAllocation.internalPort
             : this.#config.connectPort
       arguments_.push(
         "--label",
@@ -1752,25 +1852,11 @@ export class LifecycleDriver {
     for (const [name, value] of Object.entries(resolved.environment)) {
       arguments_.push("--env", `${name}=${value}`)
     }
-    // Velocity routing is additive: every game Brick, including a backend,
-    // intentionally remains directly joinable through its assigned host port.
-    if (definition.network.mode !== "direct") {
+    for (const allocation of portAllocations) {
       arguments_.push(
         "--publish",
-        `${publicPort}:${primaryPort.container}/${primaryPort.protocol}`
+        `${allocation.externalPort}:${allocation.internalPort}/${allocation.protocol}`
       )
-    }
-    if (definition.network.mode === "direct") {
-      for (const port of definition.network.ports) {
-        arguments_.push(
-          "--publish",
-          `${
-            port.name === definition.network.primaryPort
-              ? publicPort
-              : (port.host ?? 0)
-          }:${port.container}/${port.protocol}`
-        )
-      }
     }
     arguments_.push(image)
     arguments_.push(...(definition.runtime.entrypoint?.slice(1) ?? []))
@@ -1805,8 +1891,10 @@ export class LifecycleDriver {
       }
       throw error
     } finally {
-      if (generatedPublicPort) {
-        this.#pendingGamePorts.delete(`${primaryPort.protocol}:${publicPort}`)
+      for (const allocation of reservedPorts) {
+        this.#pendingGamePorts.delete(
+          `${allocation.protocol}:${allocation.port}`
+        )
       }
     }
 

@@ -52,6 +52,7 @@ export const relayControlOperations = [
   "instance.console.complete",
   "instance.logs.share",
   "instance.logs.latest",
+  "instance.network.ports.write",
   "instance.network.routes.read",
   "instance.network.routes.write",
   "hearth.tailscale.instance.detach",
@@ -77,7 +78,10 @@ export function relayControlDeadlineMs(
   ) {
     return 360_000
   }
-  return operation === "instance.network.routes.write" ? 240_000 : 30_000
+  return operation === "instance.network.ports.write" ||
+    operation === "instance.network.routes.write"
+    ? 240_000
+    : 30_000
 }
 
 export const RelayControlOperationSchema = Schema.Literals(

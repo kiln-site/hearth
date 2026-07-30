@@ -358,25 +358,16 @@ function CopyAddressCard({ instance }: { instance: InstanceSettingsInstance }) {
           ? "Direct UDP endpoint on the Relay node."
           : "Dedicated game endpoint published by the Relay node."}
       </p>
-      <CopyAddressControl
-        address={instance.connectAddress}
-        requiresNetworkUpgrade={instance.requiresNetworkUpgrade}
-      />
+      <CopyAddressControl address={instance.connectAddress} />
     </div>
   )
 }
 
-function CopyAddressControl({
-  address,
-  requiresNetworkUpgrade,
-}: {
-  address: string
-  requiresNetworkUpgrade: boolean
-}) {
+function CopyAddressControl({ address }: { address: string }) {
   const [copied, setCopied] = React.useState(false)
   const resetTimer = React.useRef<number | null>(null)
   const addressError = address.startsWith("Error:") ? address : null
-  const unavailable = requiresNetworkUpgrade || addressError !== null
+  const unavailable = addressError !== null
   React.useEffect(
     () => () => {
       if (resetTimer.current) window.clearTimeout(resetTimer.current)
@@ -398,49 +389,31 @@ function CopyAddressControl({
         type="button"
         aria-disabled={unavailable}
         className={`group mt-5 flex w-full items-center justify-between rounded-lg border px-3 py-3 text-left transition-[background-color,border-color,box-shadow] outline-none focus-visible:border-ring/70 focus-visible:ring-2 focus-visible:ring-ring/35 ${
-          requiresNetworkUpgrade
-            ? "border-amber-400/25 bg-amber-400/6"
-            : addressError
-              ? "border-destructive/25 bg-destructive/5"
-              : "border-primary/25 bg-primary/7 hover:border-primary/40 hover:bg-primary/12"
+          addressError
+            ? "border-destructive/25 bg-destructive/5"
+            : "border-primary/25 bg-primary/7 hover:border-primary/40 hover:bg-primary/12"
         }`}
         onClick={copyAddress}
       >
         <span>
           <span
             className={`block font-mono text-[9px] tracking-wider uppercase ${
-              requiresNetworkUpgrade
-                ? "text-amber-300"
-                : addressError
-                  ? "text-destructive"
-                  : "text-primary"
+              addressError ? "text-destructive" : "text-primary"
             }`}
           >
             Server address
           </span>
           <span
             className={`mt-1 block font-mono text-sm font-semibold ${
-              requiresNetworkUpgrade
-                ? "text-amber-100"
-                : addressError
-                  ? "text-destructive"
-                  : ""
+              addressError ? "text-destructive" : ""
             }`}
           >
-            {requiresNetworkUpgrade
-              ? "UPGRADE REQUIRED"
-              : addressError
-                ? "ERROR"
-                : address}
+            {addressError ? "ERROR" : address}
           </span>
         </span>
         <span className="grid size-8 place-items-center rounded-md bg-background/70 text-muted-foreground group-hover:text-foreground">
           {unavailable ? (
-            <TriangleAlert
-              className={`size-4 ${
-                requiresNetworkUpgrade ? "text-amber-300" : "text-destructive"
-              }`}
-            />
+            <TriangleAlert className="size-4 text-destructive" />
           ) : copied ? (
             <Check className="size-4 text-emerald-400" />
           ) : (
@@ -450,17 +423,11 @@ function CopyAddressControl({
       </button>
       <p
         className={`mt-3 font-mono text-[9px] ${
-          requiresNetworkUpgrade
-            ? "text-amber-200/70"
-            : addressError
-              ? "text-destructive"
-              : "text-muted-foreground/75"
+          addressError ? "text-destructive" : "text-muted-foreground/75"
         }`}
       >
-        {requiresNetworkUpgrade
-          ? "Restart this server from Network to assign its dedicated address"
-          : (addressError ??
-            (copied ? "Address copied to clipboard" : "Click to copy"))}
+        {addressError ??
+          (copied ? "Address copied to clipboard" : "Click to copy")}
       </p>
     </>
   )

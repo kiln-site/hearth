@@ -626,6 +626,91 @@ export const relayInstanceLimitsSchema = z
   })
   .strict()
 
+export const relayInstancePortIdSchema = z
+  .string()
+  .regex(
+    /^(?:primary|brick-[a-z0-9][a-z0-9-]{0,31}|[a-f0-9]{8})$/u,
+    "Port allocation ID is invalid"
+  )
+
+export const relayInstancePortNameSchema = z.string().trim().min(1).max(32)
+
+export const relayInstancePortProtocolSchema = z.enum(["tcp", "udp"])
+
+const relayInstancePortConfigurationSchema = z
+  .object({
+    internalPort: z.number().int().min(1).max(65_535),
+    name: relayInstancePortNameSchema,
+    protocol: relayInstancePortProtocolSchema,
+  })
+  .strict()
+
+export const relayInstancePortInputSchema =
+  relayInstancePortConfigurationSchema.extend({
+    id: relayInstancePortIdSchema.optional(),
+  })
+
+export const relayInstancePortMetadataSchema =
+  relayInstancePortConfigurationSchema.extend({
+    id: relayInstancePortIdSchema,
+    kind: z.enum(["primary", "brick", "custom"]),
+  })
+
+export const relayInstancePortAllocationSchema =
+  relayInstancePortMetadataSchema.extend({
+    externalPort: z.number().int().min(1).max(65_535),
+  })
+
+function relayInstancePortArraySchema<
+  Port extends z.ZodType<{
+    id?: string
+    internalPort: number
+    protocol: string
+  }>,
+>(port: Port) {
+  return z
+    .array(port)
+    .min(1)
+    .max(16)
+    .superRefine((ports, context) => {
+      const ids = new Set<string>()
+      const bindings = new Set<string>()
+      for (const [index, allocation] of ports.entries()) {
+        if (allocation.id) {
+          if (ids.has(allocation.id)) {
+            context.addIssue({
+              code: "custom",
+              message: "Port allocation IDs must be unique",
+              path: [index, "id"],
+            })
+          }
+          ids.add(allocation.id)
+        }
+        const binding = `${allocation.protocol}:${allocation.internalPort}`
+        if (bindings.has(binding)) {
+          context.addIssue({
+            code: "custom",
+            message: "Internal port and protocol combinations must be unique",
+            path: [index, "internalPort"],
+          })
+        }
+        bindings.add(binding)
+      }
+    })
+}
+
+export const relayInstancePortInputsSchema = relayInstancePortArraySchema(
+  relayInstancePortInputSchema
+)
+
+export const relayInstancePortMetadataListSchema = relayInstancePortArraySchema(
+  relayInstancePortMetadataSchema
+)
+
+export const relayInstancePortAllocationsSchema = relayInstancePortArraySchema(
+  relayInstancePortAllocationSchema
+)
+
 export const relayInstanceSchema = z.object({
   id: z.string().regex(/^[a-f0-9]{40}$/u),
   shortId: z.string().regex(/^[a-f0-9]{8}$/u),
@@ -654,7 +739,7 @@ export const relayInstanceSchema = z.object({
   brickSource: brickSourceSchema.optional(),
   publicHost: z.string().min(1).max(253).optional(),
   publicPort: z.number().int().min(1).max(65_535).optional(),
-  requiresNetworkUpgrade: z.boolean().default(false),
+  ports: relayInstancePortAllocationsSchema.or(z.tuple([])).default([]),
   tailscale: relayInstanceTailscaleSchema.default({ enabled: false }),
   variables: brickVariableValuesSchema.optional(),
   managedByRelay: z.boolean().default(false),
@@ -1020,6 +1105,15 @@ export type RelayInstanceResources = z.infer<
   typeof relayInstanceResourcesSchema
 >
 export type RelayInstanceLimits = z.infer<typeof relayInstanceLimitsSchema>
+export type RelayInstancePortInput = z.infer<
+  typeof relayInstancePortInputSchema
+>
+export type RelayInstancePortMetadata = z.infer<
+  typeof relayInstancePortMetadataSchema
+>
+export type RelayInstancePortAllocation = z.infer<
+  typeof relayInstancePortAllocationSchema
+>
 export type RelayInstance = z.infer<typeof relayInstanceSchema>
 export type RelayNode = z.infer<typeof relayNodeSchema>
 export type RelaySnapshot = z.infer<typeof relaySnapshotSchema>

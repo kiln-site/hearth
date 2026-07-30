@@ -141,6 +141,9 @@ export function activityLabelForAudit(audit: RelayAuditRecord): string {
   }
   if (operation === "instance.files.write") return "Saved a server file"
   if (operation === "instance.console.write") return "Sent a console command"
+  if (operation === "instance.network.ports.write") {
+    return "Updated server port allocations"
+  }
   if (operation === "instance.network.routes.write") {
     return "Updated server network routes"
   }
@@ -228,9 +231,11 @@ export function activityPermissionForAudit(
     operation === "instance.delete" ||
     operation === "instance.files.write" ||
     operation === "instance.console.write" ||
+    operation === "instance.network.ports.write" ||
     operation === "instance.network.routes.write"
   ) {
-    return operation === "instance.network.routes.write"
+    return operation === "instance.network.ports.write" ||
+      operation === "instance.network.routes.write"
       ? "instance.network.write"
       : operation
   }

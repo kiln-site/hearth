@@ -576,6 +576,7 @@ function isAuditedMutation(operation: RelayControlOperation): boolean {
     operation === "instance.action" ||
     operation === "instance.files.write" ||
     operation === "instance.console.write" ||
+    operation === "instance.network.ports.write" ||
     operation === "instance.network.routes.write"
   )
 }
@@ -732,6 +733,8 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
       return "instance.logs.share"
     case "instance.logs.latest":
       return "instance.logs.read"
+    case "instance.network.ports.write":
+      return "instance.network.write"
     case "instance.network.routes.read":
       return "instance.network.read"
     case "instance.network.routes.write":

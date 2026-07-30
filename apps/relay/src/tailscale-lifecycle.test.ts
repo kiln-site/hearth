@@ -159,6 +159,7 @@ describe("Tailscale pending removal recovery", () => {
       },
       managedByRelay: true,
       name: "Private Network",
+      ports: [],
       service: "pending-removal-test-kiln-ts-aaaaaaaa",
       shortId: id.slice(0, 8),
       tailscale: { enabled: false },

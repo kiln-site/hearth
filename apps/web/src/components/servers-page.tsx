@@ -602,19 +602,15 @@ const ServerTableRow = React.memo(function ServerTableRow({
       <WorkspaceTableCell className="hidden xl:table-cell">
         <span
           className={`block truncate font-mono text-[9px] ${
-            server.requiresNetworkUpgrade
-              ? "font-semibold text-amber-300"
-              : server.connectAddress.startsWith("Error:")
-                ? "font-semibold text-destructive"
-                : "text-foreground"
+            server.connectAddress.startsWith("Error:")
+              ? "font-semibold text-destructive"
+              : "text-foreground"
           }`}
           title={server.connectAddress}
         >
-          {server.requiresNetworkUpgrade
-            ? "UPGRADE REQUIRED"
-            : server.connectAddress.startsWith("Error:")
-              ? "ERROR"
-              : server.connectAddress}
+          {server.connectAddress.startsWith("Error:")
+            ? "ERROR"
+            : server.connectAddress}
         </span>
       </WorkspaceTableCell>
       <WorkspaceTableCell className="hidden md:table-cell">

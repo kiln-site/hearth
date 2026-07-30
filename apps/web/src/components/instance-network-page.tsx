@@ -8,22 +8,36 @@ import {
 import {
   AlertTriangle,
   Cable,
-  CheckCircle2,
   Copy,
   Globe2,
   LoaderCircle,
+  Pencil,
   Plus,
   RotateCw,
   Trash2,
 } from "lucide-react"
-import { relayInstanceWebRouteInputSchema } from "@workspace/contracts"
+import {
+  relayInstancePortInputSchema,
+  relayInstanceWebRouteInputSchema,
+} from "@workspace/contracts"
 import type {
+  RelayInstancePortAllocation,
+  RelayInstancePortInput,
   RelayInstanceWebRoute,
   RelayInstanceWebRouteInput,
   RelayInstanceWebRouteState,
 } from "@workspace/contracts"
 
 import { Button } from "@workspace/ui/components/button"
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@workspace/ui/components/dialog"
 import { Input } from "@workspace/ui/components/input"
 import { dismissToast, showToast } from "@workspace/ui/components/sonner"
 import {
@@ -42,19 +56,21 @@ import {
   TailscaleNetworkMembershipPage,
 } from "@/components/tailscale-network-membership"
 import {
+  WorkspaceTableCell,
+  WorkspaceTableHead,
+  WorkspaceTableHeading,
+} from "@/components/workspace-data-table"
+import {
   accessCapabilitiesQueryOptions,
-  instanceDomainQueryOptions,
   queryKeys,
-  relaySnapshotQueryOptions,
   replaceRelaySnapshotInstance,
 } from "@/lib/query-options"
 import type { RelayFleetSnapshot } from "@/lib/relay-fleet"
 import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
-import { selectInstanceObservedState } from "@/lib/relay-selectors"
-import { setInstanceVanity } from "@/server/domains"
 import {
   getInstanceWebRoutes,
   performRelayAction,
+  updateInstancePorts,
   updateInstanceWebRoutes,
 } from "@/server/relay"
 
@@ -140,6 +156,20 @@ function WebRoutesNetworkPage({ showTailscale }: { showTailscale: boolean }) {
     restarting: restart.isPending,
     state: routes.data,
   })
+  const addWebRoute = React.useCallback(
+    async (route: RelayInstanceWebRouteInput) => {
+      if (!routes.data) throw new Error("Routes are not loaded yet")
+      await update.mutateAsync([...routes.data.routes, route])
+    },
+    [routes.data, update]
+  )
+  const removeWebRoute = React.useCallback(
+    (routeId: string) =>
+      update.mutateAsync(
+        (routes.data?.routes ?? []).filter((route) => route.id !== routeId)
+      ),
+    [routes.data?.routes, update]
+  )
 
   if (!permissions.networkRead) {
     return (
@@ -154,531 +184,950 @@ function WebRoutesNetworkPage({ showTailscale }: { showTailscale: boolean }) {
   return (
     <main className="min-h-0 flex-1 overflow-y-auto bg-background/55 p-4 sm:p-6">
       <div className="mx-auto max-w-4xl space-y-4">
-        <ManagedGameAddressSection
-          canPower={permissions.power}
+        <ConfiguredRoutesSection
+          canRestart={permissions.power && relayConnected}
           canWrite={permissions.networkWrite}
           instance={instance}
           relayConnected={relayConnected}
+          routeError={routes.error ?? update.error}
+          routePending={update.isPending}
+          routeState={routes.data}
+          routes={routes.data?.routes}
+          restarting={restart.isPending}
+          onAddWebRoute={addWebRoute}
+          onRemoveWebRoute={removeWebRoute}
+          onRestart={restartPendingRoutes}
         />
         {showTailscale ? (
           <GameServerTailscaleSection server={instance} />
         ) : null}
-        <header className="border border-border/80 bg-card/55 p-4">
-          <div className="flex items-start gap-3">
-            <div className="grid size-9 shrink-0 place-items-center border border-primary/25 bg-primary/10 text-primary">
-              <Globe2 className="size-4" />
-            </div>
-            <div>
-              <h1 className="font-heading text-lg font-semibold tracking-tight">
-                Web routes
-              </h1>
-              <p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted-foreground">
-                Route a public hostname—or a path on one—to an HTTP service
-                running inside this Ember. Kiln prepares Traefik; you remain in
-                control of DNS.
-              </p>
-            </div>
-          </div>
-          <div className="mt-4 flex gap-2 border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-[11px] leading-relaxed text-amber-100/80">
-            <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-amber-300" />
-            Point the hostname at this Relay first. Kiln validates the active
-            edge and tells you when a controlled restart is required.
-          </div>
-        </header>
-
-        {routes.data ? (
-          <RouteApplyState
-            state={routes.data}
-            canRestart={permissions.power && relayConnected}
-            restarting={restart.isPending}
-            onRestart={restartPendingRoutes}
-          />
-        ) : null}
-
-        {permissions.networkWrite ? (
-          <RouteForm
-            disabled={update.isPending || routes.data === undefined}
-            onAdd={async (route) => {
-              if (!routes.data) throw new Error("Routes are not loaded yet")
-              await update.mutateAsync([...routes.data.routes, route])
-            }}
-          />
-        ) : null}
-
-        <section className="border border-border/80 bg-card/45">
-          <div className="flex items-center justify-between border-b border-border/70 px-4 py-3">
-            <h2 className="text-sm font-semibold">Configured routes</h2>
-            <span className="font-mono text-[10px] text-muted-foreground">
-              {routes.data?.routes.length ?? 0} / 16
-            </span>
-          </div>
-          {routes.isLoading ? (
-            <div className="flex h-28 items-center justify-center gap-2 text-xs text-muted-foreground">
-              <LoaderCircle className="size-4 animate-spin text-primary" />
-              Reading routes from Relay
-            </div>
-          ) : routes.error ? (
-            <p className="px-4 py-8 text-center text-xs text-destructive">
-              {errorMessage(routes.error)}
-            </p>
-          ) : routes.data?.routes.length ? (
-            <div className="divide-y divide-border/65">
-              {routes.data.routes.map((route) => (
-                <RouteRow
-                  key={route.id}
-                  route={route}
-                  removing={update.isPending}
-                  canRemove={permissions.networkWrite}
-                  onRemove={() =>
-                    update.mutateAsync(
-                      (routes.data?.routes ?? []).filter(
-                        (item) => item.id !== route.id
-                      )
-                    )
-                  }
-                />
-              ))}
-            </div>
-          ) : (
-            <p className="px-4 py-10 text-center text-xs text-muted-foreground">
-              No public web routes are configured for this Ember.
-            </p>
-          )}
-          {update.error ? (
-            <p className="border-t border-destructive/20 bg-destructive/5 px-4 py-2 text-xs text-destructive">
-              {errorMessage(update.error)}
-            </p>
-          ) : null}
-        </section>
       </div>
     </main>
   )
 }
 
-const ManagedGameAddressSection = React.memo(
-  function ManagedGameAddressSection({
-    canPower,
-    canWrite,
-    instance,
-    relayConnected,
-  }: {
-    canPower: boolean
-    canWrite: boolean
-    instance: InstanceWorkspaceInstance
-    relayConnected: boolean
-  }) {
-    const queryClient = useQueryClient()
-    const selectObservedState = React.useMemo(
-      () => selectInstanceObservedState(instance.id, instance.relayId),
-      [instance.id, instance.relayId]
-    )
-    const { data: observedState } = useQuery({
-      ...relaySnapshotQueryOptions(),
-      select: selectObservedState,
-    })
-    const queryOptions = instanceDomainQueryOptions(
-      instance.relayId,
-      instance.id
-    )
-    const domain = useQuery(queryOptions)
-    const assignment = domain.data?.assignment
-    const addressError = instance.connectAddress.startsWith("Error:")
-      ? instance.connectAddress
-      : null
-    const addressUnavailable =
-      instance.requiresNetworkUpgrade || addressError !== null
-    const update = useMutation({
-      mutationFn: (vanityLabel: string) =>
-        setInstanceVanity({
-          data: {
-            instanceId: instance.id,
-            relayId: instance.relayId,
-            vanityLabel,
-          },
-        }),
-      onSuccess: async (next) => {
-        queryClient.setQueryData(queryOptions.queryKey, {
-          assignment: next,
-          managedDomain: next.domain,
-        })
-        await Promise.all([
-          queryClient.invalidateQueries({
-            queryKey: queryKeys.relay.connection,
-          }),
-          queryClient.invalidateQueries({
-            queryKey: queryKeys.relay.snapshot,
-          }),
-        ])
-        showToast({
-          message: "Game server address updated",
-          type: "success",
-        })
-      },
-    })
-    const networkUpgrade = useMutation({
-      mutationFn: () =>
-        performRelayAction({
-          data: {
-            action: observedState === "stopped" ? "start" : "restart",
-            instanceId: instance.id,
-            relayId: instance.relayId,
-          },
-        }),
-      onSuccess: async (updated) => {
-        queryClient.setQueryData<RelayFleetSnapshot>(
-          queryKeys.relay.snapshot,
-          (snapshot) => replaceRelaySnapshotInstance(snapshot, updated)
-        )
-        await Promise.all([
-          queryClient.invalidateQueries({
-            queryKey: queryOptions.queryKey,
-          }),
-          queryClient.invalidateQueries({
-            queryKey: queryKeys.relay.connection,
-          }),
-          queryClient.invalidateQueries({
-            queryKey: queryKeys.relay.snapshot,
-          }),
-        ])
-        showToast({
-          message: "Dedicated server address is ready",
-          type: "success",
-        })
-      },
-    })
-    const upgradingUnavailable =
-      !canPower ||
-      !relayConnected ||
-      observedState === undefined ||
-      observedState === "starting" ||
-      observedState === "stopping" ||
-      networkUpgrade.isPending
-    const copyAddress = React.useCallback(() => {
-      if (addressUnavailable) return
-      const address = assignment?.address ?? instance.connectAddress
-      void navigator.clipboard.writeText(address)
-      showToast({ message: "Server address copied", type: "success" })
-    }, [addressUnavailable, assignment?.address, instance.connectAddress])
+type RouteDialogState =
+  | { mode: "add" }
+  | { allocation: RelayInstancePortAllocation; mode: "edit-port" }
+  | null
 
-    return (
-      <section className="border border-border/80 bg-card/55">
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/70 p-4">
-          <div className="flex items-start gap-3">
-            <div className="grid size-9 shrink-0 place-items-center border border-primary/25 bg-primary/10 text-primary">
-              <Globe2 className="size-4" />
-            </div>
-            <div>
-              <h1 className="font-heading text-lg font-semibold tracking-tight">
-                Game server address
-              </h1>
-              <p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted-foreground">
-                The public endpoint players use to join this server.
-              </p>
-            </div>
-          </div>
-          {assignment?.srvActive ? (
-            <span className="border border-emerald-400/25 bg-emerald-400/8 px-2 py-1 font-mono text-[9px] text-emerald-300 uppercase">
-              SRV · no port required
-            </span>
-          ) : null}
-        </div>
-
-        <div className="space-y-4 p-4">
-          {domain.isLoading ? (
-            <div className="flex h-14 items-center gap-2 text-xs text-muted-foreground">
-              <LoaderCircle className="size-4 animate-spin text-primary" />
-              Reading managed address
-            </div>
-          ) : domain.error ? (
-            <p className="text-xs text-destructive">
-              {errorMessage(domain.error)}
-            </p>
-          ) : (
-            <>
-              {instance.requiresNetworkUpgrade ? (
-                <div className="border border-amber-400/25 bg-amber-400/6">
-                  <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="flex min-w-0 items-start gap-3">
-                      <div className="grid size-8 shrink-0 place-items-center border border-amber-300/25 bg-amber-300/8 text-amber-300">
-                        <Cable className="size-4" />
-                      </div>
-                      <div>
-                        <p className="text-xs font-semibold text-amber-100">
-                          Networking upgrade required
-                        </p>
-                        <p className="mt-1 max-w-xl text-[11px] leading-relaxed text-amber-100/65">
-                          This server predates dedicated game ports. Kiln will
-                          preserve its files and settings, assign a unique port,
-                          and restore the previous container if the upgrade
-                          fails.
-                        </p>
-                      </div>
-                    </div>
-                    {canPower ? (
-                      <Button
-                        className="shrink-0 border-amber-300/30 text-amber-100 hover:bg-amber-300/10 hover:text-amber-50"
-                        disabled={upgradingUnavailable}
-                        onClick={() => networkUpgrade.mutate()}
-                        size="sm"
-                        type="button"
-                        variant="outline"
-                      >
-                        {networkUpgrade.isPending ? (
-                          <LoaderCircle className="animate-spin" />
-                        ) : (
-                          <RotateCw />
-                        )}
-                        {networkUpgrade.isPending
-                          ? "Upgrading"
-                          : observedState === "stopped"
-                            ? "Start & upgrade"
-                            : "Restart & upgrade"}
-                      </Button>
-                    ) : null}
-                  </div>
-                  {networkUpgrade.error ? (
-                    <p className="border-t border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-                      {errorMessage(networkUpgrade.error)}
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
-              <div className="flex min-w-0 items-stretch border border-border/80 bg-background/55">
-                <code
-                  className={`min-w-0 flex-1 truncate px-3 py-2.5 text-sm ${
-                    instance.requiresNetworkUpgrade
-                      ? "text-amber-200/75"
-                      : addressError
-                        ? "font-semibold text-destructive"
-                        : "text-foreground"
-                  }`}
-                >
-                  {instance.requiresNetworkUpgrade
-                    ? "Dedicated address pending"
-                    : addressError
-                      ? "ERROR"
-                      : (assignment?.address ?? instance.connectAddress)}
-                </code>
-                <Button
-                  aria-label="Copy game server address"
-                  className="h-auto rounded-none border-y-0 border-r-0"
-                  disabled={addressUnavailable}
-                  onClick={copyAddress}
-                  type="button"
-                  variant="outline"
-                >
-                  <Copy />
-                  Copy
-                </Button>
-              </div>
-
-              {instance.requiresNetworkUpgrade ? (
-                <p className="text-[11px] text-amber-100/65">
-                  The address will appear here after the next successful start
-                  or restart.
-                </p>
-              ) : addressError ? (
-                <p className="text-[11px] text-destructive">{addressError}</p>
-              ) : assignment ? (
-                <p className="font-mono text-[10px] text-muted-foreground">
-                  Direct fallback · {assignment.directAddress}
-                </p>
-              ) : domain.data?.managedDomain ? (
-                <p className="text-[11px] text-muted-foreground">
-                  This server predates automatic domain provisioning. Assign an
-                  available name below.
-                </p>
-              ) : (
-                <p className="text-[11px] text-muted-foreground">
-                  The platform administrator has not enabled managed domains.
-                  The Relay address remains ready to use.
-                </p>
-              )}
-
-              {canWrite && domain.data?.managedDomain && !addressUnavailable ? (
-                <form
-                  className="border-t border-border/70 pt-4"
-                  action={(form) => {
-                    update.mutate(String(form.get("vanityLabel") ?? ""))
-                  }}
-                >
-                  <label className="text-[11px] font-medium">
-                    Custom address
-                    <div className="mt-1.5 flex">
-                      <Input
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        className="rounded-r-none"
-                        defaultValue={assignment?.vanityLabel ?? ""}
-                        maxLength={63}
-                        name="vanityLabel"
-                        placeholder="my-server"
-                        required
-                      />
-                      <span className="flex max-w-[45%] items-center border-y border-r border-border bg-muted/35 px-3 font-mono text-xs text-muted-foreground">
-                        .{domain.data.managedDomain}
-                      </span>
-                      <Button
-                        className="rounded-l-none"
-                        disabled={update.isPending}
-                        type="submit"
-                      >
-                        {update.isPending ? (
-                          <LoaderCircle className="animate-spin" />
-                        ) : (
-                          <CheckCircle2 />
-                        )}
-                        {assignment ? "Save" : "Assign"}
-                      </Button>
-                    </div>
-                  </label>
-                  {assignment?.lastError || update.error ? (
-                    <p className="mt-2 text-xs text-destructive">
-                      {update.error
-                        ? errorMessage(update.error)
-                        : assignment?.lastError}
-                    </p>
-                  ) : null}
-                </form>
-              ) : null}
-            </>
-          )}
-        </div>
-      </section>
-    )
-  }
-)
-
-function RouteForm({
-  disabled,
-  onAdd,
+const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
+  canRestart,
+  canWrite,
+  instance,
+  relayConnected,
+  routeError,
+  routePending,
+  routeState,
+  routes,
+  restarting,
+  onAddWebRoute,
+  onRemoveWebRoute,
+  onRestart,
 }: {
-  disabled: boolean
-  onAdd: (route: RelayInstanceWebRouteInput) => Promise<void>
+  canRestart: boolean
+  canWrite: boolean
+  instance: InstanceWorkspaceInstance
+  relayConnected: boolean
+  routeError: unknown
+  routePending: boolean
+  routeState: RelayInstanceWebRouteState | undefined
+  routes: Array<RelayInstanceWebRoute> | undefined
+  restarting: boolean
+  onAddWebRoute: (route: RelayInstanceWebRouteInput) => Promise<void>
+  onRemoveWebRoute: (routeId: string) => Promise<unknown>
+  onRestart: () => void
 }) {
-  const [error, setError] = React.useState<string | null>(null)
+  const queryClient = useQueryClient()
+  const [dialog, setDialog] = React.useState<RouteDialogState>(null)
+  const update = useMutation({
+    mutationFn: (ports: Array<RelayInstancePortInput>) =>
+      updateInstancePorts({
+        data: {
+          instanceId: instance.id,
+          ports,
+          relayId: instance.relayId,
+        },
+      }),
+    onSuccess: async (updated) => {
+      queryClient.setQueryData<RelayFleetSnapshot>(
+        queryKeys.relay.snapshot,
+        (snapshot) => replaceRelaySnapshotInstance(snapshot, updated)
+      )
+      setDialog(null)
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.relay.connection,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.relay.snapshot,
+        }),
+      ])
+      showToast({ message: "Port allocations updated", type: "success" })
+    },
+  })
+  const disabled =
+    !canWrite || !instance.managedByRelay || !relayConnected || update.isPending
+  const primaryPort = instance.ports.find(
+    (allocation) => allocation.kind === "primary"
+  )
+  const hasAdditionalRoutes =
+    instance.ports.some((allocation) => allocation.kind !== "primary") ||
+    Boolean(routes?.length)
+  const portInputs = React.useMemo(
+    () =>
+      instance.ports.map(({ id, internalPort, name, protocol }) => ({
+        id,
+        internalPort,
+        name,
+        protocol,
+      })),
+    [instance.ports]
+  )
+  const applyPort = React.useCallback(
+    async (port: RelayInstancePortInput) => {
+      const ports =
+        dialog?.mode === "edit-port"
+          ? portInputs.map((existing) =>
+              existing.id === dialog.allocation.id ? port : existing
+            )
+          : [...portInputs, port]
+      await update.mutateAsync(ports)
+    },
+    [dialog, portInputs, update]
+  )
+  const removePort = React.useCallback(
+    (allocation: RelayInstancePortAllocation) => {
+      if (allocation.kind !== "custom" || disabled) return
+      update.mutate(portInputs.filter((port) => port.id !== allocation.id))
+    },
+    [disabled, portInputs, update]
+  )
+  const editPort = React.useCallback(
+    (allocation: RelayInstancePortAllocation) => {
+      update.reset()
+      setDialog({ allocation, mode: "edit-port" })
+    },
+    [update]
+  )
+
   return (
-    <form
-      action={async (form) => {
-        const path = String(form.get("path") ?? "").trim()
-        const parsed = relayInstanceWebRouteInputSchema.safeParse({
-          hostname: String(form.get("hostname") ?? ""),
-          path: path || null,
-          stripPrefix: form.get("stripPrefix") === "on",
-          targetPort: Number(form.get("targetPort")),
-        })
-        if (!parsed.success) {
-          setError(parsed.error.issues[0]?.message ?? "Route is invalid")
-          return
-        }
-        setError(null)
-        try {
-          await onAdd(parsed.data)
-        } catch (cause) {
-          setError(errorMessage(cause))
-        }
-      }}
-      className="border border-border/80 bg-card/45 p-4"
-    >
-      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(9rem,0.45fr)_7rem]">
-        <label className="space-y-1.5 text-[11px] font-medium">
-          Hostname
-          <Input
-            name="hostname"
-            placeholder="map.donutsmp.com"
-            autoCapitalize="none"
-            autoCorrect="off"
-            required
-          />
-        </label>
-        <label className="space-y-1.5 text-[11px] font-medium">
-          Path (optional)
-          <Input name="path" placeholder="/map" />
-        </label>
-        <label className="space-y-1.5 text-[11px] font-medium">
-          Ember port
-          <Input
-            name="targetPort"
-            type="number"
-            min={1}
-            max={65_535}
-            placeholder="8080"
-            required
-          />
-        </label>
-      </div>
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-        <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
-          <input
-            type="checkbox"
-            name="stripPrefix"
-            defaultChecked
-            className="accent-primary"
-          />
-          Strip the configured path before forwarding
-        </label>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button type="submit" size="sm" disabled={disabled}>
-              {disabled ? <LoaderCircle className="animate-spin" /> : <Plus />}
+    <section className="border border-border/80 bg-card/55">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 px-4 py-3">
+        <div>
+          <h1 className="font-heading text-base font-semibold tracking-tight">
+            Configured routes
+          </h1>
+        </div>
+        <div className="flex items-center gap-2">
+          {routeState ? (
+            <RouteStatusButton
+              canRestart={canRestart}
+              restarting={restarting}
+              state={routeState}
+              onRestart={onRestart}
+            />
+          ) : null}
+          {canWrite ? (
+            <Button
+              disabled={disabled || routes === undefined}
+              onClick={() => {
+                update.reset()
+                setDialog({ mode: "add" })
+              }}
+              size="sm"
+              type="button"
+            >
+              <Plus />
               Add route
             </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            Kiln will show whether this edge mode requires a restart
-          </TooltipContent>
-        </Tooltip>
+          ) : null}
+        </div>
       </div>
-      {error ? <p className="mt-3 text-xs text-destructive">{error}</p> : null}
-    </form>
-  )
-}
 
-const RouteRow = React.memo(function RouteRow({
-  route,
-  removing,
-  canRemove,
-  onRemove,
-}: {
-  route: RelayInstanceWebRoute
-  removing: boolean
-  canRemove: boolean
-  onRemove: () => Promise<unknown>
-}) {
-  const publicUrl = `https://${route.hostname}${route.path ?? ""}`
-  return (
-    <div className="flex items-center gap-3 px-4 py-3">
-      <span
-        className="size-2 shrink-0 bg-amber-300"
-        aria-label="DNS unverified"
-      />
-      <div className="min-w-0 flex-1">
-        <p className="truncate font-mono text-[11px] text-foreground">
-          {publicUrl}
-        </p>
-        <p className="mt-0.5 font-mono text-[9px] text-muted-foreground">
-          HTTP → :{route.targetPort}
-          {route.path && route.stripPrefix ? " · prefix stripped" : ""}
-          {" · DNS / TLS unverified"}
-        </p>
-      </div>
-      {canRemove ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label={`Remove ${publicUrl}`}
-          disabled={removing}
-          onClick={() => void onRemove().catch(() => undefined)}
-        >
-          <Trash2 />
-        </Button>
+      {primaryPort ? (
+        <PrimaryPortSummary
+          allocation={primaryPort}
+          canWrite={canWrite}
+          disabled={disabled}
+          publicHost={instance.publicHost}
+          onEdit={editPort}
+        />
       ) : null}
+
+      {hasAdditionalRoutes ? (
+        <ConfiguredRoutesTable
+          canWrite={canWrite}
+          disabled={disabled}
+          instance={instance}
+          routePending={routePending}
+          routes={routes}
+          onEditPort={editPort}
+          onRemoveWebRoute={onRemoveWebRoute}
+        />
+      ) : (
+        <div className="px-4 py-10 text-center">
+          <p className="text-xs text-muted-foreground">
+            No additional routes are configured for this server.
+          </p>
+        </div>
+      )}
+
+      {!relayConnected ? (
+        <p className="border-t border-amber-400/20 bg-amber-400/5 px-4 py-2 text-[11px] text-amber-100/75">
+          Port changes are unavailable while this Relay is disconnected.
+        </p>
+      ) : (update.error || routeError) && dialog === null ? (
+        <p className="border-t border-destructive/20 bg-destructive/5 px-4 py-2 text-xs text-destructive">
+          {errorMessage(update.error ?? routeError)}
+        </p>
+      ) : null}
+
+      {dialog?.mode === "add" ? (
+        <AddNetworkRouteDialog
+          canAddPort={instance.ports.length < 16}
+          canAddWebRoute={(routes?.length ?? 16) < 16}
+          error={
+            update.error || routeError
+              ? errorMessage(update.error ?? routeError)
+              : null
+          }
+          pending={update.isPending || routePending}
+          onOpenChange={(open) => {
+            if (!open && !update.isPending && !routePending) setDialog(null)
+          }}
+          onSubmitPort={applyPort}
+          onSubmitWebRoute={onAddWebRoute}
+        />
+      ) : null}
+      <PortAllocationDialog
+        allocation={dialog?.mode === "edit-port" ? dialog.allocation : null}
+        error={update.error ? errorMessage(update.error) : null}
+        open={dialog?.mode === "edit-port"}
+        pending={update.isPending}
+        onOpenChange={(open) => {
+          if (!open && !update.isPending) setDialog(null)
+        }}
+        onRemove={
+          dialog?.mode === "edit-port" && dialog.allocation.kind === "custom"
+            ? () => {
+                removePort(dialog.allocation)
+              }
+            : undefined
+        }
+        onSubmit={applyPort}
+      />
+    </section>
+  )
+})
+
+const PrimaryPortSummary = React.memo(function PrimaryPortSummary({
+  allocation,
+  canWrite,
+  disabled,
+  publicHost,
+  onEdit,
+}: {
+  allocation: RelayInstancePortAllocation
+  canWrite: boolean
+  disabled: boolean
+  publicHost: string | undefined
+  onEdit: (allocation: RelayInstancePortAllocation) => void
+}) {
+  const address = publicHost
+    ? formatHostPort(publicHost, allocation.externalPort)
+    : null
+
+  return (
+    <div className="border-b border-border/70 bg-background/25 px-4 py-3">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+        <div className="flex min-w-40 items-center gap-2.5">
+          <div className="grid size-7 shrink-0 place-items-center border border-primary/20 bg-primary/6 text-primary">
+            <Cable className="size-3.5" />
+          </div>
+          <div>
+            <p className="text-xs font-medium">Game server port</p>
+            <p className="mt-0.5 font-mono text-[9px] text-muted-foreground uppercase">
+              {allocation.protocol}
+            </p>
+          </div>
+        </div>
+        <dl className="grid min-w-0 flex-1 grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-[7rem_7rem_minmax(10rem,1fr)]">
+          <div>
+            <dt className="text-[9px] text-muted-foreground">Internal port</dt>
+            <dd className="mt-0.5 font-mono text-xs">
+              {allocation.internalPort}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-[9px] text-muted-foreground">Public port</dt>
+            <dd className="mt-0.5 font-mono text-xs">
+              {allocation.externalPort}
+            </dd>
+          </div>
+          <div className="col-span-2 min-w-0 sm:col-span-1">
+            <dt className="text-[9px] text-muted-foreground">Public address</dt>
+            <dd className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">
+              {address ?? "Unavailable"}
+            </dd>
+          </div>
+        </dl>
+        <div className="ml-auto flex shrink-0">
+          {address ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label="Copy game server public address"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(address)
+                    showToast({
+                      message: "Public address copied",
+                      type: "success",
+                    })
+                  }}
+                  size="icon-sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  <Copy />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Copy public address</TooltipContent>
+            </Tooltip>
+          ) : null}
+          {canWrite ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label="Edit game server port"
+                  disabled={disabled}
+                  onClick={() => onEdit(allocation)}
+                  size="icon-sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  <Pencil />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Edit allocation</TooltipContent>
+            </Tooltip>
+          ) : null}
+        </div>
+      </div>
     </div>
   )
 })
 
-function RouteApplyState({
+const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
+  canWrite,
+  disabled,
+  instance,
+  routePending,
+  routes,
+  onEditPort,
+  onRemoveWebRoute,
+}: {
+  canWrite: boolean
+  disabled: boolean
+  instance: InstanceWorkspaceInstance
+  routePending: boolean
+  routes: Array<RelayInstanceWebRoute> | undefined
+  onEditPort: (allocation: RelayInstancePortAllocation) => void
+  onRemoveWebRoute: (routeId: string) => Promise<unknown>
+}) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[46rem] table-fixed border-collapse text-left">
+        <WorkspaceTableHead>
+          <WorkspaceTableHeading className="w-[28%]">
+            Name
+          </WorkspaceTableHeading>
+          <WorkspaceTableHeading className="w-[12%]">
+            Protocol
+          </WorkspaceTableHeading>
+          <WorkspaceTableHeading className="w-[16%]">
+            Internal port
+          </WorkspaceTableHeading>
+          <WorkspaceTableHeading className="w-[16%]">
+            Public port
+          </WorkspaceTableHeading>
+          <WorkspaceTableHeading>Public address</WorkspaceTableHeading>
+          <WorkspaceTableHeading className="w-[5.5rem] text-right">
+            Actions
+          </WorkspaceTableHeading>
+        </WorkspaceTableHead>
+        <tbody className="divide-y divide-border/70">
+          {instance.ports.map((allocation) => {
+            if (allocation.kind === "primary") return null
+            const address = instance.publicHost
+              ? formatHostPort(instance.publicHost, allocation.externalPort)
+              : null
+            return (
+              <tr key={allocation.id} className="hover:bg-muted/10">
+                <WorkspaceTableCell>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-xs font-medium">
+                      {allocation.name}
+                    </span>
+                  </div>
+                </WorkspaceTableCell>
+                <WorkspaceTableCell>
+                  <span className="font-mono text-[10px] text-muted-foreground uppercase">
+                    {allocation.protocol}
+                  </span>
+                </WorkspaceTableCell>
+                <WorkspaceTableCell>
+                  <span className="font-mono text-xs text-foreground">
+                    {allocation.internalPort}
+                  </span>
+                </WorkspaceTableCell>
+                <WorkspaceTableCell>
+                  <span className="font-mono text-xs text-foreground">
+                    {allocation.externalPort}
+                  </span>
+                </WorkspaceTableCell>
+                <WorkspaceTableCell>
+                  <span className="block truncate font-mono text-[10px] text-muted-foreground">
+                    {address ?? "Unavailable"}
+                  </span>
+                </WorkspaceTableCell>
+                <WorkspaceTableCell className="px-2">
+                  <div className="flex justify-end">
+                    {address ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            aria-label={`Copy ${allocation.name} public address`}
+                            onClick={() => {
+                              void navigator.clipboard.writeText(address)
+                              showToast({
+                                message: "Public address copied",
+                                type: "success",
+                              })
+                            }}
+                            size="icon-sm"
+                            type="button"
+                            variant="ghost"
+                          >
+                            <Copy />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Copy public address</TooltipContent>
+                      </Tooltip>
+                    ) : null}
+                    {canWrite ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            aria-label={`Edit ${allocation.name}`}
+                            disabled={disabled}
+                            onClick={() => onEditPort(allocation)}
+                            size="icon-sm"
+                            type="button"
+                            variant="ghost"
+                          >
+                            <Pencil />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Edit allocation</TooltipContent>
+                      </Tooltip>
+                    ) : null}
+                  </div>
+                </WorkspaceTableCell>
+              </tr>
+            )
+          })}
+          {routes?.map((route) => {
+            const publicUrl = `https://${route.hostname}${route.path ?? ""}`
+            return (
+              <tr key={`web-${route.id}`} className="hover:bg-muted/10">
+                <WorkspaceTableCell>
+                  <div className="min-w-0">
+                    <span className="block truncate text-xs font-medium">
+                      {route.hostname}
+                    </span>
+                    {route.path ? (
+                      <span className="mt-0.5 block truncate font-mono text-[9px] text-muted-foreground">
+                        {route.path}
+                      </span>
+                    ) : null}
+                  </div>
+                </WorkspaceTableCell>
+                <WorkspaceTableCell>
+                  <span className="font-mono text-[10px] text-muted-foreground uppercase">
+                    HTTPS
+                  </span>
+                </WorkspaceTableCell>
+                <WorkspaceTableCell>
+                  <span className="font-mono text-xs text-foreground">
+                    {route.targetPort}
+                  </span>
+                </WorkspaceTableCell>
+                <WorkspaceTableCell>
+                  <span className="font-mono text-xs text-muted-foreground">
+                    —
+                  </span>
+                </WorkspaceTableCell>
+                <WorkspaceTableCell>
+                  <span className="block truncate font-mono text-[10px] text-muted-foreground">
+                    {publicUrl}
+                  </span>
+                </WorkspaceTableCell>
+                <WorkspaceTableCell className="px-2">
+                  <div className="flex justify-end">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          aria-label={`Copy ${publicUrl}`}
+                          onClick={() => {
+                            void navigator.clipboard.writeText(publicUrl)
+                            showToast({
+                              message: "Web route copied",
+                              type: "success",
+                            })
+                          }}
+                          size="icon-sm"
+                          type="button"
+                          variant="ghost"
+                        >
+                          <Copy />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Copy web route</TooltipContent>
+                    </Tooltip>
+                    {canWrite ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            aria-label={`Remove ${publicUrl}`}
+                            disabled={disabled || routePending}
+                            onClick={() => {
+                              void onRemoveWebRoute(route.id).catch(
+                                () => undefined
+                              )
+                            }}
+                            size="icon-sm"
+                            type="button"
+                            variant="ghost"
+                          >
+                            <Trash2 />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Remove web route</TooltipContent>
+                      </Tooltip>
+                    ) : null}
+                  </div>
+                </WorkspaceTableCell>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+})
+
+function AddNetworkRouteDialog({
+  canAddPort,
+  canAddWebRoute,
+  error,
+  pending,
+  onOpenChange,
+  onSubmitPort,
+  onSubmitWebRoute,
+}: {
+  canAddPort: boolean
+  canAddWebRoute: boolean
+  error: string | null
+  pending: boolean
+  onOpenChange: (open: boolean) => void
+  onSubmitPort: (port: RelayInstancePortInput) => Promise<void>
+  onSubmitWebRoute: (route: RelayInstanceWebRouteInput) => Promise<void>
+}) {
+  const [routeType, setRouteType] = React.useState<"port" | "web">(
+    canAddPort ? "port" : "web"
+  )
+  const [validationError, setValidationError] = React.useState<string | null>(
+    null
+  )
+
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <p className="font-mono text-[9px] tracking-[0.16em] text-primary uppercase">
+            New route
+          </p>
+          <DialogTitle>Add a network route</DialogTitle>
+          <DialogDescription>
+            Publish a raw TCP or UDP port, or forward a hostname to an HTTP
+            service inside this Ember.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid grid-cols-2 gap-2" role="radiogroup">
+          <Button
+            aria-checked={routeType === "port"}
+            className="h-auto items-start justify-start px-3 py-2.5 text-left"
+            disabled={!canAddPort || pending}
+            onClick={() => {
+              setRouteType("port")
+              setValidationError(null)
+            }}
+            role="radio"
+            type="button"
+            variant={routeType === "port" ? "default" : "outline"}
+          >
+            <Cable className="mt-0.5" />
+            <span>
+              <span className="block text-xs">Port</span>
+              <span className="mt-0.5 block text-[9px] opacity-70">
+                TCP or UDP
+              </span>
+            </span>
+          </Button>
+          <Button
+            aria-checked={routeType === "web"}
+            className="h-auto items-start justify-start px-3 py-2.5 text-left"
+            disabled={!canAddWebRoute || pending}
+            onClick={() => {
+              setRouteType("web")
+              setValidationError(null)
+            }}
+            role="radio"
+            type="button"
+            variant={routeType === "web" ? "default" : "outline"}
+          >
+            <Globe2 className="mt-0.5" />
+            <span>
+              <span className="block text-xs">Web route</span>
+              <span className="mt-0.5 block text-[9px] opacity-70">
+                HTTPS hostname
+              </span>
+            </span>
+          </Button>
+        </div>
+
+        <form
+          key={routeType}
+          action={async (form) => {
+            if (routeType === "port") {
+              const parsed = relayInstancePortInputSchema.safeParse({
+                internalPort: Number(form.get("internalPort")),
+                name: String(form.get("name") ?? ""),
+                protocol: String(form.get("protocol") ?? "tcp"),
+              })
+              if (!parsed.success) {
+                setValidationError(
+                  parsed.error.issues[0]?.message ??
+                    "Port allocation is invalid"
+                )
+                return
+              }
+              setValidationError(null)
+              await onSubmitPort(parsed.data).catch(() => undefined)
+              return
+            }
+
+            const path = String(form.get("path") ?? "").trim()
+            const parsed = relayInstanceWebRouteInputSchema.safeParse({
+              hostname: String(form.get("hostname") ?? ""),
+              path: path || null,
+              stripPrefix: form.get("stripPrefix") === "on",
+              targetPort: Number(form.get("targetPort")),
+            })
+            if (!parsed.success) {
+              setValidationError(
+                parsed.error.issues[0]?.message ?? "Web route is invalid"
+              )
+              return
+            }
+            setValidationError(null)
+            await onSubmitWebRoute(parsed.data)
+              .then(() => onOpenChange(false))
+              .catch(() => undefined)
+          }}
+          className="space-y-4"
+        >
+          {routeType === "port" ? (
+            <>
+              <label className="block space-y-1.5 text-[11px] font-medium">
+                Name
+                <Input
+                  autoComplete="off"
+                  maxLength={32}
+                  name="name"
+                  placeholder="Voice chat"
+                  required
+                />
+              </label>
+              <div className="grid grid-cols-[minmax(0,1fr)_8rem] gap-3">
+                <label className="block space-y-1.5 text-[11px] font-medium">
+                  Internal port
+                  <Input
+                    max={65_535}
+                    min={1}
+                    name="internalPort"
+                    placeholder="24454"
+                    required
+                    type="number"
+                  />
+                </label>
+                <label className="block space-y-1.5 text-[11px] font-medium">
+                  Protocol
+                  <select
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-xs shadow-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+                    defaultValue="tcp"
+                    name="protocol"
+                  >
+                    <option value="tcp">TCP</option>
+                    <option value="udp">UDP</option>
+                  </select>
+                </label>
+              </div>
+              <div className="border border-border/70 bg-background/45 px-3 py-2.5">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-[10px] text-muted-foreground">
+                    Public port
+                  </span>
+                  <span className="font-mono text-xs text-foreground">
+                    Assigned after creation
+                  </span>
+                </div>
+                <p className="mt-1 text-[9px] leading-relaxed text-muted-foreground/75">
+                  Public ports are selected by Kiln and cannot be changed.
+                </p>
+              </div>
+            </>
+          ) : (
+            <>
+              <label className="block space-y-1.5 text-[11px] font-medium">
+                Hostname
+                <Input
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  name="hostname"
+                  placeholder="map.donutsmp.com"
+                  required
+                />
+              </label>
+              <div className="grid grid-cols-[minmax(0,1fr)_8rem] gap-3">
+                <label className="block space-y-1.5 text-[11px] font-medium">
+                  Path (optional)
+                  <Input name="path" placeholder="/map" />
+                </label>
+                <label className="block space-y-1.5 text-[11px] font-medium">
+                  Internal port
+                  <Input
+                    max={65_535}
+                    min={1}
+                    name="targetPort"
+                    placeholder="8080"
+                    required
+                    type="number"
+                  />
+                </label>
+              </div>
+              <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                <input
+                  className="accent-primary"
+                  defaultChecked
+                  name="stripPrefix"
+                  type="checkbox"
+                />
+                Strip the configured path before forwarding
+              </label>
+              <div className="flex gap-2 border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-[10px] leading-relaxed text-amber-100/75">
+                <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-amber-300" />
+                Point this hostname at the Relay before applying the route.
+              </div>
+            </>
+          )}
+
+          {validationError || error ? (
+            <p className="text-xs text-destructive">
+              {validationError ?? error}
+            </p>
+          ) : null}
+
+          <DialogFooter>
+            <DialogClose
+              render={
+                <Button disabled={pending} type="button" variant="outline" />
+              }
+            >
+              Cancel
+            </DialogClose>
+            <Button disabled={pending} type="submit">
+              {pending ? <LoaderCircle className="animate-spin" /> : <Plus />}
+              {pending ? "Adding" : "Add route"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function PortAllocationDialog({
+  allocation,
+  error,
+  open,
+  pending,
+  onOpenChange,
+  onRemove,
+  onSubmit,
+}: {
+  allocation: RelayInstancePortAllocation | null
+  error: string | null
+  open: boolean
+  pending: boolean
+  onOpenChange: (open: boolean) => void
+  onRemove?: () => void
+  onSubmit: (port: RelayInstancePortInput) => Promise<void>
+}) {
+  const [validationError, setValidationError] = React.useState<string | null>(
+    null
+  )
+  const editing = allocation !== null
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <p className="font-mono text-[9px] tracking-[0.16em] text-primary uppercase">
+            {editing ? "Port mapping" : "New allocation"}
+          </p>
+          <DialogTitle>
+            {editing ? "Edit port allocation" : "Allocate a port"}
+          </DialogTitle>
+          <DialogDescription>
+            Choose where traffic should arrive inside the Ember. Kiln assigns
+            the public port automatically.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form
+          key={allocation?.id ?? "new"}
+          action={async (form) => {
+            const parsed = relayInstancePortInputSchema.safeParse({
+              id: allocation?.id,
+              internalPort: Number(form.get("internalPort")),
+              name: String(form.get("name") ?? ""),
+              protocol: String(form.get("protocol") ?? "tcp"),
+            })
+            if (!parsed.success) {
+              setValidationError(
+                parsed.error.issues[0]?.message ?? "Port allocation is invalid"
+              )
+              return
+            }
+            setValidationError(null)
+            await onSubmit(parsed.data).catch(() => undefined)
+          }}
+          className="space-y-4"
+        >
+          <label className="block space-y-1.5 text-[11px] font-medium">
+            Name
+            <Input
+              autoComplete="off"
+              defaultValue={allocation?.name ?? ""}
+              maxLength={32}
+              name="name"
+              placeholder="Voice chat"
+              required
+            />
+          </label>
+          <div className="grid grid-cols-[minmax(0,1fr)_8rem] gap-3">
+            <label className="block space-y-1.5 text-[11px] font-medium">
+              Internal port
+              <Input
+                defaultValue={allocation?.internalPort}
+                max={65_535}
+                min={1}
+                name="internalPort"
+                placeholder="24454"
+                required
+                type="number"
+              />
+            </label>
+            <label className="block space-y-1.5 text-[11px] font-medium">
+              Protocol
+              <select
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-xs shadow-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-55"
+                defaultValue={allocation?.protocol ?? "tcp"}
+                disabled={editing}
+                name="protocol"
+              >
+                <option value="tcp">TCP</option>
+                <option value="udp">UDP</option>
+              </select>
+              {editing ? (
+                <input
+                  name="protocol"
+                  type="hidden"
+                  value={allocation.protocol}
+                />
+              ) : null}
+            </label>
+          </div>
+
+          <div className="border border-border/70 bg-background/45 px-3 py-2.5">
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-[10px] text-muted-foreground">
+                Public port
+              </span>
+              <span className="font-mono text-xs text-foreground">
+                {allocation?.externalPort ?? "Assigned after creation"}
+              </span>
+            </div>
+            <p className="mt-1 text-[9px] leading-relaxed text-muted-foreground/75">
+              Public ports are selected by Kiln and cannot be changed.
+            </p>
+          </div>
+
+          {validationError || error ? (
+            <p className="text-xs text-destructive">
+              {validationError ?? error}
+            </p>
+          ) : null}
+
+          <DialogFooter>
+            {onRemove ? (
+              <Button
+                className="sm:mr-auto"
+                disabled={pending}
+                onClick={onRemove}
+                type="button"
+                variant="destructive"
+              >
+                <Trash2 />
+                Remove
+              </Button>
+            ) : null}
+            <DialogClose
+              render={
+                <Button disabled={pending} type="button" variant="outline" />
+              }
+            >
+              Cancel
+            </DialogClose>
+            <Button disabled={pending} type="submit">
+              {pending ? <LoaderCircle className="animate-spin" /> : null}
+              {pending
+                ? "Applying"
+                : editing
+                  ? "Save allocation"
+                  : "Allocate port"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function RouteStatusButton({
   state,
   canRestart,
   restarting,
@@ -689,58 +1138,58 @@ function RouteApplyState({
   restarting: boolean
   onRestart: () => void
 }) {
-  if (state.status === "ready" && state.routes.length === 0) return null
+  if (state.status === "ready") return null
   const pending = state.status === "pending_restart"
-  const blocked = state.status === "blocked"
+
   return (
-    <section
-      className={
-        blocked
-          ? "border border-destructive/35 bg-destructive/5"
-          : pending
-            ? "border border-amber-400/30 bg-[linear-gradient(100deg,rgba(251,191,36,0.08),transparent_65%)]"
-            : "border border-emerald-400/25 bg-emerald-400/5"
-      }
-      aria-live="polite"
-    >
-      <div className="flex flex-wrap items-center gap-3 px-4 py-3">
-        <div
-          className={`grid size-8 shrink-0 place-items-center border ${
-            blocked
-              ? "border-destructive/35 text-destructive"
-              : pending
-                ? "border-amber-300/35 text-amber-300"
-                : "border-emerald-300/30 text-emerald-300"
-          }`}
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          aria-label={
+            pending
+              ? restarting
+                ? "Applying route changes"
+                : "Restart to apply route changes"
+              : "View route error"
+          }
+          className={
+            pending
+              ? "w-7 border-amber-400/30 bg-amber-400/5 px-0 text-amber-200 hover:bg-amber-400/10 hover:text-amber-100 sm:w-auto sm:px-3"
+              : "w-7 px-0 sm:w-auto sm:px-3"
+          }
+          onClick={() => {
+            if (pending && canRestart) {
+              onRestart()
+              return
+            }
+            showToast({
+              description: state.message,
+              message: pending ? "Restart required" : "Edge route error",
+              type: pending ? "warning" : "error",
+            })
+          }}
+          size="sm"
+          type="button"
+          variant={pending ? "outline" : "destructive"}
+          aria-live="polite"
+          disabled={restarting}
         >
           {pending ? (
-            <RotateCw className="size-3.5" />
-          ) : blocked ? (
-            <AlertTriangle className="size-3.5" />
-          ) : (
-            <CheckCircle2 className="size-3.5" />
-          )}
-        </div>
-        <div className="min-w-48 flex-1">
-          <p className="font-mono text-[10px] tracking-[0.1em]">
-            {pending
-              ? "Route changes staged"
-              : blocked
-                ? "Edge requires attention"
-                : "Edge configuration active"}
-          </p>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            {state.message}
-          </p>
-        </div>
-        {pending && canRestart ? (
-          <Button size="sm" onClick={onRestart} disabled={restarting}>
             <RotateCw className={restarting ? "animate-spin" : undefined} />
-            {restarting ? "Applying" : "Restart and apply"}
-          </Button>
-        ) : null}
-      </div>
-    </section>
+          ) : (
+            <AlertTriangle />
+          )}
+          <span className="hidden sm:inline">
+            {pending
+              ? restarting
+                ? "Applying"
+                : "Restart to apply"
+              : "Route error"}
+          </span>
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{state.message}</TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -785,5 +1234,9 @@ function usePendingRouteToast({
 }
 
 function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : "The network route failed."
+  return cause instanceof Error ? cause.message : "The network change failed."
+}
+
+function formatHostPort(host: string, port: number): string {
+  return `${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}:${port}`
 }

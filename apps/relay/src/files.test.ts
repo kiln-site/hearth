@@ -79,6 +79,7 @@ function testInstance(): RelayInstanceConfig {
     limits: { diskBytes: 0, memoryBytes: 0 },
     managedByRelay: true,
     name: "Test Instance",
+    ports: [],
     service: "test",
     shortId: "instance",
     tailscale: { enabled: false },

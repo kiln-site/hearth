@@ -10,6 +10,7 @@ import {
   relayConsoleCompletionSchema,
   relayInstanceActionSchema,
   relayInstanceNameSchema,
+  relayInstancePortInputsSchema,
   relayInstanceResourceSnapshotSchema,
   relayInstanceWebRouteInputsSchema,
   relayInstanceWebRouteStateSchema,
@@ -114,6 +115,10 @@ const actionInputSchema = instanceInputSchema.extend(
 
 const webRoutesInputSchema = instanceInputSchema.extend({
   routes: relayInstanceWebRouteInputsSchema,
+})
+
+const portsInputSchema = instanceInputSchema.extend({
+  ports: relayInstancePortInputsSchema,
 })
 
 const consoleCommandInputSchema = instanceInputSchema.extend(
@@ -374,6 +379,29 @@ export const updateInstanceWebRoutes = createServerFn({ method: "POST" })
       240_000
     )
     return relayInstanceWebRouteStateSchema.parse(value)
+  })
+
+export const updateInstancePorts = createServerFn({ method: "POST" })
+  .validator(portsInputSchema)
+  .handler(async ({ data }) => {
+    const value = await relayRequest(
+      `/v1/instances/${encodeURIComponent(data.instanceId)}/ports`,
+      {
+        body: JSON.stringify({ ports: data.ports }),
+        headers: { "Content-Type": "application/json" },
+        method: "PUT",
+      },
+      "instance.network.write",
+      data.instanceId,
+      data.relayId,
+      240_000
+    )
+    const instance = relayInstanceSchema.parse(value)
+    await runAppEffect(
+      "relay.snapshot.invalidate",
+      invalidateRelayCache(relayCachePolicy.snapshot(data.relayId))
+    )
+    return { ...instance, relayId: data.relayId }
   })
 
 export const getRelayTree = createServerFn({ method: "GET" })

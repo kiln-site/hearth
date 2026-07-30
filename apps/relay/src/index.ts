@@ -14,6 +14,7 @@ import {
   relayCreateInstanceSchema,
   relayInstanceActionSchema,
   relayInstanceNameSchema,
+  relayInstancePortInputsSchema,
   relayInstanceWebRouteInputsSchema,
   relayNetworkingSchema,
   relayProxySettingsSchema,
@@ -1013,6 +1014,19 @@ async function executeControlRequest(
     }
     case "instance.logs.latest":
       return filesystem.latestLog(await requiredInstance(payload))
+    case "instance.network.ports.write": {
+      return serializeWebRouteMutation(async () => {
+        const instance = await requiredInstance(payload)
+        const ports = relayInstancePortInputsSchema.parse(payload.ports)
+        const routes = await runRelayEffect(
+          "relay.network.ports.routes",
+          startup.state.listInstanceRoutes(instance.id)
+        )
+        return serializeInstanceMutation(instance.id, () =>
+          lifecycle.updateInstancePorts(instance.id, ports, routes)
+        )
+      })
+    }
     case "instance.network.routes.read": {
       const instance = await requiredInstance(payload)
       const routes = await runRelayEffect(

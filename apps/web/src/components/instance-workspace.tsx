@@ -11,7 +11,6 @@ import type {
   RelayObservedState,
 } from "@workspace/contracts"
 import {
-  AlertTriangle,
   Check,
   CircleStop,
   Copy,
@@ -412,21 +411,11 @@ function InstanceIdCopyButton({
   )
 }
 
-function InstanceAddressCopyButton({
-  address,
-  requiresNetworkUpgrade,
-}: {
-  address: string
-  requiresNetworkUpgrade: boolean
-}) {
+function InstanceAddressCopyButton({ address }: { address: string }) {
   const { copied, copy } = useCopyFeedback(address)
   const addressError = address.startsWith("Error:") ? address : null
-  const unavailable = requiresNetworkUpgrade || addressError !== null
-  const label = requiresNetworkUpgrade
-    ? "UPGRADE REQUIRED"
-    : addressError
-      ? "ERROR"
-      : address
+  const unavailable = addressError !== null
+  const label = addressError ? "ERROR" : address
 
   return (
     <Tooltip>
@@ -434,30 +423,20 @@ function InstanceAddressCopyButton({
         <button
           type="button"
           className={`flex min-w-0 flex-1 items-center gap-1 truncate font-mono transition-colors ${
-            requiresNetworkUpgrade
-              ? "font-semibold text-amber-300"
-              : addressError
-                ? "font-semibold text-destructive hover:text-destructive/80"
-                : copied
-                  ? "text-emerald-400"
-                  : "text-primary/75 hover:text-primary"
+            addressError
+              ? "font-semibold text-destructive hover:text-destructive/80"
+              : copied
+                ? "text-emerald-400"
+                : "text-primary/75 hover:text-primary"
           }`}
           aria-disabled={unavailable}
-          aria-label={
-            requiresNetworkUpgrade
-              ? "Server networking upgrade required"
-              : addressError
-                ? addressError
-                : `Copy server address ${address}`
-          }
+          aria-label={addressError ?? `Copy server address ${address}`}
           onClick={() => {
             if (!unavailable) void copy()
           }}
         >
           <span className="truncate">{label}</span>
-          {unavailable ? (
-            <AlertTriangle className="size-3 shrink-0 opacity-70" />
-          ) : copied ? (
+          {copied ? (
             <Check className="size-3 shrink-0" />
           ) : (
             <Copy className="size-3 shrink-0 opacity-55" />
@@ -465,10 +444,7 @@ function InstanceAddressCopyButton({
         </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" sideOffset={6}>
-        {requiresNetworkUpgrade
-          ? "Restart this server from Network to assign its dedicated address"
-          : (addressError ??
-            (copied ? "Address copied" : "Copy server address"))}
+        {addressError ?? (copied ? "Address copied" : "Copy server address")}
       </TooltipContent>
     </Tooltip>
   )
@@ -506,10 +482,7 @@ function InstanceIdentity({
           <InstanceIdCopyButton id={instance.id} shortId={instance.shortId} />
           <span className="text-border">/</span>
         </span>
-        <InstanceAddressCopyButton
-          address={instance.connectAddress}
-          requiresNetworkUpgrade={instance.requiresNetworkUpgrade}
-        />
+        <InstanceAddressCopyButton address={instance.connectAddress} />
       </div>
       {error ? (
         <p className="mt-0.5 truncate text-[9px] text-destructive">{error}</p>

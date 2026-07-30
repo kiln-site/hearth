@@ -4,6 +4,7 @@ import { hostname } from "node:os"
 
 import type {
   BrickReadiness,
+  RelayInstancePortAllocation,
   RelayInstanceTailscale,
 } from "@workspace/contracts"
 
@@ -28,9 +29,9 @@ export interface RelayInstanceConfig {
     memoryBytes: number
   }
   name: string
+  ports: Array<RelayInstancePortAllocation>
   publicHost?: string
   publicPort?: number
-  requiresNetworkUpgrade?: boolean
   service: string
   tailscale: RelayInstanceTailscale
   variables?: Record<string, boolean | number | string>
