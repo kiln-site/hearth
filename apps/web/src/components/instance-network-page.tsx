@@ -8,6 +8,7 @@ import {
 import {
   AlertTriangle,
   Cable,
+  Check,
   Copy,
   Globe2,
   LoaderCircle,
@@ -621,7 +622,6 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
                   <PublicAddressCopy
                     address={publicUrl}
                     label={`${route.hostname} web route`}
-                    successMessage="Web route copied"
                   />
                 </WorkspaceTableCell>
                 <WorkspaceTableCell className="px-2">
@@ -661,12 +661,12 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
 const PublicAddressCopy = React.memo(function PublicAddressCopy({
   address,
   label,
-  successMessage = "Public address copied",
 }: {
   address: string | null
   label: string
-  successMessage?: string
 }) {
+  const { copied, copy } = useCopyFeedback(address ?? "")
+
   if (!address) {
     return (
       <span className="block truncate font-mono text-[10px] text-muted-foreground">
@@ -680,21 +680,48 @@ const PublicAddressCopy = React.memo(function PublicAddressCopy({
       <TooltipTrigger asChild>
         <button
           aria-label={`Copy ${label}`}
-          className="flex max-w-full items-center gap-1 font-mono text-[10px] text-primary/75 transition-colors hover:text-primary"
+          className={`flex max-w-full items-center gap-1 font-mono text-[10px] transition-colors ${
+            copied ? "text-emerald-400" : "text-primary/75 hover:text-primary"
+          }`}
           onClick={() => {
-            void navigator.clipboard.writeText(address)
-            showToast({ message: successMessage, type: "success" })
+            void copy()
           }}
           type="button"
         >
           <span className="truncate">{address}</span>
-          <Copy className="size-3 shrink-0 opacity-55" />
+          {copied ? (
+            <Check className="size-3 shrink-0" />
+          ) : (
+            <Copy className="size-3 shrink-0 opacity-55" />
+          )}
         </button>
       </TooltipTrigger>
-      <TooltipContent>Copy address</TooltipContent>
+      <TooltipContent>
+        {copied ? "Address copied" : "Copy address"}
+      </TooltipContent>
     </Tooltip>
   )
 })
+
+function useCopyFeedback(value: string) {
+  const [copied, setCopied] = React.useState(false)
+  const resetTimer = React.useRef<number | null>(null)
+  React.useEffect(
+    () => () => {
+      if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    },
+    []
+  )
+
+  async function copy() {
+    await copyToClipboard(value)
+    setCopied(true)
+    if (resetTimer.current) window.clearTimeout(resetTimer.current)
+    resetTimer.current = window.setTimeout(() => setCopied(false), 1_800)
+  }
+
+  return { copied, copy }
+}
 
 function AddNetworkRouteDialog({
   canAddPort,
@@ -1208,4 +1235,19 @@ function errorMessage(cause: unknown): string {
 
 function formatHostPort(host: string, port: number): string {
   return `${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}:${port}`
+}
+
+async function copyToClipboard(value: string) {
+  try {
+    await navigator.clipboard.writeText(value)
+  } catch {
+    const textarea = document.createElement("textarea")
+    textarea.value = value
+    textarea.style.position = "fixed"
+    textarea.style.opacity = "0"
+    document.body.append(textarea)
+    textarea.select()
+    document.execCommand("copy")
+    textarea.remove()
+  }
 }
