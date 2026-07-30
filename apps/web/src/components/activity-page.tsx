@@ -22,6 +22,14 @@ import {
 
 import { Button } from "@workspace/ui/components/button"
 import { Calendar } from "@workspace/ui/components/calendar"
+import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from "@workspace/ui/components/combobox"
 import { Input } from "@workspace/ui/components/input"
 import {
   Popover,
@@ -94,6 +102,32 @@ const activityShortDate = new Intl.DateTimeFormat(undefined, {
 })
 
 const minimumActivitySyncFeedbackMs = 500
+const activityTableHeaderHeight = 32
+const activityTableBottomPadding = 12
+
+type ActivityServerOption = ActivityData["servers"][number] & {
+  relayName: string
+  searchText: string
+}
+
+function activityServerLabel(server: ActivityServerOption) {
+  return server.name
+}
+
+function activityServerValue(server: ActivityServerOption) {
+  return `${server.relayId}:${server.id}`
+}
+
+function activityServersEqual(
+  server: ActivityServerOption,
+  value: ActivityServerOption
+) {
+  return server.id === value.id && server.relayId === value.relayId
+}
+
+function filterActivityServer(server: ActivityServerOption, query: string) {
+  return server.searchText.includes(query.trim().toLocaleLowerCase())
+}
 
 export const ActivityPage = React.memo(function ActivityPage({
   filters,
@@ -119,8 +153,14 @@ export const ActivityPage = React.memo(function ActivityPage({
   ].filter(Boolean).length
 
   return (
-    <div className="mx-auto flex h-[calc(100dvh-5.75rem)] min-h-[34rem] w-full max-w-[90rem] flex-col px-3 pb-3 sm:px-5 sm:pb-5">
-      <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card/45 [contain:paint]">
+    <div className="mx-auto w-full max-w-[90rem] px-3 pb-10 sm:px-5">
+      <ActivityServerFilter
+        data={data}
+        filters={filters}
+        onFiltersChange={onFiltersChange}
+      />
+
+      <section className="overflow-hidden rounded-xl border bg-card/45 [contain:paint]">
         <ActivityFiltersToolbar
           actors={actors}
           data={data}
@@ -149,14 +189,6 @@ const ActivityFiltersToolbar = React.memo(function ActivityFiltersToolbar({
   filters: ActivityFilters
   onFiltersChange: (change: Partial<ActivityFilters>) => void
 }) {
-  const relayNameById = React.useMemo(
-    () => new Map(data.relays.map((relay) => [relay.id, relay.name])),
-    [data.relays]
-  )
-  const servers = filters.relay
-    ? data.servers.filter((server) => server.relayId === filters.relay)
-    : data.servers
-
   return (
     <div className="border-b bg-background/15 p-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -228,23 +260,6 @@ const ActivityFiltersToolbar = React.memo(function ActivityFiltersToolbar({
           </ActivitySelect>
         ) : null}
 
-        <ActivitySelect
-          ariaLabel="Filter activity by server"
-          icon={<Server />}
-          value={filters.server ?? ""}
-          onChange={(value) => onFiltersChange({ server: value || undefined })}
-        >
-          <option value="">All servers</option>
-          {servers.map((server) => (
-            <option key={`${server.relayId}:${server.id}`} value={server.id}>
-              {server.name}
-              {data.relays.length > 1
-                ? ` · ${relayNameById.get(server.relayId) ?? "Relay"}`
-                : ""}
-            </option>
-          ))}
-        </ActivitySelect>
-
         <ActivityDateRange
           from={filters.from}
           to={filters.to}
@@ -273,6 +288,85 @@ const ActivityFiltersToolbar = React.memo(function ActivityFiltersToolbar({
           </Button>
         ) : null}
       </div>
+    </div>
+  )
+})
+
+const ActivityServerFilter = React.memo(function ActivityServerFilter({
+  data,
+  filters,
+  onFiltersChange,
+}: {
+  data: ActivityData
+  filters: ActivityFilters
+  onFiltersChange: (change: Partial<ActivityFilters>) => void
+}) {
+  const relayNameById = React.useMemo(
+    () => new Map(data.relays.map((relay) => [relay.id, relay.name])),
+    [data.relays]
+  )
+  const servers = React.useMemo(
+    () =>
+      data.servers.flatMap((server) => {
+        if (filters.relay && server.relayId !== filters.relay) return []
+
+        const relayName = relayNameById.get(server.relayId) ?? "Relay"
+        return [
+          {
+            ...server,
+            relayName,
+            searchText:
+              `${server.name} ${server.id} ${relayName}`.toLocaleLowerCase(),
+          },
+        ]
+      }),
+    [data.servers, filters.relay, relayNameById]
+  )
+  const selectedServer =
+    servers.find((server) => server.id === filters.server) ?? null
+
+  return (
+    <div className="mb-3">
+      <Combobox
+        items={servers}
+        value={selectedServer}
+        itemToStringLabel={activityServerLabel}
+        itemToStringValue={activityServerValue}
+        isItemEqualToValue={activityServersEqual}
+        filter={filterActivityServer}
+        onValueChange={(server) =>
+          onFiltersChange({ server: server?.id ?? undefined })
+        }
+      >
+        <ComboboxInput
+          aria-label="Filter activity by server"
+          className="h-10 w-full bg-card/45"
+          placeholder="All servers — search by name, Relay, or ID"
+          showClear={selectedServer !== null}
+        />
+        <ComboboxContent>
+          <ComboboxEmpty>No accessible servers found.</ComboboxEmpty>
+          <ComboboxList>
+            {(server: ActivityServerOption) => (
+              <ComboboxItem
+                key={`${server.relayId}:${server.id}`}
+                value={server}
+                className="py-2"
+              >
+                <Server className="size-4 text-primary" />
+                <span className="min-w-0">
+                  <span className="block truncate font-medium">
+                    {server.name}
+                  </span>
+                  <span className="block truncate font-mono text-[9px] text-muted-foreground">
+                    {server.relayName} · {server.id}
+                  </span>
+                </span>
+              </ComboboxItem>
+            )}
+          </ComboboxList>
+        </ComboboxContent>
+      </Combobox>
     </div>
   )
 })
@@ -583,7 +677,7 @@ function ActivityResults({
 
   if (entries.length === 0) {
     return (
-      <div className="grid min-h-0 flex-1 place-items-center p-8 text-center">
+      <div className="grid min-h-40 place-items-center p-8 text-center">
         <div>
           <span className="mx-auto mb-3 grid size-10 place-items-center border border-border bg-muted/35 text-muted-foreground">
             <FileClock className="size-4" />
@@ -601,8 +695,16 @@ function ActivityResults({
     )
   }
 
+  const activityTableHeight =
+    activityTableHeaderHeight +
+    rowVirtualizer.getTotalSize() +
+    activityTableBottomPadding
+
   return (
-    <div className="relative min-h-0 flex-1">
+    <div
+      className="relative min-h-0 max-h-[min(42rem,calc(100dvh-16rem))]"
+      style={{ height: `${activityTableHeight}px` }}
+    >
       <div
         aria-hidden="true"
         className="absolute inset-x-0 top-0 z-10 grid h-8 grid-cols-[5.5rem_minmax(0,1fr)] items-center border-b bg-card/95 px-3 font-mono text-[8px] tracking-[0.12em] text-muted-foreground uppercase backdrop-blur md:grid-cols-[7rem_minmax(8rem,11rem)_minmax(8rem,10rem)_minmax(12rem,1fr)] lg:grid-cols-[8rem_minmax(10rem,14rem)_minmax(9rem,12rem)_minmax(15rem,1fr)]"
@@ -620,7 +722,11 @@ function ActivityResults({
       >
         <div
           className="relative w-full"
-          style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+          style={{
+            height: `${
+              rowVirtualizer.getTotalSize() + activityTableBottomPadding
+            }px`,
+          }}
         >
           {rowVirtualizer.getVirtualItems().map((virtualRow) => {
             const entry = entries[virtualRow.index]
