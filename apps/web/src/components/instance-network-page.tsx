@@ -1802,12 +1802,14 @@ function usePortLease({
   const [lease, setLease] = React.useState<RelayInstancePortLease | null>(null)
   const [pending, setPending] = React.useState(enabled)
   const [portValue, setPortValueState] = React.useState("")
+  const [sealed, setSealed] = React.useState(false)
   const generation = React.useRef(0)
   const leasePromiseRef =
     React.useRef<Promise<RelayInstancePortLease> | null>(null)
   const leaseRef = React.useRef<RelayInstancePortLease | null>(null)
   const portDirty = React.useRef(false)
   const portValueRef = React.useRef("")
+  const sealedRef = React.useRef(false)
 
   React.useEffect(() => {
     const currentGeneration = generation.current + 1
@@ -1820,6 +1822,8 @@ function usePortLease({
       setPending(false)
       setPortValueState("")
       portValueRef.current = ""
+      sealedRef.current = false
+      setSealed(false)
       return
     }
 
@@ -1829,6 +1833,8 @@ function usePortLease({
     setPortValueState("")
     portDirty.current = false
     portValueRef.current = ""
+    sealedRef.current = false
+    setSealed(false)
     const leasePromise = reserveInstancePort({
       data: { instanceId, protocol, relayId },
     })
@@ -1873,13 +1879,19 @@ function usePortLease({
   }, [enabled, instanceId, protocol, relayId])
 
   React.useEffect(() => {
-    if (!enabled || !lease) return
+    if (!enabled || !lease || sealed) return
     let cancelled = false
     let timer = window.setTimeout(renew, 30_000)
 
     async function renew() {
       const currentLease = leaseRef.current
-      if (!currentLease || currentLease.id !== lease?.id) return
+      if (
+        !currentLease ||
+        currentLease.id !== lease?.id ||
+        sealedRef.current
+      ) {
+        return
+      }
       try {
         const nextLease = await reserveInstancePort({
           data: {
@@ -1889,6 +1901,14 @@ function usePortLease({
             relayId,
           },
         })
+        if (sealedRef.current) {
+          if (nextLease.id !== currentLease.id) {
+            void releaseInstancePort({
+              data: { instanceId, leaseId: nextLease.id, relayId },
+            }).catch(() => undefined)
+          }
+          return
+        }
         if (cancelled || leaseRef.current?.id !== currentLease.id) {
           void releaseInstancePort({
             data: { instanceId, leaseId: nextLease.id, relayId },
@@ -1903,7 +1923,7 @@ function usePortLease({
         }
         setError(null)
       } catch (cause) {
-        if (!cancelled) {
+        if (!cancelled && !sealedRef.current) {
           setError(errorMessage(cause))
           timer = window.setTimeout(renew, 10_000)
         }
@@ -1914,7 +1934,7 @@ function usePortLease({
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [enabled, instanceId, lease, protocol, relayId])
+  }, [enabled, instanceId, lease, protocol, relayId, sealed])
 
   const setPortValue = React.useCallback((value: string) => {
     portDirty.current = true
@@ -1982,8 +2002,24 @@ function usePortLease({
     }
   }, [instanceId, protocol, relayId])
 
+  const commitForSubmit = React.useCallback(async () => {
+    const currentGeneration = generation.current
+    sealedRef.current = true
+    setSealed(true)
+    try {
+      return await commit()
+    } catch (cause) {
+      if (generation.current === currentGeneration) {
+        sealedRef.current = false
+        setSealed(false)
+      }
+      throw cause
+    }
+  }, [commit])
+
   return {
     commit,
+    commitForSubmit,
     error,
     lease,
     pending,
@@ -2168,7 +2204,7 @@ function AddNetworkRouteDialog({
                 setValidationError(null)
                 setSubmitted(true)
                 const lease = await portLease
-                  .commit()
+                  .commitForSubmit()
                   .catch((cause: unknown) => {
                     onCancelSubmit()
                     setSubmitted(false)
