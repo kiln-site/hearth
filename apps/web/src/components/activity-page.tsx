@@ -310,9 +310,6 @@ const ActivityServerFilter = React.memo(function ActivityServerFilter({
         : servers,
     [normalizedServerQuery, servers]
   )
-  const selectionDescription = selectedServer
-    ? "Activity is scoped to this server."
-    : "Activity across every server you can access."
   const selectionMetadata = selectedServer
     ? selectedServer.id
     : `${servers.length} accessible ${
@@ -344,9 +341,6 @@ const ActivityServerFilter = React.memo(function ActivityServerFilter({
                     "All Relays"}
                 </Badge>
               </div>
-              <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
-                {selectionDescription}
-              </p>
               <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground/70">
                 {selectionMetadata}
               </p>
