@@ -303,6 +303,18 @@ type AddedNetworkRoute =
       status: "ready"
     }
 
+type RouteRemovalState =
+  | {
+      allocation: RelayInstancePortAllocation
+      kind: "port"
+      phase: "confirming" | "removing"
+    }
+  | {
+      kind: "web"
+      phase: "confirming" | "removing"
+      route: RelayInstanceWebRoute
+    }
+
 const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   canRestart,
   canWrite,
@@ -355,6 +367,7 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
     Array<AddedNetworkRoute>
   >([])
   const addedRouteSequence = React.useRef(0)
+  const [removal, setRemoval] = React.useState<RouteRemovalState | null>(null)
   const clearEditGamePortIntent = React.useCallback(() => {
     if (!editGamePort) return
     void navigate({
@@ -501,21 +514,9 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   const removePort = React.useCallback(
     (allocation: RelayInstancePortAllocation) => {
       if (allocation.kind !== "custom" || disabled) return
-      if (!window.confirm(`Remove ${allocation.name} from this server?`)) return
-      update.mutate(portInputs.filter((port) => port.id !== allocation.id), {
-        onSuccess: () => {
-          setAddedRoutes((current) =>
-            current.filter(
-              (route) =>
-                route.kind !== "port" ||
-                route.status !== "ready" ||
-                route.allocation.id !== allocation.id
-            )
-          )
-        },
-      })
+      setRemoval({ allocation, kind: "port", phase: "confirming" })
     },
-    [disabled, portInputs, update]
+    [disabled]
   )
   const editPort = React.useCallback(
     (allocation: RelayInstancePortAllocation) => {
@@ -534,22 +535,43 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   const removeWebRoute = React.useCallback(
     (route: RelayInstanceWebRoute) => {
       if (disabled || routePending) return
-      if (!window.confirm(`Remove ${route.hostname} from this server?`)) return
-      void onRemoveWebRoute(route.id)
-        .then(() => {
-          setAddedRoutes((current) =>
-            current.filter(
-              (currentRoute) =>
-                currentRoute.kind !== "web" ||
-                currentRoute.status !== "ready" ||
-                currentRoute.route.id !== route.id
-            )
-          )
-        })
-        .catch(() => undefined)
+      setRemoval({ kind: "web", phase: "confirming", route })
     },
-    [disabled, onRemoveWebRoute, routePending]
+    [disabled, routePending]
   )
+  const confirmRemoval = React.useCallback(async () => {
+    if (!removal || removal.phase !== "confirming") return
+    setRemoval({ ...removal, phase: "removing" })
+    try {
+      if (removal.kind === "port") {
+        await update.mutateAsync(
+          portInputs.filter((port) => port.id !== removal.allocation.id)
+        )
+        setAddedRoutes((current) =>
+          current.filter(
+            (route) =>
+              route.kind !== "port" ||
+              route.status !== "ready" ||
+              route.allocation.id !== removal.allocation.id
+          )
+        )
+      } else {
+        await onRemoveWebRoute(removal.route.id)
+        setAddedRoutes((current) =>
+          current.filter(
+            (currentRoute) =>
+              currentRoute.kind !== "web" ||
+              currentRoute.status !== "ready" ||
+              currentRoute.route.id !== removal.route.id
+          )
+        )
+      }
+    } catch {
+      // Mutation state renders the Relay error below the table.
+    } finally {
+      setRemoval(null)
+    }
+  }, [onRemoveWebRoute, portInputs, removal, update])
 
   return (
     <section className="border border-border/80 bg-card/55">
@@ -600,6 +622,7 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
           routeState={routeState}
           routes={routes}
           restarting={restarting}
+          removal={removal?.phase === "removing" ? removal : null}
           onEditPort={editPort}
           onEditWebRoute={editWebRoute}
           onRecoverPrimaryPort={recoverPrimaryPort}
@@ -688,6 +711,15 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
         }}
         onSubmit={applyPort}
       />
+      <RemoveNetworkRouteDialog
+        open={removal?.phase === "confirming"}
+        publicHost={instance.publicHost}
+        removal={removal}
+        onConfirm={() => void confirmRemoval()}
+        onOpenChange={(open) => {
+          if (!open && removal?.phase === "confirming") setRemoval(null)
+        }}
+      />
     </section>
   )
 })
@@ -702,6 +734,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
   routeState,
   routes,
   restarting,
+  removal,
   onEditPort,
   onEditWebRoute,
   onRecoverPrimaryPort,
@@ -718,6 +751,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
   routeState: RelayInstanceWebRouteState | undefined
   routes: Array<RelayInstanceWebRoute> | undefined
   restarting: boolean
+  removal: RouteRemovalState | null
   onEditPort: (allocation: RelayInstancePortAllocation) => void
   onEditWebRoute: (route: RelayInstanceWebRoute) => void
   onRecoverPrimaryPort: () => void
@@ -860,6 +894,10 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
               key={allocation.id}
               allocation={allocation}
               canWrite={canWrite}
+              deleting={
+                removal?.kind === "port" &&
+                removal.allocation.id === allocation.id
+              }
               disabled={disabled}
               publicHost={instance.publicHost}
               onEdit={onEditPort}
@@ -884,6 +922,9 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
               key={`web-${route.id}`}
               canRestart={canRestart}
               canWrite={canWrite}
+              deleting={
+                removal?.kind === "web" && removal.route.id === route.id
+              }
               disabled={disabled || routePending}
               restarting={restarting}
               route={route}
@@ -900,6 +941,14 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
             addedRoute={addedRoute}
             canRestart={canRestart}
             canWrite={canWrite}
+            deleting={
+              addedRoute.status === "ready" &&
+              (addedRoute.kind === "port"
+                ? removal?.kind === "port" &&
+                  removal.allocation.id === addedRoute.allocation.id
+                : removal?.kind === "web" &&
+                  removal.route.id === addedRoute.route.id)
+            }
             disabled={disabled}
             instance={instance}
             restarting={restarting}
@@ -918,9 +967,73 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
   )
 })
 
+function RemoveNetworkRouteDialog({
+  open,
+  publicHost,
+  removal,
+  onConfirm,
+  onOpenChange,
+}: {
+  open: boolean
+  publicHost?: string
+  removal: RouteRemovalState | null
+  onConfirm: () => void
+  onOpenChange: (open: boolean) => void
+}) {
+  if (!removal) return null
+  const name =
+    removal.kind === "port" ? removal.allocation.name : removal.route.hostname
+  const publicAddress =
+    removal.kind === "port"
+      ? publicHost
+        ? formatHostPort(publicHost, removal.allocation.externalPort)
+        : String(removal.allocation.externalPort)
+      : `https://${removal.route.hostname}${removal.route.path ?? ""}`
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <p className="font-mono text-[9px] tracking-[0.16em] text-destructive uppercase">
+            Network route
+          </p>
+          <DialogTitle>Remove Route</DialogTitle>
+          <DialogDescription>
+            {removal.kind === "port"
+              ? "Its public port will be released and will stop accepting connections."
+              : "This hostname will stop forwarding traffic to the server."}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="border border-border bg-muted/20 px-3 py-2.5">
+          <span className="block truncate text-sm font-medium text-foreground">
+            {name}
+          </span>
+          <span className="mt-0.5 block truncate font-mono text-xs text-muted-foreground">
+            {publicAddress}
+          </span>
+        </div>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+          >
+            Cancel
+          </Button>
+          <Button type="button" variant="destructive" onClick={onConfirm}>
+            <Trash2 />
+            Remove route
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 const PortRouteRow = React.memo(function PortRouteRow({
   allocation,
   canWrite,
+  deleting = false,
   disabled,
   publicHost,
   onEdit,
@@ -928,6 +1041,7 @@ const PortRouteRow = React.memo(function PortRouteRow({
 }: {
   allocation: RelayInstancePortAllocation
   canWrite: boolean
+  deleting?: boolean
   disabled: boolean
   publicHost?: string
   onEdit: (allocation: RelayInstancePortAllocation) => void
@@ -938,10 +1052,17 @@ const PortRouteRow = React.memo(function PortRouteRow({
     : null
 
   return (
-    <tr className="hover:bg-muted/10">
+    <tr
+      aria-label={deleting ? `Removing ${allocation.name}` : undefined}
+      className="hover:bg-muted/10"
+    >
       <WorkspaceTableCell>
         <div className="flex min-w-0 items-center gap-2.5">
-          <RouteRowIcon kind="port" />
+          <RouteRowIcon
+            busyLabel="Removing route"
+            kind="port"
+            settingUp={deleting}
+          />
           <RouteName
             name={allocation.name}
             secondary={formatPortProtocol(allocation.protocol)}
@@ -968,7 +1089,7 @@ const PortRouteRow = React.memo(function PortRouteRow({
                 <TooltipTrigger asChild>
                   <Button
                     aria-label={`Edit ${allocation.name}`}
-                    disabled={disabled}
+                    disabled={disabled || deleting}
                     onClick={() => onEdit(allocation)}
                     size="icon-sm"
                     type="button"
@@ -984,7 +1105,7 @@ const PortRouteRow = React.memo(function PortRouteRow({
                   <TooltipTrigger asChild>
                     <Button
                       aria-label={`Remove ${allocation.name}`}
-                      disabled={disabled}
+                      disabled={disabled || deleting}
                       onClick={() => onRemove(allocation)}
                       size="icon-sm"
                       type="button"
@@ -1007,6 +1128,7 @@ const PortRouteRow = React.memo(function PortRouteRow({
 const WebRouteRow = React.memo(function WebRouteRow({
   canRestart,
   canWrite,
+  deleting = false,
   disabled,
   restarting,
   route,
@@ -1017,6 +1139,7 @@ const WebRouteRow = React.memo(function WebRouteRow({
 }: {
   canRestart: boolean
   canWrite: boolean
+  deleting?: boolean
   disabled: boolean
   restarting: boolean
   route: RelayInstanceWebRoute
@@ -1028,13 +1151,18 @@ const WebRouteRow = React.memo(function WebRouteRow({
   const publicUrl = `https://${route.hostname}${route.path ?? ""}`
 
   return (
-    <tr className="hover:bg-muted/10">
+    <tr
+      aria-label={deleting ? `Removing ${route.hostname}` : undefined}
+      className="hover:bg-muted/10"
+    >
       <WorkspaceTableCell>
         <div className="flex min-w-0 items-center gap-2.5">
           <RouteRowIcon
+            busyLabel="Removing route"
             canRestart={canRestart}
             kind="web"
             restarting={restarting}
+            settingUp={deleting}
             state={state}
             onRestart={onRestart}
           />
@@ -1064,7 +1192,7 @@ const WebRouteRow = React.memo(function WebRouteRow({
                 <TooltipTrigger asChild>
                   <Button
                     aria-label={`Edit ${publicUrl}`}
-                    disabled={disabled}
+                    disabled={disabled || deleting}
                     onClick={() => onEdit(route)}
                     size="icon-sm"
                     type="button"
@@ -1079,7 +1207,7 @@ const WebRouteRow = React.memo(function WebRouteRow({
                 <TooltipTrigger asChild>
                   <Button
                     aria-label={`Remove ${publicUrl}`}
-                    disabled={disabled}
+                    disabled={disabled || deleting}
                     onClick={() => onRemove(route)}
                     size="icon-sm"
                     type="button"
@@ -1102,6 +1230,7 @@ function AddedRouteRow({
   addedRoute,
   canRestart,
   canWrite,
+  deleting,
   disabled,
   instance,
   restarting,
@@ -1117,6 +1246,7 @@ function AddedRouteRow({
   addedRoute: AddedNetworkRoute
   canRestart: boolean
   canWrite: boolean
+  deleting: boolean
   disabled: boolean
   instance: InstanceWorkspaceInstance
   restarting: boolean
@@ -1166,7 +1296,7 @@ function AddedRouteRow({
                 <TooltipTrigger asChild>
                   <Button
                     aria-label={`Edit ${details.allocation.name}`}
-                    disabled={disabled}
+                    disabled={disabled || deleting}
                     onClick={() => onEditPort(details.allocation)}
                     size="icon-sm"
                     type="button"
@@ -1181,7 +1311,7 @@ function AddedRouteRow({
                 <TooltipTrigger asChild>
                   <Button
                     aria-label={`Remove ${details.allocation.name}`}
-                    disabled={disabled}
+                    disabled={disabled || deleting}
                     onClick={() => onRemovePort(details.allocation)}
                     size="icon-sm"
                     type="button"
@@ -1201,7 +1331,9 @@ function AddedRouteRow({
         kind="port"
         name={details.name}
         secondary={formatPortProtocol(details.protocol)}
-        settingUp={!details.allocation}
+        settingUp={!details.allocation || deleting}
+        showCopy={Boolean(details.allocation)}
+        statusLabel={deleting ? "Removing" : "Adding"}
       />
     )
   }
@@ -1224,7 +1356,7 @@ function AddedRouteRow({
               <TooltipTrigger asChild>
                 <Button
                   aria-label={`Edit ${publicUrl}`}
-                  disabled={disabled || routePending}
+                  disabled={disabled || routePending || deleting}
                   onClick={() => onEditWebRoute(readyRoute)}
                   size="icon-sm"
                   type="button"
@@ -1239,7 +1371,7 @@ function AddedRouteRow({
               <TooltipTrigger asChild>
                 <Button
                   aria-label={`Remove ${publicUrl}`}
-                  disabled={disabled || routePending}
+                  disabled={disabled || routePending || deleting}
                   onClick={() => onRemoveWebRoute(readyRoute)}
                   size="icon-sm"
                   type="button"
@@ -1261,8 +1393,10 @@ function AddedRouteRow({
       name={route.hostname}
       restarting={restarting}
       secondary={`HTTPS${route.path ? ` · ${route.path}` : ""}`}
-      settingUp={settingUp}
+      settingUp={settingUp || deleting}
+      showCopy={!settingUp}
       state={state}
+      statusLabel={deleting ? "Removing" : "Adding"}
       onRestart={onRestart}
     />
   )
@@ -1279,7 +1413,9 @@ function ProvisioningRouteRow({
   restarting,
   secondary,
   settingUp,
+  showCopy,
   state,
+  statusLabel,
   onRestart,
 }: {
   actions: React.ReactNode
@@ -1292,17 +1428,20 @@ function ProvisioningRouteRow({
   restarting?: boolean
   secondary: string
   settingUp: boolean
+  showCopy: boolean
   state?: RelayInstanceWebRouteState
+  statusLabel: "Adding" | "Removing"
   onRestart?: () => void
 }) {
   return (
     <tr
-      aria-label={settingUp ? `Adding ${name}` : undefined}
+      aria-label={settingUp ? `${statusLabel} ${name}` : undefined}
       className="hover:bg-muted/10"
     >
       <WorkspaceTableCell>
         <div className="flex min-w-0 items-center gap-2.5">
           <RouteRowIcon
+            busyLabel={`${statusLabel} route`}
             canRestart={canRestart}
             kind={kind}
             restarting={restarting}
@@ -1319,16 +1458,16 @@ function ProvisioningRouteRow({
         </span>
       </WorkspaceTableCell>
       <WorkspaceTableCell>
-        {settingUp ? (
-          <span className="block truncate font-mono text-sm font-medium text-muted-foreground">
-            {address}
-          </span>
-        ) : (
+        {showCopy ? (
           <PublicAddressCopy
             address={address}
             label={copyLabel}
             prominent
           />
+        ) : (
+          <span className="block truncate font-mono text-sm font-medium text-muted-foreground">
+            {address}
+          </span>
         )}
       </WorkspaceTableCell>
       <WorkspaceTableCell className="px-2">
@@ -1350,6 +1489,7 @@ function RouteName({ name, secondary }: { name: string; secondary: string }) {
 }
 
 const RouteRowIcon = React.memo(function RouteRowIcon({
+  busyLabel = "Setting up route",
   canRestart = false,
   errorMessage,
   kind,
@@ -1359,6 +1499,7 @@ const RouteRowIcon = React.memo(function RouteRowIcon({
   state,
   onRestart,
 }: {
+  busyLabel?: string
   canRestart?: boolean
   errorMessage?: string
   kind: "port" | "primary" | "web"
@@ -1376,7 +1517,7 @@ const RouteRowIcon = React.memo(function RouteRowIcon({
   if (settingUp) {
     return (
       <div
-        aria-label="Setting up route"
+        aria-label={busyLabel}
         className="grid size-7 shrink-0 place-items-center border border-primary/30 bg-primary/5 text-primary"
         role="status"
       >
