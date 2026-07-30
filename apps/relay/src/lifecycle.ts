@@ -22,6 +22,8 @@ import type {
   RelayInstancePendingPrimaryPort,
   RelayInstancePortAllocation,
   RelayInstancePortInput,
+  RelayInstancePortLease,
+  RelayInstancePortLeaseRequest,
   RelayInstanceTailscale,
   RelayInstanceWebRoute,
   RelayInstanceWebRouteState,
@@ -77,6 +79,15 @@ const TAILSCALE_STACK_DISK_BYTES = 128 * 1024 * 1024
 const TAILSCALE_STACK_MEMORY_BYTES = 64 * 1024 * 1024
 const TAILSCALE_STACK_FORWARD_CHAIN = "KILN-TAILSCALE"
 const TAILSCALE_STACK_SUBNET_COUNT = 64 * 256
+const PORT_LEASE_TTL_MS = 2 * 60_000
+
+interface PortLeaseRecord {
+  expiresAt: number
+  externalPort: number
+  id: string
+  instanceId: string
+  protocol: RelayInstancePortAllocation["protocol"]
+}
 
 export function nextManagedGamePort(input: {
   end: number
@@ -210,7 +221,10 @@ export class LifecycleDriver {
   #edgeReconciliationTimer: NodeJS.Timeout | null = null
   #hostDataDirectoryPromise: Promise<string> | null = null
   #listenerMode: RelayProxySettings["mode"] | null = null
+  #gamePortMutation: Promise<void> = Promise.resolve()
   readonly #pendingGamePorts = new Set<string>()
+  readonly #portLeases = new Map<string, PortLeaseRecord>()
+  readonly #portLeaseTimers = new Map<string, NodeJS.Timeout>()
   readonly #tailscaleConfigs = new Map<string, RelayTailscaleStackConfig>()
   #tailscaleConfigsDiscovered = false
   readonly #tailscaleFirewallGenerations = new Map<string, string>()
@@ -1303,7 +1317,7 @@ export class LifecycleDriver {
                   id: "primary" as const,
                   internalPort: pendingPrimaryPort.internalPort,
                   kind: "primary" as const,
-                  name: "Game server port",
+                  name: "Default Server",
                   protocol: pendingPrimaryPort.protocol,
                 },
                 ...instance.ports,
@@ -1409,7 +1423,7 @@ export class LifecycleDriver {
     const primaryInput = requested.find((input) => input.id === "primary")
     if (!hasPrimary && !primaryInput) {
       throw new Error(
-        "Configure the game server port before allocating additional ports."
+        "Configure the Default Server before allocating additional ports."
       )
     }
     for (const allocation of systemAllocations) {
@@ -1434,7 +1448,7 @@ export class LifecycleDriver {
         !unchangedExistingPorts
       ) {
         throw new Error(
-          "Assign the game server port separately before changing other ports."
+          "Assign the Default Server separately before changing other ports."
         )
       }
       return {
@@ -1442,7 +1456,7 @@ export class LifecycleDriver {
         pendingPrimaryPort: {
           id: "primary",
           internalPort: primaryInput.internalPort,
-          name: "Game server port",
+          name: "Default Server",
           protocol: primaryInput.protocol,
         },
       }
@@ -1460,9 +1474,9 @@ export class LifecycleDriver {
           if (input.id !== "primary" || hasPrimary) {
             throw new Error(`Port allocation ${input.id} no longer exists`)
           }
-          const externalPort = await this.#reserveGamePort(
+          const externalPort = await this.#claimPortLease(
             instance.id,
-            input.protocol,
+            input,
             inspected
           )
           pending.push({ port: externalPort, protocol: input.protocol })
@@ -1471,7 +1485,7 @@ export class LifecycleDriver {
             id: "primary",
             internalPort: input.internalPort,
             kind: "primary",
-            name: "Game server port",
+            name: "Default Server",
             protocol: input.protocol,
           })
           continue
@@ -1490,9 +1504,9 @@ export class LifecycleDriver {
           continue
         }
 
-        const externalPort = await this.#reserveGamePort(
+        const externalPort = await this.#claimPortLease(
           instance.id,
-          input.protocol,
+          input,
           inspected
         )
         pending.push({ port: externalPort, protocol: input.protocol })
@@ -1555,6 +1569,85 @@ export class LifecycleDriver {
         }
       }
     }
+  }
+
+  async reserveInstancePort(
+    instanceId: string,
+    input: RelayInstancePortLeaseRequest
+  ): Promise<RelayInstancePortLease> {
+    return this.#withGamePortLock(async () => {
+      const now = Date.now()
+      this.#pruneExpiredPortLeases(now)
+      const inspected = await this.#docker.inspectInstances()
+      const instance = inspected.find(
+        (candidate) => candidate.id === instanceId
+      )
+      if (!instance) throw new Error("Instance not found")
+      if (!instance.managedByRelay) {
+        throw new Error(
+          "Relay can only reserve ports for containers it created"
+        )
+      }
+      if (instance.brickId === builtinTailscaleBrickId) {
+        throw new Error(
+          "Configure this Tailscale network from Infrastructure → Tailscale"
+        )
+      }
+
+      const previous = input.leaseId
+        ? this.#portLeases.get(input.leaseId)
+        : undefined
+      if (previous && previous.instanceId !== instanceId) {
+        throw new Error("Port reservation does not belong to this server")
+      }
+      if (previous) this.#removePendingPort(previous)
+
+      let externalPort: number
+      try {
+        externalPort = await this.#reserveGamePortUnlocked(
+          instanceId,
+          input.protocol,
+          inspected,
+          input.externalPort ?? previous?.externalPort
+        )
+      } catch (error) {
+        if (previous) this.#addPendingPort(previous)
+        throw error
+      }
+
+      const id = previous?.id ?? randomBytes(16).toString("hex")
+      const lease: PortLeaseRecord = {
+        expiresAt: Date.now() + PORT_LEASE_TTL_MS,
+        externalPort,
+        id,
+        instanceId,
+        protocol: input.protocol,
+      }
+      this.#portLeases.set(id, lease)
+      this.#schedulePortLeaseExpiry(lease)
+      return {
+        expiresAt: new Date(lease.expiresAt).toISOString(),
+        externalPort: lease.externalPort,
+        id: lease.id,
+        protocol: lease.protocol,
+      }
+    })
+  }
+
+  async releaseInstancePort(
+    instanceId: string,
+    leaseId: string
+  ): Promise<void> {
+    await this.#withGamePortLock(() => {
+      this.#pruneExpiredPortLeases(Date.now())
+      const lease = this.#portLeases.get(leaseId)
+      if (!lease) return Promise.resolve()
+      if (lease.instanceId !== instanceId) {
+        throw new Error("Port reservation does not belong to this server")
+      }
+      this.#deletePortLease(lease)
+      return Promise.resolve()
+    })
   }
 
   async createInstance(input: RelayCreateInstance): Promise<RelayInstance> {
@@ -2033,6 +2126,53 @@ export class LifecycleDriver {
     protocol: RelayInstancePortAllocation["protocol"],
     existing: ReadonlyArray<RelayInstance>
   ): Promise<number> {
+    return this.#withGamePortLock(() => {
+      this.#pruneExpiredPortLeases(Date.now())
+      return this.#reserveGamePortUnlocked(instanceId, protocol, existing)
+    })
+  }
+
+  async #claimPortLease(
+    instanceId: string,
+    input: RelayInstancePortInput,
+    existing: ReadonlyArray<RelayInstance>
+  ): Promise<number> {
+    if (input.externalPort === undefined || input.leaseId === undefined) {
+      return this.#reserveGamePort(instanceId, input.protocol, existing)
+    }
+    const externalPort = input.externalPort
+    const leaseId = input.leaseId
+    return this.#withGamePortLock(async () => {
+      this.#pruneExpiredPortLeases(Date.now())
+      const lease = this.#portLeases.get(leaseId)
+      if (!lease) {
+        return this.#reserveGamePortUnlocked(
+          instanceId,
+          input.protocol,
+          existing,
+          externalPort
+        )
+      }
+      if (lease.instanceId !== instanceId) {
+        throw new Error("Port reservation does not belong to this server")
+      }
+      if (
+        lease.externalPort !== externalPort ||
+        lease.protocol !== input.protocol
+      ) {
+        throw new Error("Port reservation no longer matches this allocation")
+      }
+      this.#consumePortLease(lease)
+      return lease.externalPort
+    })
+  }
+
+  async #reserveGamePortUnlocked(
+    instanceId: string,
+    protocol: RelayInstancePortAllocation["protocol"],
+    existing: ReadonlyArray<RelayInstance>,
+    requestedPort?: number
+  ): Promise<number> {
     const protocols = portProtocols(protocol)
     const unavailable = new Set<number>()
     for (const candidate of protocols) {
@@ -2058,16 +2198,91 @@ export class LifecycleDriver {
       }
     }
     const { end, start } = this.#config.gamePortRange
-    const port = nextManagedGamePort({
-      end,
-      instanceId,
-      start,
-      unavailable,
-    })
+    if (
+      requestedPort !== undefined &&
+      (requestedPort < start || requestedPort > end)
+    ) {
+      throw new Error(
+        `Public port must be between ${start} and ${end} on this Relay`
+      )
+    }
+    if (requestedPort !== undefined && unavailable.has(requestedPort)) {
+      throw new Error(`Public port ${requestedPort} is already in use`)
+    }
+    const port =
+      requestedPort ??
+      nextManagedGamePort({
+        end,
+        instanceId,
+        start,
+        unavailable,
+      })
     for (const candidate of protocols) {
       this.#pendingGamePorts.add(`${candidate}:${port}`)
     }
     return port
+  }
+
+  #addPendingPort(
+    allocation: Pick<PortLeaseRecord, "externalPort" | "protocol">
+  ): void {
+    for (const protocol of portProtocols(allocation.protocol)) {
+      this.#pendingGamePorts.add(`${protocol}:${allocation.externalPort}`)
+    }
+  }
+
+  #removePendingPort(
+    allocation: Pick<PortLeaseRecord, "externalPort" | "protocol">
+  ): void {
+    for (const protocol of portProtocols(allocation.protocol)) {
+      this.#pendingGamePorts.delete(`${protocol}:${allocation.externalPort}`)
+    }
+  }
+
+  #consumePortLease(lease: PortLeaseRecord): void {
+    this.#portLeases.delete(lease.id)
+    const timer = this.#portLeaseTimers.get(lease.id)
+    if (timer) clearTimeout(timer)
+    this.#portLeaseTimers.delete(lease.id)
+  }
+
+  #deletePortLease(lease: PortLeaseRecord): void {
+    this.#consumePortLease(lease)
+    this.#removePendingPort(lease)
+  }
+
+  #pruneExpiredPortLeases(now: number): void {
+    for (const lease of this.#portLeases.values()) {
+      if (lease.expiresAt <= now) this.#deletePortLease(lease)
+    }
+  }
+
+  #schedulePortLeaseExpiry(lease: PortLeaseRecord): void {
+    const previous = this.#portLeaseTimers.get(lease.id)
+    if (previous) clearTimeout(previous)
+    const timer = setTimeout(
+      () => {
+        void this.#withGamePortLock(() => {
+          const current = this.#portLeases.get(lease.id)
+          if (current && current.expiresAt <= Date.now()) {
+            this.#deletePortLease(current)
+          }
+          return Promise.resolve()
+        })
+      },
+      Math.max(lease.expiresAt - Date.now(), 0)
+    )
+    timer.unref()
+    this.#portLeaseTimers.set(lease.id, timer)
+  }
+
+  #withGamePortLock<Result>(action: () => Promise<Result>): Promise<Result> {
+    const result = this.#gamePortMutation.then(action, action)
+    this.#gamePortMutation = result.then(
+      () => undefined,
+      () => undefined
+    )
+    return result
   }
 
   async #assertAllocationAvailable(input: {

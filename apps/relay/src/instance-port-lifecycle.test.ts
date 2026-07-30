@@ -21,6 +21,7 @@ import { LifecycleDriver } from "./lifecycle.js"
 const temporaryDirectories: Array<string> = []
 
 afterEach(async () => {
+  vi.useRealTimers()
   commandMock.mockReset()
   await Promise.all(
     temporaryDirectories
@@ -65,7 +66,7 @@ describe("instance port lifecycle", () => {
       id: "primary",
       internalPort: 25_565,
       kind: "primary",
-      name: "Game server port",
+      name: "Default Server",
       protocol: "tcp",
     } satisfies RelayInstancePortAllocation
     const recreateOwnedInstance = vi.fn(
@@ -83,13 +84,18 @@ describe("instance port lifecycle", () => {
     } as unknown as DockerDriver
     commandMock.mockRejectedValue(new Error("container not found"))
     const lifecycle = new LifecycleDriver(config, docker, {} as BrickCatalog)
+    const lease = await lifecycle.reserveInstancePort(instance.id, {
+      protocol: "tcp",
+    })
 
     const updated = await lifecycle.updateInstancePorts(
       instance.id,
       [
         {
+          externalPort: lease.externalPort,
           id: "primary",
           internalPort: 25_565,
+          leaseId: lease.id,
           name: "Ignored client name",
           protocol: "tcp",
         },
@@ -117,6 +123,76 @@ describe("instance port lifecycle", () => {
         },
       }
     )
+  })
+
+  it("reclaims abandoned port leases and releases closed ones", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-07-30T12:00:00.000Z"))
+    const dataDirectory = await mkdtemp(join(tmpdir(), "kiln-port-lease-"))
+    temporaryDirectories.push(dataDirectory)
+    const config = loadConfig({
+      KILN_RELAY_DATA_DIR: dataDirectory,
+      KILN_RELAY_GAME_PORT_RANGE: "32125-32125",
+      KILN_RELAY_PROXY: "hearth",
+      KILN_RELAY_RESOURCE_NAMESPACE: "port-lease-test",
+      NODE_ENV: "test",
+    })
+    const first = relayInstanceSchema.parse({
+      brickNetworkMode: "direct",
+      connectAddress: "first.test",
+      containerId: "first-container",
+      desiredState: "stopped",
+      directory: "c".repeat(40),
+      game: "Minecraft",
+      id: "c".repeat(40),
+      implementation: "Paper",
+      javaVersion: "21",
+      managedByRelay: true,
+      name: "First server",
+      observedState: "stopped",
+      publicHost: "first.test",
+      service: "kiln-first",
+      shortId: "cccccccc",
+      startedAt: null,
+      status: "created",
+      version: "1.21.11",
+    })
+    const second = relayInstanceSchema.parse({
+      ...first,
+      connectAddress: "second.test",
+      containerId: "second-container",
+      directory: "d".repeat(40),
+      id: "d".repeat(40),
+      name: "Second server",
+      publicHost: "second.test",
+      service: "kiln-second",
+      shortId: "dddddddd",
+    })
+    const docker = {
+      inspectInstances: vi.fn(async () => [first, second]),
+      publishedHostPorts: vi.fn(async () => []),
+    } as unknown as DockerDriver
+    const lifecycle = new LifecycleDriver(config, docker, {} as BrickCatalog)
+
+    const abandoned = await lifecycle.reserveInstancePort(first.id, {
+      protocol: "tcp",
+    })
+    expect(abandoned.externalPort).toBe(32_125)
+    await expect(
+      lifecycle.reserveInstancePort(second.id, { protocol: "tcp" })
+    ).rejects.toThrow("No game ports are available")
+
+    await vi.advanceTimersByTimeAsync(120_001)
+    const reclaimed = await lifecycle.reserveInstancePort(second.id, {
+      protocol: "tcp",
+    })
+    expect(reclaimed.externalPort).toBe(32_125)
+
+    await lifecycle.releaseInstancePort(second.id, reclaimed.id)
+    const released = await lifecycle.reserveInstancePort(first.id, {
+      protocol: "tcp",
+    })
+    expect(released.externalPort).toBe(32_125)
   })
 
   it("waits for a manual restart before applying a missing primary port", async () => {
@@ -157,7 +233,7 @@ describe("instance port lifecycle", () => {
       id: "primary",
       internalPort: 25_565,
       kind: "primary",
-      name: "Game server port",
+      name: "Default Server",
       protocol: "tcp",
     } satisfies RelayInstancePortAllocation
     const recreateOwnedInstance = vi.fn(
@@ -193,7 +269,7 @@ describe("instance port lifecycle", () => {
     expect(staged.pendingPrimaryPort).toEqual({
       id: "primary",
       internalPort: 25_565,
-      name: "Game server port",
+      name: "Default Server",
       protocol: "tcp",
     })
     expect(staged.ports).toEqual([])

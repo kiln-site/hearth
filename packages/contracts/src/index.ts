@@ -645,15 +645,55 @@ const relayInstancePortConfigurationSchema = z
   })
   .strict()
 
-export const relayInstancePortInputSchema =
-  relayInstancePortConfigurationSchema.extend({
+export const relayInstancePortInputSchema = relayInstancePortConfigurationSchema
+  .extend({
+    externalPort: z.number().int().min(1).max(65_535).optional(),
     id: relayInstancePortIdSchema.optional(),
+    leaseId: z
+      .string()
+      .regex(/^[a-f0-9]{32}$/u)
+      .optional(),
+  })
+  .superRefine((input, context) => {
+    if ((input.externalPort === undefined) !== (input.leaseId === undefined)) {
+      context.addIssue({
+        code: "custom",
+        message: "Public port reservations must include their lease",
+        path: [input.externalPort === undefined ? "externalPort" : "leaseId"],
+      })
+    }
   })
 
 export const relayInstancePendingPrimaryPortSchema =
   relayInstancePortConfigurationSchema.extend({
     id: z.literal("primary"),
   })
+
+export const relayInstancePortLeaseRequestSchema = z
+  .object({
+    externalPort: z.number().int().min(1).max(65_535).optional(),
+    leaseId: z
+      .string()
+      .regex(/^[a-f0-9]{32}$/u)
+      .optional(),
+    protocol: relayInstancePortProtocolSchema,
+  })
+  .strict()
+
+export const relayInstancePortLeaseReleaseSchema = z
+  .object({
+    leaseId: z.string().regex(/^[a-f0-9]{32}$/u),
+  })
+  .strict()
+
+export const relayInstancePortLeaseSchema = z
+  .object({
+    expiresAt: z.string().datetime(),
+    externalPort: z.number().int().min(1).max(65_535),
+    id: z.string().regex(/^[a-f0-9]{32}$/u),
+    protocol: relayInstancePortProtocolSchema,
+  })
+  .strict()
 
 export const relayInstancePortMetadataSchema =
   relayInstancePortConfigurationSchema.extend({
@@ -1128,6 +1168,12 @@ export type RelayInstanceResources = z.infer<
 export type RelayInstanceLimits = z.infer<typeof relayInstanceLimitsSchema>
 export type RelayInstancePortInput = z.infer<
   typeof relayInstancePortInputSchema
+>
+export type RelayInstancePortLease = z.infer<
+  typeof relayInstancePortLeaseSchema
+>
+export type RelayInstancePortLeaseRequest = z.infer<
+  typeof relayInstancePortLeaseRequestSchema
 >
 export type RelayInstancePendingPrimaryPort = z.infer<
   typeof relayInstancePendingPrimaryPortSchema

@@ -733,6 +733,8 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
       return "instance.logs.share"
     case "instance.logs.latest":
       return "instance.logs.read"
+    case "instance.network.ports.reserve":
+    case "instance.network.ports.release":
     case "instance.network.ports.write":
       return "instance.network.write"
     case "instance.network.routes.read":

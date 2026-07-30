@@ -10,6 +10,9 @@ import {
   relayConsoleCompletionSchema,
   relayInstanceActionSchema,
   relayInstanceNameSchema,
+  relayInstancePortLeaseReleaseSchema,
+  relayInstancePortLeaseRequestSchema,
+  relayInstancePortLeaseSchema,
   relayInstancePortInputsSchema,
   relayInstanceResourceSnapshotSchema,
   relayInstanceWebRouteInputsSchema,
@@ -120,6 +123,14 @@ const webRoutesInputSchema = instanceInputSchema.extend({
 const portsInputSchema = instanceInputSchema.extend({
   ports: relayInstancePortInputsSchema,
 })
+
+const portLeaseInputSchema = instanceInputSchema.extend(
+  relayInstancePortLeaseRequestSchema.shape
+)
+
+const portLeaseReleaseInputSchema = instanceInputSchema.extend(
+  relayInstancePortLeaseReleaseSchema.shape
+)
 
 const consoleCommandInputSchema = instanceInputSchema.extend(
   relayConsoleCommandSchema.shape
@@ -402,6 +413,44 @@ export const updateInstancePorts = createServerFn({ method: "POST" })
       invalidateRelayCache(relayCachePolicy.snapshot(data.relayId))
     )
     return { ...instance, relayId: data.relayId }
+  })
+
+export const reserveInstancePort = createServerFn({ method: "POST" })
+  .validator(portLeaseInputSchema)
+  .handler(async ({ data }) => {
+    const value = await relayRequest(
+      `/v1/instances/${encodeURIComponent(data.instanceId)}/ports`,
+      {
+        body: JSON.stringify({
+          externalPort: data.externalPort,
+          leaseId: data.leaseId,
+          protocol: data.protocol,
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      },
+      "instance.network.write",
+      data.instanceId,
+      data.relayId
+    )
+    return relayInstancePortLeaseSchema.parse(value)
+  })
+
+export const releaseInstancePort = createServerFn({ method: "POST" })
+  .validator(portLeaseReleaseInputSchema)
+  .handler(async ({ data }) => {
+    await relayRequest(
+      `/v1/instances/${encodeURIComponent(data.instanceId)}/ports`,
+      {
+        body: JSON.stringify({ leaseId: data.leaseId }),
+        headers: { "Content-Type": "application/json" },
+        method: "DELETE",
+      },
+      "instance.network.write",
+      data.instanceId,
+      data.relayId
+    )
+    return { released: true as const }
   })
 
 export const getRelayTree = createServerFn({ method: "GET" })

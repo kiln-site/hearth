@@ -298,7 +298,7 @@ describe("Relay state", () => {
             id: "primary",
             instanceId: "instance-a",
             internalPort: 25_565,
-            name: "Game server port",
+            name: "Default Server",
             protocol: "tcp",
           }
         )
@@ -312,7 +312,7 @@ describe("Relay state", () => {
             id: "primary",
             instanceId: "instance-a",
             internalPort: 19_132,
-            name: "Game server port",
+            name: "Default Server",
             protocol: "udp",
           },
         ])

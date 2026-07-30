@@ -195,7 +195,7 @@ function parsePrimaryPortLabel(
     id: "primary",
     internalPort,
     kind: "primary",
-    name: "Game server port",
+    name: "Default Server",
     protocol:
       match[2] === "tcp" || match[2] === "udp"
         ? match[2]

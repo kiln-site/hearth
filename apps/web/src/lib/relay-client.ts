@@ -348,6 +348,18 @@ function relayControlRequest(path: string, init?: RequestInit) {
       payload: { instanceId, ports: body.ports },
     }
   }
+  if (resource === "ports" && method === "POST") {
+    return {
+      operation: "instance.network.ports.reserve" as const,
+      payload: { ...body, instanceId },
+    }
+  }
+  if (resource === "ports" && method === "DELETE") {
+    return {
+      operation: "instance.network.ports.release" as const,
+      payload: { ...body, instanceId },
+    }
+  }
   if (resource === "web-routes") {
     return method === "PUT"
       ? {

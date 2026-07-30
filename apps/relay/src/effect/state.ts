@@ -393,7 +393,7 @@ const makeRelayStateStore = Effect.gen(function* () {
             id: "primary",
             instanceId: row.instanceId,
             internalPort: row.internalPort,
-            name: "Game server port",
+            name: "Default Server",
             protocol: row.protocol,
           }) satisfies RelayStoredPendingPrimaryPort
       )

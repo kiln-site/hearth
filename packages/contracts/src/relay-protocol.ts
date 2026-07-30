@@ -52,6 +52,8 @@ export const relayControlOperations = [
   "instance.console.complete",
   "instance.logs.share",
   "instance.logs.latest",
+  "instance.network.ports.reserve",
+  "instance.network.ports.release",
   "instance.network.ports.write",
   "instance.network.routes.read",
   "instance.network.routes.write",

@@ -51,7 +51,7 @@ describe("instance port allocations", () => {
         id: "primary",
         internalPort: 25_565,
         kind: "primary",
-        name: "Game server port",
+        name: "Default Server",
         protocol: "tcp",
       },
       {
@@ -79,7 +79,7 @@ describe("instance port allocations", () => {
         id: "primary",
         internalPort: 25_565,
         kind: "primary",
-        name: "Game server port",
+        name: "Default Server",
         protocol: "tcp",
       },
       {
@@ -126,7 +126,7 @@ describe("instance port allocations", () => {
         id: "primary",
         internalPort: 19_132,
         kind: "primary",
-        name: "Game server port",
+        name: "Default Server",
         protocol: "both",
       },
     ])
@@ -151,7 +151,7 @@ describe("instance port allocations", () => {
           id: "primary",
           internalPort: 25_565,
           kind: "primary",
-          name: "Game server port",
+          name: "Default Server",
           protocol,
         },
       ])
@@ -175,7 +175,7 @@ describe("instance port allocations", () => {
         id: "primary",
         internalPort: 25_565,
         kind: "primary",
-        name: "Game server port",
+        name: "Default Server",
         protocol: "tcp",
       },
     ])

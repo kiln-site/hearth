@@ -14,6 +14,8 @@ import {
   relayCreateInstanceSchema,
   relayInstanceActionSchema,
   relayInstanceNameSchema,
+  relayInstancePortLeaseReleaseSchema,
+  relayInstancePortLeaseRequestSchema,
   relayInstancePortInputsSchema,
   relayInstanceWebRouteInputsSchema,
   relayNetworkingSchema,
@@ -1053,6 +1055,23 @@ async function executeControlRequest(
     }
     case "instance.logs.latest":
       return filesystem.latestLog(await requiredInstance(payload))
+    case "instance.network.ports.reserve": {
+      const instance = await requiredInstance(payload)
+      const input = relayInstancePortLeaseRequestSchema.parse({
+        externalPort: payload.externalPort,
+        leaseId: payload.leaseId,
+        protocol: payload.protocol,
+      })
+      return lifecycle.reserveInstancePort(instance.id, input)
+    }
+    case "instance.network.ports.release": {
+      const instance = await requiredInstance(payload)
+      const input = relayInstancePortLeaseReleaseSchema.parse({
+        leaseId: payload.leaseId,
+      })
+      await lifecycle.releaseInstancePort(instance.id, input.leaseId)
+      return { released: true }
+    }
     case "instance.network.ports.write": {
       return serializeWebRouteMutation(async () => {
         const instance = await requiredInstance(payload)
