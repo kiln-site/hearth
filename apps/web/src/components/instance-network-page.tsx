@@ -278,18 +278,30 @@ type PendingNetworkRoute =
     }
 
 type AddedNetworkRoute =
-  | { allocation: RelayInstancePortAllocation; kind: "port"; status: "ready" }
   | {
+      allocation: RelayInstancePortAllocation
+      clientId: string
+      kind: "port"
+      status: "ready"
+    }
+  | {
+      clientId: string
       kind: "port"
       route: PendingNetworkRoute & { kind: "port" }
       status: "pending"
     }
   | {
+      clientId: string
       kind: "web"
       route: PendingNetworkRoute & { kind: "web" }
       status: "pending"
     }
-  | { kind: "web"; route: RelayInstanceWebRoute; status: "ready" }
+  | {
+      clientId: string
+      kind: "web"
+      route: RelayInstanceWebRoute
+      status: "ready"
+    }
 
 const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   canRestart,
@@ -339,9 +351,10 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
         : { mode: "recover-primary" }
       : null
   )
-  const [addedRoute, setAddedRoute] = React.useState<AddedNetworkRoute | null>(
-    null
-  )
+  const [addedRoutes, setAddedRoutes] = React.useState<
+    Array<AddedNetworkRoute>
+  >([])
+  const addedRouteSequence = React.useRef(0)
   const clearEditGamePortIntent = React.useCallback(() => {
     if (!editGamePort) return
     void navigate({
@@ -412,6 +425,16 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   )
   const addPort = React.useCallback(
     async (port: RelayInstancePortInput) => {
+      setAddedRoutes((current) =>
+        current.map((route) =>
+          route.kind === "port" && route.status === "pending"
+            ? {
+                ...route,
+                route: { ...route.route, publicPort: port.externalPort },
+              }
+            : route
+        )
+      )
       try {
         const updated = await update.mutateAsync([...portInputs, port])
         const allocation = updated.ports.find(
@@ -422,9 +445,24 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
         if (!allocation) {
           throw new Error("Relay did not return the new port allocation")
         }
-        setAddedRoute({ allocation, kind: "port", status: "ready" })
+        setAddedRoutes((current) =>
+          current.map((route) =>
+            route.kind === "port" && route.status === "pending"
+              ? {
+                  allocation,
+                  clientId: route.clientId,
+                  kind: "port",
+                  status: "ready",
+                }
+              : route
+          )
+        )
       } catch (cause) {
-        setAddedRoute(null)
+        setAddedRoutes((current) =>
+          current.filter(
+            (route) => route.kind !== "port" || route.status !== "pending"
+          )
+        )
         throw cause
       }
     },
@@ -434,9 +472,27 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
     async (route: RelayInstanceWebRouteInput) => {
       try {
         const added = await onAddWebRoute(route)
-        setAddedRoute({ kind: "web", route: added, status: "ready" })
+        setAddedRoutes((current) =>
+          current.map((currentRoute) =>
+            currentRoute.kind === "web" &&
+            currentRoute.status === "pending"
+              ? {
+                  clientId: currentRoute.clientId,
+                  kind: "web",
+                  route: added,
+                  status: "ready",
+                }
+              : currentRoute
+          )
+        )
       } catch (cause) {
-        setAddedRoute(null)
+        setAddedRoutes((current) =>
+          current.filter(
+            (currentRoute) =>
+              currentRoute.kind !== "web" ||
+              currentRoute.status !== "pending"
+          )
+        )
         throw cause
       }
     },
@@ -448,12 +504,13 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
       if (!window.confirm(`Remove ${allocation.name} from this server?`)) return
       update.mutate(portInputs.filter((port) => port.id !== allocation.id), {
         onSuccess: () => {
-          setAddedRoute((current) =>
-            current?.kind === "port" &&
-            current.status === "ready" &&
-            current.allocation.id === allocation.id
-              ? null
-              : current
+          setAddedRoutes((current) =>
+            current.filter(
+              (route) =>
+                route.kind !== "port" ||
+                route.status !== "ready" ||
+                route.allocation.id !== allocation.id
+            )
           )
         },
       })
@@ -480,12 +537,13 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
       if (!window.confirm(`Remove ${route.hostname} from this server?`)) return
       void onRemoveWebRoute(route.id)
         .then(() => {
-          setAddedRoute((current) =>
-            current?.kind === "web" &&
-            current.status === "ready" &&
-            current.route.id === route.id
-              ? null
-              : current
+          setAddedRoutes((current) =>
+            current.filter(
+              (currentRoute) =>
+                currentRoute.kind !== "web" ||
+                currentRoute.status !== "ready" ||
+                currentRoute.route.id !== route.id
+            )
           )
         })
         .catch(() => undefined)
@@ -515,7 +573,7 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
               disabled={
                 disabled ||
                 routes === undefined ||
-                addedRoute?.status === "pending"
+                addedRoutes.some(({ status }) => status === "pending")
               }
               onClick={() => {
                 update.reset()
@@ -533,7 +591,7 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
 
       <div className="overflow-x-auto">
         <ConfiguredRoutesTable
-          addedRoute={addedRoute}
+          addedRoutes={addedRoutes}
           canWrite={canWrite}
           disabled={disabled}
           instance={instance}
@@ -579,13 +637,20 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
             if (!open && !update.isPending && !routePending) setDialog(null)
           }}
           onBeginSubmit={(route) => {
-            setAddedRoute(
+            addedRouteSequence.current += 1
+            const clientId = `added-route-${addedRouteSequence.current}`
+            setAddedRoutes((current) => [
+              ...current,
               route.kind === "port"
-                ? { kind: "port", route, status: "pending" }
-                : { kind: "web", route, status: "pending" }
+                ? { clientId, kind: "port", route, status: "pending" }
+                : { clientId, kind: "web", route, status: "pending" },
+            ])
+          }}
+          onCancelSubmit={() => {
+            setAddedRoutes((current) =>
+              current.filter(({ status }) => status !== "pending")
             )
           }}
-          onCancelSubmit={() => setAddedRoute(null)}
           onSubmitPort={addPort}
           onSubmitWebRoute={
             dialog.mode === "edit-web" ? onEditWebRoute : addWebRoute
@@ -628,7 +693,7 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
 })
 
 const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
-  addedRoute,
+  addedRoutes,
   canRestart,
   canWrite,
   disabled,
@@ -644,7 +709,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
   onRemoveWebRoute,
   onRestart,
 }: {
-  addedRoute: AddedNetworkRoute | null
+  addedRoutes: Array<AddedNetworkRoute>
   canRestart: boolean
   canWrite: boolean
   disabled: boolean
@@ -667,20 +732,10 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
     ? undefined
     : instance.pendingPrimaryPort
   const displayedPrimaryPort = primaryPort ?? pendingPrimaryPort
-  const addedPort =
-    addedRoute?.kind === "port" && addedRoute.status === "ready"
-      ? (instance.ports.find(({ id }) => id === addedRoute.allocation.id) ??
-        addedRoute.allocation)
-      : null
-  const addedWebRoute =
-    addedRoute?.kind === "web" && addedRoute.status === "ready"
-      ? (routes?.find(({ id }) => id === addedRoute.route.id) ??
-        addedRoute.route)
-      : null
   const hasAdditionalRoutes =
     instance.ports.some((allocation) => allocation.kind !== "primary") ||
     Boolean(routes?.length) ||
-    addedRoute?.status === "pending"
+    addedRoutes.length > 0
 
   return (
     <table className="w-full min-w-[40rem] table-fixed border-collapse text-left">
@@ -790,7 +845,13 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
         {instance.ports.map((allocation) => {
           if (
             allocation.kind === "primary" ||
-            allocation.id === addedPort?.id
+            addedRoutes.some(
+              (addedRoute) =>
+                addedRoute.kind === "port" &&
+                (addedRoute.status === "ready"
+                  ? addedRoute.allocation.id === allocation.id
+                  : addedRoute.route.publicPort === allocation.externalPort)
+            )
           ) {
             return null
           }
@@ -807,7 +868,17 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
           )
         })}
         {routes?.map((route) => {
-          if (route.id === addedWebRoute?.id) return null
+          if (
+            addedRoutes.some(
+              (addedRoute) =>
+                addedRoute.kind === "web" &&
+                (addedRoute.status === "ready"
+                  ? addedRoute.route.id === route.id
+                  : addedRoute.route.hostname === route.hostname)
+            )
+          ) {
+            return null
+          }
           return (
             <WebRouteRow
               key={`web-${route.id}`}
@@ -823,35 +894,25 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
             />
           )
         })}
-        {addedPort ? (
-          <PortRouteRow
-            allocation={addedPort}
-            canWrite={canWrite}
-            disabled={disabled}
-            publicHost={instance.publicHost}
-            onEdit={onEditPort}
-            onRemove={onRemovePort}
-          />
-        ) : null}
-        {addedWebRoute ? (
-          <WebRouteRow
+        {addedRoutes.map((addedRoute) => (
+          <AddedRouteRow
+            key={addedRoute.clientId}
+            addedRoute={addedRoute}
             canRestart={canRestart}
             canWrite={canWrite}
-            disabled={disabled || routePending}
+            disabled={disabled}
+            instance={instance}
             restarting={restarting}
-            route={addedWebRoute}
+            routePending={routePending}
+            routes={routes}
             state={routeState}
-            onEdit={onEditWebRoute}
-            onRemove={onRemoveWebRoute}
+            onEditPort={onEditPort}
+            onEditWebRoute={onEditWebRoute}
+            onRemovePort={onRemovePort}
+            onRemoveWebRoute={onRemoveWebRoute}
             onRestart={onRestart}
           />
-        ) : null}
-        {addedRoute?.status === "pending" ? (
-          <PendingRouteRow
-            publicHost={instance.publicHost}
-            route={addedRoute.route}
-          />
-        ) : null}
+        ))}
       </tbody>
     </table>
   )
@@ -1037,48 +1098,242 @@ const WebRouteRow = React.memo(function WebRouteRow({
   )
 })
 
-function PendingRouteRow({
-  publicHost,
-  route,
+function AddedRouteRow({
+  addedRoute,
+  canRestart,
+  canWrite,
+  disabled,
+  instance,
+  restarting,
+  routePending,
+  routes,
+  state,
+  onEditPort,
+  onEditWebRoute,
+  onRemovePort,
+  onRemoveWebRoute,
+  onRestart,
 }: {
-  publicHost?: string
-  route: PendingNetworkRoute
+  addedRoute: AddedNetworkRoute
+  canRestart: boolean
+  canWrite: boolean
+  disabled: boolean
+  instance: InstanceWorkspaceInstance
+  restarting: boolean
+  routePending: boolean
+  routes: Array<RelayInstanceWebRoute> | undefined
+  state: RelayInstanceWebRouteState | undefined
+  onEditPort: (allocation: RelayInstancePortAllocation) => void
+  onEditWebRoute: (route: RelayInstanceWebRoute) => void
+  onRemovePort: (allocation: RelayInstancePortAllocation) => void
+  onRemoveWebRoute: (route: RelayInstanceWebRoute) => void
+  onRestart: () => void
 }) {
-  const address =
-    route.kind === "web"
-      ? `https://${route.hostname}${route.path ?? ""}`
-      : publicHost && route.publicPort
-        ? formatHostPort(publicHost, route.publicPort)
+  if (addedRoute.kind === "port") {
+    const details =
+      addedRoute.status === "ready"
+        ? (() => {
+            const allocation =
+              instance.ports.find(
+                ({ id }) => id === addedRoute.allocation.id
+              ) ?? addedRoute.allocation
+            return {
+              allocation,
+              externalPort: allocation.externalPort,
+              internalPort: allocation.internalPort,
+              name: allocation.name,
+              protocol: allocation.protocol,
+            }
+          })()
+        : {
+            allocation: null,
+            externalPort: addedRoute.route.publicPort,
+            internalPort: addedRoute.route.internalPort,
+            name: addedRoute.route.name,
+            protocol: addedRoute.route.protocol,
+          }
+    const address =
+      instance.publicHost && details.externalPort
+        ? formatHostPort(instance.publicHost, details.externalPort)
         : "Allocating…"
 
+    return (
+      <ProvisioningRouteRow
+        actions={
+          details.allocation && canWrite ? (
+            <>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    aria-label={`Edit ${details.allocation.name}`}
+                    disabled={disabled}
+                    onClick={() => onEditPort(details.allocation)}
+                    size="icon-sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Pencil />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Edit allocation</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    aria-label={`Remove ${details.allocation.name}`}
+                    disabled={disabled}
+                    onClick={() => onRemovePort(details.allocation)}
+                    size="icon-sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Trash2 />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Remove allocation</TooltipContent>
+              </Tooltip>
+            </>
+          ) : null
+        }
+        address={address}
+        copyLabel={`${details.name} public address`}
+        internalPort={details.internalPort}
+        kind="port"
+        name={details.name}
+        secondary={formatPortProtocol(details.protocol)}
+        settingUp={!details.allocation}
+      />
+    )
+  }
+
+  const readyRoute =
+    addedRoute.status === "ready"
+      ? (routes?.find(({ id }) => id === addedRoute.route.id) ??
+        addedRoute.route)
+      : null
+  const route = readyRoute ?? addedRoute.route
+  const settingUp = readyRoute === null
+  const publicUrl = `https://${route.hostname}${route.path ?? ""}`
+
+  return (
+    <ProvisioningRouteRow
+      actions={
+        readyRoute && canWrite ? (
+          <>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label={`Edit ${publicUrl}`}
+                  disabled={disabled || routePending}
+                  onClick={() => onEditWebRoute(readyRoute)}
+                  size="icon-sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  <Pencil />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Edit web route</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label={`Remove ${publicUrl}`}
+                  disabled={disabled || routePending}
+                  onClick={() => onRemoveWebRoute(readyRoute)}
+                  size="icon-sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  <Trash2 />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Remove web route</TooltipContent>
+            </Tooltip>
+          </>
+        ) : null
+      }
+      address={publicUrl}
+      canRestart={canRestart}
+      copyLabel={`${route.hostname} web route`}
+      internalPort={route.targetPort}
+      kind="web"
+      name={route.hostname}
+      restarting={restarting}
+      secondary={`HTTPS${route.path ? ` · ${route.path}` : ""}`}
+      settingUp={settingUp}
+      state={state}
+      onRestart={onRestart}
+    />
+  )
+}
+
+function ProvisioningRouteRow({
+  actions,
+  address,
+  canRestart,
+  copyLabel,
+  internalPort,
+  kind,
+  name,
+  restarting,
+  secondary,
+  settingUp,
+  state,
+  onRestart,
+}: {
+  actions: React.ReactNode
+  address: string
+  canRestart?: boolean
+  copyLabel: string
+  internalPort: number
+  kind: "port" | "web"
+  name: string
+  restarting?: boolean
+  secondary: string
+  settingUp: boolean
+  state?: RelayInstanceWebRouteState
+  onRestart?: () => void
+}) {
   return (
     <tr
-      aria-label={`Adding ${route.kind === "web" ? route.hostname : route.name}`}
+      aria-label={settingUp ? `Adding ${name}` : undefined}
+      className="hover:bg-muted/10"
     >
       <WorkspaceTableCell>
         <div className="flex min-w-0 items-center gap-2.5">
-          <RouteRowIcon kind={route.kind} settingUp />
-          <RouteName
-            name={route.kind === "web" ? route.hostname : route.name}
-            secondary={
-              route.kind === "web"
-                ? `HTTPS${route.path ? ` · ${route.path}` : ""}`
-                : formatPortProtocol(route.protocol)
-            }
+          <RouteRowIcon
+            canRestart={canRestart}
+            kind={kind}
+            restarting={restarting}
+            settingUp={settingUp}
+            state={state}
+            onRestart={onRestart}
           />
+          <RouteName name={name} secondary={secondary} />
         </div>
       </WorkspaceTableCell>
       <WorkspaceTableCell>
         <span className="font-mono text-xs text-foreground">
-          {route.kind === "web" ? route.targetPort : route.internalPort}
+          {internalPort}
         </span>
       </WorkspaceTableCell>
       <WorkspaceTableCell>
-        <span className="block truncate font-mono text-sm font-medium text-muted-foreground">
-          {address}
-        </span>
+        {settingUp ? (
+          <span className="block truncate font-mono text-sm font-medium text-muted-foreground">
+            {address}
+          </span>
+        ) : (
+          <PublicAddressCopy
+            address={address}
+            label={copyLabel}
+            prominent
+          />
+        )}
       </WorkspaceTableCell>
-      <WorkspaceTableCell>{null}</WorkspaceTableCell>
+      <WorkspaceTableCell className="px-2">
+        <div className="flex justify-end gap-0.5">{actions}</div>
+      </WorkspaceTableCell>
     </tr>
   )
 }
