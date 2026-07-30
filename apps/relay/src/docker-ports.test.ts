@@ -173,6 +173,11 @@ describe("Docker public game ports", () => {
         brickId: "fabric",
         managedByRelay: true,
       })
+    ).toBe(true)
+    expect(
+      managedInstanceRequiresNetworkUpgrade({
+        managedByRelay: true,
+      })
     ).toBe(false)
   })
 })

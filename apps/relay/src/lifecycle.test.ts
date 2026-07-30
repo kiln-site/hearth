@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vite-plus/test"
 import {
+  brickRecipeSchema,
   relayInstanceTailscaleSchema,
   relayInstanceWebRoutesSchema,
+  relayCatalogSchema,
   relayTailscaleDomainSchema,
   relayTailscaleStackApplySchema,
   relayTailscaleStackConfigSchema,
@@ -10,8 +12,10 @@ import {
 
 import { loadConfig } from "./config.js"
 import {
+  catalogBrickSource,
   coreDnsHostnamePattern,
   discoverExternalTraefikContainer,
+  legacyNetworkUpgradeLabels,
   LifecycleDriver,
   nextManagedGamePort,
   recoveryRouteLabels,
@@ -33,6 +37,75 @@ import {
   traefikStaticConfiguration,
   velocityForcedHosts,
 } from "./lifecycle.js"
+
+describe("legacy game networking", () => {
+  const recipe = brickRecipeSchema.parse({
+    format: "kiln.brick/v1",
+    metadata: {
+      author: "Kiln",
+      description: "Legacy Fabric test recipe",
+      game: "Minecraft",
+      id: "fabric",
+      name: "Fabric",
+    },
+    network: {
+      mode: "direct",
+      ports: [{ container: 25_565, name: "game", protocol: "tcp" }],
+      primaryPort: "game",
+      supportsSrv: true,
+    },
+    readiness: {
+      logs: ["Server is running"],
+    },
+    runtime: {
+      environment: {},
+      image: "ghcr.io/kiln-site/ember:latest",
+      name: "Java 21",
+      resources: {
+        memory: "2G",
+        memoryReservation: "1G",
+        pids: 128,
+      },
+      storage: { mount: "/server" },
+    },
+    variables: {},
+  })
+  const source =
+    "https://raw.githubusercontent.com/kiln-site/bricks/main/recipes/fabric.yml"
+  const catalog = relayCatalogSchema.parse({
+    bricks: [{ ...recipe, source }],
+    format: "kiln.catalog/v1",
+  })
+  const primaryPort = recipe.network.ports[0]
+  if (!primaryPort) throw new Error("Test recipe primary port is missing")
+
+  it("recovers an exact official recipe source from a legacy Brick id", () => {
+    expect(catalogBrickSource(catalog, "fabric")).toBe(source)
+    expect(catalogBrickSource(catalog, "unknown")).toBeUndefined()
+    expect(catalogBrickSource(catalog, undefined)).toBeUndefined()
+  })
+
+  it("backfills recipe and networking labels during the port migration", () => {
+    expect(
+      legacyNetworkUpgradeLabels({
+        definition: recipe,
+        gameHost: "games.example.com",
+        primaryPort,
+        recipe: source,
+      })
+    ).toEqual({
+      "kiln.brick.format": "kiln.brick/v1",
+      "kiln.brick.id": "fabric",
+      "kiln.brick.network-mode": "direct",
+      "kiln.brick.primary-port": "25565",
+      "kiln.brick.primary-port-protocol": "tcp",
+      "kiln.brick.readiness": '{"logs":["Server is running"]}',
+      "kiln.brick.source": source,
+      "kiln.brick.supports-srv": "true",
+      "kiln.instance.public-host": "games.example.com",
+    })
+  })
+})
 
 describe("managed game ports", () => {
   it("assigns a stable available port and probes past collisions", () => {

@@ -260,7 +260,7 @@ export function managedInstanceRequiresNetworkUpgrade(input: {
   return (
     input.managedByRelay &&
     input.brickId !== builtinTailscaleBrickId &&
-    Boolean(input.brickSource) &&
+    Boolean(input.brickSource || input.brickId) &&
     input.publicPort === undefined
   )
 }

@@ -17,6 +17,8 @@ import { resolveBrick } from "./bricks.js"
 import { command } from "./command.js"
 import { directoryApparentSize } from "./disk-usage.js"
 import type {
+  BrickRecipe,
+  RelayCatalog,
   RelayCreateInstance,
   RelayInstance,
   RelayInstanceTailscale,
@@ -84,6 +86,37 @@ export function nextManagedGamePort(input: {
     if (!input.unavailable.has(port)) return port
   }
   throw new Error(`No game ports are available in ${input.start}-${input.end}`)
+}
+
+export function catalogBrickSource(
+  catalog: RelayCatalog,
+  brickId: string | undefined
+): string | undefined {
+  if (!brickId) return undefined
+  return catalog.bricks.find((brick) => brick.metadata.id === brickId)?.source
+}
+
+export function legacyNetworkUpgradeLabels(input: {
+  definition: BrickRecipe
+  gameHost: string
+  primaryPort: BrickRecipe["network"]["ports"][number]
+  recipe: string
+}): Readonly<Record<string, string>> {
+  return {
+    "kiln.brick.id": input.definition.metadata.id,
+    "kiln.brick.format": input.definition.format,
+    "kiln.brick.source": input.recipe,
+    "kiln.brick.network-mode": input.definition.network.mode,
+    "kiln.brick.primary-port": String(input.primaryPort.container),
+    "kiln.brick.primary-port-protocol": input.primaryPort.protocol,
+    "kiln.brick.supports-srv": String(input.definition.network.supportsSrv),
+    ...(input.definition.readiness
+      ? {
+          "kiln.brick.readiness": JSON.stringify(input.definition.readiness),
+        }
+      : {}),
+    "kiln.instance.public-host": input.gameHost,
+  }
 }
 
 export function tailscaleStackFirewallRules(
@@ -1307,10 +1340,13 @@ export class LifecycleDriver {
     routeLabels: Readonly<Record<string, string>>,
     action: "start" | "restart"
   ): Promise<RelayInstance> {
-    const recipe = instance.brickSource
+    const recipe =
+      instance.brickSource ??
+      catalogBrickSource(await this.#bricks.catalog(), instance.brickId)
     if (!recipe) {
+      const brick = instance.brickId ? `Brick ${instance.brickId}` : "Brick"
       throw new Error(
-        `Cannot ${action} ${instance.name}: its legacy container is missing its Brick recipe source`
+        `Cannot ${action} ${instance.name}: its legacy ${brick} is not available in the configured catalog`
       )
     }
     const definition = await this.#bricks.recipe(recipe)
@@ -1337,13 +1373,12 @@ export class LifecycleDriver {
     const upgrade: DockerPublishedPortUpgrade = {
       containerPort: primaryPort.container,
       hostPort: publicPort,
-      labels: {
-        "kiln.brick.network-mode": definition.network.mode,
-        "kiln.brick.primary-port": String(primaryPort.container),
-        "kiln.brick.primary-port-protocol": primaryPort.protocol,
-        "kiln.brick.supports-srv": String(definition.network.supportsSrv),
-        "kiln.instance.public-host": this.#config.gameHost,
-      },
+      labels: legacyNetworkUpgradeLabels({
+        definition,
+        gameHost: this.#config.gameHost,
+        primaryPort,
+        recipe,
+      }),
       protocol: primaryPort.protocol,
     }
     try {
