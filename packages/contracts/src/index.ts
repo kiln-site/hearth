@@ -8,6 +8,11 @@ export const relayIdSchema = z.string().regex(/^[A-Za-z\d_-]{43}$/u)
 export const relayAuditQuerySchema = z
   .object({
     from: z.number().int().nonnegative().optional(),
+    instanceIds: z
+      .array(z.string().min(1).max(120))
+      .min(1)
+      .max(2_000)
+      .optional(),
     limit: z.number().int().min(1).max(2_000).default(200),
     to: z.number().int().nonnegative().optional(),
   })

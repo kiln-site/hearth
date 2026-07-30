@@ -60,6 +60,7 @@ export interface RelayAuditRecord extends RelayAuditInput {}
 
 export interface RelayAuditQuery {
   readonly from?: number
+  readonly instanceIds?: ReadonlyArray<string>
   readonly limit: number
   readonly to?: number
 }
@@ -567,62 +568,33 @@ const makeRelayStateStore = Effect.gen(function* () {
             Math.max(Math.trunc(query.limit), 1),
             2_000
           )
-          const rows =
-            query.from !== undefined && query.to !== undefined
-              ? yield* sql<Record<string, unknown>>`
-                  SELECT
-                    id,
-                    event,
-                    client_id AS clientId,
-                    request_id AS requestId,
-                    details_json AS detailsJson,
-                    occurred_at AS occurredAt
-                  FROM relay_audit
-                  WHERE occurred_at >= ${query.from}
-                    AND occurred_at <= ${query.to}
-                  ORDER BY occurred_at DESC
-                  LIMIT ${boundedLimit}
-                `
-              : query.from !== undefined
-                ? yield* sql<Record<string, unknown>>`
-                    SELECT
-                      id,
-                      event,
-                      client_id AS clientId,
-                      request_id AS requestId,
-                      details_json AS detailsJson,
-                      occurred_at AS occurredAt
-                    FROM relay_audit
-                    WHERE occurred_at >= ${query.from}
-                    ORDER BY occurred_at DESC
-                    LIMIT ${boundedLimit}
-                  `
-                : query.to !== undefined
-                  ? yield* sql<Record<string, unknown>>`
-                      SELECT
-                        id,
-                        event,
-                        client_id AS clientId,
-                        request_id AS requestId,
-                        details_json AS detailsJson,
-                        occurred_at AS occurredAt
-                      FROM relay_audit
-                      WHERE occurred_at <= ${query.to}
-                      ORDER BY occurred_at DESC
-                      LIMIT ${boundedLimit}
-                    `
-                  : yield* sql<Record<string, unknown>>`
-                      SELECT
-                        id,
-                        event,
-                        client_id AS clientId,
-                        request_id AS requestId,
-                        details_json AS detailsJson,
-                        occurred_at AS occurredAt
-                      FROM relay_audit
-                      ORDER BY occurred_at DESC
-                      LIMIT ${boundedLimit}
-                    `
+          const filters = []
+          if (query.from !== undefined) {
+            filters.push(sql`occurred_at >= ${query.from}`)
+          }
+          if (query.to !== undefined) {
+            filters.push(sql`occurred_at <= ${query.to}`)
+          }
+          if (query.instanceIds !== undefined) {
+            filters.push(
+              sql`json_extract(details_json, '$.instanceId') IN ${sql.in(query.instanceIds)}`
+            )
+          }
+          const where =
+            filters.length > 0 ? sql`WHERE ${sql.and(filters)}` : sql``
+          const rows = yield* sql<Record<string, unknown>>`
+            SELECT
+              id,
+              event,
+              client_id AS clientId,
+              request_id AS requestId,
+              details_json AS detailsJson,
+              occurred_at AS occurredAt
+            FROM relay_audit
+            ${where}
+            ORDER BY occurred_at DESC
+            LIMIT ${boundedLimit}
+          `
           const decoded = yield* Schema.decodeUnknownEffect(
             Schema.Array(RelayAuditRowSchema)
           )(rows)

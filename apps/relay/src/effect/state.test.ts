@@ -229,6 +229,38 @@ describe("Relay state", () => {
       })
     )
 
+    it.effect("filters instance audits before applying the result limit", () =>
+      Effect.gen(function* () {
+        const store = yield* RelayStateStore
+        yield* store.appendAudit({
+          clientId: "hearth-audit",
+          details: { instanceId: "instance-other" },
+          event: "control.mutation",
+          id: "audit-other-instance",
+          occurredAt: 40,
+          requestId: "request-other-instance",
+        })
+        yield* store.appendAudit({
+          clientId: "hearth-audit",
+          details: { instanceId: "instance-allowed" },
+          event: "control.mutation",
+          id: "audit-allowed-instance",
+          occurredAt: 30,
+          requestId: "request-allowed-instance",
+        })
+
+        const audits = yield* store.listAudits({
+          instanceIds: ["instance-allowed"],
+          limit: 1,
+        })
+
+        assert.deepStrictEqual(
+          audits.map((audit) => audit.id),
+          ["audit-allowed-instance"]
+        )
+      })
+    )
+
     it.effect("persists Relay-owned instance names", () =>
       Effect.gen(function* () {
         const store = yield* RelayStateStore

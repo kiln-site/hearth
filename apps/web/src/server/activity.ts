@@ -1,5 +1,9 @@
 import { createServerFn } from "@tanstack/react-start"
-import { relayAuditRecordSchema, relayIdSchema } from "@workspace/contracts"
+import {
+  relayAuditRecordSchema,
+  relayIdSchema,
+  relaySnapshotSchema,
+} from "@workspace/contracts"
 import type { RowDataPacket } from "mysql2/promise"
 import { z } from "zod"
 
@@ -37,6 +41,12 @@ interface InstanceRow extends RowDataPacket {
   display_name: string | null
   instance_id: string
   relay_id: string
+}
+
+interface ActivityInstance {
+  displayName: string | null
+  instanceId: string
+  relayId: string
 }
 
 interface UserRow extends RowDataPacket {
@@ -85,29 +95,49 @@ export const getActivity = createServerFn({ method: "GET" })
     }
 
     const visibleRelays = relays.filter((relay) => scopes.has(relay.id))
-    const query = {
+    const baseQuery = {
       ...(data.from ? { from: Date.parse(data.from) } : {}),
       limit: 2_000,
       ...(data.to ? { to: Date.parse(data.to) } : {}),
     }
-    const results = await Promise.allSettled(
+    const results = await Promise.all(
       visibleRelays.map(async (relay) => {
         const { relayRpc } = await import("@/lib/relay-connection")
-        const records = z
-          .array(relayAuditRecordSchema)
-          .parse(await relayRpc(relay, "relay.audit.list", query, 10_000))
-        return { records, relay }
+        const scope = scopes.get(relay.id)
+        const query =
+          scope?.allInstances === false
+            ? { ...baseQuery, instanceIds: [...scope.instanceIds] }
+            : baseQuery
+        const [auditResult, snapshotResult] = await Promise.allSettled([
+          relayRpc(relay, "relay.audit.list", query, 10_000).then((value) =>
+            z.array(relayAuditRecordSchema).parse(value)
+          ),
+          relayRpc(relay, "relay.snapshot", {}, 5_000).then((value) =>
+            relaySnapshotSchema.parse(value)
+          ),
+        ])
+        return { auditResult, relay, snapshotResult }
       })
     )
     const available = results.flatMap((result) =>
-      result.status === "fulfilled" ? [result.value] : []
+      result.auditResult.status === "fulfilled"
+        ? [{ records: result.auditResult.value, relay: result.relay }]
+        : []
     )
     const unavailableRelayIds = new Set(
-      results.flatMap((result, index) =>
-        result.status === "rejected" && visibleRelays[index]
-          ? [visibleRelays[index].id]
-          : []
+      results.flatMap((result) =>
+        result.auditResult.status === "rejected" ? [result.relay.id] : []
       )
+    )
+    const snapshotInstances: Array<ActivityInstance> = results.flatMap(
+      ({ relay, snapshotResult }) =>
+        snapshotResult.status === "fulfilled"
+          ? snapshotResult.value.instances.map((instance) => ({
+              displayName: instance.name,
+              instanceId: instance.id,
+              relayId: relay.id,
+            }))
+          : []
     )
     const visibleAudits = available.flatMap(({ records, relay }) => {
       const scope = scopes.get(relay.id)
@@ -126,12 +156,22 @@ export const getActivity = createServerFn({ method: "GET" })
         })
       ),
     ])
-    const instanceByKey = new Map(
+    const instanceByKey = new Map<string, ActivityInstance>(
       instanceRows.map((instance) => [
         instanceKey(instance.relay_id, instance.instance_id),
-        instance,
+        {
+          displayName: instance.display_name,
+          instanceId: instance.instance_id,
+          relayId: instance.relay_id,
+        },
       ])
     )
+    for (const instance of snapshotInstances) {
+      instanceByKey.set(
+        instanceKey(instance.relayId, instance.instanceId),
+        instance
+      )
+    }
     const userById = new Map(userRows.map((actor) => [actor.id, actor]))
 
     const entries = visibleAudits
@@ -164,7 +204,7 @@ export const getActivity = createServerFn({ method: "GET" })
             ? {
                 id: instanceId,
                 name:
-                  instance?.display_name ?? `Server ${instanceId.slice(0, 8)}`,
+                  instance?.displayName ?? `Server ${instanceId.slice(0, 8)}`,
               }
             : null,
           type: activityTypeForAudit(record),
@@ -179,23 +219,25 @@ export const getActivity = createServerFn({ method: "GET" })
         name: relay.name,
         unavailable: unavailableRelayIds.has(relay.id),
       })),
-      servers: instanceRows.flatMap((instance) => {
-        const scope = scopes.get(instance.relay_id)
-        const visible =
-          scope?.allInstances === true ||
-          scope?.instanceIds.has(instance.instance_id) === true
-        return visible
-          ? [
-              {
-                id: instance.instance_id,
-                name:
-                  instance.display_name ??
-                  `Server ${instance.instance_id.slice(0, 8)}`,
-                relayId: instance.relay_id,
-              },
-            ]
-          : []
-      }),
+      servers: [...instanceByKey.values()]
+        .flatMap((instance) => {
+          const scope = scopes.get(instance.relayId)
+          const visible =
+            scope?.allInstances === true ||
+            scope?.instanceIds.has(instance.instanceId) === true
+          return visible
+            ? [
+                {
+                  id: instance.instanceId,
+                  name:
+                    instance.displayName ??
+                    `Server ${instance.instanceId.slice(0, 8)}`,
+                  relayId: instance.relayId,
+                },
+              ]
+            : []
+        })
+        .sort((left, right) => left.name.localeCompare(right.name)),
       truncatedRelayIds: available.flatMap(({ records, relay }) =>
         records.length === 2_000 ? [relay.id] : []
       ),
