@@ -1007,6 +1007,7 @@ function AddNetworkRouteDialog({
                   >
                     <option value="tcp">TCP</option>
                     <option value="udp">UDP</option>
+                    <option value="both">TCP + UDP</option>
                   </select>
                 </label>
               </div>
@@ -1202,6 +1203,7 @@ function PortAllocationDialog({
               >
                 <option value="tcp">TCP</option>
                 <option value="udp">UDP</option>
+                <option value="both">TCP + UDP</option>
               </select>
               {editing ? (
                 <input

@@ -51,8 +51,9 @@ import type { RelayConfig, RelayInstanceConfig } from "./config.js"
 import type { DockerDriver } from "./docker.js"
 import {
   dockerPortBindingsForAllocations,
-  INSTANCE_PORT_ALLOCATIONS_LABEL,
-  portAllocationMetadataLabel,
+  portAllocationContainerLabels,
+  portLabelsRequireRestart,
+  portProtocols,
 } from "./port-allocations.js"
 import { INSTANCE_STOP_TIMEOUT_SECONDS } from "./power-state.js"
 import {
@@ -1279,7 +1280,27 @@ export class LifecycleDriver {
     ) {
       const desiredLabels = this.#containerWebRouteLabels(routes, settings)
       const labels = await containerLabels(instance.service)
-      if (routeLabelsRequireRestart(labels, routes, desiredLabels)) {
+      const primary = instance.ports.find(
+        (allocation) => allocation.kind === "primary"
+      )
+      const desiredPortLabels = primary
+        ? portAllocationContainerLabels(instance.ports)
+        : null
+      const portConfiguration =
+        primary && desiredPortLabels
+          ? {
+              bindings: dockerPortBindingsForAllocations(instance.ports),
+              labels: {
+                ...desiredPortLabels,
+                "kiln.traefik.service.port": String(primary.internalPort),
+              },
+            }
+          : undefined
+      if (
+        routeLabelsRequireRestart(labels, routes, desiredLabels) ||
+        (desiredPortLabels &&
+          portLabelsRequireRestart(labels, desiredPortLabels))
+      ) {
         const usesExternalEdge =
           settings.mode === "none" || settings.mode === "coolify"
         if (usesExternalEdge && routes.length > 0) {
@@ -1291,7 +1312,8 @@ export class LifecycleDriver {
           usesExternalEdge && routes.length > 0
             ? this.#resources.edgeNetwork
             : null,
-          action
+          action,
+          portConfiguration
         )
       }
     }
@@ -1344,7 +1366,10 @@ export class LifecycleDriver {
       }
     }
 
-    const pending: Array<{ port: number; protocol: "tcp" | "udp" }> = []
+    const pending: Array<{
+      port: number
+      protocol: RelayInstancePortAllocation["protocol"]
+    }> = []
     const allocations: Array<RelayInstancePortAllocation> = []
     try {
       for (const input of requested) {
@@ -1410,10 +1435,7 @@ export class LifecycleDriver {
         {
           bindings: dockerPortBindingsForAllocations(allocations),
           labels: {
-            [INSTANCE_PORT_ALLOCATIONS_LABEL]:
-              portAllocationMetadataLabel(allocations),
-            "kiln.brick.primary-port": String(primary.internalPort),
-            "kiln.brick.primary-port-protocol": primary.protocol,
+            ...portAllocationContainerLabels(allocations),
             "kiln.traefik.service.port": String(primary.internalPort),
           },
         }
@@ -1429,9 +1451,9 @@ export class LifecycleDriver {
       return updated
     } finally {
       for (const allocation of pending) {
-        this.#pendingGamePorts.delete(
-          `${allocation.protocol}:${allocation.port}`
-        )
+        for (const protocol of portProtocols(allocation.protocol)) {
+          this.#pendingGamePorts.delete(`${protocol}:${allocation.port}`)
+        }
       }
     }
   }
@@ -1685,7 +1707,7 @@ export class LifecycleDriver {
 
     const reservedPorts: Array<{
       port: number
-      protocol: "tcp" | "udp"
+      protocol: RelayInstancePortAllocation["protocol"]
     }> = []
     const portAllocations: Array<RelayInstancePortAllocation> = input.ports
       ? [...input.ports]
@@ -1719,6 +1741,7 @@ export class LifecycleDriver {
     if (!primaryAllocation) {
       throw new Error("Managed server port allocations require a primary port")
     }
+    const portLabels = portAllocationContainerLabels(portAllocations)
     const variablesLabel = JSON.stringify(resolved.values)
     const arguments_ = [
       "container",
@@ -1767,10 +1790,6 @@ export class LifecycleDriver {
       "--label",
       `kiln.brick.network-mode=${definition.network.mode}`,
       "--label",
-      `kiln.brick.primary-port=${primaryAllocation.internalPort}`,
-      "--label",
-      `kiln.brick.primary-port-protocol=${primaryAllocation.protocol}`,
-      "--label",
       `kiln.brick.supports-srv=${definition.network.supportsSrv}`,
       "--label",
       "kiln.traefik.managed=true",
@@ -1794,11 +1813,12 @@ export class LifecycleDriver {
       `kiln.instance.disk-bytes=${input.diskLimitBytes}`,
       "--label",
       `kiln.instance.mount=${definition.runtime.storage.mount}`,
-      "--label",
-      `${INSTANCE_PORT_ALLOCATIONS_LABEL}=${portAllocationMetadataLabel(portAllocations)}`,
       "--volume",
       `${hostDirectory}:${definition.runtime.storage.mount}`,
     ]
+    for (const [label, value] of Object.entries(portLabels)) {
+      arguments_.push("--label", `${label}=${value}`)
+    }
     if (definition.readiness) {
       arguments_.push(
         "--label",
@@ -1852,11 +1872,12 @@ export class LifecycleDriver {
     for (const [name, value] of Object.entries(resolved.environment)) {
       arguments_.push("--env", `${name}=${value}`)
     }
-    for (const allocation of portAllocations) {
-      arguments_.push(
-        "--publish",
-        `${allocation.externalPort}:${allocation.internalPort}/${allocation.protocol}`
-      )
+    for (const [binding, candidates] of Object.entries(
+      dockerPortBindingsForAllocations(portAllocations)
+    )) {
+      const hostPort = candidates[0]?.HostPort
+      if (!hostPort) continue
+      arguments_.push("--publish", `${hostPort}:${binding}`)
     }
     arguments_.push(image)
     arguments_.push(...(definition.runtime.entrypoint?.slice(1) ?? []))
@@ -1892,9 +1913,9 @@ export class LifecycleDriver {
       throw error
     } finally {
       for (const allocation of reservedPorts) {
-        this.#pendingGamePorts.delete(
-          `${allocation.protocol}:${allocation.port}`
-        )
+        for (const protocol of portProtocols(allocation.protocol)) {
+          this.#pendingGamePorts.delete(`${protocol}:${allocation.port}`)
+        }
       }
     }
 
@@ -1910,19 +1931,29 @@ export class LifecycleDriver {
 
   async #reserveGamePort(
     instanceId: string,
-    protocol: "tcp" | "udp",
+    protocol: RelayInstancePortAllocation["protocol"],
     existing: ReadonlyArray<RelayInstance>
   ): Promise<number> {
-    const unavailable = await this.#docker.publishedHostPorts(protocol)
-    const pendingPrefix = `${protocol}:`
-    for (const key of this.#pendingGamePorts) {
-      if (!key.startsWith(pendingPrefix)) continue
-      unavailable.add(Number(key.slice(pendingPrefix.length)))
+    const protocols = portProtocols(protocol)
+    const unavailable = new Set<number>()
+    for (const candidate of protocols) {
+      for (const port of await this.#docker.publishedHostPorts(candidate)) {
+        unavailable.add(port)
+      }
+      const pendingPrefix = `${candidate}:`
+      for (const key of this.#pendingGamePorts) {
+        if (!key.startsWith(pendingPrefix)) continue
+        unavailable.add(Number(key.slice(pendingPrefix.length)))
+      }
     }
     for (const instance of existing) {
+      const instanceProtocol = instance.brickPrimaryPortProtocol
       if (
         instance.publicPort &&
-        instance.brickPrimaryPortProtocol === protocol
+        instanceProtocol &&
+        protocols.some((candidate) =>
+          portProtocols(instanceProtocol).includes(candidate)
+        )
       ) {
         unavailable.add(instance.publicPort)
       }
@@ -1934,7 +1965,9 @@ export class LifecycleDriver {
       start,
       unavailable,
     })
-    this.#pendingGamePorts.add(`${protocol}:${port}`)
+    for (const candidate of protocols) {
+      this.#pendingGamePorts.add(`${candidate}:${port}`)
+    }
     return port
   }
 

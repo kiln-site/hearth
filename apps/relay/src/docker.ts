@@ -18,6 +18,7 @@ import type {
   RelayConsoleSegment,
   RelayDesiredState,
   RelayInstance,
+  RelayInstancePortProtocol,
   RelayInstanceResources,
 } from "@workspace/contracts"
 import {
@@ -36,7 +37,10 @@ import {
   relayResourceNames,
   type RelayResourceNames,
 } from "./relay-resources.js"
-import { discoverPortAllocations } from "./port-allocations.js"
+import {
+  discoverPortAllocations,
+  isManagedPortLabel,
+} from "./port-allocations.js"
 import {
   INSTANCE_STARTUP_READINESS_TIMEOUT_MS,
   INSTANCE_STOP_TIMEOUT_SECONDS,
@@ -156,7 +160,7 @@ export type DockerPortBindings = Record<
 
 export interface DockerPublishedPort {
   port: number
-  protocol: "tcp" | "udp"
+  protocol: RelayInstancePortProtocol
 }
 
 export interface DockerPortConfiguration {
@@ -181,15 +185,21 @@ export function dockerPublishedPort(
 export function dockerPublishedPrimaryPort(
   bindings: DockerPortBindings | undefined,
   containerPort: number | undefined,
-  protocol: "tcp" | "udp" | undefined
+  protocol: RelayInstancePortProtocol | undefined
 ): DockerPublishedPort | undefined {
-  const protocols: ReadonlyArray<"tcp" | "udp"> = protocol
-    ? [protocol]
-    : ["tcp", "udp"]
+  const protocols: ReadonlyArray<"tcp" | "udp"> =
+    protocol === "both" || protocol === undefined ? ["tcp", "udp"] : [protocol]
   const matches = protocols.flatMap((candidate) => {
     const port = dockerPublishedPort(bindings, containerPort, candidate)
     return port ? [{ port, protocol: candidate }] : []
   })
+  if (
+    matches.length === 2 &&
+    matches[0]?.port === matches[1]?.port &&
+    (protocol === "both" || protocol === undefined)
+  ) {
+    return { port: matches[0].port, protocol: "both" }
+  }
   return matches.length === 1 ? matches[0] : undefined
 }
 
@@ -679,6 +689,9 @@ export class DockerDriver {
     }
     Object.assign(labels, routeLabels)
     if (portConfiguration) {
+      for (const label of Object.keys(labels)) {
+        if (isManagedPortLabel(label)) delete labels[label]
+      }
       Object.assign(labels, portConfiguration.labels)
     }
 
@@ -1410,7 +1423,7 @@ export class DockerDriver {
         ? "tcp"
         : undefined)
     const port = instance.brickPrimaryPort
-    if (protocol !== "tcp" || !port) return undefined
+    if ((protocol !== "tcp" && protocol !== "both") || !port) return undefined
 
     const addresses = Object.values(
       container.NetworkSettings?.Networks ?? {}
@@ -1923,30 +1936,19 @@ export class DockerDriver {
       brickNetworkMode === "minecraft-proxy"
         ? brickNetworkMode
         : undefined
-    const primaryPort = Number(labels["kiln.brick.primary-port"])
-    const primaryProtocol =
-      labels["kiln.brick.primary-port-protocol"] === "tcp" ||
-      labels["kiln.brick.primary-port-protocol"] === "udp"
-        ? labels["kiln.brick.primary-port-protocol"]
-        : undefined
-    const validPrimaryPort = Number.isInteger(primaryPort)
-      ? primaryPort
-      : undefined
     const brickReadiness = parseBrickReadinessLabel(
       labels["kiln.brick.readiness"]
     )
     const ports = discoverPortAllocations({
       bindings: container.HostConfig?.PortBindings,
-      label: labels["kiln.instance.ports"],
+      labels,
     })
     const primaryAllocation = ports.find(
       (allocation) => allocation.kind === "primary"
     )
     const publicPort = primaryAllocation?.externalPort
-    const effectivePrimaryPort =
-      primaryAllocation?.internalPort ?? validPrimaryPort
-    const effectivePrimaryProtocol =
-      primaryAllocation?.protocol ?? primaryProtocol
+    const effectivePrimaryPort = primaryAllocation?.internalPort
+    const effectivePrimaryProtocol = primaryAllocation?.protocol
     const publicHost = instancePublicHost({
       discoveredPublicIp: this.#config.discoveredPublicIp,
       gameHost: this.#config.gameHost,

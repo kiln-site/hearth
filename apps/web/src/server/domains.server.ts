@@ -419,11 +419,12 @@ const provisionVanityRecordsEffect = Effect.fn(
   if (!publicHost || !publicPort) {
     return yield* domainFailure("The Relay did not report a public endpoint")
   }
-  const supportsSrv =
-    instance.brickSupportsSrv && instance.brickPrimaryPortProtocol !== undefined
-  const srvProtocol = supportsSrv
-    ? (instance.brickPrimaryPortProtocol ?? null)
-    : null
+  const primaryProtocol = instance.brickPrimaryPortProtocol
+  const srvProtocol =
+    primaryProtocol === "tcp" || primaryProtocol === "udp"
+      ? primaryProtocol
+      : null
+  const supportsSrv = instance.brickSupportsSrv && srvProtocol !== null
   const srvService = supportsSrv ? defaultSrvService(instance.game) : null
   yield* reserveInstanceDomainAssignmentEffect({
     domain: credential.domain,

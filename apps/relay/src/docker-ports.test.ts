@@ -65,6 +65,16 @@ describe("Docker public game ports", () => {
         undefined
       )
     ).toBeUndefined()
+    expect(
+      dockerPublishedPrimaryPort(
+        {
+          "19132/tcp": [{ HostPort: "30132" }],
+          "19132/udp": [{ HostPort: "30132" }],
+        },
+        19_132,
+        undefined
+      )
+    ).toEqual({ port: 30_132, protocol: "both" })
   })
 
   it("collects host ports for the requested protocol across all bindings", () => {

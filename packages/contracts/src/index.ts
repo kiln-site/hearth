@@ -148,7 +148,7 @@ export const brickRecipeSchema = z
               .object({
                 name: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/u),
                 container: z.number().int().min(1).max(65_535),
-                protocol: z.enum(["tcp", "udp"]),
+                protocol: z.enum(["tcp", "udp", "both"]),
                 host: z.number().int().min(1).max(65_535).optional(),
               })
               .strict()
@@ -635,7 +635,7 @@ export const relayInstancePortIdSchema = z
 
 export const relayInstancePortNameSchema = z.string().trim().min(1).max(32)
 
-export const relayInstancePortProtocolSchema = z.enum(["tcp", "udp"])
+export const relayInstancePortProtocolSchema = z.enum(["tcp", "udp", "both"])
 
 const relayInstancePortConfigurationSchema = z
   .object({
@@ -660,6 +660,15 @@ export const relayInstancePortAllocationSchema =
   relayInstancePortMetadataSchema.extend({
     externalPort: z.number().int().min(1).max(65_535),
   })
+
+export const relayInstanceCustomRouteLabelSchema = z
+  .object({
+    internal: z.number().int().min(1).max(65_535),
+    name: relayInstancePortNameSchema,
+    protocol: relayInstancePortProtocolSchema,
+    public: z.number().int().min(1).max(65_535),
+  })
+  .strict()
 
 function relayInstancePortArraySchema<
   Port extends z.ZodType<{
@@ -686,15 +695,21 @@ function relayInstancePortArraySchema<
           }
           ids.add(allocation.id)
         }
-        const binding = `${allocation.protocol}:${allocation.internalPort}`
-        if (bindings.has(binding)) {
-          context.addIssue({
-            code: "custom",
-            message: "Internal port and protocol combinations must be unique",
-            path: [index, "internalPort"],
-          })
+        const protocols =
+          allocation.protocol === "both"
+            ? ["tcp", "udp"]
+            : [allocation.protocol]
+        for (const protocol of protocols) {
+          const binding = `${protocol}:${allocation.internalPort}`
+          if (bindings.has(binding)) {
+            context.addIssue({
+              code: "custom",
+              message: "Internal port and protocol combinations must be unique",
+              path: [index, "internalPort"],
+            })
+          }
+          bindings.add(binding)
         }
-        bindings.add(binding)
       }
     })
 }
@@ -734,7 +749,7 @@ export const relayInstanceSchema = z.object({
     .enum(["direct", "minecraft-backend", "minecraft-proxy"])
     .optional(),
   brickPrimaryPort: z.number().int().min(1).max(65_535).optional(),
-  brickPrimaryPortProtocol: z.enum(["tcp", "udp"]).optional(),
+  brickPrimaryPortProtocol: relayInstancePortProtocolSchema.optional(),
   brickSupportsSrv: z.boolean().default(false),
   brickSource: brickSourceSchema.optional(),
   publicHost: z.string().min(1).max(253).optional(),
@@ -1108,11 +1123,17 @@ export type RelayInstanceLimits = z.infer<typeof relayInstanceLimitsSchema>
 export type RelayInstancePortInput = z.infer<
   typeof relayInstancePortInputSchema
 >
+export type RelayInstancePortProtocol = z.infer<
+  typeof relayInstancePortProtocolSchema
+>
 export type RelayInstancePortMetadata = z.infer<
   typeof relayInstancePortMetadataSchema
 >
 export type RelayInstancePortAllocation = z.infer<
   typeof relayInstancePortAllocationSchema
+>
+export type RelayInstanceCustomRouteLabel = z.infer<
+  typeof relayInstanceCustomRouteLabelSchema
 >
 export type RelayInstance = z.infer<typeof relayInstanceSchema>
 export type RelayNode = z.infer<typeof relayNodeSchema>
