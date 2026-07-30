@@ -994,7 +994,10 @@ function RemoveNetworkRouteDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle className="text-destructive">Remove Route</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            <Trash2 aria-hidden="true" className="size-5 text-destructive" />
+            Remove Route
+          </DialogTitle>
         </DialogHeader>
         <div className="border border-border bg-muted/20 px-3 py-2.5">
           <span className="block truncate text-sm font-medium text-foreground">
