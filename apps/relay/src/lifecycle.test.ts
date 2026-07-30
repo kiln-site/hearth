@@ -538,6 +538,7 @@ describe("Traefik web routes", () => {
     hostname: "donutsmp.example.com",
     id: "b00d4423",
     instanceId: "a".repeat(40),
+    name: "Live Map",
     path: "/map",
     stripPrefix: true,
     targetPort: 8080,
@@ -601,7 +602,7 @@ describe("Traefik web routes", () => {
       labels[`traefik.http.services.${name}.loadbalancer.server.port`]
     ).toBe("8080")
     expect(labels["kiln.relay.web-routes.b00d4423"]).toBe(
-      "donutsmp.example.com:8080/map"
+      "donutsmp.example.com:8080/map|name=Live%20Map"
     )
     expect(labels["kiln.relay.web-routes.revision"]).toMatch(/^[a-f0-9]{64}$/u)
   })
@@ -612,7 +613,7 @@ describe("Traefik web routes", () => {
     expect(labels["traefik.enable"]).toBe("false")
     expect(labels["traefik.docker.network"]).toBeUndefined()
     expect(labels["kiln.relay.web-routes.b00d4423"]).toBe(
-      "donutsmp.example.com:8080/map"
+      "donutsmp.example.com:8080/map|name=Live%20Map"
     )
     expect(labels["kiln.relay.web-routes.revision"]).toMatch(/^[a-f0-9]{64}$/u)
   })

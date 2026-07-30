@@ -503,9 +503,12 @@ export const relayInstanceWebRouteIdSchema = z.union([
   z.uuid(),
 ])
 
+export const relayInstanceWebRouteNameSchema = z.string().trim().min(1).max(32)
+
 const relayInstanceWebRouteConfigurationSchema = z
   .object({
     hostname: webRouteHostnameSchema,
+    name: relayInstanceWebRouteNameSchema,
     path: z
       .string()
       .trim()

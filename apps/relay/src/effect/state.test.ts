@@ -330,6 +330,7 @@ describe("Relay state", () => {
           const first = {
             hostname: "map.example.com",
             id: "15c524a6",
+            name: "Live Map",
             path: null,
             stripPrefix: true,
             targetPort: 8080,

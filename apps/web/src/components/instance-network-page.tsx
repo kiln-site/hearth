@@ -273,6 +273,7 @@ type PendingNetworkRoute =
   | {
       hostname: string
       kind: "web"
+      name: string
       path: string | null
       targetPort: number
     }
@@ -1105,7 +1106,7 @@ function RemoveNetworkRouteDialog({
 }) {
   if (!removal) return null
   const name =
-    removal.kind === "port" ? removal.allocation.name : removal.route.hostname
+    removal.kind === "port" ? removal.allocation.name : removal.route.name
   const publicAddress =
     removal.kind === "port"
       ? publicHost
@@ -1270,7 +1271,7 @@ const WebRouteRow = React.memo(function WebRouteRow({
 
   return (
     <tr
-      aria-label={deleting ? `Removing ${route.hostname}` : undefined}
+      aria-label={deleting ? `Removing ${route.name}` : undefined}
       className="hover:bg-muted/10"
     >
       <WorkspaceTableCell>
@@ -1285,7 +1286,7 @@ const WebRouteRow = React.memo(function WebRouteRow({
             onRestart={onRestart}
           />
           <RouteName
-            name={route.hostname}
+            name={route.name}
             secondary={`HTTPS${route.path ? ` · ${route.path}` : ""}`}
           />
         </div>
@@ -1298,7 +1299,7 @@ const WebRouteRow = React.memo(function WebRouteRow({
       <WorkspaceTableCell>
         <PublicAddressCopy
           address={publicUrl}
-          label={`${route.hostname} web route`}
+          label={`${route.name} web route`}
           prominent
         />
       </WorkspaceTableCell>
@@ -1505,10 +1506,10 @@ function AddedRouteRow({
       }
       address={publicUrl}
       canRestart={canRestart}
-      copyLabel={`${route.hostname} web route`}
+      copyLabel={`${route.name} web route`}
       internalPort={route.targetPort}
       kind="web"
-      name={route.hostname}
+      name={route.name}
       restarting={restarting}
       secondary={`HTTPS${route.path ? ` · ${route.path}` : ""}`}
       settingUp={settingUp || deleting}
@@ -2206,6 +2207,7 @@ function AddNetworkRouteDialog({
               const parsed = relayInstanceWebRouteInputSchema.safeParse({
                 id: webRoute?.id,
                 hostname: String(form.get("hostname") ?? ""),
+                name: String(form.get("name") ?? ""),
                 path: path || null,
                 stripPrefix: form.get("stripPrefix") === "on",
                 targetPort: Number(form.get("targetPort")),
@@ -2221,6 +2223,7 @@ function AddNetworkRouteDialog({
                 onBeginSubmit({
                   hostname: parsed.data.hostname,
                   kind: "web",
+                  name: parsed.data.name,
                   path: parsed.data.path,
                   targetPort: parsed.data.targetPort,
                 })
@@ -2293,6 +2296,17 @@ function AddNetworkRouteDialog({
             </>
           ) : (
             <>
+              <label className="block space-y-1.5 text-[11px] font-medium">
+                Name
+                <Input
+                  autoComplete="off"
+                  defaultValue={webRoute?.name}
+                  maxLength={32}
+                  name="name"
+                  placeholder="Live map"
+                  required
+                />
+              </label>
               <label className="block space-y-1.5 text-[11px] font-medium">
                 Hostname
                 <Input

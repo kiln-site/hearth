@@ -128,6 +128,7 @@ const RelayWebRouteRowSchema = Schema.Struct({
   hostname: Schema.String,
   id: Schema.String,
   instanceId: Schema.String,
+  name: Schema.String,
   path: Schema.String,
   stripPrefix: Schema.Number,
   targetPort: Schema.Number,
@@ -341,6 +342,17 @@ const migrations = SqliteMigrator.fromRecord({
       ) STRICT
     `
   }),
+  "3_web_route_names": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`
+      ALTER TABLE relay_web_routes
+      ADD COLUMN name TEXT NOT NULL DEFAULT 'Web Route'
+    `
+    yield* sql`
+      UPDATE relay_web_routes
+      SET name = substr(hostname, 1, 32)
+    `
+  }),
 })
 
 const makeRelayStateStore = Effect.gen(function* () {
@@ -409,6 +421,7 @@ const makeRelayStateStore = Effect.gen(function* () {
             id,
             instance_id AS instanceId,
             hostname,
+            name,
             path,
             strip_prefix AS stripPrefix,
             target_port AS targetPort
@@ -421,6 +434,7 @@ const makeRelayStateStore = Effect.gen(function* () {
             id,
             instance_id AS instanceId,
             hostname,
+            name,
             path,
             strip_prefix AS stripPrefix,
             target_port AS targetPort
@@ -432,6 +446,7 @@ const makeRelayStateStore = Effect.gen(function* () {
       hostname: row.hostname,
       id: row.id,
       instanceId: row.instanceId,
+      name: row.name,
       path: row.path || null,
       stripPrefix: row.stripPrefix === 1,
       targetPort: row.targetPort,
@@ -950,6 +965,7 @@ const makeRelayStateStore = Effect.gen(function* () {
                   id,
                   instance_id,
                   hostname,
+                  name,
                   path,
                   strip_prefix,
                   target_port,
@@ -959,6 +975,7 @@ const makeRelayStateStore = Effect.gen(function* () {
                   ${route.id},
                   ${instanceId},
                   ${route.hostname},
+                  ${route.name},
                   ${route.path ?? ""},
                   ${route.stripPrefix ? 1 : 0},
                   ${route.targetPort},

@@ -15,6 +15,7 @@ describe("Relay web route recovery labels", () => {
         {
           hostname: "mc.donutsmp.com",
           id: "b00d4423",
+          name: "Live Map",
           path: "/map",
           stripPrefix: true,
           targetPort: 8_080,
@@ -22,23 +23,26 @@ describe("Relay web route recovery labels", () => {
         {
           hostname: "admin.donutsmp.com",
           id: "decafbad",
+          name: "Admin Panel",
           path: "/admin",
           stripPrefix: false,
           targetPort: 3_000,
         },
       ])
     ).toEqual({
-      "kiln.relay.web-routes.b00d4423": "mc.donutsmp.com:8080/map",
+      "kiln.relay.web-routes.b00d4423":
+        "mc.donutsmp.com:8080/map|name=Live%20Map",
       "kiln.relay.web-routes.decafbad":
-        "admin.donutsmp.com:3000/admin|keep-prefix",
+        "admin.donutsmp.com:3000/admin|name=Admin%20Panel,keep-prefix",
     })
   })
 
   it("decodes labels and ignores the revision marker", () => {
     const decoded = decodeWebRouteRecoveryLabels({
-      "kiln.relay.web-routes.b00d4423": "mc.donutsmp.com:8080/map",
+      "kiln.relay.web-routes.b00d4423":
+        "mc.donutsmp.com:8080/map|name=Live%20Map",
       "kiln.relay.web-routes.decafbad":
-        "admin.donutsmp.com:3000/admin|keep-prefix",
+        "admin.donutsmp.com:3000/admin|name=Admin%20Panel,keep-prefix",
       "kiln.relay.web-routes.revision": "abc123",
       "other.label": "ignored",
     })
@@ -48,6 +52,7 @@ describe("Relay web route recovery labels", () => {
       {
         hostname: "mc.donutsmp.com",
         id: "b00d4423",
+        name: "Live Map",
         path: "/map",
         stripPrefix: true,
         targetPort: 8_080,
@@ -55,6 +60,7 @@ describe("Relay web route recovery labels", () => {
       {
         hostname: "admin.donutsmp.com",
         id: "decafbad",
+        name: "Admin Panel",
         path: "/admin",
         stripPrefix: false,
         targetPort: 3_000,
@@ -68,6 +74,7 @@ describe("Relay web route recovery labels", () => {
         hostname: "new.example.com",
         id: "cafebabe",
         instanceId,
+        name: "New Route",
         path: null,
         stripPrefix: true,
         targetPort: 8_080,
@@ -114,6 +121,7 @@ describe("Relay web route recovery labels", () => {
       {
         hostname: "valid.donutsmp.com",
         id: "facefeed",
+        name: "valid.donutsmp.com",
         path: null,
         stripPrefix: true,
         targetPort: 9_000,

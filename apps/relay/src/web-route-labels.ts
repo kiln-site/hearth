@@ -13,10 +13,11 @@ export const WEB_ROUTE_LABEL_PREFIX = "kiln.relay.web-routes."
 export const WEB_ROUTE_REVISION_LABEL = `${WEB_ROUTE_LABEL_PREFIX}revision`
 
 const KEEP_PREFIX_OPTION = "keep-prefix"
+const NAME_OPTION_PREFIX = "name="
 const MAX_INSTANCE_WEB_ROUTES = 16
 
 // One label per route:
-// kiln.relay.web-routes.<id>=hostname:port[/path][|keep-prefix]
+// kiln.relay.web-routes.<id>=hostname:port[/path]|name=<encoded>[,keep-prefix]
 // A configured path is stripped unless keep-prefix is present.
 export interface RelayWebRouteLabelSnapshot {
   readonly instanceId: string
@@ -144,7 +145,9 @@ export function planWebRouteRecovery(
 
 function encodeWebRouteRecoveryValue(route: RelayInstanceWebRoute): string {
   const endpoint = `${route.hostname}:${route.targetPort}${route.path ?? ""}`
-  return route.stripPrefix ? endpoint : `${endpoint}|${KEEP_PREFIX_OPTION}`
+  const options = [`${NAME_OPTION_PREFIX}${encodeURIComponent(route.name)}`]
+  if (!route.stripPrefix) options.push(KEEP_PREFIX_OPTION)
+  return `${endpoint}|${options.join(",")}`
 }
 
 function parseWebRouteRecoveryValue(
@@ -171,17 +174,34 @@ function parseWebRouteRecoveryValue(
     segments[1] === undefined
       ? []
       : segments[1].split(",").filter((option) => option.length > 0)
+  const nameOptions = options.filter((option) =>
+    option.startsWith(NAME_OPTION_PREFIX)
+  )
   if (
     segments[1] === "" ||
-    options.some((option) => option !== KEEP_PREFIX_OPTION) ||
+    options.some(
+      (option) =>
+        option !== KEEP_PREFIX_OPTION && !option.startsWith(NAME_OPTION_PREFIX)
+    ) ||
+    nameOptions.length > 1 ||
     new Set(options).size !== options.length
   ) {
     return { success: false, message: "route options are invalid" }
   }
 
+  let name = authority.slice(0, portSeparator).slice(0, 32)
+  if (nameOptions[0]) {
+    try {
+      name = decodeURIComponent(nameOptions[0].slice(NAME_OPTION_PREFIX.length))
+    } catch {
+      return { success: false, message: "route name is invalid" }
+    }
+  }
+
   const parsed = relayInstanceWebRouteSchema.safeParse({
     hostname: authority.slice(0, portSeparator),
     id,
+    name,
     path,
     stripPrefix: !options.includes(KEEP_PREFIX_OPTION),
     targetPort: Number(authority.slice(portSeparator + 1)),

@@ -5,6 +5,7 @@ import { assignRelayWebRouteIds } from "./web-route-ids.js"
 const instanceId = "a".repeat(40)
 const route = {
   hostname: "map.example.com",
+  name: "Live Map",
   path: "/map",
   stripPrefix: true,
   targetPort: 8_100,
