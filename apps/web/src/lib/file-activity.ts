@@ -145,53 +145,54 @@ const setFilePinnedEffect = Effect.fn("files.activity.setPinned")(function* (
   yield* ensureActivityInstanceEffect(relayId, instanceId)
   const updated = yield* database.transaction(
     "file_activity_set_pinned",
-    async (transaction) => {
-      await transaction.queryRows(
-        `SELECT instance_id
+    (transaction) =>
+      Effect.gen(function* () {
+        yield* transaction.queryRows(
+          `SELECT instance_id
            FROM ${databaseTable("instance")}
           WHERE relay_id = ? AND instance_id = ?
           FOR UPDATE`,
-        [relayId, instanceId]
-      )
-      if (pinned) {
-        const pinnedFiles = await transaction.queryRows<PinnedFilePathRow>(
-          `SELECT path_hash, path
+          [relayId, instanceId]
+        )
+        if (pinned) {
+          const pinnedFiles = yield* transaction.queryRows<PinnedFilePathRow>(
+            `SELECT path_hash, path
              FROM ${databaseTable("file_activity")}
             WHERE relay_id = ?
               AND instance_id = ?
               AND pinned = TRUE
             LIMIT ${pinnedFileLimit}`,
-          [relayId, instanceId]
-        )
-        const staleHashes: Array<string> = []
-        for (const file of pinnedFiles) {
-          if (!validPaths.has(file.path)) staleHashes.push(file.path_hash)
-        }
-        if (staleHashes.length) {
-          await transaction.execute(
-            `DELETE FROM ${databaseTable("file_activity")}
+            [relayId, instanceId]
+          )
+          const staleHashes: Array<string> = []
+          for (const file of pinnedFiles) {
+            if (!validPaths.has(file.path)) staleHashes.push(file.path_hash)
+          }
+          if (staleHashes.length) {
+            yield* transaction.execute(
+              `DELETE FROM ${databaseTable("file_activity")}
               WHERE relay_id = ?
                 AND instance_id = ?
                 AND path_hash IN (${staleHashes.map(() => "?").join(", ")})`,
-            [relayId, instanceId, ...staleHashes]
-          )
+              [relayId, instanceId, ...staleHashes]
+            )
+          }
+          const activePinCount = pinnedFiles.filter(
+            (file) => validPaths.has(file.path) && file.path_hash !== hash
+          ).length
+          if (activePinCount >= pinnedFileLimit) return false
         }
-        const activePinCount = pinnedFiles.filter(
-          (file) => validPaths.has(file.path) && file.path_hash !== hash
-        ).length
-        if (activePinCount >= pinnedFileLimit) return false
-      }
-      await transaction.execute(
-        `INSERT INTO ${databaseTable("file_activity")}
+        yield* transaction.execute(
+          `INSERT INTO ${databaseTable("file_activity")}
            (relay_id, instance_id, path_hash, path, pinned, last_viewed_at)
          VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))
          ON DUPLICATE KEY UPDATE
            path = VALUES(path),
            pinned = VALUES(pinned)`,
-        [relayId, instanceId, hash, path, pinned]
-      )
-      return true
-    }
+          [relayId, instanceId, hash, path, pinned]
+        )
+        return true
+      })
   )
   if (!updated) return yield* FilePinLimitError.make({ limit: pinnedFileLimit })
 })

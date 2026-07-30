@@ -1,5 +1,9 @@
-import type { ResultSetHeader, RowDataPacket } from "mysql2/promise"
-import { Context, Effect, Layer } from "effect"
+import type {
+  PoolConnection,
+  ResultSetHeader,
+  RowDataPacket,
+} from "mysql2/promise"
+import { Context, Effect, Exit, Layer } from "effect"
 
 import { DatabaseError } from "./errors"
 
@@ -9,11 +13,11 @@ export interface DatabaseTransaction {
   readonly execute: (
     sql: string,
     values?: Array<QueryValue>
-  ) => Promise<ResultSetHeader>
+  ) => Effect.Effect<ResultSetHeader, DatabaseError>
   readonly queryRows: <TRow extends RowDataPacket>(
     sql: string,
     values?: Array<QueryValue>
-  ) => Promise<ReadonlyArray<TRow>>
+  ) => Effect.Effect<ReadonlyArray<TRow>, DatabaseError>
 }
 
 export class Database extends Context.Service<
@@ -29,10 +33,12 @@ export class Database extends Context.Service<
       sql: string,
       values?: Array<QueryValue>
     ) => Effect.Effect<ReadonlyArray<TRow>, DatabaseError>
-    readonly transaction: <TResult>(
+    readonly transaction: <TResult, TError, TRequirements>(
       operation: string,
-      run: (transaction: DatabaseTransaction) => Promise<TResult>
-    ) => Effect.Effect<TResult, DatabaseError>
+      run: (
+        transaction: DatabaseTransaction
+      ) => Effect.Effect<TResult, TError, TRequirements>
+    ) => Effect.Effect<TResult, DatabaseError | TError, TRequirements>
   }
 >()("kiln/Database") {}
 
@@ -63,38 +69,64 @@ export const DatabaseLive = Layer.succeed(Database)({
       catch: (cause) => DatabaseError.make({ operation, cause }),
     }).pipe(Effect.withSpan(`db.${operation}`)),
   transaction: (operation, run) =>
-    Effect.tryPromise({
-      try: async () => {
+    Effect.acquireUseRelease(
+      databasePromise(operation, async () => {
         const { databasePool } = await import("@/lib/database")
-        const connection = await databasePool.getConnection()
-        try {
-          await connection.beginTransaction()
-          const transaction: DatabaseTransaction = {
-            execute: async (sql, values) => {
-              const [result] = await connection.execute<ResultSetHeader>(
-                sql,
-                values
-              )
-              return result
-            },
-            queryRows: async <TRow extends RowDataPacket>(
-              sql: string,
-              values?: Array<QueryValue>
-            ) => {
-              const [rows] = await connection.query<Array<TRow>>(sql, values)
-              return rows
-            },
-          }
-          const result = await run(transaction)
-          await connection.commit()
+        return databasePool.getConnection()
+      }),
+      (connection) =>
+        Effect.gen(function* () {
+          yield* databasePromise(operation, () => connection.beginTransaction())
+          const result = yield* run(databaseTransaction(connection, operation))
+          yield* databasePromise(operation, () => connection.commit())
           return result
-        } catch (cause) {
-          await connection.rollback()
-          throw cause
-        } finally {
-          connection.release()
-        }
-      },
-      catch: (cause) => DatabaseError.make({ operation, cause }),
-    }).pipe(Effect.withSpan(`db.${operation}`)),
+        }),
+      (connection, exit) =>
+        Effect.gen(function* () {
+          if (Exit.isSuccess(exit)) {
+            yield* Effect.sync(() => {
+              connection.release()
+            })
+            return
+          }
+          const rollbackExit = yield* databasePromise(operation, () =>
+            connection.rollback()
+          ).pipe(Effect.exit)
+          yield* Effect.sync(() => {
+            connection.release()
+          })
+          yield* rollbackExit
+        })
+    ).pipe(Effect.withSpan(`db.${operation}`)),
 })
+
+function databaseTransaction(
+  connection: PoolConnection,
+  operation: string
+): DatabaseTransaction {
+  return {
+    execute: (sql, values) =>
+      databasePromise(operation, async () => {
+        const [result] = await connection.execute<ResultSetHeader>(sql, values)
+        return result
+      }),
+    queryRows: <TRow extends RowDataPacket>(
+      sql: string,
+      values?: Array<QueryValue>
+    ) =>
+      databasePromise(operation, async () => {
+        const [rows] = await connection.query<Array<TRow>>(sql, values)
+        return rows
+      }),
+  }
+}
+
+function databasePromise<TResult>(
+  operation: string,
+  run: () => PromiseLike<TResult>
+): Effect.Effect<TResult, DatabaseError> {
+  return Effect.tryPromise({
+    try: run,
+    catch: (cause) => DatabaseError.make({ operation, cause }),
+  })
+}

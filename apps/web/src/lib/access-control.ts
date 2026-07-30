@@ -176,15 +176,14 @@ export const allowedInstanceIdsEffect = Effect.fn("access.allowedInstanceIds")(
 export const deleteInstanceAccessEffect = Effect.fn("access.deleteInstance")(
   function* (relayId: string, instanceId: string) {
     const database = yield* Database
-    yield* database.transaction(
-      "access.deleteInstance",
-      async (transaction) => {
-        await transaction.execute(
+    yield* database.transaction("access.deleteInstance", (transaction) =>
+      Effect.gen(function* () {
+        yield* transaction.execute(
           `DELETE FROM ${databaseTable("access_grant")}
         WHERE relay_id = ? AND resource_type = 'instance' AND resource_id = ?`,
           [relayId, instanceId]
         )
-        await transaction.execute(
+        yield* transaction.execute(
           `DELETE FROM ${databaseTable("invitation")}
         WHERE relay_id = ? AND instance_id = ?
           AND accepted_at IS NULL
@@ -192,7 +191,7 @@ export const deleteInstanceAccessEffect = Effect.fn("access.deleteInstance")(
           AND expires_at > CURRENT_TIMESTAMP(3)`,
           [relayId, instanceId]
         )
-      }
+      })
     )
   }
 )

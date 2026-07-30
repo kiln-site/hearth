@@ -5,6 +5,17 @@ import type { ResultSetHeader } from "mysql2/promise"
 import { Database } from "@/effect/database"
 import { deleteInstanceAccessEffect } from "@/lib/access-control"
 
+const emptyResult: ResultSetHeader = {
+  affectedRows: 0,
+  changedRows: 0,
+  constructor: { name: "ResultSetHeader" },
+  fieldCount: 0,
+  info: "",
+  insertId: 0,
+  serverStatus: 0,
+  warningStatus: 0,
+}
+
 describe("instance access cleanup", () => {
   it.effect("removes grants and pending invitations in one transaction", () => {
     const statements: Array<{
@@ -15,15 +26,14 @@ describe("instance access cleanup", () => {
       execute: () => Effect.die("Unexpected standalone database write"),
       queryRows: () => Effect.die("Unexpected database query"),
       transaction: (_operation, run) =>
-        Effect.promise(() =>
-          run({
-            execute: async (sql, values) => {
+        run({
+          execute: (sql, values) =>
+            Effect.sync(() => {
               statements.push({ sql, values: values ?? [] })
-              return {} as ResultSetHeader
-            },
-            queryRows: async () => [],
-          })
-        ),
+              return emptyResult
+            }),
+          queryRows: () => Effect.succeed([]),
+        }),
     })
 
     return Effect.gen(function* () {
