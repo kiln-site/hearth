@@ -467,35 +467,16 @@ const PrimaryPortSummary = React.memo(function PrimaryPortSummary({
           </div>
           <div className="col-span-2 min-w-0 sm:col-span-1">
             <dt className="text-[9px] text-muted-foreground">Public address</dt>
-            <dd className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">
-              {address ?? "Unavailable"}
+            <dd className="mt-0.5 min-w-0">
+              <PublicAddressCopy
+                address={address}
+                label="game server public address"
+              />
             </dd>
           </div>
         </dl>
-        <div className="ml-auto flex shrink-0">
-          {address ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  aria-label="Copy game server public address"
-                  onClick={() => {
-                    void navigator.clipboard.writeText(address)
-                    showToast({
-                      message: "Public address copied",
-                      type: "success",
-                    })
-                  }}
-                  size="icon-sm"
-                  type="button"
-                  variant="ghost"
-                >
-                  <Copy />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Copy public address</TooltipContent>
-            </Tooltip>
-          ) : null}
-          {canWrite ? (
+        {canWrite ? (
+          <div className="ml-auto flex shrink-0">
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -511,8 +492,8 @@ const PrimaryPortSummary = React.memo(function PrimaryPortSummary({
               </TooltipTrigger>
               <TooltipContent>Edit allocation</TooltipContent>
             </Tooltip>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
       </div>
     </div>
   )
@@ -582,34 +563,13 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
                   </span>
                 </WorkspaceTableCell>
                 <WorkspaceTableCell>
-                  <span className="block truncate font-mono text-[10px] text-muted-foreground">
-                    {address ?? "Unavailable"}
-                  </span>
+                  <PublicAddressCopy
+                    address={address}
+                    label={`${allocation.name} public address`}
+                  />
                 </WorkspaceTableCell>
                 <WorkspaceTableCell className="px-2">
                   <div className="flex justify-end">
-                    {address ? (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            aria-label={`Copy ${allocation.name} public address`}
-                            onClick={() => {
-                              void navigator.clipboard.writeText(address)
-                              showToast({
-                                message: "Public address copied",
-                                type: "success",
-                              })
-                            }}
-                            size="icon-sm"
-                            type="button"
-                            variant="ghost"
-                          >
-                            <Copy />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Copy public address</TooltipContent>
-                      </Tooltip>
-                    ) : null}
                     {canWrite ? (
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -658,32 +618,14 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
                   </span>
                 </WorkspaceTableCell>
                 <WorkspaceTableCell>
-                  <span className="block truncate font-mono text-[10px] text-muted-foreground">
-                    {publicUrl}
-                  </span>
+                  <PublicAddressCopy
+                    address={publicUrl}
+                    label={`${route.hostname} web route`}
+                    successMessage="Web route copied"
+                  />
                 </WorkspaceTableCell>
                 <WorkspaceTableCell className="px-2">
                   <div className="flex justify-end">
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          aria-label={`Copy ${publicUrl}`}
-                          onClick={() => {
-                            void navigator.clipboard.writeText(publicUrl)
-                            showToast({
-                              message: "Web route copied",
-                              type: "success",
-                            })
-                          }}
-                          size="icon-sm"
-                          type="button"
-                          variant="ghost"
-                        >
-                          <Copy />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>Copy web route</TooltipContent>
-                    </Tooltip>
                     {canWrite ? (
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -713,6 +655,44 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
         </tbody>
       </table>
     </div>
+  )
+})
+
+const PublicAddressCopy = React.memo(function PublicAddressCopy({
+  address,
+  label,
+  successMessage = "Public address copied",
+}: {
+  address: string | null
+  label: string
+  successMessage?: string
+}) {
+  if (!address) {
+    return (
+      <span className="block truncate font-mono text-[10px] text-muted-foreground">
+        Unavailable
+      </span>
+    )
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          aria-label={`Copy ${label}`}
+          className="flex max-w-full items-center gap-1 font-mono text-[10px] text-primary/75 transition-colors hover:text-primary"
+          onClick={() => {
+            void navigator.clipboard.writeText(address)
+            showToast({ message: successMessage, type: "success" })
+          }}
+          type="button"
+        >
+          <span className="truncate">{address}</span>
+          <Copy className="size-3 shrink-0 opacity-55" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>Copy address</TooltipContent>
+    </Tooltip>
   )
 })
 
