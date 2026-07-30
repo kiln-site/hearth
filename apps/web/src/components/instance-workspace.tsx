@@ -5,7 +5,7 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query"
-import { useRouterState } from "@tanstack/react-router"
+import { Link, useParams, useRouterState } from "@tanstack/react-router"
 import type {
   RelayInstanceResources,
   RelayObservedState,
@@ -19,6 +19,7 @@ import {
   OctagonX,
   Play,
   RotateCw,
+  TriangleAlert,
 } from "lucide-react"
 
 import { Button } from "@workspace/ui/components/button"
@@ -411,31 +412,43 @@ function InstanceIdCopyButton({
   )
 }
 
-function InstanceAddressCopyButton({ address }: { address: string }) {
+function InstanceAddressControl({ address }: { address: string }) {
+  const { serverId } = useParams({ from: "/_app/server/$serverId" })
   const { copied, copy } = useCopyFeedback(address)
   const addressError = address.startsWith("Error:") ? address : null
-  const unavailable = addressError !== null
-  const label = addressError ? "ERROR" : address
+
+  if (addressError) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Link
+            aria-label="Open Network and edit the game server port"
+            className="flex min-w-0 flex-1 items-center gap-1 truncate font-mono font-semibold text-destructive transition-colors hover:text-destructive/80"
+            params={{ serverId }}
+            search={{ edit: "game-port" }}
+            to="/server/$serverId/network"
+          >
+            <span className="truncate">ERROR</span>
+            <TriangleAlert className="size-3 shrink-0" />
+          </Link>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={6}>
+          Configure game server port
+        </TooltipContent>
+      </Tooltip>
+    )
+  }
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
           type="button"
-          className={`flex min-w-0 flex-1 items-center gap-1 truncate font-mono transition-colors ${
-            addressError
-              ? "font-semibold text-destructive hover:text-destructive/80"
-              : copied
-                ? "text-emerald-400"
-                : "text-primary/75 hover:text-primary"
-          }`}
-          aria-disabled={unavailable}
-          aria-label={addressError ?? `Copy server address ${address}`}
-          onClick={() => {
-            if (!unavailable) void copy()
-          }}
+          className={`flex min-w-0 flex-1 items-center gap-1 truncate font-mono transition-colors ${copied ? "text-emerald-400" : "text-primary/75 hover:text-primary"}`}
+          aria-label={`Copy server address ${address}`}
+          onClick={() => void copy()}
         >
-          <span className="truncate">{label}</span>
+          <span className="truncate">{address}</span>
           {copied ? (
             <Check className="size-3 shrink-0" />
           ) : (
@@ -444,7 +457,7 @@ function InstanceAddressCopyButton({ address }: { address: string }) {
         </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" sideOffset={6}>
-        {addressError ?? (copied ? "Address copied" : "Copy server address")}
+        {copied ? "Address copied" : "Copy server address"}
       </TooltipContent>
     </Tooltip>
   )
@@ -482,7 +495,7 @@ function InstanceIdentity({
           <InstanceIdCopyButton id={instance.id} shortId={instance.shortId} />
           <span className="text-border">/</span>
         </span>
-        <InstanceAddressCopyButton address={instance.connectAddress} />
+        <InstanceAddressControl address={instance.connectAddress} />
       </div>
       {error ? (
         <p className="mt-0.5 truncate text-[9px] text-destructive">{error}</p>

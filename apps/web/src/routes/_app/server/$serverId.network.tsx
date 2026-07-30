@@ -6,6 +6,7 @@ import { pageTitle } from "@/lib/page-title"
 
 export const Route = createFileRoute("/_app/server/$serverId/network")({
   validateSearch: z.object({
+    edit: z.enum(["game-port"]).optional(),
     member: z.string().max(512).optional(),
   }),
   component: NetworkRoute,
@@ -13,6 +14,12 @@ export const Route = createFileRoute("/_app/server/$serverId/network")({
 })
 
 function NetworkRoute() {
-  const { member } = Route.useSearch()
-  return <InstanceNetworkPage highlightedTailscaleMember={member} />
+  const { edit, member } = Route.useSearch()
+
+  return (
+    <InstanceNetworkPage
+      editGamePort={edit === "game-port"}
+      highlightedTailscaleMember={member}
+    />
+  )
 }

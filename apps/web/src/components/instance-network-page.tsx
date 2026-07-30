@@ -5,6 +5,7 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query"
+import { useNavigate } from "@tanstack/react-router"
 import {
   AlertTriangle,
   Cable,
@@ -78,8 +79,10 @@ import {
 } from "@/server/relay"
 
 export function InstanceNetworkPage({
+  editGamePort = false,
   highlightedTailscaleMember,
 }: {
+  editGamePort?: boolean
   highlightedTailscaleMember?: string
 }) {
   const instance = useInstanceIdentity()
@@ -103,10 +106,21 @@ export function InstanceNetworkPage({
     )
   }
 
-  return <WebRoutesNetworkPage showTailscale={isPlatformAdmin} />
+  return (
+    <WebRoutesNetworkPage
+      editGamePort={editGamePort}
+      showTailscale={isPlatformAdmin}
+    />
+  )
 }
 
-function WebRoutesNetworkPage({ showTailscale }: { showTailscale: boolean }) {
+function WebRoutesNetworkPage({
+  editGamePort,
+  showTailscale,
+}: {
+  editGamePort: boolean
+  showTailscale: boolean
+}) {
   const instance = useInstanceIdentity()
   const permissions = useInstancePermissions()
   const relayConnected = useInstanceRelayConnected()
@@ -203,8 +217,10 @@ function WebRoutesNetworkPage({ showTailscale }: { showTailscale: boolean }) {
     <main className="min-h-0 flex-1 overflow-y-auto bg-background/55 p-4 sm:p-6">
       <div className="mx-auto max-w-4xl space-y-4">
         <ConfiguredRoutesSection
+          key={editGamePort ? "edit-game-port" : "network"}
           canRestart={permissions.power && relayConnected}
           canWrite={permissions.networkWrite}
+          editGamePort={editGamePort}
           instance={instance}
           relayConnected={relayConnected}
           routeError={routes.error ?? update.error}
@@ -235,6 +251,7 @@ type RouteDialogState =
 const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   canRestart,
   canWrite,
+  editGamePort,
   instance,
   relayConnected,
   routeError,
@@ -249,6 +266,7 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
 }: {
   canRestart: boolean
   canWrite: boolean
+  editGamePort: boolean
   instance: InstanceWorkspaceInstance
   relayConnected: boolean
   routeError: unknown
@@ -261,8 +279,28 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   onRemoveWebRoute: (routeId: string) => Promise<unknown>
   onRestart: () => void
 }) {
+  const navigate = useNavigate({ from: "/server/$serverId/network" })
   const queryClient = useQueryClient()
-  const [dialog, setDialog] = React.useState<RouteDialogState>(null)
+  const primaryPort = instance.ports.find(
+    (allocation) => allocation.kind === "primary"
+  )
+  const pendingPrimaryPort = primaryPort
+    ? undefined
+    : instance.pendingPrimaryPort
+  const [dialog, setDialog] = React.useState<RouteDialogState>(() =>
+    editGamePort && canWrite
+      ? primaryPort
+        ? { allocation: primaryPort, mode: "edit-port" }
+        : { mode: "recover-primary" }
+      : null
+  )
+  const clearEditGamePortIntent = React.useCallback(() => {
+    if (!editGamePort) return
+    void navigate({
+      replace: true,
+      search: (previous) => ({ ...previous, edit: undefined }),
+    })
+  }, [editGamePort, navigate])
   const update = useMutation({
     mutationFn: (ports: Array<RelayInstancePortInput>) =>
       updateInstancePorts({
@@ -278,6 +316,7 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
         (snapshot) => replaceRelaySnapshotInstance(snapshot, updated)
       )
       setDialog(null)
+      clearEditGamePortIntent()
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: queryKeys.relay.connection,
@@ -299,12 +338,6 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   })
   const disabled =
     !canWrite || !instance.managedByRelay || !relayConnected || update.isPending
-  const primaryPort = instance.ports.find(
-    (allocation) => allocation.kind === "primary"
-  )
-  const pendingPrimaryPort = primaryPort
-    ? undefined
-    : instance.pendingPrimaryPort
   const portInputs = React.useMemo(
     () =>
       instance.ports.map(({ id, internalPort, name, protocol }) => ({
@@ -457,7 +490,10 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
         }
         recoveringPrimary={dialog?.mode === "recover-primary"}
         onOpenChange={(open) => {
-          if (!open && !update.isPending) setDialog(null)
+          if (!open && !update.isPending) {
+            setDialog(null)
+            clearEditGamePortIntent()
+          }
         }}
         onSubmit={applyPort}
       />
