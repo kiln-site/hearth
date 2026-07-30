@@ -369,39 +369,31 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
         </div>
       </div>
 
-      {primaryPort ? (
-        <PrimaryPortSummary
-          allocation={primaryPort}
-          canWrite={canWrite}
-          disabled={disabled}
-          publicHost={instance.publicHost}
-          onEdit={editPort}
-        />
-      ) : null}
-
-      {hasAdditionalRoutes ? (
-        <ConfiguredRoutesTable
-          canWrite={canWrite}
-          disabled={disabled}
-          instance={instance}
-          canRestart={canRestart}
-          routePending={routePending}
-          routeState={routeState}
-          routes={routes}
-          restarting={restarting}
-          onEditPort={editPort}
-          onEditWebRoute={editWebRoute}
-          onRemovePort={removePort}
-          onRemoveWebRoute={removeWebRoute}
-          onRestart={onRestart}
-        />
-      ) : (
-        <div className="px-4 py-10 text-center">
-          <p className="text-xs text-muted-foreground">
-            No additional routes are configured for this server.
-          </p>
-        </div>
-      )}
+      <div className="overflow-x-auto">
+        {primaryPort || hasAdditionalRoutes ? (
+          <ConfiguredRoutesTable
+            canWrite={canWrite}
+            disabled={disabled}
+            instance={instance}
+            canRestart={canRestart}
+            routePending={routePending}
+            routeState={routeState}
+            routes={routes}
+            restarting={restarting}
+            onEditPort={editPort}
+            onEditWebRoute={editWebRoute}
+            onRemovePort={removePort}
+            onRemoveWebRoute={removeWebRoute}
+            onRestart={onRestart}
+          />
+        ) : (
+          <div className="px-4 py-10 text-center">
+            <p className="text-xs text-muted-foreground">
+              No additional routes are configured for this server.
+            </p>
+          </div>
+        )}
+      </div>
 
       {!relayConnected ? (
         <p className="border-t border-amber-400/20 bg-amber-400/5 px-4 py-2 text-[11px] text-amber-100/75">
@@ -447,73 +439,6 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   )
 })
 
-const PrimaryPortSummary = React.memo(function PrimaryPortSummary({
-  allocation,
-  canWrite,
-  disabled,
-  publicHost,
-  onEdit,
-}: {
-  allocation: RelayInstancePortAllocation
-  canWrite: boolean
-  disabled: boolean
-  publicHost: string | undefined
-  onEdit: (allocation: RelayInstancePortAllocation) => void
-}) {
-  const address = publicHost
-    ? formatHostPort(publicHost, allocation.externalPort)
-    : null
-
-  return (
-    <div className="border-b border-border/70 bg-background/25 px-4 py-3">
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
-        <div className="flex min-w-40 items-center gap-2.5">
-          <div className="grid size-7 shrink-0 place-items-center border border-emerald-400/25 bg-emerald-400/5 text-emerald-300">
-            <Cable className="size-3.5" />
-          </div>
-          <div>
-            <p className="text-xs font-medium">Game server port</p>
-            <p className="mt-0.5 font-mono text-[9px] text-muted-foreground uppercase">
-              {allocation.protocol}
-            </p>
-          </div>
-        </div>
-        <div className="flex min-w-0 flex-1 items-center gap-8">
-          <span className="w-20 shrink-0 font-mono text-sm text-foreground">
-            {allocation.internalPort}
-          </span>
-          <div className="min-w-0 flex-1">
-            <PublicAddressCopy
-              address={address}
-              label="game server public address"
-              prominent
-            />
-          </div>
-        </div>
-        {canWrite ? (
-          <div className="ml-auto flex shrink-0">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  aria-label="Edit game server port"
-                  disabled={disabled}
-                  onClick={() => onEdit(allocation)}
-                  size="icon-sm"
-                  type="button"
-                  variant="ghost"
-                >
-                  <Pencil />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Edit allocation</TooltipContent>
-            </Tooltip>
-          </div>
-        ) : null}
-      </div>
-    </div>
-  )
-})
-
 const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
   canRestart,
   canWrite,
@@ -543,184 +468,243 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
   onRemoveWebRoute: (route: RelayInstanceWebRoute) => void
   onRestart: () => void
 }) {
+  const primaryPort = instance.ports.find(
+    (allocation) => allocation.kind === "primary"
+  )
+  const hasAdditionalRoutes =
+    instance.ports.some((allocation) => allocation.kind !== "primary") ||
+    Boolean(routes?.length)
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[40rem] table-fixed border-collapse text-left">
-        <WorkspaceTableHead>
-          <WorkspaceTableHeading className="w-[27%]">
-            Name
-          </WorkspaceTableHeading>
-          <WorkspaceTableHeading className="w-[15%]">
-            Internal port
-          </WorkspaceTableHeading>
-          <WorkspaceTableHeading className="w-[15%]">
-            Public port
-          </WorkspaceTableHeading>
-          <WorkspaceTableHeading>Public address</WorkspaceTableHeading>
-          <WorkspaceTableHeading className="w-[6.5rem] text-right">
-            Actions
-          </WorkspaceTableHeading>
-        </WorkspaceTableHead>
-        <tbody className="divide-y divide-border/70">
-          {instance.ports.map((allocation) => {
-            if (allocation.kind === "primary") return null
-            const address = instance.publicHost
-              ? formatHostPort(instance.publicHost, allocation.externalPort)
-              : null
-            return (
-              <tr key={allocation.id} className="hover:bg-muted/10">
-                <WorkspaceTableCell>
-                  <div className="flex min-w-0 items-center gap-2.5">
-                    <RouteRowIcon kind="port" />
-                    <div className="min-w-0">
-                      <span className="block truncate text-xs font-medium">
-                        {allocation.name}
-                      </span>
-                      <span className="mt-0.5 block font-mono text-[9px] text-muted-foreground uppercase">
-                        {allocation.protocol}
-                      </span>
-                    </div>
+    <table className="w-full min-w-[40rem] table-fixed border-collapse text-left">
+      <WorkspaceTableHead>
+        <WorkspaceTableHeading className="w-[27%]">Name</WorkspaceTableHeading>
+        <WorkspaceTableHeading className="w-[15%]">
+          Internal port
+        </WorkspaceTableHeading>
+        <WorkspaceTableHeading>Public address</WorkspaceTableHeading>
+        <WorkspaceTableHeading className="w-[6.5rem] text-right">
+          Actions
+        </WorkspaceTableHeading>
+      </WorkspaceTableHead>
+      <tbody className="divide-y divide-border/70">
+        {primaryPort ? (
+          <tr className="bg-background/25 hover:bg-muted/10">
+            <WorkspaceTableCell>
+              <div className="flex min-w-0 items-center gap-2.5">
+                <RouteRowIcon kind="port" />
+                <div className="min-w-0">
+                  <span className="block truncate text-xs font-medium">
+                    Game server port
+                  </span>
+                  <span className="mt-0.5 block font-mono text-[9px] text-muted-foreground uppercase">
+                    {primaryPort.protocol}
+                  </span>
+                </div>
+              </div>
+            </WorkspaceTableCell>
+            <WorkspaceTableCell>
+              <span className="font-mono text-xs text-foreground">
+                {primaryPort.internalPort}
+              </span>
+            </WorkspaceTableCell>
+            <WorkspaceTableCell>
+              <PublicAddressCopy
+                address={
+                  instance.publicHost
+                    ? formatHostPort(
+                        instance.publicHost,
+                        primaryPort.externalPort
+                      )
+                    : null
+                }
+                label="game server public address"
+                prominent
+              />
+            </WorkspaceTableCell>
+            <WorkspaceTableCell className="px-2">
+              <div className="flex justify-end">
+                {canWrite ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        aria-label="Edit game server port"
+                        disabled={disabled}
+                        onClick={() => onEditPort(primaryPort)}
+                        size="icon-sm"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Pencil />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Edit allocation</TooltipContent>
+                  </Tooltip>
+                ) : null}
+              </div>
+            </WorkspaceTableCell>
+          </tr>
+        ) : null}
+        {primaryPort && hasAdditionalRoutes ? (
+          <tr aria-hidden="true">
+            <td
+              className="h-2 border-y border-border/70 bg-muted/15 p-0"
+              colSpan={4}
+            />
+          </tr>
+        ) : null}
+        {instance.ports.map((allocation) => {
+          if (allocation.kind === "primary") return null
+          const address = instance.publicHost
+            ? formatHostPort(instance.publicHost, allocation.externalPort)
+            : null
+          return (
+            <tr key={allocation.id} className="hover:bg-muted/10">
+              <WorkspaceTableCell>
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <RouteRowIcon kind="port" />
+                  <div className="min-w-0">
+                    <span className="block truncate text-xs font-medium">
+                      {allocation.name}
+                    </span>
+                    <span className="mt-0.5 block font-mono text-[9px] text-muted-foreground uppercase">
+                      {allocation.protocol}
+                    </span>
                   </div>
-                </WorkspaceTableCell>
-                <WorkspaceTableCell>
-                  <span className="font-mono text-xs text-foreground">
-                    {allocation.internalPort}
-                  </span>
-                </WorkspaceTableCell>
-                <WorkspaceTableCell>
-                  <span className="font-mono text-xs text-foreground">
-                    {allocation.externalPort}
-                  </span>
-                </WorkspaceTableCell>
-                <WorkspaceTableCell>
-                  <PublicAddressCopy
-                    address={address}
-                    label={`${allocation.name} public address`}
+                </div>
+              </WorkspaceTableCell>
+              <WorkspaceTableCell>
+                <span className="font-mono text-xs text-foreground">
+                  {allocation.internalPort}
+                </span>
+              </WorkspaceTableCell>
+              <WorkspaceTableCell>
+                <PublicAddressCopy
+                  address={address}
+                  label={`${allocation.name} public address`}
+                  prominent
+                />
+              </WorkspaceTableCell>
+              <WorkspaceTableCell className="px-2">
+                <div className="flex justify-end gap-0.5">
+                  {canWrite ? (
+                    <>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            aria-label={`Edit ${allocation.name}`}
+                            disabled={disabled}
+                            onClick={() => onEditPort(allocation)}
+                            size="icon-sm"
+                            type="button"
+                            variant="ghost"
+                          >
+                            <Pencil />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Edit allocation</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            aria-label={`Remove ${allocation.name}`}
+                            disabled={disabled}
+                            onClick={() => onRemovePort(allocation)}
+                            size="icon-sm"
+                            type="button"
+                            variant="ghost"
+                          >
+                            <Trash2 />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Remove allocation</TooltipContent>
+                      </Tooltip>
+                    </>
+                  ) : null}
+                </div>
+              </WorkspaceTableCell>
+            </tr>
+          )
+        })}
+        {routes?.map((route) => {
+          const publicUrl = `https://${route.hostname}${route.path ?? ""}`
+          return (
+            <tr key={`web-${route.id}`} className="hover:bg-muted/10">
+              <WorkspaceTableCell>
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <RouteRowIcon
+                    canRestart={canRestart}
+                    kind="web"
+                    restarting={restarting}
+                    state={routeState}
+                    onRestart={onRestart}
                   />
-                </WorkspaceTableCell>
-                <WorkspaceTableCell className="px-2">
-                  <div className="flex justify-end gap-0.5">
-                    {canWrite ? (
-                      <>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              aria-label={`Edit ${allocation.name}`}
-                              disabled={disabled}
-                              onClick={() => onEditPort(allocation)}
-                              size="icon-sm"
-                              type="button"
-                              variant="ghost"
-                            >
-                              <Pencil />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Edit allocation</TooltipContent>
-                        </Tooltip>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              aria-label={`Remove ${allocation.name}`}
-                              disabled={disabled}
-                              onClick={() => onRemovePort(allocation)}
-                              size="icon-sm"
-                              type="button"
-                              variant="ghost"
-                            >
-                              <Trash2 />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Remove allocation</TooltipContent>
-                        </Tooltip>
-                      </>
-                    ) : null}
+                  <div className="min-w-0">
+                    <span className="block truncate text-xs font-medium">
+                      {route.hostname}
+                    </span>
+                    <span className="mt-0.5 block truncate font-mono text-[9px] text-muted-foreground">
+                      <span className="uppercase">HTTPS</span>
+                      {route.path ? ` · ${route.path}` : ""}
+                    </span>
                   </div>
-                </WorkspaceTableCell>
-              </tr>
-            )
-          })}
-          {routes?.map((route) => {
-            const publicUrl = `https://${route.hostname}${route.path ?? ""}`
-            return (
-              <tr key={`web-${route.id}`} className="hover:bg-muted/10">
-                <WorkspaceTableCell>
-                  <div className="flex min-w-0 items-center gap-2.5">
-                    <RouteRowIcon
-                      canRestart={canRestart}
-                      kind="web"
-                      restarting={restarting}
-                      state={routeState}
-                      onRestart={onRestart}
-                    />
-                    <div className="min-w-0">
-                      <span className="block truncate text-xs font-medium">
-                        {route.hostname}
-                      </span>
-                      <span className="mt-0.5 block truncate font-mono text-[9px] text-muted-foreground">
-                        <span className="uppercase">HTTPS</span>
-                        {route.path ? ` · ${route.path}` : ""}
-                      </span>
-                    </div>
-                  </div>
-                </WorkspaceTableCell>
-                <WorkspaceTableCell>
-                  <span className="font-mono text-xs text-foreground">
-                    {route.targetPort}
-                  </span>
-                </WorkspaceTableCell>
-                <WorkspaceTableCell>
-                  <span className="font-mono text-xs text-foreground">443</span>
-                </WorkspaceTableCell>
-                <WorkspaceTableCell>
-                  <PublicAddressCopy
-                    address={publicUrl}
-                    label={`${route.hostname} web route`}
-                  />
-                </WorkspaceTableCell>
-                <WorkspaceTableCell className="px-2">
-                  <div className="flex justify-end gap-0.5">
-                    {canWrite ? (
-                      <>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              aria-label={`Edit ${publicUrl}`}
-                              disabled={disabled || routePending}
-                              onClick={() => onEditWebRoute(route)}
-                              size="icon-sm"
-                              type="button"
-                              variant="ghost"
-                            >
-                              <Pencil />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Edit web route</TooltipContent>
-                        </Tooltip>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              aria-label={`Remove ${publicUrl}`}
-                              disabled={disabled || routePending}
-                              onClick={() => onRemoveWebRoute(route)}
-                              size="icon-sm"
-                              type="button"
-                              variant="ghost"
-                            >
-                              <Trash2 />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Remove web route</TooltipContent>
-                        </Tooltip>
-                      </>
-                    ) : null}
-                  </div>
-                </WorkspaceTableCell>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
+                </div>
+              </WorkspaceTableCell>
+              <WorkspaceTableCell>
+                <span className="font-mono text-xs text-foreground">
+                  {route.targetPort}
+                </span>
+              </WorkspaceTableCell>
+              <WorkspaceTableCell>
+                <PublicAddressCopy
+                  address={publicUrl}
+                  label={`${route.hostname} web route`}
+                  prominent
+                />
+              </WorkspaceTableCell>
+              <WorkspaceTableCell className="px-2">
+                <div className="flex justify-end gap-0.5">
+                  {canWrite ? (
+                    <>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            aria-label={`Edit ${publicUrl}`}
+                            disabled={disabled || routePending}
+                            onClick={() => onEditWebRoute(route)}
+                            size="icon-sm"
+                            type="button"
+                            variant="ghost"
+                          >
+                            <Pencil />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Edit web route</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            aria-label={`Remove ${publicUrl}`}
+                            disabled={disabled || routePending}
+                            onClick={() => onRemoveWebRoute(route)}
+                            size="icon-sm"
+                            type="button"
+                            variant="ghost"
+                          >
+                            <Trash2 />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Remove web route</TooltipContent>
+                      </Tooltip>
+                    </>
+                  ) : null}
+                </div>
+              </WorkspaceTableCell>
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
   )
 })
 
