@@ -994,15 +994,7 @@ function RemoveNetworkRouteDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <p className="font-mono text-[9px] tracking-[0.16em] text-destructive uppercase">
-            Network route
-          </p>
-          <DialogTitle>Remove Route</DialogTitle>
-          <DialogDescription>
-            {removal.kind === "port"
-              ? "Its public port will be released and will stop accepting connections."
-              : "This hostname will stop forwarding traffic to the server."}
-          </DialogDescription>
+          <DialogTitle className="text-destructive">Remove Route</DialogTitle>
         </DialogHeader>
         <div className="border border-border bg-muted/20 px-3 py-2.5">
           <span className="block truncate text-sm font-medium text-foreground">
