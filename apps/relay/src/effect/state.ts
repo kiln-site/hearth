@@ -1,7 +1,11 @@
 import { SqliteClient, SqliteMigrator } from "@effect/sql-sqlite-node"
 import { Context, Effect, Layer, Schema } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
-import type { RelayInstanceWebRoute } from "@workspace/contracts"
+import type {
+  RelayInstancePendingPrimaryPort,
+  RelayInstancePortProtocol,
+  RelayInstanceWebRoute,
+} from "@workspace/contracts"
 
 import { RelayStateError } from "./errors.js"
 
@@ -74,6 +78,10 @@ export interface RelayStoredInstanceName {
   readonly name: string
 }
 
+export interface RelayStoredPendingPrimaryPort extends RelayInstancePendingPrimaryPort {
+  readonly instanceId: string
+}
+
 const RelayClientRoleSchema = Schema.Literals([
   "custom",
   "full_access",
@@ -125,6 +133,14 @@ const RelayWebRouteRowSchema = Schema.Struct({
   targetPort: Schema.Number,
 })
 
+const RelayInstancePortProtocolSchema = Schema.Literals(["tcp", "udp", "both"])
+
+const RelayPendingPrimaryPortRowSchema = Schema.Struct({
+  instanceId: Schema.String,
+  internalPort: Schema.Number,
+  protocol: RelayInstancePortProtocolSchema,
+})
+
 export class RelayStateStore extends Context.Service<
   RelayStateStore,
   {
@@ -164,6 +180,13 @@ export class RelayStateStore extends Context.Service<
       ReadonlyArray<RelayStoredInstanceName>,
       RelayStateError
     >
+    readonly getPendingPrimaryPort: (
+      instanceId: string
+    ) => Effect.Effect<RelayStoredPendingPrimaryPort | null, RelayStateError>
+    readonly listPendingPrimaryPorts: () => Effect.Effect<
+      ReadonlyArray<RelayStoredPendingPrimaryPort>,
+      RelayStateError
+    >
     readonly listInstanceRoutes: (
       instanceId: string
     ) => Effect.Effect<ReadonlyArray<RelayInstanceWebRoute>, RelayStateError>
@@ -192,6 +215,16 @@ export class RelayStateStore extends Context.Service<
     ) => Effect.Effect<void, RelayStateError>
     readonly deleteInstanceName: (
       instanceId: string
+    ) => Effect.Effect<void, RelayStateError>
+    readonly deletePendingPrimaryPort: (
+      instanceId: string
+    ) => Effect.Effect<void, RelayStateError>
+    readonly setPendingPrimaryPort: (
+      instanceId: string,
+      port: {
+        readonly internalPort: number
+        readonly protocol: RelayInstancePortProtocol
+      }
     ) => Effect.Effect<void, RelayStateError>
     readonly replaceInstanceRoutes: (
       instanceId: string,
@@ -296,6 +329,18 @@ const migrations = SqliteMigrator.fromRecord({
       ) STRICT
     `
   }),
+  "2_pending_primary_ports": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`
+      CREATE TABLE relay_pending_primary_ports (
+        instance_id TEXT PRIMARY KEY NOT NULL,
+        internal_port INTEGER NOT NULL
+          CHECK (internal_port BETWEEN 1 AND 65535),
+        protocol TEXT NOT NULL CHECK (protocol IN ('tcp', 'udp', 'both')),
+        updated_at INTEGER NOT NULL
+      ) STRICT
+    `
+  }),
 })
 
 const makeRelayStateStore = Effect.gen(function* () {
@@ -316,6 +361,43 @@ const makeRelayStateStore = Effect.gen(function* () {
   )
   const decodeWebRouteRows = Schema.decodeUnknownEffect(
     Schema.Array(RelayWebRouteRowSchema)
+  )
+  const decodePendingPrimaryPortRows = Schema.decodeUnknownEffect(
+    Schema.Array(RelayPendingPrimaryPortRowSchema)
+  )
+
+  const pendingPrimaryPorts = Effect.fn("RelayStateStore.pendingPrimaryPorts")(
+    function* (instanceId?: string) {
+      const rows = instanceId
+        ? yield* sql<Record<string, unknown>>`
+          SELECT
+            instance_id AS instanceId,
+            internal_port AS internalPort,
+            protocol
+          FROM relay_pending_primary_ports
+          WHERE instance_id = ${instanceId}
+          LIMIT 1
+        `
+        : yield* sql<Record<string, unknown>>`
+          SELECT
+            instance_id AS instanceId,
+            internal_port AS internalPort,
+            protocol
+          FROM relay_pending_primary_ports
+          ORDER BY instance_id ASC
+        `
+      const decoded = yield* decodePendingPrimaryPortRows(rows)
+      return decoded.map(
+        (row) =>
+          ({
+            id: "primary",
+            instanceId: row.instanceId,
+            internalPort: row.internalPort,
+            name: "Game server port",
+            protocol: row.protocol,
+          }) satisfies RelayStoredPendingPrimaryPort
+      )
+    }
   )
 
   const webRoutes = Effect.fn("RelayStateStore.webRoutes")(function* (
@@ -654,6 +736,15 @@ const makeRelayStateStore = Effect.gen(function* () {
           ORDER BY instance_id ASC
         `
       ),
+    getPendingPrimaryPort: (instanceId) =>
+      run(
+        "get_pending_primary_port",
+        pendingPrimaryPorts(instanceId).pipe(
+          Effect.map((ports) => ports[0] ?? null)
+        )
+      ),
+    listPendingPrimaryPorts: () =>
+      run("list_pending_primary_ports", pendingPrimaryPorts()),
     listInstanceRoutes: (instanceId) =>
       run(
         "list_instance_routes",
@@ -813,6 +904,35 @@ const makeRelayStateStore = Effect.gen(function* () {
         "delete_instance_name",
         sql`
           DELETE FROM relay_instance_names WHERE instance_id = ${instanceId}
+        `.pipe(Effect.asVoid)
+      ),
+    deletePendingPrimaryPort: (instanceId) =>
+      run(
+        "delete_pending_primary_port",
+        sql`
+          DELETE FROM relay_pending_primary_ports
+          WHERE instance_id = ${instanceId}
+        `.pipe(Effect.asVoid)
+      ),
+    setPendingPrimaryPort: (instanceId, port) =>
+      run(
+        "set_pending_primary_port",
+        sql`
+          INSERT INTO relay_pending_primary_ports (
+            instance_id,
+            internal_port,
+            protocol,
+            updated_at
+          ) VALUES (
+            ${instanceId},
+            ${port.internalPort},
+            ${port.protocol},
+            ${Date.now()}
+          )
+          ON CONFLICT (instance_id) DO UPDATE SET
+            internal_port = excluded.internal_port,
+            protocol = excluded.protocol,
+            updated_at = excluded.updated_at
         `.pipe(Effect.asVoid)
       ),
     replaceInstanceRoutes: (instanceId, routes) =>

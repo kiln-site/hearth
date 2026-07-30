@@ -63,7 +63,11 @@ import {
   runRelayEffect,
 } from "./effect/runtime.js"
 import { RelayStateStore } from "./effect/state.js"
-import type { RelayClientGrant, RelayClientRole } from "./effect/state.js"
+import type {
+  RelayClientGrant,
+  RelayClientRole,
+  RelayStoredPendingPrimaryPort,
+} from "./effect/state.js"
 import { loadRelayTls } from "./effect/tls.js"
 import { applyStoredInstanceNames } from "./instance-names.js"
 import { normalizedRoute } from "./route-label.js"
@@ -612,17 +616,26 @@ async function shutdownRelay(signal: NodeJS.Signals): Promise<void> {
 }
 
 async function relaySnapshot() {
-  const [node, instances, storedNames] = await Promise.all([
-    nodeSnapshot(config, docker),
-    docker.inspectInstances(),
-    runRelayEffect(
-      "relay.snapshot.instanceNames",
-      startup.state.listInstanceNames()
-    ),
-  ])
+  const [node, instances, storedNames, pendingPrimaryPorts] = await Promise.all(
+    [
+      nodeSnapshot(config, docker),
+      docker.inspectInstances(),
+      runRelayEffect(
+        "relay.snapshot.instanceNames",
+        startup.state.listInstanceNames()
+      ),
+      runRelayEffect(
+        "relay.snapshot.pendingPrimaryPorts",
+        startup.state.listPendingPrimaryPorts()
+      ),
+    ]
+  )
   return {
     node,
-    instances: applyStoredInstanceNames(instances, storedNames),
+    instances: applyStoredPendingPrimaryPorts(
+      applyStoredInstanceNames(instances, storedNames),
+      pendingPrimaryPorts
+    ),
     relay: {
       id: relayIdentity.fingerprint,
       name: relayIdentity.name,
@@ -931,6 +944,10 @@ async function executeControlRequest(
         "relay.instance.deleteName",
         startup.state.deleteInstanceName(instanceId)
       )
+      await runRelayEffect(
+        "relay.instance.deletePendingPrimaryPort",
+        startup.state.deletePendingPrimaryPort(instanceId)
+      )
       await serializeWebRouteMutation(async () => {
         await runRelayEffect(
           "relay.network.routes.deleteInstance",
@@ -950,11 +967,33 @@ async function executeControlRequest(
       const input = relayInstanceActionSchema.parse(payload)
       const runAction = () =>
         serializeInstanceMutation(instance.id, async () => {
-          const routes = await runRelayEffect(
-            "relay.network.routes.forAction",
-            startup.state.listInstanceRoutes(instance.id)
+          const [routes, pendingPrimaryPort] = await Promise.all([
+            runRelayEffect(
+              "relay.network.routes.forAction",
+              startup.state.listInstanceRoutes(instance.id)
+            ),
+            runRelayEffect(
+              "relay.instance.pendingPrimaryPort.forAction",
+              startup.state.getPendingPrimaryPort(instance.id)
+            ),
+          ])
+          const updated = await lifecycle.runInstanceAction(
+            instance,
+            input.action,
+            routes,
+            pendingPrimaryPort
           )
-          return lifecycle.runInstanceAction(instance, input.action, routes)
+          if (
+            pendingPrimaryPort &&
+            (input.action === "start" || input.action === "restart") &&
+            updated.ports.some((allocation) => allocation.kind === "primary")
+          ) {
+            await runRelayEffect(
+              "relay.instance.pendingPrimaryPort.applied",
+              startup.state.deletePendingPrimaryPort(instance.id)
+            )
+          }
+          return updated
         })
       const updated =
         input.action === "start" || input.action === "restart"
@@ -1022,9 +1061,28 @@ async function executeControlRequest(
           "relay.network.ports.routes",
           startup.state.listInstanceRoutes(instance.id)
         )
-        return serializeInstanceMutation(instance.id, () =>
-          lifecycle.updateInstancePorts(instance.id, ports, routes)
-        )
+        return serializeInstanceMutation(instance.id, async () => {
+          const updated = await lifecycle.updateInstancePorts(
+            instance.id,
+            ports,
+            routes
+          )
+          if (updated.pendingPrimaryPort) {
+            await runRelayEffect(
+              "relay.instance.pendingPrimaryPort.set",
+              startup.state.setPendingPrimaryPort(
+                instance.id,
+                updated.pendingPrimaryPort
+              )
+            )
+          } else {
+            await runRelayEffect(
+              "relay.instance.pendingPrimaryPort.clear",
+              startup.state.deletePendingPrimaryPort(instance.id)
+            )
+          }
+          return relayInstanceWithStoredName(updated)
+        })
       })
     }
     case "instance.network.routes.read": {
@@ -1189,11 +1247,35 @@ async function requiredInstance(payload: Readonly<Record<string, unknown>>) {
 }
 
 async function relayInstanceWithStoredName(instance: RelayInstance) {
-  const names = await runRelayEffect(
-    "relay.instance.name",
-    startup.state.listInstanceNames()
+  const [names, pendingPrimaryPorts] = await Promise.all([
+    runRelayEffect("relay.instance.name", startup.state.listInstanceNames()),
+    runRelayEffect(
+      "relay.instance.pendingPrimaryPort",
+      startup.state.listPendingPrimaryPorts()
+    ),
+  ])
+  return (
+    applyStoredPendingPrimaryPorts(
+      applyStoredInstanceNames([instance], names),
+      pendingPrimaryPorts
+    )[0] ?? instance
   )
-  return applyStoredInstanceNames([instance], names)[0] ?? instance
+}
+
+function applyStoredPendingPrimaryPorts(
+  instances: ReadonlyArray<RelayInstance>,
+  pendingPrimaryPorts: ReadonlyArray<RelayStoredPendingPrimaryPort>
+): Array<RelayInstance> {
+  const pendingByInstanceId = new Map(
+    pendingPrimaryPorts.map(({ instanceId, ...port }) => [instanceId, port])
+  )
+  return instances.map((instance) => {
+    if (instance.ports.some((allocation) => allocation.kind === "primary")) {
+      return instance
+    }
+    const pendingPrimaryPort = pendingByInstanceId.get(instance.id)
+    return pendingPrimaryPort ? { ...instance, pendingPrimaryPort } : instance
+  })
 }
 
 async function serializeInstanceMutation<T>(

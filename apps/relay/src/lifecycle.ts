@@ -19,6 +19,7 @@ import { directoryApparentSize } from "./disk-usage.js"
 import type {
   RelayCreateInstance,
   RelayInstance,
+  RelayInstancePendingPrimaryPort,
   RelayInstancePortAllocation,
   RelayInstancePortInput,
   RelayInstanceTailscale,
@@ -1235,7 +1236,8 @@ export class LifecycleDriver {
   async runInstanceAction(
     instance: RelayInstanceConfig,
     action: "start" | "stop" | "restart" | "kill",
-    routes: ReadonlyArray<RelayInstanceWebRoute>
+    routes: ReadonlyArray<RelayInstanceWebRoute>,
+    pendingPrimaryPort: RelayInstancePendingPrimaryPort | null = null
   ): Promise<RelayInstance> {
     if (instance.brickId === builtinTailscaleBrickId) {
       if (action === "start" || action === "restart") {
@@ -1278,43 +1280,91 @@ export class LifecycleDriver {
       instance.managedByRelay &&
       (action === "start" || action === "restart")
     ) {
-      const desiredLabels = this.#containerWebRouteLabels(routes, settings)
-      const labels = await containerLabels(instance.service)
-      const primary = instance.ports.find(
+      const hasPrimary = instance.ports.some(
         (allocation) => allocation.kind === "primary"
       )
-      const desiredPortLabels = primary
-        ? portAllocationContainerLabels(instance.ports)
+      const inspected = pendingPrimaryPort
+        ? await this.#docker.inspectInstances()
         : null
-      const portConfiguration =
-        primary && desiredPortLabels
-          ? {
-              bindings: dockerPortBindingsForAllocations(instance.ports),
-              labels: {
-                ...desiredPortLabels,
-                "kiln.traefik.service.port": String(primary.internalPort),
-              },
-            }
-          : undefined
-      if (
-        routeLabelsRequireRestart(labels, routes, desiredLabels) ||
-        (desiredPortLabels &&
-          portLabelsRequireRestart(labels, desiredPortLabels))
-      ) {
-        const usesExternalEdge =
-          settings.mode === "none" || settings.mode === "coolify"
-        if (usesExternalEdge && routes.length > 0) {
-          await this.#ensureEdgeNetwork()
-        }
-        return this.#docker.recreateOwnedInstance(
-          instance,
-          desiredLabels,
-          usesExternalEdge && routes.length > 0
-            ? this.#resources.edgeNetwork
-            : null,
-          action,
-          portConfiguration
+      const pendingExternalPort =
+        pendingPrimaryPort && !hasPrimary && inspected
+          ? await this.#reserveGamePort(
+              instance.id,
+              pendingPrimaryPort.protocol,
+              inspected
+            )
+          : null
+      try {
+        const allocations =
+          pendingPrimaryPort && pendingExternalPort
+            ? [
+                {
+                  externalPort: pendingExternalPort,
+                  id: "primary" as const,
+                  internalPort: pendingPrimaryPort.internalPort,
+                  kind: "primary" as const,
+                  name: "Game server port",
+                  protocol: pendingPrimaryPort.protocol,
+                },
+                ...instance.ports,
+              ]
+            : instance.ports
+        const desiredLabels = this.#containerWebRouteLabels(routes, settings)
+        const labels = await containerLabels(instance.service)
+        const primary = allocations.find(
+          (allocation) => allocation.kind === "primary"
         )
+        const desiredPortLabels = primary
+          ? portAllocationContainerLabels(allocations)
+          : null
+        const portConfiguration =
+          primary && desiredPortLabels
+            ? {
+                bindings: dockerPortBindingsForAllocations(allocations),
+                labels: {
+                  ...desiredPortLabels,
+                  "kiln.traefik.service.port": String(primary.internalPort),
+                },
+              }
+            : undefined
+        if (
+          pendingExternalPort ||
+          routeLabelsRequireRestart(labels, routes, desiredLabels) ||
+          (desiredPortLabels &&
+            portLabelsRequireRestart(labels, desiredPortLabels))
+        ) {
+          const usesExternalEdge =
+            settings.mode === "none" || settings.mode === "coolify"
+          if (usesExternalEdge && routes.length > 0) {
+            await this.#ensureEdgeNetwork()
+          }
+          const updated = await this.#docker.recreateOwnedInstance(
+            instance,
+            desiredLabels,
+            usesExternalEdge && routes.length > 0
+              ? this.#resources.edgeNetwork
+              : null,
+            action,
+            portConfiguration
+          )
+          if (pendingExternalPort) {
+            const networking = await this.networking()
+            if (networking?.enabled) {
+              await this.#refreshCoreDnsConfiguration(networking)
+            }
+            await this.#refreshTailscaleDns()
+            if (updated.brickNetworkMode === "minecraft-backend") {
+              await this.#refreshVelocityConfigurations(networking)
+            }
+          }
+          return updated
+        }
+      } finally {
+        if (pendingPrimaryPort && pendingExternalPort) {
+          for (const protocol of portProtocols(pendingPrimaryPort.protocol)) {
+            this.#pendingGamePorts.delete(`${protocol}:${pendingExternalPort}`)
+          }
+        }
       }
     }
     return this.#docker.runAction(instance, action)
@@ -1365,6 +1415,36 @@ export class LifecycleDriver {
     for (const allocation of systemAllocations) {
       if (!requested.some((input) => input.id === allocation.id)) {
         throw new Error(`${allocation.name} is required by this server`)
+      }
+    }
+    if (!hasPrimary && primaryInput && instance.desiredState === "running") {
+      const unchangedExistingPorts = requested
+        .filter((input) => input.id !== "primary")
+        .every((input) => {
+          const existing = input.id ? existingById.get(input.id) : undefined
+          return (
+            existing !== undefined &&
+            existing.internalPort === input.internalPort &&
+            existing.name === input.name &&
+            existing.protocol === input.protocol
+          )
+        })
+      if (
+        requested.length !== instance.ports.length + 1 ||
+        !unchangedExistingPorts
+      ) {
+        throw new Error(
+          "Assign the game server port separately before changing other ports."
+        )
+      }
+      return {
+        ...instance,
+        pendingPrimaryPort: {
+          id: "primary",
+          internalPort: primaryInput.internalPort,
+          name: "Game server port",
+          protocol: primaryInput.protocol,
+        },
       }
     }
 
@@ -1510,9 +1590,7 @@ export class LifecycleDriver {
         "Configure this Tailscale network from Infrastructure → Tailscale"
       )
     }
-    if (
-      !existing.ports.some((allocation) => allocation.kind === "primary")
-    ) {
+    if (!existing.ports.some((allocation) => allocation.kind === "primary")) {
       throw new Error(
         "This server does not have a recoverable primary port. Recreate it before changing startup settings."
       )

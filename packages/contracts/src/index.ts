@@ -650,6 +650,11 @@ export const relayInstancePortInputSchema =
     id: relayInstancePortIdSchema.optional(),
   })
 
+export const relayInstancePendingPrimaryPortSchema =
+  relayInstancePortConfigurationSchema.extend({
+    id: z.literal("primary"),
+  })
+
 export const relayInstancePortMetadataSchema =
   relayInstancePortConfigurationSchema.extend({
     id: relayInstancePortIdSchema,
@@ -754,6 +759,7 @@ export const relayInstanceSchema = z.object({
   brickSource: brickSourceSchema.optional(),
   publicHost: z.string().min(1).max(253).optional(),
   publicPort: z.number().int().min(1).max(65_535).optional(),
+  pendingPrimaryPort: relayInstancePendingPrimaryPortSchema.optional(),
   ports: relayInstancePortAllocationsSchema.or(z.tuple([])).default([]),
   tailscale: relayInstanceTailscaleSchema.default({ enabled: false }),
   variables: brickVariableValuesSchema.optional(),
@@ -1122,6 +1128,9 @@ export type RelayInstanceResources = z.infer<
 export type RelayInstanceLimits = z.infer<typeof relayInstanceLimitsSchema>
 export type RelayInstancePortInput = z.infer<
   typeof relayInstancePortInputSchema
+>
+export type RelayInstancePendingPrimaryPort = z.infer<
+  typeof relayInstancePendingPrimaryPortSchema
 >
 export type RelayInstancePortProtocol = z.infer<
   typeof relayInstancePortProtocolSchema

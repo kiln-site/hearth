@@ -23,6 +23,7 @@ import {
   relayInstanceWebRouteInputSchema,
 } from "@workspace/contracts"
 import type {
+  RelayInstancePendingPrimaryPort,
   RelayInstancePortAllocation,
   RelayInstancePortInput,
   RelayInstanceWebRoute,
@@ -142,8 +143,17 @@ function WebRoutesNetworkPage({ showTailscale }: { showTailscale: boolean }) {
           relayId: instance.relayId,
         },
       }),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey })
+    onSuccess: async (updated) => {
+      queryClient.setQueryData<RelayFleetSnapshot>(
+        queryKeys.relay.snapshot,
+        (snapshot) => replaceRelaySnapshotInstance(snapshot, updated)
+      )
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.relay.snapshot,
+        }),
+      ])
     },
   })
   const restartPendingRoutes = React.useCallback(() => {
@@ -276,7 +286,15 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
           queryKey: queryKeys.relay.snapshot,
         }),
       ])
-      showToast({ message: "Port allocations updated", type: "success" })
+      showToast({
+        description: updated.pendingPrimaryPort
+          ? "Restart the server when you are ready to apply it."
+          : undefined,
+        message: updated.pendingPrimaryPort
+          ? "Game server port saved"
+          : "Port allocations updated",
+        type: "success",
+      })
     },
   })
   const disabled =
@@ -284,6 +302,9 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   const primaryPort = instance.ports.find(
     (allocation) => allocation.kind === "primary"
   )
+  const pendingPrimaryPort = primaryPort
+    ? undefined
+    : instance.pendingPrimaryPort
   const portInputs = React.useMemo(
     () =>
       instance.ports.map(({ id, internalPort, name, protocol }) => ({
@@ -429,6 +450,11 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
           dialog?.mode === "edit-port" || dialog?.mode === "recover-primary"
         }
         pending={update.isPending}
+        pendingPrimaryPort={
+          dialog?.mode === "recover-primary"
+            ? (pendingPrimaryPort ?? null)
+            : null
+        }
         recoveringPrimary={dialog?.mode === "recover-primary"}
         onOpenChange={(open) => {
           if (!open && !update.isPending) setDialog(null)
@@ -473,6 +499,10 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
   const primaryPort = instance.ports.find(
     (allocation) => allocation.kind === "primary"
   )
+  const pendingPrimaryPort = primaryPort
+    ? undefined
+    : instance.pendingPrimaryPort
+  const displayedPrimaryPort = primaryPort ?? pendingPrimaryPort
   const hasAdditionalRoutes =
     instance.ports.some((allocation) => allocation.kind !== "primary") ||
     Boolean(routes?.length)
@@ -494,18 +524,28 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
           className={
             primaryPort
               ? "bg-primary/[0.04] hover:bg-primary/[0.065]"
-              : "bg-destructive/[0.035] hover:bg-destructive/[0.055]"
+              : pendingPrimaryPort
+                ? "bg-amber-400/[0.035] hover:bg-amber-400/[0.055]"
+                : "bg-destructive/[0.035] hover:bg-destructive/[0.055]"
           }
         >
           <WorkspaceTableCell>
             <div className="flex min-w-0 items-center gap-2.5">
               <RouteRowIcon
+                canRestart={canRestart}
                 errorMessage={
-                  primaryPort
+                  displayedPrimaryPort
                     ? undefined
                     : "Edit the game server port to assign its internal port and protocol."
                 }
                 kind="port"
+                pendingMessage={
+                  pendingPrimaryPort
+                    ? "Restart this server when you are ready to apply its game server port."
+                    : undefined
+                }
+                restarting={restarting}
+                onRestart={onRestart}
               />
               <div className="min-w-0">
                 <div className="flex min-w-0 items-center gap-2">
@@ -517,21 +557,24 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
                   </span>
                 </div>
                 <span className="mt-0.5 block font-mono text-[9px] text-muted-foreground uppercase">
-                  {primaryPort?.protocol ?? "Not configured"}
+                  {displayedPrimaryPort?.protocol ?? "Not configured"}
                 </span>
               </div>
             </div>
           </WorkspaceTableCell>
           <WorkspaceTableCell>
             <span className="font-mono text-xs text-foreground">
-              {primaryPort?.internalPort ?? "—"}
+              {displayedPrimaryPort?.internalPort ?? "—"}
             </span>
           </WorkspaceTableCell>
           <WorkspaceTableCell>
             <PublicAddressCopy
               address={
                 instance.publicHost && primaryPort
-                  ? formatHostPort(instance.publicHost, primaryPort.externalPort)
+                  ? formatHostPort(
+                      instance.publicHost,
+                      primaryPort.externalPort
+                    )
                   : null
               }
               label="game server public address"
@@ -558,7 +601,11 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>
-                    {primaryPort ? "Edit allocation" : "Assign game server port"}
+                    {primaryPort
+                      ? "Edit allocation"
+                      : pendingPrimaryPort
+                        ? "Edit pending game server port"
+                        : "Assign game server port"}
                   </TooltipContent>
                 </Tooltip>
               ) : null}
@@ -734,6 +781,7 @@ const RouteRowIcon = React.memo(function RouteRowIcon({
   canRestart = false,
   errorMessage,
   kind,
+  pendingMessage,
   restarting = false,
   state,
   onRestart,
@@ -741,11 +789,13 @@ const RouteRowIcon = React.memo(function RouteRowIcon({
   canRestart?: boolean
   errorMessage?: string
   kind: "port" | "web"
+  pendingMessage?: string
   restarting?: boolean
   state?: RelayInstanceWebRouteState
   onRestart?: () => void
 }) {
-  const pending = state?.status === "pending_restart"
+  const pending =
+    pendingMessage !== undefined || state?.status === "pending_restart"
   const blocked = state?.status === "blocked" || errorMessage !== undefined
   const Icon = kind === "web" ? Globe2 : Cable
 
@@ -763,7 +813,7 @@ const RouteRowIcon = React.memo(function RouteRowIcon({
         <button
           aria-label={
             pending
-              ? "View route restart warning"
+              ? "View game server port restart warning"
               : errorMessage
                 ? "View game server port error"
                 : "View route error"
@@ -779,6 +829,15 @@ const RouteRowIcon = React.memo(function RouteRowIcon({
                 description: errorMessage,
                 message: "Game server port is not configured",
                 type: "error",
+              })
+              return
+            }
+            if (pendingMessage) {
+              showPendingRestartToast({
+                canRestart,
+                message: pendingMessage,
+                restarting,
+                onRestart,
               })
               return
             }
@@ -1153,6 +1212,7 @@ function PortAllocationDialog({
   error,
   open,
   pending,
+  pendingPrimaryPort,
   recoveringPrimary = false,
   onOpenChange,
   onSubmit,
@@ -1161,6 +1221,7 @@ function PortAllocationDialog({
   error: string | null
   open: boolean
   pending: boolean
+  pendingPrimaryPort: RelayInstancePendingPrimaryPort | null
   recoveringPrimary?: boolean
   onOpenChange: (open: boolean) => void
   onSubmit: (port: RelayInstancePortInput) => Promise<void>
@@ -1196,12 +1257,14 @@ function PortAllocationDialog({
         </DialogHeader>
 
         <form
-          key={allocation?.id ?? (recoveringPrimary ? "primary" : "new")}
+          key={
+            allocation?.id ??
+            pendingPrimaryPort?.internalPort ??
+            (recoveringPrimary ? "primary" : "new")
+          }
           action={async (form) => {
             const parsed = relayInstancePortInputSchema.safeParse({
-              id:
-                allocation?.id ??
-                (recoveringPrimary ? "primary" : undefined),
+              id: allocation?.id ?? (recoveringPrimary ? "primary" : undefined),
               internalPort: Number(form.get("internalPort")),
               name: recoveringPrimary
                 ? "Game server port"
@@ -1238,6 +1301,7 @@ function PortAllocationDialog({
               <Input
                 defaultValue={
                   allocation?.internalPort ??
+                  pendingPrimaryPort?.internalPort ??
                   (recoveringPrimary ? 25_565 : undefined)
                 }
                 max={65_535}
@@ -1252,7 +1316,9 @@ function PortAllocationDialog({
               Protocol
               <select
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-xs shadow-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-55"
-                defaultValue={allocation?.protocol ?? "tcp"}
+                defaultValue={
+                  allocation?.protocol ?? pendingPrimaryPort?.protocol ?? "tcp"
+                }
                 disabled={allocation !== null}
                 name="protocol"
               >
@@ -1276,7 +1342,10 @@ function PortAllocationDialog({
                 Public port
               </span>
               <span className="font-mono text-xs text-foreground">
-                {allocation?.externalPort ?? "Assigned after creation"}
+                {allocation?.externalPort ??
+                  (pendingPrimaryPort
+                    ? "Assigned on restart"
+                    : "Assigned after creation")}
               </span>
             </div>
             <p className="mt-1 text-[9px] leading-relaxed text-muted-foreground/75">
@@ -1305,8 +1374,8 @@ function PortAllocationDialog({
                 : recoveringPrimary
                   ? "Assign game port"
                   : editing
-                  ? "Save allocation"
-                  : "Allocate port"}
+                    ? "Save allocation"
+                    : "Allocate port"}
             </Button>
           </DialogFooter>
         </form>
@@ -1389,21 +1458,44 @@ function showRouteStatusToast({
   onRestart?: () => void
 }) {
   const pending = state.status === "pending_restart"
+  if (pending) {
+    showPendingRestartToast({
+      canRestart,
+      message: state.message,
+      restarting,
+      onRestart,
+    })
+    return
+  }
   showToast({
     description: state.message,
-    message: pending ? "Restart required" : "Edge route error",
-    type: pending ? "warning" : "error",
-    ...(pending
+    message: "Edge route error",
+    type: "error",
+  })
+}
+
+function showPendingRestartToast({
+  canRestart,
+  message,
+  restarting,
+  onRestart,
+}: {
+  canRestart: boolean
+  message: string
+  restarting: boolean
+  onRestart?: () => void
+}) {
+  showToast({
+    description: message,
+    duration: Infinity,
+    message: "Restart required",
+    type: "warning",
+    ...(canRestart && !restarting && onRestart
       ? {
-          duration: Infinity,
-          ...(canRestart && !restarting && onRestart
-            ? {
-                action: {
-                  label: "Restart and apply",
-                  onClick: onRestart,
-                },
-              }
-            : {}),
+          action: {
+            label: "Restart and apply",
+            onClick: onRestart,
+          },
         }
       : {}),
   })

@@ -49,6 +49,7 @@ export type InstanceWorkspaceInstance = Pick<
   | "javaVersion"
   | "managedByRelay"
   | "name"
+  | "pendingPrimaryPort"
   | "ports"
   | "publicHost"
   | "service"
@@ -180,6 +181,7 @@ export function selectInstanceWorkspaceInstance(identifier: string) {
       javaVersion: instance.javaVersion,
       managedByRelay: instance.managedByRelay,
       name: instance.name,
+      pendingPrimaryPort: instance.pendingPrimaryPort,
       ports: instance.ports,
       publicHost: instance.publicHost,
       relayId: instance.relayId,
