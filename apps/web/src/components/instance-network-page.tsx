@@ -599,7 +599,9 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
                   Default Server
                 </span>
                 <span className="mt-0.5 block font-mono text-[9px] text-muted-foreground uppercase">
-                  {displayedPrimaryPort?.protocol ?? "Not configured"}
+                  {displayedPrimaryPort
+                    ? formatPortProtocol(displayedPrimaryPort.protocol)
+                    : "Not configured"}
                 </span>
               </div>
               <span className="shrink-0 self-center border border-primary/30 bg-primary/8 px-2 py-1 font-mono text-[9px] leading-none tracking-[0.1em] text-primary uppercase">
@@ -680,7 +682,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
                       {allocation.name}
                     </span>
                     <span className="mt-0.5 block font-mono text-[9px] text-muted-foreground uppercase">
-                      {allocation.protocol}
+                      {formatPortProtocol(allocation.protocol)}
                     </span>
                   </div>
                 </div>
@@ -1171,11 +1173,9 @@ function usePortLease({
 }
 
 function ProtocolSelect({
-  disabled = false,
   value,
   onChange,
 }: {
-  disabled?: boolean
   value: RelayInstancePortProtocol
   onChange: (protocol: RelayInstancePortProtocol) => void
 }) {
@@ -1183,8 +1183,7 @@ function ProtocolSelect({
     <div className="relative">
       <select
         aria-label="Protocol"
-        className="flex h-8 w-full appearance-none rounded-md border border-input bg-transparent py-1 pr-8 pl-3 text-xs shadow-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-55"
-        disabled={disabled}
+        className="flex h-8 w-full appearance-none rounded-md border border-input bg-transparent py-1 pr-8 pl-3 text-xs shadow-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
         name="protocol"
         value={value}
         onChange={(event) => {
@@ -1673,11 +1672,7 @@ function PortAllocationDialog({
             </label>
             <label className="col-span-2 block space-y-1.5 text-[11px] font-medium sm:col-span-1">
               Protocol
-              <ProtocolSelect
-                disabled={allocation !== null}
-                value={protocol}
-                onChange={setProtocol}
-              />
+              <ProtocolSelect value={protocol} onChange={setProtocol} />
             </label>
           </div>
 
@@ -1837,6 +1832,10 @@ function errorMessage(cause: unknown): string {
 
 function formatHostPort(host: string, port: number): string {
   return `${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}:${port}`
+}
+
+function formatPortProtocol(protocol: RelayInstancePortProtocol): string {
+  return protocol === "both" ? "TCP + UDP" : protocol.toUpperCase()
 }
 
 async function copyToClipboard(value: string) {
