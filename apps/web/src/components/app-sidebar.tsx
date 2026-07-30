@@ -6,7 +6,6 @@ import {
 } from "@tanstack/react-query"
 import {
   ChevronsUpDown,
-  CircleHelp,
   Folder,
   ListTodo,
   LoaderCircle,
@@ -666,18 +665,6 @@ function AccountNavigation({
   return (
     <SidebarFooter>
       <SidebarMenu>
-        <SidebarMenuItem>
-          <SidebarMenuButton
-            tooltip={{ children: "Help & docs - Coming Soon", hidden: false }}
-            type="button"
-            aria-disabled="true"
-            tabIndex={-1}
-            className="text-sidebar-foreground/35 aria-disabled:pointer-events-auto! aria-disabled:cursor-not-allowed aria-disabled:opacity-100"
-          >
-            <CircleHelp />
-            <span>Help & docs</span>
-          </SidebarMenuButton>
-        </SidebarMenuItem>
         <SidebarMenuItem>
           <SidebarMenuButton
             tooltip={{ children: "Operations - Coming Soon", hidden: false }}
