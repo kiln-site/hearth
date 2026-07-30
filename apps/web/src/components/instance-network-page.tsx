@@ -758,14 +758,11 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
               : "closed"
         }
         allocation={dialog?.mode === "edit-port" ? dialog.allocation : null}
-        canEditPublicPort={canWrite}
         error={update.error ? errorMessage(update.error) : null}
         open={
           dialog?.mode === "edit-port" || dialog?.mode === "recover-primary"
         }
         pending={update.isPending}
-        instanceId={instance.id}
-        relayId={instance.relayId}
         pendingPrimaryPort={
           dialog?.mode === "recover-primary"
             ? (pendingPrimaryPort ?? null)
@@ -2395,25 +2392,19 @@ function AddNetworkRouteDialog({
 
 function PortAllocationDialog({
   allocation,
-  canEditPublicPort,
   error,
-  instanceId,
   open,
   pending,
   pendingPrimaryPort,
-  relayId,
   recoveringPrimary = false,
   onOpenChange,
   onSubmit,
 }: {
   allocation: RelayInstancePortAllocation | null
-  canEditPublicPort: boolean
   error: string | null
-  instanceId: string
   open: boolean
   pending: boolean
   pendingPrimaryPort: RelayInstancePendingPrimaryPort | null
-  relayId: string
   recoveringPrimary?: boolean
   onOpenChange: (open: boolean) => void
   onSubmit: (port: RelayInstancePortInput) => Promise<void>
@@ -2426,16 +2417,9 @@ function PortAllocationDialog({
   const [protocol, setProtocol] = React.useState<RelayInstancePortProtocol>(
     allocation?.protocol ?? pendingPrimaryPort?.protocol ?? "tcp"
   )
-  const [internalPort, setInternalPort] = React.useState<string | null>(
-    pendingPrimaryPort ? String(pendingPrimaryPort.internalPort) : null
+  const [internalPort, setInternalPort] = React.useState(
+    pendingPrimaryPort ? String(pendingPrimaryPort.internalPort) : ""
   )
-  const portLease = usePortLease({
-    enabled: open && recoveringPrimary,
-    instanceId,
-    protocol,
-    relayId,
-  })
-  const portPending = recoveringPrimary && portLease.pending
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -2471,18 +2455,9 @@ function PortAllocationDialog({
             (recoveringPrimary ? "primary" : "new")
           }
           action={async (form) => {
-            const lease = recoveringPrimary
-              ? await portLease.commit().catch((cause: unknown) => {
-                  setValidationError(errorMessage(cause))
-                  return null
-                })
-              : null
-            if (recoveringPrimary && !lease) return
             const parsed = relayInstancePortInputSchema.safeParse({
-              externalPort: lease?.externalPort,
               id: allocation?.id ?? (recoveringPrimary ? "primary" : undefined),
               internalPort: Number(form.get("internalPort")),
-              leaseId: lease?.id,
               name: isDefaultServer
                 ? "Default Server"
                 : String(form.get("name") ?? ""),
@@ -2512,7 +2487,13 @@ function PortAllocationDialog({
               />
             </label>
           )}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-[7.5rem_7.5rem_minmax(0,1fr)]">
+          <div
+            className={
+              recoveringPrimary
+                ? "grid grid-cols-[7.5rem_minmax(0,1fr)] gap-3"
+                : "grid grid-cols-2 gap-3 sm:grid-cols-[7.5rem_7.5rem_minmax(0,1fr)]"
+            }
+          >
             <label className="block space-y-1.5 text-[11px] font-medium">
               Internal Port
               <Input
@@ -2523,11 +2504,7 @@ function PortAllocationDialog({
                 placeholder="24454"
                 required
                 type="number"
-                value={
-                  recoveringPrimary
-                    ? (internalPort ?? portLease.portValue)
-                    : undefined
-                }
+                value={recoveringPrimary ? internalPort : undefined}
                 onChange={
                   recoveringPrimary
                     ? (event) => setInternalPort(event.target.value)
@@ -2535,44 +2512,33 @@ function PortAllocationDialog({
                 }
               />
             </label>
-            <label className="block space-y-1.5 text-[11px] font-medium">
-              Public Port
-              <Input
-                aria-label="Public Port"
-                className="font-mono"
-                disabled={
-                  allocation !== null || !canEditPublicPort || portLease.pending
-                }
-                max={65_535}
-                min={1}
-                readOnly={allocation !== null || !canEditPublicPort}
-                type="number"
-                value={
-                  allocation
-                    ? String(allocation.externalPort)
-                    : portLease.portValue
-                }
-                onBlur={() => {
-                  if (
-                    recoveringPrimary &&
-                    canEditPublicPort &&
-                    portLease.lease
-                  ) {
-                    void portLease.commit().catch(() => undefined)
-                  }
-                }}
-                onChange={(event) => portLease.setPortValue(event.target.value)}
-              />
-            </label>
-            <label className="col-span-2 block space-y-1.5 text-[11px] font-medium sm:col-span-1">
+            {recoveringPrimary ? null : (
+              <label className="block space-y-1.5 text-[11px] font-medium">
+                Public Port
+                <Input
+                  aria-label="Public Port"
+                  className="font-mono"
+                  disabled
+                  type="number"
+                  value={allocation ? String(allocation.externalPort) : ""}
+                />
+              </label>
+            )}
+            <label
+              className={
+                recoveringPrimary
+                  ? "block space-y-1.5 text-[11px] font-medium"
+                  : "col-span-2 block space-y-1.5 text-[11px] font-medium sm:col-span-1"
+              }
+            >
               Protocol
               <ProtocolSelect value={protocol} onChange={setProtocol} />
             </label>
           </div>
 
-          {validationError || portLease.error || error ? (
+          {validationError || error ? (
             <p className="text-xs text-destructive">
-              {validationError ?? portLease.error ?? error}
+              {validationError ?? error}
             </p>
           ) : null}
 
@@ -2584,11 +2550,9 @@ function PortAllocationDialog({
             >
               Cancel
             </DialogClose>
-            <Button disabled={pending || portPending} type="submit">
-              {pending || portPending ? (
-                <LoaderCircle className="animate-spin" />
-              ) : null}
-              {pending || portPending
+            <Button disabled={pending} type="submit">
+              {pending ? <LoaderCircle className="animate-spin" /> : null}
+              {pending
                 ? "Applying"
                 : recoveringPrimary
                   ? "Assign Default Server"

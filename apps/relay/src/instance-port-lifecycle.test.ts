@@ -64,7 +64,7 @@ describe("instance port lifecycle", () => {
     const primary = {
       externalPort: 32_123,
       id: "primary",
-      internalPort: 25_565,
+      internalPort: 25_570,
       kind: "primary",
       name: "Default Server",
       protocol: "tcp",
@@ -84,18 +84,13 @@ describe("instance port lifecycle", () => {
     } as unknown as DockerDriver
     commandMock.mockRejectedValue(new Error("container not found"))
     const lifecycle = new LifecycleDriver(config, docker, {} as BrickCatalog)
-    const lease = await lifecycle.reserveInstancePort(instance.id, {
-      protocol: "tcp",
-    })
 
     const updated = await lifecycle.updateInstancePorts(
       instance.id,
       [
         {
-          externalPort: lease.externalPort,
           id: "primary",
-          internalPort: 25_565,
-          leaseId: lease.id,
+          internalPort: 25_570,
           name: "Ignored client name",
           protocol: "tcp",
         },
@@ -115,11 +110,11 @@ describe("instance port lifecycle", () => {
       "stop",
       {
         bindings: {
-          "25565/tcp": [{ HostIp: "", HostPort: "32123" }],
+          "25570/tcp": [{ HostIp: "", HostPort: "32123" }],
         },
         labels: {
-          "kiln.brick.primary-port": "25565/tcp",
-          "kiln.traefik.service.port": "25565",
+          "kiln.brick.primary-port": "25570/tcp",
+          "kiln.traefik.service.port": "25570",
         },
       }
     )
@@ -287,7 +282,7 @@ describe("instance port lifecycle", () => {
     expect(released.externalPort).toBe(32_125)
   })
 
-  it("waits for a manual restart before applying a missing primary port", async () => {
+  it("stages a missing primary port without requiring a free public port", async () => {
     const dataDirectory = await mkdtemp(join(tmpdir(), "kiln-primary-port-"))
     temporaryDirectories.push(dataDirectory)
     const config = loadConfig({
@@ -323,7 +318,7 @@ describe("instance port lifecycle", () => {
     const primary = {
       externalPort: 32_124,
       id: "primary",
-      internalPort: 25_565,
+      internalPort: 24_454,
       kind: "primary",
       name: "Default Server",
       protocol: "tcp",
@@ -336,9 +331,10 @@ describe("instance port lifecycle", () => {
         publicPort: 32_124,
       })
     )
+    const publishedHostPorts = vi.fn(async () => new Set([32_124]))
     const docker = {
       inspectInstances: vi.fn(async () => [instance]),
-      publishedHostPorts: vi.fn(async () => []),
+      publishedHostPorts,
       recreateOwnedInstance,
       runAction: vi.fn(),
     } as unknown as DockerDriver
@@ -350,7 +346,7 @@ describe("instance port lifecycle", () => {
       [
         {
           id: "primary",
-          internalPort: 25_565,
+          internalPort: 24_454,
           name: "Ignored client name",
           protocol: "tcp",
         },
@@ -360,13 +356,15 @@ describe("instance port lifecycle", () => {
 
     expect(staged.pendingPrimaryPort).toEqual({
       id: "primary",
-      internalPort: 25_565,
+      internalPort: 24_454,
       name: "Default Server",
       protocol: "tcp",
     })
     expect(staged.ports).toEqual([])
     expect(recreateOwnedInstance).not.toHaveBeenCalled()
+    expect(publishedHostPorts).not.toHaveBeenCalled()
 
+    publishedHostPorts.mockResolvedValue(new Set())
     const updated = await lifecycle.runInstanceAction(
       instance,
       "restart",
@@ -386,11 +384,11 @@ describe("instance port lifecycle", () => {
       "restart",
       {
         bindings: {
-          "25565/tcp": [{ HostIp: "", HostPort: "32124" }],
+          "24454/tcp": [{ HostIp: "", HostPort: "32124" }],
         },
         labels: {
-          "kiln.brick.primary-port": "25565/tcp",
-          "kiln.traefik.service.port": "25565",
+          "kiln.brick.primary-port": "24454/tcp",
+          "kiln.traefik.service.port": "24454",
         },
       }
     )
