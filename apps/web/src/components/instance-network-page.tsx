@@ -307,13 +307,27 @@ type RouteRemovalState =
   | {
       allocation: RelayInstancePortAllocation
       kind: "port"
+      placement:
+        | { source: "added" }
+        | { index: number; source: "server" }
       phase: "confirming" | "removing"
     }
   | {
       kind: "web"
+      placement:
+        | { source: "added" }
+        | { index: number; source: "server" }
       phase: "confirming" | "removing"
       route: RelayInstanceWebRoute
     }
+
+function portRemovalKey(id: string) {
+  return `port:${id}`
+}
+
+function webRouteRemovalKey(id: string) {
+  return `web:${id}`
+}
 
 const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   canRestart,
@@ -368,6 +382,9 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   >([])
   const addedRouteSequence = React.useRef(0)
   const [removal, setRemoval] = React.useState<RouteRemovalState | null>(null)
+  const [removedRouteKeys, setRemovedRouteKeys] = React.useState<
+    ReadonlySet<string>
+  >(() => new Set())
   const clearEditGamePortIntent = React.useCallback(() => {
     if (!editGamePort) return
     void navigate({
@@ -514,9 +531,30 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   const removePort = React.useCallback(
     (allocation: RelayInstancePortAllocation) => {
       if (allocation.kind !== "custom" || disabled) return
-      setRemoval({ allocation, kind: "port", phase: "confirming" })
+      const added = addedRoutes.some(
+        (route) =>
+          route.kind === "port" &&
+          route.status === "ready" &&
+          route.allocation.id === allocation.id
+      )
+      setRemoval({
+        allocation,
+        kind: "port",
+        phase: "confirming",
+        placement: added
+          ? { source: "added" }
+          : {
+              index: Math.max(
+                instance.ports.findIndex(
+                  (current) => current.id === allocation.id
+                ),
+                0
+              ),
+              source: "server",
+            },
+      })
     },
-    [disabled]
+    [addedRoutes, disabled, instance.ports]
   )
   const editPort = React.useCallback(
     (allocation: RelayInstancePortAllocation) => {
@@ -535,9 +573,28 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   const removeWebRoute = React.useCallback(
     (route: RelayInstanceWebRoute) => {
       if (disabled || routePending) return
-      setRemoval({ kind: "web", phase: "confirming", route })
+      const added = addedRoutes.some(
+        (current) =>
+          current.kind === "web" &&
+          current.status === "ready" &&
+          current.route.id === route.id
+      )
+      setRemoval({
+        kind: "web",
+        phase: "confirming",
+        placement: added
+          ? { source: "added" }
+          : {
+              index: Math.max(
+                (routes ?? []).findIndex((current) => current.id === route.id),
+                0
+              ),
+              source: "server",
+            },
+        route,
+      })
     },
-    [disabled, routePending]
+    [addedRoutes, disabled, routePending, routes]
   )
   const confirmRemoval = React.useCallback(async () => {
     if (!removal || removal.phase !== "confirming") return
@@ -547,6 +604,11 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
         await update.mutateAsync(
           portInputs.filter((port) => port.id !== removal.allocation.id)
         )
+        setRemovedRouteKeys((current) => {
+          const next = new Set(current)
+          next.add(portRemovalKey(removal.allocation.id))
+          return next
+        })
         setAddedRoutes((current) =>
           current.filter(
             (route) =>
@@ -557,6 +619,11 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
         )
       } else {
         await onRemoveWebRoute(removal.route.id)
+        setRemovedRouteKeys((current) => {
+          const next = new Set(current)
+          next.add(webRouteRemovalKey(removal.route.id))
+          return next
+        })
         setAddedRoutes((current) =>
           current.filter(
             (currentRoute) =>
@@ -623,6 +690,7 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
           routes={routes}
           restarting={restarting}
           removal={removal?.phase === "removing" ? removal : null}
+          removedRouteKeys={removedRouteKeys}
           onEditPort={editPort}
           onEditWebRoute={editWebRoute}
           onRecoverPrimaryPort={recoverPrimaryPort}
@@ -735,6 +803,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
   routes,
   restarting,
   removal,
+  removedRouteKeys,
   onEditPort,
   onEditWebRoute,
   onRecoverPrimaryPort,
@@ -752,6 +821,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
   routes: Array<RelayInstanceWebRoute> | undefined
   restarting: boolean
   removal: RouteRemovalState | null
+  removedRouteKeys: ReadonlySet<string>
   onEditPort: (allocation: RelayInstancePortAllocation) => void
   onEditWebRoute: (route: RelayInstanceWebRoute) => void
   onRecoverPrimaryPort: () => void
@@ -766,10 +836,63 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
     ? undefined
     : instance.pendingPrimaryPort
   const displayedPrimaryPort = primaryPort ?? pendingPrimaryPort
+  const displayedPorts = React.useMemo(() => {
+    const current = instance.ports.filter(
+      (allocation) => !removedRouteKeys.has(portRemovalKey(allocation.id))
+    )
+    if (
+      removal?.kind !== "port" ||
+      removal.placement.source !== "server" ||
+      current.some(
+        (allocation) => allocation.id === removal.allocation.id
+      )
+    ) {
+      return current
+    }
+    const next = [...current]
+    next.splice(
+      Math.min(removal.placement.index, next.length),
+      0,
+      removal.allocation
+    )
+    return next
+  }, [instance.ports, removal, removedRouteKeys])
+  const displayedWebRoutes = React.useMemo(() => {
+    const current = (routes ?? []).filter(
+      (route) => !removedRouteKeys.has(webRouteRemovalKey(route.id))
+    )
+    if (
+      removal?.kind !== "web" ||
+      removal.placement.source !== "server" ||
+      current.some((route) => route.id === removal.route.id)
+    ) {
+      return current
+    }
+    const next = [...current]
+    next.splice(
+      Math.min(removal.placement.index, next.length),
+      0,
+      removal.route
+    )
+    return next
+  }, [removal, removedRouteKeys, routes])
+  const displayedAddedRoutes = React.useMemo(
+    () =>
+      addedRoutes.filter(
+        (route) =>
+          route.status === "pending" ||
+          !removedRouteKeys.has(
+            route.kind === "port"
+              ? portRemovalKey(route.allocation.id)
+              : webRouteRemovalKey(route.route.id)
+          )
+      ),
+    [addedRoutes, removedRouteKeys]
+  )
   const hasAdditionalRoutes =
-    instance.ports.some((allocation) => allocation.kind !== "primary") ||
-    Boolean(routes?.length) ||
-    addedRoutes.length > 0
+    displayedPorts.some((allocation) => allocation.kind !== "primary") ||
+    displayedWebRoutes.length > 0 ||
+    displayedAddedRoutes.length > 0
 
   return (
     <table className="w-full min-w-[40rem] table-fixed border-collapse text-left">
@@ -876,7 +999,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
             />
           </tr>
         ) : null}
-        {instance.ports.map((allocation) => {
+        {displayedPorts.map((allocation) => {
           if (
             allocation.kind === "primary" ||
             addedRoutes.some(
@@ -905,7 +1028,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
             />
           )
         })}
-        {routes?.map((route) => {
+        {displayedWebRoutes.map((route) => {
           if (
             addedRoutes.some(
               (addedRoute) =>
@@ -935,7 +1058,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
             />
           )
         })}
-        {addedRoutes.map((addedRoute) => (
+        {displayedAddedRoutes.map((addedRoute) => (
           <AddedRouteRow
             key={addedRoute.clientId}
             addedRoute={addedRoute}
