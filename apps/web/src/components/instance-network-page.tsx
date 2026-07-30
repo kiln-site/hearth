@@ -8,6 +8,7 @@ import {
 import { useNavigate } from "@tanstack/react-router"
 import {
   AlertTriangle,
+  BrickWall,
   Cable,
   Check,
   ChevronDown,
@@ -584,7 +585,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
                     ? undefined
                     : "Edit the Default Server to assign its internal port and protocol."
                 }
-                kind="port"
+                kind="primary"
                 pendingMessage={
                   pendingPrimaryPort
                     ? "Restart this server when you are ready to apply its Default Server route."
@@ -832,7 +833,7 @@ const RouteRowIcon = React.memo(function RouteRowIcon({
 }: {
   canRestart?: boolean
   errorMessage?: string
-  kind: "port" | "web"
+  kind: "port" | "primary" | "web"
   pendingMessage?: string
   restarting?: boolean
   state?: RelayInstanceWebRouteState
@@ -841,11 +842,17 @@ const RouteRowIcon = React.memo(function RouteRowIcon({
   const pending =
     pendingMessage !== undefined || state?.status === "pending_restart"
   const blocked = state?.status === "blocked" || errorMessage !== undefined
-  const Icon = kind === "web" ? Globe2 : Cable
+  const Icon = kind === "primary" ? BrickWall : kind === "web" ? Globe2 : Cable
 
   if (!pending && !blocked) {
     return (
-      <div className="grid size-7 shrink-0 place-items-center border border-emerald-400/25 bg-emerald-400/5 text-emerald-300">
+      <div
+        className={`grid size-7 shrink-0 place-items-center border ${
+          kind === "primary"
+            ? "border-primary/30 bg-primary/5 text-primary"
+            : "border-emerald-400/25 bg-emerald-400/5 text-emerald-300"
+        }`}
+      >
         <Icon className="size-3.5" />
       </div>
     )
