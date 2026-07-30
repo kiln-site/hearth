@@ -1353,11 +1353,13 @@ export class LifecycleDriver {
     const systemAllocations = instance.ports.filter(
       (allocation) => allocation.kind !== "custom"
     )
-    if (
-      !systemAllocations.some((allocation) => allocation.kind === "primary")
-    ) {
+    const hasPrimary = systemAllocations.some(
+      (allocation) => allocation.kind === "primary"
+    )
+    const primaryInput = requested.find((input) => input.id === "primary")
+    if (!hasPrimary && !primaryInput) {
       throw new Error(
-        "This server does not have a managed primary port. Recreate it before allocating ports."
+        "Configure the game server port before allocating additional ports."
       )
     }
     for (const allocation of systemAllocations) {
@@ -1375,7 +1377,24 @@ export class LifecycleDriver {
       for (const input of requested) {
         const existing = input.id ? existingById.get(input.id) : undefined
         if (input.id && !existing) {
-          throw new Error(`Port allocation ${input.id} no longer exists`)
+          if (input.id !== "primary" || hasPrimary) {
+            throw new Error(`Port allocation ${input.id} no longer exists`)
+          }
+          const externalPort = await this.#reserveGamePort(
+            instance.id,
+            input.protocol,
+            inspected
+          )
+          pending.push({ port: externalPort, protocol: input.protocol })
+          allocations.push({
+            externalPort,
+            id: "primary",
+            internalPort: input.internalPort,
+            kind: "primary",
+            name: "Game server port",
+            protocol: input.protocol,
+          })
+          continue
         }
         if (existing) {
           if (existing.protocol !== input.protocol) {

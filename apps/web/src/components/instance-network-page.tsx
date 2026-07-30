@@ -219,6 +219,7 @@ type RouteDialogState =
   | { mode: "add" }
   | { allocation: RelayInstancePortAllocation; mode: "edit-port" }
   | { mode: "edit-web"; route: RelayInstanceWebRoute }
+  | { mode: "recover-primary" }
   | null
 
 const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
@@ -283,9 +284,6 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   const primaryPort = instance.ports.find(
     (allocation) => allocation.kind === "primary"
   )
-  const hasAdditionalRoutes =
-    instance.ports.some((allocation) => allocation.kind !== "primary") ||
-    Boolean(routes?.length)
   const portInputs = React.useMemo(
     () =>
       instance.ports.map(({ id, internalPort, name, protocol }) => ({
@@ -303,7 +301,9 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
           ? portInputs.map((existing) =>
               existing.id === dialog.allocation.id ? port : existing
             )
-          : [...portInputs, port]
+          : dialog?.mode === "recover-primary"
+            ? [port, ...portInputs]
+            : [...portInputs, port]
       await update.mutateAsync(ports)
     },
     [dialog, portInputs, update]
@@ -323,6 +323,10 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
     },
     [update]
   )
+  const recoverPrimaryPort = React.useCallback(() => {
+    update.reset()
+    setDialog({ mode: "recover-primary" })
+  }, [update])
   const editWebRoute = React.useCallback((route: RelayInstanceWebRoute) => {
     setDialog({ mode: "edit-web", route })
   }, [])
@@ -370,29 +374,22 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
       </div>
 
       <div className="overflow-x-auto">
-        {primaryPort || hasAdditionalRoutes ? (
-          <ConfiguredRoutesTable
-            canWrite={canWrite}
-            disabled={disabled}
-            instance={instance}
-            canRestart={canRestart}
-            routePending={routePending}
-            routeState={routeState}
-            routes={routes}
-            restarting={restarting}
-            onEditPort={editPort}
-            onEditWebRoute={editWebRoute}
-            onRemovePort={removePort}
-            onRemoveWebRoute={removeWebRoute}
-            onRestart={onRestart}
-          />
-        ) : (
-          <div className="px-4 py-10 text-center">
-            <p className="text-xs text-muted-foreground">
-              No additional routes are configured for this server.
-            </p>
-          </div>
-        )}
+        <ConfiguredRoutesTable
+          canWrite={canWrite}
+          disabled={disabled}
+          instance={instance}
+          canRestart={canRestart}
+          routePending={routePending}
+          routeState={routeState}
+          routes={routes}
+          restarting={restarting}
+          onEditPort={editPort}
+          onEditWebRoute={editWebRoute}
+          onRecoverPrimaryPort={recoverPrimaryPort}
+          onRemovePort={removePort}
+          onRemoveWebRoute={removeWebRoute}
+          onRestart={onRestart}
+        />
       </div>
 
       {!relayConnected ? (
@@ -407,7 +404,7 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
 
       {dialog?.mode === "add" || dialog?.mode === "edit-web" ? (
         <AddNetworkRouteDialog
-          canAddPort={instance.ports.length < 16}
+          canAddPort={primaryPort !== undefined && instance.ports.length < 16}
           canAddWebRoute={(routes?.length ?? 16) < 16}
           error={
             update.error || routeError
@@ -428,8 +425,11 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
       <PortAllocationDialog
         allocation={dialog?.mode === "edit-port" ? dialog.allocation : null}
         error={update.error ? errorMessage(update.error) : null}
-        open={dialog?.mode === "edit-port"}
+        open={
+          dialog?.mode === "edit-port" || dialog?.mode === "recover-primary"
+        }
         pending={update.isPending}
+        recoveringPrimary={dialog?.mode === "recover-primary"}
         onOpenChange={(open) => {
           if (!open && !update.isPending) setDialog(null)
         }}
@@ -450,6 +450,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
   restarting,
   onEditPort,
   onEditWebRoute,
+  onRecoverPrimaryPort,
   onRemovePort,
   onRemoveWebRoute,
   onRestart,
@@ -464,6 +465,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
   restarting: boolean
   onEditPort: (allocation: RelayInstancePortAllocation) => void
   onEditWebRoute: (route: RelayInstanceWebRoute) => void
+  onRecoverPrimaryPort: () => void
   onRemovePort: (allocation: RelayInstancePortAllocation) => void
   onRemoveWebRoute: (route: RelayInstanceWebRoute) => void
   onRestart: () => void
@@ -488,69 +490,82 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
         </WorkspaceTableHeading>
       </WorkspaceTableHead>
       <tbody className="divide-y divide-border/70">
-        {primaryPort ? (
-          <tr className="bg-primary/[0.04] hover:bg-primary/[0.065]">
-            <WorkspaceTableCell>
-              <div className="flex min-w-0 items-center gap-2.5">
-                <RouteRowIcon kind="port" />
-                <div className="min-w-0">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span className="truncate text-xs font-medium">
-                      Game server port
-                    </span>
-                    <span className="shrink-0 border border-primary/25 bg-primary/8 px-1.5 py-0.5 font-mono text-[8px] leading-none tracking-[0.08em] text-primary uppercase">
-                      Primary
-                    </span>
-                  </div>
-                  <span className="mt-0.5 block font-mono text-[9px] text-muted-foreground uppercase">
-                    {primaryPort.protocol}
+        <tr
+          className={
+            primaryPort
+              ? "bg-primary/[0.04] hover:bg-primary/[0.065]"
+              : "bg-destructive/[0.035] hover:bg-destructive/[0.055]"
+          }
+        >
+          <WorkspaceTableCell>
+            <div className="flex min-w-0 items-center gap-2.5">
+              <RouteRowIcon
+                errorMessage={
+                  primaryPort
+                    ? undefined
+                    : "Edit the game server port to assign its internal port and protocol."
+                }
+                kind="port"
+              />
+              <div className="min-w-0">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="truncate text-xs font-medium">
+                    Game server port
+                  </span>
+                  <span className="shrink-0 border border-primary/25 bg-primary/8 px-1.5 py-0.5 font-mono text-[8px] leading-none tracking-[0.08em] text-primary uppercase">
+                    Primary
                   </span>
                 </div>
+                <span className="mt-0.5 block font-mono text-[9px] text-muted-foreground uppercase">
+                  {primaryPort?.protocol ?? "Not configured"}
+                </span>
               </div>
-            </WorkspaceTableCell>
-            <WorkspaceTableCell>
-              <span className="font-mono text-xs text-foreground">
-                {primaryPort.internalPort}
-              </span>
-            </WorkspaceTableCell>
-            <WorkspaceTableCell>
-              <PublicAddressCopy
-                address={
-                  instance.publicHost
-                    ? formatHostPort(
-                        instance.publicHost,
-                        primaryPort.externalPort
-                      )
-                    : null
-                }
-                label="game server public address"
-                prominent
-              />
-            </WorkspaceTableCell>
-            <WorkspaceTableCell className="px-2">
-              <div className="flex justify-end">
-                {canWrite ? (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        aria-label="Edit game server port"
-                        disabled={disabled}
-                        onClick={() => onEditPort(primaryPort)}
-                        size="icon-sm"
-                        type="button"
-                        variant="ghost"
-                      >
-                        <Pencil />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Edit allocation</TooltipContent>
-                  </Tooltip>
-                ) : null}
-              </div>
-            </WorkspaceTableCell>
-          </tr>
-        ) : null}
-        {primaryPort && hasAdditionalRoutes ? (
+            </div>
+          </WorkspaceTableCell>
+          <WorkspaceTableCell>
+            <span className="font-mono text-xs text-foreground">
+              {primaryPort?.internalPort ?? "—"}
+            </span>
+          </WorkspaceTableCell>
+          <WorkspaceTableCell>
+            <PublicAddressCopy
+              address={
+                instance.publicHost && primaryPort
+                  ? formatHostPort(instance.publicHost, primaryPort.externalPort)
+                  : null
+              }
+              label="game server public address"
+              prominent
+            />
+          </WorkspaceTableCell>
+          <WorkspaceTableCell className="px-2">
+            <div className="flex justify-end">
+              {canWrite ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      aria-label="Edit game server port"
+                      disabled={disabled}
+                      onClick={() => {
+                        if (primaryPort) onEditPort(primaryPort)
+                        else onRecoverPrimaryPort()
+                      }}
+                      size="icon-sm"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <Pencil />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {primaryPort ? "Edit allocation" : "Assign game server port"}
+                  </TooltipContent>
+                </Tooltip>
+              ) : null}
+            </div>
+          </WorkspaceTableCell>
+        </tr>
+        {hasAdditionalRoutes ? (
           <tr aria-hidden="true">
             <td
               className="h-3 border-y border-border/70 bg-muted/25 p-0"
@@ -717,19 +732,21 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
 
 const RouteRowIcon = React.memo(function RouteRowIcon({
   canRestart = false,
+  errorMessage,
   kind,
   restarting = false,
   state,
   onRestart,
 }: {
   canRestart?: boolean
+  errorMessage?: string
   kind: "port" | "web"
   restarting?: boolean
   state?: RelayInstanceWebRouteState
   onRestart?: () => void
 }) {
   const pending = state?.status === "pending_restart"
-  const blocked = state?.status === "blocked"
+  const blocked = state?.status === "blocked" || errorMessage !== undefined
   const Icon = kind === "web" ? Globe2 : Cable
 
   if (!pending && !blocked) {
@@ -745,7 +762,11 @@ const RouteRowIcon = React.memo(function RouteRowIcon({
       <TooltipTrigger asChild>
         <button
           aria-label={
-            pending ? "View route restart warning" : "View route error"
+            pending
+              ? "View route restart warning"
+              : errorMessage
+                ? "View game server port error"
+                : "View route error"
           }
           className={`grid size-7 shrink-0 place-items-center border transition-colors ${
             pending
@@ -753,6 +774,14 @@ const RouteRowIcon = React.memo(function RouteRowIcon({
               : "border-destructive/35 bg-destructive/5 text-destructive hover:bg-destructive/10"
           }`}
           onClick={() => {
+            if (errorMessage) {
+              showToast({
+                description: errorMessage,
+                message: "Game server port is not configured",
+                type: "error",
+              })
+              return
+            }
             if (!state) return
             showRouteStatusToast({
               canRestart,
@@ -771,7 +800,11 @@ const RouteRowIcon = React.memo(function RouteRowIcon({
         </button>
       </TooltipTrigger>
       <TooltipContent>
-        {pending ? "Restart required" : "View route error"}
+        {pending
+          ? "Restart required"
+          : errorMessage
+            ? "Game server port needs configuration"
+            : "View route error"}
       </TooltipContent>
     </Tooltip>
   )
@@ -1120,6 +1153,7 @@ function PortAllocationDialog({
   error,
   open,
   pending,
+  recoveringPrimary = false,
   onOpenChange,
   onSubmit,
 }: {
@@ -1127,37 +1161,51 @@ function PortAllocationDialog({
   error: string | null
   open: boolean
   pending: boolean
+  recoveringPrimary?: boolean
   onOpenChange: (open: boolean) => void
   onSubmit: (port: RelayInstancePortInput) => Promise<void>
 }) {
   const [validationError, setValidationError] = React.useState<string | null>(
     null
   )
-  const editing = allocation !== null
+  const editing = allocation !== null || recoveringPrimary
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <p className="font-mono text-[9px] tracking-[0.16em] text-primary uppercase">
-            {editing ? "Port mapping" : "New allocation"}
+            {recoveringPrimary
+              ? "Game server port"
+              : editing
+                ? "Port mapping"
+                : "New allocation"}
           </p>
           <DialogTitle>
-            {editing ? "Edit port allocation" : "Allocate a port"}
+            {recoveringPrimary
+              ? "Assign the game server port"
+              : editing
+                ? "Edit port allocation"
+                : "Allocate a port"}
           </DialogTitle>
           <DialogDescription>
-            Choose where traffic should arrive inside the Ember. Kiln assigns
-            the public port automatically.
+            {recoveringPrimary
+              ? "Choose the internal port and protocol used by this game server. Kiln assigns its public port automatically."
+              : "Choose where traffic should arrive inside the Ember. Kiln assigns the public port automatically."}
           </DialogDescription>
         </DialogHeader>
 
         <form
-          key={allocation?.id ?? "new"}
+          key={allocation?.id ?? (recoveringPrimary ? "primary" : "new")}
           action={async (form) => {
             const parsed = relayInstancePortInputSchema.safeParse({
-              id: allocation?.id,
+              id:
+                allocation?.id ??
+                (recoveringPrimary ? "primary" : undefined),
               internalPort: Number(form.get("internalPort")),
-              name: String(form.get("name") ?? ""),
+              name: recoveringPrimary
+                ? "Game server port"
+                : String(form.get("name") ?? ""),
               protocol: String(form.get("protocol") ?? "tcp"),
             })
             if (!parsed.success) {
@@ -1171,22 +1219,27 @@ function PortAllocationDialog({
           }}
           className="space-y-4"
         >
-          <label className="block space-y-1.5 text-[11px] font-medium">
-            Name
-            <Input
-              autoComplete="off"
-              defaultValue={allocation?.name ?? ""}
-              maxLength={32}
-              name="name"
-              placeholder="Voice chat"
-              required
-            />
-          </label>
+          {recoveringPrimary ? null : (
+            <label className="block space-y-1.5 text-[11px] font-medium">
+              Name
+              <Input
+                autoComplete="off"
+                defaultValue={allocation?.name ?? ""}
+                maxLength={32}
+                name="name"
+                placeholder="Voice chat"
+                required
+              />
+            </label>
+          )}
           <div className="grid grid-cols-[minmax(0,1fr)_8rem] gap-3">
             <label className="block space-y-1.5 text-[11px] font-medium">
               Internal port
               <Input
-                defaultValue={allocation?.internalPort}
+                defaultValue={
+                  allocation?.internalPort ??
+                  (recoveringPrimary ? 25_565 : undefined)
+                }
                 max={65_535}
                 min={1}
                 name="internalPort"
@@ -1200,14 +1253,14 @@ function PortAllocationDialog({
               <select
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-xs shadow-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-55"
                 defaultValue={allocation?.protocol ?? "tcp"}
-                disabled={editing}
+                disabled={allocation !== null}
                 name="protocol"
               >
                 <option value="tcp">TCP</option>
                 <option value="udp">UDP</option>
                 <option value="both">TCP + UDP</option>
               </select>
-              {editing ? (
+              {allocation ? (
                 <input
                   name="protocol"
                   type="hidden"
@@ -1249,7 +1302,9 @@ function PortAllocationDialog({
               {pending ? <LoaderCircle className="animate-spin" /> : null}
               {pending
                 ? "Applying"
-                : editing
+                : recoveringPrimary
+                  ? "Assign game port"
+                  : editing
                   ? "Save allocation"
                   : "Allocate port"}
             </Button>
