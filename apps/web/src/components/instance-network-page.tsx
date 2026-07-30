@@ -9,6 +9,7 @@ import {
   AlertTriangle,
   Cable,
   Check,
+  CircleAlert,
   Copy,
   Globe2,
   LoaderCircle,
@@ -40,7 +41,7 @@ import {
   DialogTitle,
 } from "@workspace/ui/components/dialog"
 import { Input } from "@workspace/ui/components/input"
-import { dismissToast, showToast } from "@workspace/ui/components/sonner"
+import { showToast } from "@workspace/ui/components/sonner"
 import {
   Tooltip,
   TooltipContent,
@@ -150,17 +151,23 @@ function WebRoutesNetworkPage({ showTailscale }: { showTailscale: boolean }) {
     restart.mutate()
   }, [permissions.power, relayConnected, restart])
 
-  usePendingRouteToast({
-    canRestart: permissions.power && relayConnected,
-    instanceId: instance.id,
-    onRestart: restartPendingRoutes,
-    restarting: restart.isPending,
-    state: routes.data,
-  })
   const addWebRoute = React.useCallback(
     async (route: RelayInstanceWebRouteInput) => {
       if (!routes.data) throw new Error("Routes are not loaded yet")
       await update.mutateAsync([...routes.data.routes, route])
+    },
+    [routes.data, update]
+  )
+  const editWebRoute = React.useCallback(
+    async (route: RelayInstanceWebRouteInput) => {
+      if (!route.id || !routes.data) {
+        throw new Error("The web route is not loaded yet")
+      }
+      await update.mutateAsync(
+        routes.data.routes.map((existing) =>
+          existing.id === route.id ? route : existing
+        )
+      )
     },
     [routes.data, update]
   )
@@ -196,6 +203,7 @@ function WebRoutesNetworkPage({ showTailscale }: { showTailscale: boolean }) {
           routes={routes.data?.routes}
           restarting={restart.isPending}
           onAddWebRoute={addWebRoute}
+          onEditWebRoute={editWebRoute}
           onRemoveWebRoute={removeWebRoute}
           onRestart={restartPendingRoutes}
         />
@@ -210,6 +218,7 @@ function WebRoutesNetworkPage({ showTailscale }: { showTailscale: boolean }) {
 type RouteDialogState =
   | { mode: "add" }
   | { allocation: RelayInstancePortAllocation; mode: "edit-port" }
+  | { mode: "edit-web"; route: RelayInstanceWebRoute }
   | null
 
 const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
@@ -223,6 +232,7 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   routes,
   restarting,
   onAddWebRoute,
+  onEditWebRoute,
   onRemoveWebRoute,
   onRestart,
 }: {
@@ -236,6 +246,7 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   routes: Array<RelayInstanceWebRoute> | undefined
   restarting: boolean
   onAddWebRoute: (route: RelayInstanceWebRouteInput) => Promise<void>
+  onEditWebRoute: (route: RelayInstanceWebRouteInput) => Promise<void>
   onRemoveWebRoute: (routeId: string) => Promise<unknown>
   onRestart: () => void
 }) {
@@ -300,6 +311,7 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   const removePort = React.useCallback(
     (allocation: RelayInstancePortAllocation) => {
       if (allocation.kind !== "custom" || disabled) return
+      if (!window.confirm(`Remove ${allocation.name} from this server?`)) return
       update.mutate(portInputs.filter((port) => port.id !== allocation.id))
     },
     [disabled, portInputs, update]
@@ -311,6 +323,17 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
     },
     [update]
   )
+  const editWebRoute = React.useCallback((route: RelayInstanceWebRoute) => {
+    setDialog({ mode: "edit-web", route })
+  }, [])
+  const removeWebRoute = React.useCallback(
+    (route: RelayInstanceWebRoute) => {
+      if (disabled || routePending) return
+      if (!window.confirm(`Remove ${route.hostname} from this server?`)) return
+      void onRemoveWebRoute(route.id).catch(() => undefined)
+    },
+    [disabled, onRemoveWebRoute, routePending]
+  )
 
   return (
     <section className="border border-border/80 bg-card/55">
@@ -321,7 +344,7 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
           </h1>
         </div>
         <div className="flex items-center gap-2">
-          {routeState ? (
+          {routeState && routeState.routes.length === 0 ? (
             <RouteStatusButton
               canRestart={canRestart}
               restarting={restarting}
@@ -361,10 +384,16 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
           canWrite={canWrite}
           disabled={disabled}
           instance={instance}
+          canRestart={canRestart}
           routePending={routePending}
+          routeState={routeState}
           routes={routes}
+          restarting={restarting}
           onEditPort={editPort}
-          onRemoveWebRoute={onRemoveWebRoute}
+          onEditWebRoute={editWebRoute}
+          onRemovePort={removePort}
+          onRemoveWebRoute={removeWebRoute}
+          onRestart={onRestart}
         />
       ) : (
         <div className="px-4 py-10 text-center">
@@ -384,7 +413,7 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
         </p>
       ) : null}
 
-      {dialog?.mode === "add" ? (
+      {dialog?.mode === "add" || dialog?.mode === "edit-web" ? (
         <AddNetworkRouteDialog
           canAddPort={instance.ports.length < 16}
           canAddWebRoute={(routes?.length ?? 16) < 16}
@@ -394,11 +423,14 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
               : null
           }
           pending={update.isPending || routePending}
+          webRoute={dialog.mode === "edit-web" ? dialog.route : undefined}
           onOpenChange={(open) => {
             if (!open && !update.isPending && !routePending) setDialog(null)
           }}
           onSubmitPort={applyPort}
-          onSubmitWebRoute={onAddWebRoute}
+          onSubmitWebRoute={
+            dialog.mode === "edit-web" ? onEditWebRoute : onAddWebRoute
+          }
         />
       ) : null}
       <PortAllocationDialog
@@ -409,13 +441,6 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
         onOpenChange={(open) => {
           if (!open && !update.isPending) setDialog(null)
         }}
-        onRemove={
-          dialog?.mode === "edit-port" && dialog.allocation.kind === "custom"
-            ? () => {
-                removePort(dialog.allocation)
-              }
-            : undefined
-        }
         onSubmit={applyPort}
       />
     </section>
@@ -443,7 +468,7 @@ const PrimaryPortSummary = React.memo(function PrimaryPortSummary({
     <div className="border-b border-border/70 bg-background/25 px-4 py-3">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
         <div className="flex min-w-40 items-center gap-2.5">
-          <div className="grid size-7 shrink-0 place-items-center border border-primary/20 bg-primary/6 text-primary">
+          <div className="grid size-7 shrink-0 place-items-center border border-emerald-400/25 bg-emerald-400/5 text-emerald-300">
             <Cable className="size-3.5" />
           </div>
           <div>
@@ -453,29 +478,18 @@ const PrimaryPortSummary = React.memo(function PrimaryPortSummary({
             </p>
           </div>
         </div>
-        <dl className="grid min-w-0 flex-1 grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-[7rem_7rem_minmax(10rem,1fr)]">
-          <div>
-            <dt className="text-[9px] text-muted-foreground">Internal port</dt>
-            <dd className="mt-0.5 font-mono text-xs">
-              {allocation.internalPort}
-            </dd>
+        <div className="flex min-w-0 flex-1 items-center gap-8">
+          <span className="w-20 shrink-0 font-mono text-sm text-foreground">
+            {allocation.internalPort}
+          </span>
+          <div className="min-w-0 flex-1">
+            <PublicAddressCopy
+              address={address}
+              label="game server public address"
+              prominent
+            />
           </div>
-          <div>
-            <dt className="text-[9px] text-muted-foreground">Public port</dt>
-            <dd className="mt-0.5 font-mono text-xs">
-              {allocation.externalPort}
-            </dd>
-          </div>
-          <div className="col-span-2 min-w-0 sm:col-span-1">
-            <dt className="text-[9px] text-muted-foreground">Public address</dt>
-            <dd className="mt-0.5 min-w-0">
-              <PublicAddressCopy
-                address={address}
-                label="game server public address"
-              />
-            </dd>
-          </div>
-        </dl>
+        </div>
         {canWrite ? (
           <div className="ml-auto flex shrink-0">
             <Tooltip>
@@ -501,21 +515,33 @@ const PrimaryPortSummary = React.memo(function PrimaryPortSummary({
 })
 
 const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
+  canRestart,
   canWrite,
   disabled,
   instance,
   routePending,
+  routeState,
   routes,
+  restarting,
   onEditPort,
+  onEditWebRoute,
+  onRemovePort,
   onRemoveWebRoute,
+  onRestart,
 }: {
+  canRestart: boolean
   canWrite: boolean
   disabled: boolean
   instance: InstanceWorkspaceInstance
   routePending: boolean
+  routeState: RelayInstanceWebRouteState | undefined
   routes: Array<RelayInstanceWebRoute> | undefined
+  restarting: boolean
   onEditPort: (allocation: RelayInstancePortAllocation) => void
-  onRemoveWebRoute: (routeId: string) => Promise<unknown>
+  onEditWebRoute: (route: RelayInstanceWebRoute) => void
+  onRemovePort: (allocation: RelayInstancePortAllocation) => void
+  onRemoveWebRoute: (route: RelayInstanceWebRoute) => void
+  onRestart: () => void
 }) {
   return (
     <div className="overflow-x-auto">
@@ -531,7 +557,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
             Public port
           </WorkspaceTableHeading>
           <WorkspaceTableHeading>Public address</WorkspaceTableHeading>
-          <WorkspaceTableHeading className="w-[5.5rem] text-right">
+          <WorkspaceTableHeading className="w-[6.5rem] text-right">
             Actions
           </WorkspaceTableHeading>
         </WorkspaceTableHead>
@@ -544,13 +570,16 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
             return (
               <tr key={allocation.id} className="hover:bg-muted/10">
                 <WorkspaceTableCell>
-                  <div className="min-w-0">
-                    <span className="block truncate text-xs font-medium">
-                      {allocation.name}
-                    </span>
-                    <span className="mt-0.5 block font-mono text-[9px] text-muted-foreground uppercase">
-                      {allocation.protocol}
-                    </span>
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <RouteRowIcon kind="port" />
+                    <div className="min-w-0">
+                      <span className="block truncate text-xs font-medium">
+                        {allocation.name}
+                      </span>
+                      <span className="mt-0.5 block font-mono text-[9px] text-muted-foreground uppercase">
+                        {allocation.protocol}
+                      </span>
+                    </div>
                   </div>
                 </WorkspaceTableCell>
                 <WorkspaceTableCell>
@@ -570,23 +599,40 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
                   />
                 </WorkspaceTableCell>
                 <WorkspaceTableCell className="px-2">
-                  <div className="flex justify-end">
+                  <div className="flex justify-end gap-0.5">
                     {canWrite ? (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            aria-label={`Edit ${allocation.name}`}
-                            disabled={disabled}
-                            onClick={() => onEditPort(allocation)}
-                            size="icon-sm"
-                            type="button"
-                            variant="ghost"
-                          >
-                            <Pencil />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Edit allocation</TooltipContent>
-                      </Tooltip>
+                      <>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              aria-label={`Edit ${allocation.name}`}
+                              disabled={disabled}
+                              onClick={() => onEditPort(allocation)}
+                              size="icon-sm"
+                              type="button"
+                              variant="ghost"
+                            >
+                              <Pencil />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Edit allocation</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              aria-label={`Remove ${allocation.name}`}
+                              disabled={disabled}
+                              onClick={() => onRemovePort(allocation)}
+                              size="icon-sm"
+                              type="button"
+                              variant="ghost"
+                            >
+                              <Trash2 />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Remove allocation</TooltipContent>
+                        </Tooltip>
+                      </>
                     ) : null}
                   </div>
                 </WorkspaceTableCell>
@@ -598,14 +644,23 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
             return (
               <tr key={`web-${route.id}`} className="hover:bg-muted/10">
                 <WorkspaceTableCell>
-                  <div className="min-w-0">
-                    <span className="block truncate text-xs font-medium">
-                      {route.hostname}
-                    </span>
-                    <span className="mt-0.5 block truncate font-mono text-[9px] text-muted-foreground">
-                      <span className="uppercase">HTTPS</span>
-                      {route.path ? ` · ${route.path}` : ""}
-                    </span>
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <RouteRowIcon
+                      canRestart={canRestart}
+                      kind="web"
+                      restarting={restarting}
+                      state={routeState}
+                      onRestart={onRestart}
+                    />
+                    <div className="min-w-0">
+                      <span className="block truncate text-xs font-medium">
+                        {route.hostname}
+                      </span>
+                      <span className="mt-0.5 block truncate font-mono text-[9px] text-muted-foreground">
+                        <span className="uppercase">HTTPS</span>
+                        {route.path ? ` · ${route.path}` : ""}
+                      </span>
+                    </div>
                   </div>
                 </WorkspaceTableCell>
                 <WorkspaceTableCell>
@@ -614,9 +669,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
                   </span>
                 </WorkspaceTableCell>
                 <WorkspaceTableCell>
-                  <span className="font-mono text-xs text-muted-foreground">
-                    —
-                  </span>
+                  <span className="font-mono text-xs text-foreground">443</span>
                 </WorkspaceTableCell>
                 <WorkspaceTableCell>
                   <PublicAddressCopy
@@ -625,27 +678,40 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
                   />
                 </WorkspaceTableCell>
                 <WorkspaceTableCell className="px-2">
-                  <div className="flex justify-end">
+                  <div className="flex justify-end gap-0.5">
                     {canWrite ? (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            aria-label={`Remove ${publicUrl}`}
-                            disabled={disabled || routePending}
-                            onClick={() => {
-                              void onRemoveWebRoute(route.id).catch(
-                                () => undefined
-                              )
-                            }}
-                            size="icon-sm"
-                            type="button"
-                            variant="ghost"
-                          >
-                            <Trash2 />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Remove web route</TooltipContent>
-                      </Tooltip>
+                      <>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              aria-label={`Edit ${publicUrl}`}
+                              disabled={disabled || routePending}
+                              onClick={() => onEditWebRoute(route)}
+                              size="icon-sm"
+                              type="button"
+                              variant="ghost"
+                            >
+                              <Pencil />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Edit web route</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              aria-label={`Remove ${publicUrl}`}
+                              disabled={disabled || routePending}
+                              onClick={() => onRemoveWebRoute(route)}
+                              size="icon-sm"
+                              type="button"
+                              variant="ghost"
+                            >
+                              <Trash2 />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Remove web route</TooltipContent>
+                        </Tooltip>
+                      </>
                     ) : null}
                   </div>
                 </WorkspaceTableCell>
@@ -658,12 +724,76 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
   )
 })
 
+const RouteRowIcon = React.memo(function RouteRowIcon({
+  canRestart = false,
+  kind,
+  restarting = false,
+  state,
+  onRestart,
+}: {
+  canRestart?: boolean
+  kind: "port" | "web"
+  restarting?: boolean
+  state?: RelayInstanceWebRouteState
+  onRestart?: () => void
+}) {
+  const pending = state?.status === "pending_restart"
+  const blocked = state?.status === "blocked"
+  const Icon = kind === "web" ? Globe2 : Cable
+
+  if (!pending && !blocked) {
+    return (
+      <div className="grid size-7 shrink-0 place-items-center border border-emerald-400/25 bg-emerald-400/5 text-emerald-300">
+        <Icon className="size-3.5" />
+      </div>
+    )
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          aria-label={
+            pending ? "View route restart warning" : "View route error"
+          }
+          className={`grid size-7 shrink-0 place-items-center border transition-colors ${
+            pending
+              ? "border-amber-400/30 bg-amber-400/5 text-amber-300 hover:bg-amber-400/10"
+              : "border-destructive/35 bg-destructive/5 text-destructive hover:bg-destructive/10"
+          }`}
+          onClick={() => {
+            if (!state) return
+            showRouteStatusToast({
+              canRestart,
+              restarting,
+              state,
+              onRestart,
+            })
+          }}
+          type="button"
+        >
+          {pending ? (
+            <AlertTriangle className="size-3.5" />
+          ) : (
+            <CircleAlert className="size-3.5" />
+          )}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>
+        {pending ? "Restart required" : "View route error"}
+      </TooltipContent>
+    </Tooltip>
+  )
+})
+
 const PublicAddressCopy = React.memo(function PublicAddressCopy({
   address,
   label,
+  prominent = false,
 }: {
   address: string | null
   label: string
+  prominent?: boolean
 }) {
   const { copied, copy } = useCopyFeedback(address ?? "")
 
@@ -680,7 +810,9 @@ const PublicAddressCopy = React.memo(function PublicAddressCopy({
       <TooltipTrigger asChild>
         <button
           aria-label={`Copy ${label}`}
-          className={`flex max-w-full items-center gap-1 font-mono text-[10px] transition-colors ${
+          className={`flex max-w-full items-center gap-1 font-mono transition-colors ${
+            prominent ? "text-sm font-medium" : "text-[10px]"
+          } ${
             copied ? "text-emerald-400" : "text-primary/75 hover:text-primary"
           }`}
           onClick={() => {
@@ -728,6 +860,7 @@ function AddNetworkRouteDialog({
   canAddWebRoute,
   error,
   pending,
+  webRoute,
   onOpenChange,
   onSubmitPort,
   onSubmitWebRoute,
@@ -736,12 +869,13 @@ function AddNetworkRouteDialog({
   canAddWebRoute: boolean
   error: string | null
   pending: boolean
+  webRoute?: RelayInstanceWebRoute
   onOpenChange: (open: boolean) => void
   onSubmitPort: (port: RelayInstancePortInput) => Promise<void>
   onSubmitWebRoute: (route: RelayInstanceWebRouteInput) => Promise<void>
 }) {
   const [routeType, setRouteType] = React.useState<"port" | "web">(
-    canAddPort ? "port" : "web"
+    webRoute ? "web" : canAddPort ? "port" : "web"
   )
   const [validationError, setValidationError] = React.useState<string | null>(
     null
@@ -752,60 +886,65 @@ function AddNetworkRouteDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <p className="font-mono text-[9px] tracking-[0.16em] text-primary uppercase">
-            New route
+            {webRoute ? "Web route" : "New route"}
           </p>
-          <DialogTitle>Add a network route</DialogTitle>
+          <DialogTitle>
+            {webRoute ? "Edit web route" : "Add a network route"}
+          </DialogTitle>
           <DialogDescription>
-            Publish a raw TCP or UDP port, or forward a hostname to an HTTP
-            service inside this Ember.
+            {webRoute
+              ? "Update where this hostname forwards inside the Ember."
+              : "Publish a raw TCP or UDP port, or forward a hostname to an HTTP service inside this Ember."}
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid grid-cols-2 gap-2" role="radiogroup">
-          <Button
-            aria-checked={routeType === "port"}
-            className="h-auto items-start justify-start px-3 py-2.5 text-left"
-            disabled={!canAddPort || pending}
-            onClick={() => {
-              setRouteType("port")
-              setValidationError(null)
-            }}
-            role="radio"
-            type="button"
-            variant={routeType === "port" ? "default" : "outline"}
-          >
-            <Cable className="mt-0.5" />
-            <span>
-              <span className="block text-xs">Port</span>
-              <span className="mt-0.5 block text-[9px] opacity-70">
-                TCP or UDP
+        {!webRoute ? (
+          <div className="grid grid-cols-2 gap-2" role="radiogroup">
+            <Button
+              aria-checked={routeType === "port"}
+              className="h-auto items-start justify-start px-3 py-2.5 text-left"
+              disabled={!canAddPort || pending}
+              onClick={() => {
+                setRouteType("port")
+                setValidationError(null)
+              }}
+              role="radio"
+              type="button"
+              variant={routeType === "port" ? "default" : "outline"}
+            >
+              <Cable className="mt-0.5" />
+              <span>
+                <span className="block text-xs">Port</span>
+                <span className="mt-0.5 block text-[9px] opacity-70">
+                  TCP or UDP
+                </span>
               </span>
-            </span>
-          </Button>
-          <Button
-            aria-checked={routeType === "web"}
-            className="h-auto items-start justify-start px-3 py-2.5 text-left"
-            disabled={!canAddWebRoute || pending}
-            onClick={() => {
-              setRouteType("web")
-              setValidationError(null)
-            }}
-            role="radio"
-            type="button"
-            variant={routeType === "web" ? "default" : "outline"}
-          >
-            <Globe2 className="mt-0.5" />
-            <span>
-              <span className="block text-xs">Web route</span>
-              <span className="mt-0.5 block text-[9px] opacity-70">
-                HTTPS hostname
+            </Button>
+            <Button
+              aria-checked={routeType === "web"}
+              className="h-auto items-start justify-start px-3 py-2.5 text-left"
+              disabled={!canAddWebRoute || pending}
+              onClick={() => {
+                setRouteType("web")
+                setValidationError(null)
+              }}
+              role="radio"
+              type="button"
+              variant={routeType === "web" ? "default" : "outline"}
+            >
+              <Globe2 className="mt-0.5" />
+              <span>
+                <span className="block text-xs">Web route</span>
+                <span className="mt-0.5 block text-[9px] opacity-70">
+                  HTTPS hostname
+                </span>
               </span>
-            </span>
-          </Button>
-        </div>
+            </Button>
+          </div>
+        ) : null}
 
         <form
-          key={routeType}
+          key={webRoute?.id ?? routeType}
           action={async (form) => {
             if (routeType === "port") {
               const parsed = relayInstancePortInputSchema.safeParse({
@@ -827,6 +966,7 @@ function AddNetworkRouteDialog({
 
             const path = String(form.get("path") ?? "").trim()
             const parsed = relayInstanceWebRouteInputSchema.safeParse({
+              id: webRoute?.id,
               hostname: String(form.get("hostname") ?? ""),
               path: path || null,
               stripPrefix: form.get("stripPrefix") === "on",
@@ -902,6 +1042,7 @@ function AddNetworkRouteDialog({
                 <Input
                   autoCapitalize="none"
                   autoCorrect="off"
+                  defaultValue={webRoute?.hostname}
                   name="hostname"
                   placeholder="map.donutsmp.com"
                   required
@@ -910,11 +1051,16 @@ function AddNetworkRouteDialog({
               <div className="grid grid-cols-[minmax(0,1fr)_8rem] gap-3">
                 <label className="block space-y-1.5 text-[11px] font-medium">
                   Path (optional)
-                  <Input name="path" placeholder="/map" />
+                  <Input
+                    defaultValue={webRoute?.path ?? ""}
+                    name="path"
+                    placeholder="/map"
+                  />
                 </label>
                 <label className="block space-y-1.5 text-[11px] font-medium">
                   Internal port
                   <Input
+                    defaultValue={webRoute?.targetPort}
                     max={65_535}
                     min={1}
                     name="targetPort"
@@ -927,7 +1073,7 @@ function AddNetworkRouteDialog({
               <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
                 <input
                   className="accent-primary"
-                  defaultChecked
+                  defaultChecked={webRoute?.stripPrefix ?? true}
                   name="stripPrefix"
                   type="checkbox"
                 />
@@ -955,8 +1101,20 @@ function AddNetworkRouteDialog({
               Cancel
             </DialogClose>
             <Button disabled={pending} type="submit">
-              {pending ? <LoaderCircle className="animate-spin" /> : <Plus />}
-              {pending ? "Adding" : "Add route"}
+              {pending ? (
+                <LoaderCircle className="animate-spin" />
+              ) : webRoute ? (
+                <Pencil />
+              ) : (
+                <Plus />
+              )}
+              {pending
+                ? webRoute
+                  ? "Applying"
+                  : "Adding"
+                : webRoute
+                  ? "Save route"
+                  : "Add route"}
             </Button>
           </DialogFooter>
         </form>
@@ -971,7 +1129,6 @@ function PortAllocationDialog({
   open,
   pending,
   onOpenChange,
-  onRemove,
   onSubmit,
 }: {
   allocation: RelayInstancePortAllocation | null
@@ -979,7 +1136,6 @@ function PortAllocationDialog({
   open: boolean
   pending: boolean
   onOpenChange: (open: boolean) => void
-  onRemove?: () => void
   onSubmit: (port: RelayInstancePortInput) => Promise<void>
 }) {
   const [validationError, setValidationError] = React.useState<string | null>(
@@ -1089,18 +1245,6 @@ function PortAllocationDialog({
           ) : null}
 
           <DialogFooter>
-            {onRemove ? (
-              <Button
-                className="sm:mr-auto"
-                disabled={pending}
-                onClick={onRemove}
-                type="button"
-                variant="destructive"
-              >
-                <Trash2 />
-                Remove
-              </Button>
-            ) : null}
             <DialogClose
               render={
                 <Button disabled={pending} type="button" variant="outline" />
@@ -1154,26 +1298,22 @@ function RouteStatusButton({
               : "w-7 px-0 sm:w-auto sm:px-3"
           }
           onClick={() => {
-            if (pending && canRestart) {
-              onRestart()
-              return
-            }
-            showToast({
-              description: state.message,
-              message: pending ? "Restart required" : "Edge route error",
-              type: pending ? "warning" : "error",
+            showRouteStatusToast({
+              canRestart,
+              restarting,
+              state,
+              onRestart,
             })
           }}
           size="sm"
           type="button"
           variant={pending ? "outline" : "destructive"}
           aria-live="polite"
-          disabled={restarting}
         >
           {pending ? (
             <RotateCw className={restarting ? "animate-spin" : undefined} />
           ) : (
-            <AlertTriangle />
+            <CircleAlert />
           )}
           <span className="hidden sm:inline">
             {pending
@@ -1189,44 +1329,36 @@ function RouteStatusButton({
   )
 }
 
-function usePendingRouteToast({
+function showRouteStatusToast({
   canRestart,
-  instanceId,
-  onRestart,
   restarting,
   state,
+  onRestart,
 }: {
   canRestart: boolean
-  instanceId: string
-  onRestart: () => void
   restarting: boolean
-  state: RelayInstanceWebRouteState | undefined
+  state: RelayInstanceWebRouteState
+  onRestart?: () => void
 }) {
-  React.useEffect(() => {
-    const id = `kiln-web-routes-${instanceId}`
-    if (!state?.requiresRestart) {
-      dismissToast(id)
-      return
-    }
-    showToast({
-      type: "warning",
-      message: "Web route changes need a restart",
-      id,
-      description: state.message,
-      duration: Infinity,
-      ...(canRestart
-        ? {
-            action: {
-              label: restarting ? "Applying..." : "Restart and apply",
-              onClick: onRestart,
-            },
-          }
-        : {}),
-    })
-    return () => {
-      dismissToast(id)
-    }
-  }, [canRestart, instanceId, onRestart, restarting, state])
+  const pending = state.status === "pending_restart"
+  showToast({
+    description: state.message,
+    message: pending ? "Restart required" : "Edge route error",
+    type: pending ? "warning" : "error",
+    ...(pending
+      ? {
+          duration: Infinity,
+          ...(canRestart && !restarting && onRestart
+            ? {
+                action: {
+                  label: "Restart and apply",
+                  onClick: onRestart,
+                },
+              }
+            : {}),
+        }
+      : {}),
+  })
 }
 
 function errorMessage(cause: unknown): string {
