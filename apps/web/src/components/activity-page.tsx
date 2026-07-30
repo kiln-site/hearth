@@ -3,7 +3,9 @@ import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import {
+  ArrowLeftRight,
   CalendarDays,
+  Check,
   ChevronDown,
   CircleGauge,
   FileClock,
@@ -20,16 +22,9 @@ import {
   X,
 } from "lucide-react"
 
+import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
 import { Calendar } from "@workspace/ui/components/calendar"
-import {
-  Combobox,
-  ComboboxContent,
-  ComboboxEmpty,
-  ComboboxInput,
-  ComboboxItem,
-  ComboboxList,
-} from "@workspace/ui/components/combobox"
 import { Input } from "@workspace/ui/components/input"
 import {
   Popover,
@@ -42,6 +37,7 @@ import {
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
 import { useIsMobile } from "@workspace/ui/hooks/use-mobile"
+import { cn } from "@workspace/ui/lib/utils"
 
 import {
   activityLocalRangeToUtc,
@@ -102,32 +98,7 @@ const activityShortDate = new Intl.DateTimeFormat(undefined, {
 })
 
 const minimumActivitySyncFeedbackMs = 500
-const activityTableHeaderHeight = 32
 const activityTableBottomPadding = 12
-
-type ActivityServerOption = ActivityData["servers"][number] & {
-  relayName: string
-  searchText: string
-}
-
-function activityServerLabel(server: ActivityServerOption) {
-  return server.name
-}
-
-function activityServerValue(server: ActivityServerOption) {
-  return `${server.relayId}:${server.id}`
-}
-
-function activityServersEqual(
-  server: ActivityServerOption,
-  value: ActivityServerOption
-) {
-  return server.id === value.id && server.relayId === value.relayId
-}
-
-function filterActivityServer(server: ActivityServerOption, query: string) {
-  return server.searchText.includes(query.trim().toLocaleLowerCase())
-}
 
 export const ActivityPage = React.memo(function ActivityPage({
   filters,
@@ -153,14 +124,14 @@ export const ActivityPage = React.memo(function ActivityPage({
   ].filter(Boolean).length
 
   return (
-    <div className="mx-auto w-full max-w-[90rem] px-3 pb-10 sm:px-5">
+    <div className="mx-auto flex h-full min-h-[34rem] w-full max-w-[90rem] flex-col px-3 pt-3 pb-3 sm:px-5 sm:pt-5 sm:pb-5">
       <ActivityServerFilter
         data={data}
         filters={filters}
         onFiltersChange={onFiltersChange}
       />
 
-      <section className="overflow-hidden rounded-xl border bg-card/45 [contain:paint]">
+      <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card/45 [contain:paint]">
         <ActivityFiltersToolbar
           actors={actors}
           data={data}
@@ -324,49 +295,176 @@ const ActivityServerFilter = React.memo(function ActivityServerFilter({
   )
   const selectedServer =
     servers.find((server) => server.id === filters.server) ?? null
+  const selectedRelayName = filters.relay
+    ? relayNameById.get(filters.relay)
+    : undefined
+  const [pickerOpen, setPickerOpen] = React.useState(false)
+  const [serverQuery, setServerQuery] = React.useState("")
+  const normalizedServerQuery = serverQuery.trim().toLocaleLowerCase()
+  const visibleServers = React.useMemo(
+    () =>
+      normalizedServerQuery
+        ? servers.filter((server) =>
+            server.searchText.includes(normalizedServerQuery)
+          )
+        : servers,
+    [normalizedServerQuery, servers]
+  )
+  const selectionDescription = selectedServer
+    ? "Activity is scoped to this server."
+    : "Activity across every server you can access."
+  const selectionMetadata = selectedServer
+    ? selectedServer.id
+    : `${servers.length} accessible ${
+        servers.length === 1 ? "instance" : "instances"
+      }`
 
   return (
     <div className="mb-3">
-      <Combobox
-        items={servers}
-        value={selectedServer}
-        itemToStringLabel={activityServerLabel}
-        itemToStringValue={activityServerValue}
-        isItemEqualToValue={activityServersEqual}
-        filter={filterActivityServer}
-        onValueChange={(server) =>
-          onFiltersChange({ server: server?.id ?? undefined })
-        }
+      <Popover
+        open={pickerOpen}
+        onOpenChange={(open) => {
+          setPickerOpen(open)
+          if (!open) setServerQuery("")
+        }}
       >
-        <ComboboxInput
-          aria-label="Filter activity by server"
-          className="h-10 w-full bg-card/45"
-          placeholder="All servers — search by name, Relay, or ID"
-          showClear={selectedServer !== null}
-        />
-        <ComboboxContent>
-          <ComboboxEmpty>No accessible servers found.</ComboboxEmpty>
-          <ComboboxList>
-            {(server: ActivityServerOption) => (
-              <ComboboxItem
-                key={`${server.relayId}:${server.id}`}
-                value={server}
-                className="py-2"
+        <div className="flex flex-col gap-3 rounded-xl border border-border/75 bg-card/45 p-4 sm:flex-row sm:items-center">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <span className="grid size-10 shrink-0 place-items-center rounded-lg border border-border/80 bg-background/70 text-muted-foreground">
+              <Server className="size-5" />
+            </span>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="truncate text-sm font-semibold">
+                  {selectedServer?.name ?? "All servers"}
+                </p>
+                <Badge variant="outline" className="font-mono text-[9px]">
+                  {selectedServer?.relayName ??
+                    selectedRelayName ??
+                    "All Relays"}
+                </Badge>
+              </div>
+              <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                {selectionDescription}
+              </p>
+              <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground/70">
+                {selectionMetadata}
+              </p>
+            </div>
+          </div>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+            >
+              <ArrowLeftRight />
+              {selectedServer ? "Change server" : "Choose server"}
+            </Button>
+          </PopoverTrigger>
+        </div>
+        <PopoverContent
+          align="end"
+          className="w-[min(32rem,calc(100vw-2rem))] p-1.5"
+        >
+          <div className="relative mb-1.5">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              autoFocus
+              aria-label="Search accessible servers"
+              className="h-8 pl-8"
+              placeholder="Search by name, Relay, or ID"
+              value={serverQuery}
+              onChange={(event) => setServerQuery(event.currentTarget.value)}
+            />
+          </div>
+          <div
+            role="listbox"
+            aria-label="Accessible servers"
+            className="no-scrollbar max-h-72 space-y-0.5 overflow-y-auto overscroll-contain"
+          >
+            {normalizedServerQuery.length === 0 ? (
+              <button
+                type="button"
+                role="option"
+                aria-selected={selectedServer === null}
+                className={cn(
+                  "flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left transition-colors duration-150",
+                  selectedServer === null
+                    ? "bg-primary/14 ring-1 ring-primary/35"
+                    : "hover:bg-accent/55"
+                )}
+                onClick={() => {
+                  onFiltersChange({ server: undefined })
+                  setPickerOpen(false)
+                }}
               >
-                <Server className="size-4 text-primary" />
-                <span className="min-w-0">
-                  <span className="block truncate font-medium">
-                    {server.name}
+                <span className="grid size-8 shrink-0 place-items-center rounded-md border border-border/70 bg-background/70 text-muted-foreground">
+                  <Server className="size-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-semibold tracking-tight">
+                    All servers
                   </span>
-                  <span className="block truncate font-mono text-[9px] text-muted-foreground">
-                    {server.relayName} · {server.id}
+                  <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                    Every accessible instance
                   </span>
                 </span>
-              </ComboboxItem>
-            )}
-          </ComboboxList>
-        </ComboboxContent>
-      </Combobox>
+                {selectedServer === null ? (
+                  <Check className="size-4 shrink-0 text-primary" />
+                ) : null}
+              </button>
+            ) : null}
+
+            {visibleServers.map((server) => {
+              const selected =
+                selectedServer !== null &&
+                server.id === selectedServer.id &&
+                server.relayId === selectedServer.relayId
+              return (
+                <button
+                  key={`${server.relayId}:${server.id}`}
+                  type="button"
+                  role="option"
+                  aria-selected={selected}
+                  className={cn(
+                    "flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left transition-colors duration-150",
+                    selected
+                      ? "bg-primary/14 ring-1 ring-primary/35"
+                      : "hover:bg-accent/55"
+                  )}
+                  onClick={() => {
+                    onFiltersChange({ server: server.id })
+                    setPickerOpen(false)
+                  }}
+                >
+                  <span className="grid size-8 shrink-0 place-items-center rounded-md border border-border/70 bg-background/70 text-muted-foreground">
+                    <Server className="size-4" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-semibold tracking-tight">
+                      {server.name}
+                    </span>
+                    <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                      {server.relayName} · {server.id}
+                    </span>
+                  </span>
+                  {selected ? (
+                    <Check className="size-4 shrink-0 text-primary" />
+                  ) : null}
+                </button>
+              )
+            })}
+
+            {visibleServers.length === 0 ? (
+              <p className="px-3 py-6 text-center text-xs text-muted-foreground">
+                No accessible servers found.
+              </p>
+            ) : null}
+          </div>
+        </PopoverContent>
+      </Popover>
     </div>
   )
 })
@@ -677,7 +775,7 @@ function ActivityResults({
 
   if (entries.length === 0) {
     return (
-      <div className="grid min-h-40 place-items-center p-8 text-center">
+      <div className="grid min-h-0 flex-1 place-items-center p-8 text-center">
         <div>
           <span className="mx-auto mb-3 grid size-10 place-items-center border border-border bg-muted/35 text-muted-foreground">
             <FileClock className="size-4" />
@@ -695,16 +793,8 @@ function ActivityResults({
     )
   }
 
-  const activityTableHeight =
-    activityTableHeaderHeight +
-    rowVirtualizer.getTotalSize() +
-    activityTableBottomPadding
-
   return (
-    <div
-      className="relative min-h-0 max-h-[min(42rem,calc(100dvh-16rem))]"
-      style={{ height: `${activityTableHeight}px` }}
-    >
+    <div className="relative min-h-0 flex-1">
       <div
         aria-hidden="true"
         className="absolute inset-x-0 top-0 z-10 grid h-8 grid-cols-[5.5rem_minmax(0,1fr)] items-center border-b bg-card/95 px-3 font-mono text-[8px] tracking-[0.12em] text-muted-foreground uppercase backdrop-blur md:grid-cols-[7rem_minmax(8rem,11rem)_minmax(8rem,10rem)_minmax(12rem,1fr)] lg:grid-cols-[8rem_minmax(10rem,14rem)_minmax(9rem,12rem)_minmax(15rem,1fr)]"
