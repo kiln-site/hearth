@@ -6,6 +6,7 @@ import {
   useSuspenseQuery,
 } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
+import { Effect } from "effect"
 import {
   AlertTriangle,
   BrickWall,
@@ -308,16 +309,12 @@ type RouteRemovalState =
   | {
       allocation: RelayInstancePortAllocation
       kind: "port"
-      placement:
-        | { source: "added" }
-        | { index: number; source: "server" }
+      placement: { source: "added" } | { index: number; source: "server" }
       phase: "confirming" | "removing"
     }
   | {
       kind: "web"
-      placement:
-        | { source: "added" }
-        | { index: number; source: "server" }
+      placement: { source: "added" } | { index: number; source: "server" }
       phase: "confirming" | "removing"
       route: RelayInstanceWebRoute
     }
@@ -466,67 +463,93 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
             : route
         )
       )
-      try {
-        const updated = await update.mutateAsync([...portInputs, port])
-        const allocation = updated.ports.find(
-          (candidate) =>
-            candidate.kind === "custom" &&
-            candidate.externalPort === port.externalPort
-        )
-        if (!allocation) {
-          throw new Error("Relay did not return the new port allocation")
-        }
-        setAddedRoutes((current) =>
-          current.map((route) =>
-            route.kind === "port" && route.status === "pending"
-              ? {
-                  allocation,
-                  clientId: route.clientId,
-                  kind: "port",
-                  status: "ready",
+      return Effect.runPromise(
+        Effect.tryPromise({
+          try: () => update.mutateAsync([...portInputs, port]),
+          catch: (cause) => cause,
+        }).pipe(
+          Effect.flatMap((updated) =>
+            Effect.try({
+              try: () => {
+                const allocation = updated.ports.find(
+                  (candidate) =>
+                    candidate.kind === "custom" &&
+                    candidate.externalPort === port.externalPort
+                )
+                if (!allocation) {
+                  throw new Error(
+                    "Relay did not return the new port allocation"
+                  )
                 }
-              : route
-          )
+                setAddedRoutes((current) =>
+                  current.map((route) =>
+                    route.kind === "port" && route.status === "pending"
+                      ? {
+                          allocation,
+                          clientId: route.clientId,
+                          kind: "port",
+                          status: "ready",
+                        }
+                      : route
+                  )
+                )
+              },
+              catch: (cause) => cause,
+            })
+          ),
+          Effect.tapError(() =>
+            Effect.sync(() =>
+              setAddedRoutes((current) =>
+                current.filter(
+                  (route) => route.kind !== "port" || route.status !== "pending"
+                )
+              )
+            )
+          ),
+          Effect.asVoid
         )
-      } catch (cause) {
-        setAddedRoutes((current) =>
-          current.filter(
-            (route) => route.kind !== "port" || route.status !== "pending"
-          )
-        )
-        throw cause
-      }
+      )
     },
     [portInputs, update]
   )
   const addWebRoute = React.useCallback(
-    async (route: RelayInstanceWebRouteInput) => {
-      try {
-        const added = await onAddWebRoute(route)
-        setAddedRoutes((current) =>
-          current.map((currentRoute) =>
-            currentRoute.kind === "web" &&
-            currentRoute.status === "pending"
-              ? {
-                  clientId: currentRoute.clientId,
-                  kind: "web",
-                  route: added,
-                  status: "ready",
-                }
-              : currentRoute
-          )
+    (route: RelayInstanceWebRouteInput) =>
+      Effect.runPromise(
+        Effect.tryPromise({
+          try: () => onAddWebRoute(route),
+          catch: (cause) => cause,
+        }).pipe(
+          Effect.tap((added) =>
+            Effect.sync(() => {
+              setAddedRoutes((current) =>
+                current.map((currentRoute) =>
+                  currentRoute.kind === "web" &&
+                  currentRoute.status === "pending"
+                    ? {
+                        clientId: currentRoute.clientId,
+                        kind: "web",
+                        route: added,
+                        status: "ready",
+                      }
+                    : currentRoute
+                )
+              )
+            })
+          ),
+          Effect.tapError(() =>
+            Effect.sync(() =>
+              setAddedRoutes((current) =>
+                current.filter(
+                  (currentRoute) =>
+                    currentRoute.kind !== "web" ||
+                    currentRoute.status !== "pending"
+                )
+              )
+            )
+          ),
+          Effect.asVoid
         )
-      } catch (cause) {
-        setAddedRoutes((current) =>
-          current.filter(
-            (currentRoute) =>
-              currentRoute.kind !== "web" ||
-              currentRoute.status !== "pending"
-          )
-        )
-        throw cause
-      }
-    },
+      ),
     [onAddWebRoute]
   )
   const removePort = React.useCallback(
@@ -600,45 +623,50 @@ const ConfiguredRoutesSection = React.memo(function ConfiguredRoutesSection({
   const confirmRemoval = React.useCallback(async () => {
     if (!removal || removal.phase !== "confirming") return
     setRemoval({ ...removal, phase: "removing" })
-    try {
-      if (removal.kind === "port") {
-        await update.mutateAsync(
-          portInputs.filter((port) => port.id !== removal.allocation.id)
-        )
-        setRemovedRouteKeys((current) => {
-          const next = new Set(current)
-          next.add(portRemovalKey(removal.allocation.id))
-          return next
-        })
-        setAddedRoutes((current) =>
-          current.filter(
-            (route) =>
-              route.kind !== "port" ||
-              route.status !== "ready" ||
-              route.allocation.id !== removal.allocation.id
-          )
-        )
-      } else {
-        await onRemoveWebRoute(removal.route.id)
-        setRemovedRouteKeys((current) => {
-          const next = new Set(current)
-          next.add(webRouteRemovalKey(removal.route.id))
-          return next
-        })
-        setAddedRoutes((current) =>
-          current.filter(
-            (currentRoute) =>
-              currentRoute.kind !== "web" ||
-              currentRoute.status !== "ready" ||
-              currentRoute.route.id !== removal.route.id
-          )
-        )
-      }
-    } catch {
-      // Mutation state renders the Relay error below the table.
-    } finally {
-      setRemoval(null)
-    }
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => {
+          if (removal.kind === "port") {
+            await update.mutateAsync(
+              portInputs.filter((port) => port.id !== removal.allocation.id)
+            )
+            setRemovedRouteKeys((current) => {
+              const next = new Set(current)
+              next.add(portRemovalKey(removal.allocation.id))
+              return next
+            })
+            setAddedRoutes((current) =>
+              current.filter(
+                (route) =>
+                  route.kind !== "port" ||
+                  route.status !== "ready" ||
+                  route.allocation.id !== removal.allocation.id
+              )
+            )
+          } else {
+            await onRemoveWebRoute(removal.route.id)
+            setRemovedRouteKeys((current) => {
+              const next = new Set(current)
+              next.add(webRouteRemovalKey(removal.route.id))
+              return next
+            })
+            setAddedRoutes((current) =>
+              current.filter(
+                (currentRoute) =>
+                  currentRoute.kind !== "web" ||
+                  currentRoute.status !== "ready" ||
+                  currentRoute.route.id !== removal.route.id
+              )
+            )
+          }
+        },
+        catch: (cause) => cause,
+      }).pipe(
+        // Mutation state renders the Relay error below the table.
+        Effect.catch(() => Effect.succeed(undefined)),
+        Effect.ensuring(Effect.sync(() => setRemoval(null)))
+      )
+    )
   }, [onRemoveWebRoute, portInputs, removal, update])
 
   return (
@@ -841,9 +869,7 @@ const ConfiguredRoutesTable = React.memo(function ConfiguredRoutesTable({
     if (
       removal?.kind !== "port" ||
       removal.placement.source !== "server" ||
-      current.some(
-        (allocation) => allocation.id === removal.allocation.id
-      )
+      current.some((allocation) => allocation.id === removal.allocation.id)
     ) {
       return current
     }
@@ -1575,11 +1601,7 @@ function ProvisioningRouteRow({
       </WorkspaceTableCell>
       <WorkspaceTableCell>
         {showCopy ? (
-          <PublicAddressCopy
-            address={address}
-            label={copyLabel}
-            prominent
-          />
+          <PublicAddressCopy address={address} label={copyLabel} prominent />
         ) : (
           <span className="block truncate font-mono text-sm font-medium text-muted-foreground">
             {address}
@@ -1804,8 +1826,9 @@ function usePortLease({
   const [portValue, setPortValueState] = React.useState("")
   const [sealed, setSealed] = React.useState(false)
   const generation = React.useRef(0)
-  const leasePromiseRef =
-    React.useRef<Promise<RelayInstancePortLease> | null>(null)
+  const leasePromiseRef = React.useRef<Promise<RelayInstancePortLease> | null>(
+    null
+  )
   const leaseRef = React.useRef<RelayInstancePortLease | null>(null)
   const portDirty = React.useRef(false)
   const portValueRef = React.useRef("")
@@ -1885,49 +1908,57 @@ function usePortLease({
 
     async function renew() {
       const currentLease = leaseRef.current
-      if (
-        !currentLease ||
-        currentLease.id !== lease?.id ||
-        sealedRef.current
-      ) {
+      if (!currentLease || currentLease.id !== lease?.id || sealedRef.current) {
         return
       }
-      try {
-        const nextLease = await reserveInstancePort({
-          data: {
-            instanceId,
-            leaseId: currentLease.id,
-            protocol,
-            relayId,
-          },
-        })
-        if (sealedRef.current) {
-          if (nextLease.id !== currentLease.id) {
-            void releaseInstancePort({
-              data: { instanceId, leaseId: nextLease.id, relayId },
-            }).catch(() => undefined)
-          }
-          return
-        }
-        if (cancelled || leaseRef.current?.id !== currentLease.id) {
-          void releaseInstancePort({
-            data: { instanceId, leaseId: nextLease.id, relayId },
-          }).catch(() => undefined)
-          return
-        }
-        leaseRef.current = nextLease
-        setLease(nextLease)
-        if (!portDirty.current) {
-          portValueRef.current = String(nextLease.externalPort)
-          setPortValueState(portValueRef.current)
-        }
-        setError(null)
-      } catch (cause) {
-        if (!cancelled && !sealedRef.current) {
-          setError(errorMessage(cause))
-          timer = window.setTimeout(renew, 10_000)
-        }
-      }
+      await Effect.runPromise(
+        Effect.tryPromise({
+          try: () =>
+            reserveInstancePort({
+              data: {
+                instanceId,
+                leaseId: currentLease.id,
+                protocol,
+                relayId,
+              },
+            }),
+          catch: (cause) => cause,
+        }).pipe(
+          Effect.tap((nextLease) =>
+            Effect.sync(() => {
+              if (sealedRef.current) {
+                if (nextLease.id !== currentLease.id) {
+                  void releaseInstancePort({
+                    data: { instanceId, leaseId: nextLease.id, relayId },
+                  }).catch(() => undefined)
+                }
+                return
+              }
+              if (cancelled || leaseRef.current?.id !== currentLease.id) {
+                void releaseInstancePort({
+                  data: { instanceId, leaseId: nextLease.id, relayId },
+                }).catch(() => undefined)
+                return
+              }
+              leaseRef.current = nextLease
+              setLease(nextLease)
+              if (!portDirty.current) {
+                portValueRef.current = String(nextLease.externalPort)
+                setPortValueState(portValueRef.current)
+              }
+              setError(null)
+            })
+          ),
+          Effect.catch((cause) =>
+            Effect.sync(() => {
+              if (!cancelled && !sealedRef.current) {
+                setError(errorMessage(cause))
+                timer = window.setTimeout(renew, 10_000)
+              }
+            })
+          )
+        )
+      )
     }
 
     return () => {
@@ -1968,53 +1999,67 @@ function usePortLease({
 
     setPending(true)
     setError(null)
-    try {
-      const nextLease = await reserveInstancePort({
-        data: {
-          externalPort,
-          instanceId,
-          leaseId: currentLease.id,
-          protocol,
-          relayId,
+    return Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => {
+          const nextLease = await reserveInstancePort({
+            data: {
+              externalPort,
+              instanceId,
+              leaseId: currentLease.id,
+              protocol,
+              relayId,
+            },
+          })
+          if (generation.current !== currentGeneration) {
+            void releaseInstancePort({
+              data: { instanceId, leaseId: nextLease.id, relayId },
+            }).catch(() => undefined)
+            throw new Error("Port reservation dialog was closed")
+          }
+          leaseRef.current = nextLease
+          portDirty.current = false
+          setLease(nextLease)
+          portValueRef.current = String(nextLease.externalPort)
+          setPortValueState(portValueRef.current)
+          return nextLease
         },
-      })
-      if (generation.current !== currentGeneration) {
-        void releaseInstancePort({
-          data: { instanceId, leaseId: nextLease.id, relayId },
-        }).catch(() => undefined)
-        throw new Error("Port reservation dialog was closed")
-      }
-      leaseRef.current = nextLease
-      portDirty.current = false
-      setLease(nextLease)
-      portValueRef.current = String(nextLease.externalPort)
-      setPortValueState(portValueRef.current)
-      return nextLease
-    } catch (cause) {
-      if (generation.current === currentGeneration) {
-        setError(errorMessage(cause))
-      }
-      throw cause
-    } finally {
-      if (generation.current === currentGeneration) {
-        setPending(false)
-      }
-    }
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.tapError((cause) =>
+          Effect.sync(() => {
+            if (generation.current === currentGeneration) {
+              setError(errorMessage(cause))
+            }
+          })
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (generation.current === currentGeneration) {
+              setPending(false)
+            }
+          })
+        )
+      )
+    )
   }, [instanceId, protocol, relayId])
 
   const commitForSubmit = React.useCallback(async () => {
     const currentGeneration = generation.current
     sealedRef.current = true
     setSealed(true)
-    try {
-      return await commit()
-    } catch (cause) {
-      if (generation.current === currentGeneration) {
-        sealedRef.current = false
-        setSealed(false)
-      }
-      throw cause
-    }
+    return Effect.runPromise(
+      Effect.tryPromise({ try: commit, catch: (cause) => cause }).pipe(
+        Effect.tapError(() =>
+          Effect.sync(() => {
+            if (generation.current === currentGeneration) {
+              sealedRef.current = false
+              setSealed(false)
+            }
+          })
+        )
+      )
+    )
   }, [commit])
 
   return {
@@ -2733,16 +2778,23 @@ function formatPortProtocol(protocol: RelayInstancePortProtocol): string {
 }
 
 async function copyToClipboard(value: string) {
-  try {
-    await navigator.clipboard.writeText(value)
-  } catch {
-    const textarea = document.createElement("textarea")
-    textarea.value = value
-    textarea.style.position = "fixed"
-    textarea.style.opacity = "0"
-    document.body.append(textarea)
-    textarea.select()
-    document.execCommand("copy")
-    textarea.remove()
-  }
+  await Effect.runPromise(
+    Effect.tryPromise({
+      try: () => navigator.clipboard.writeText(value),
+      catch: (cause) => cause,
+    }).pipe(
+      Effect.catch(() =>
+        Effect.sync(() => {
+          const textarea = document.createElement("textarea")
+          textarea.value = value
+          textarea.style.position = "fixed"
+          textarea.style.opacity = "0"
+          document.body.append(textarea)
+          textarea.select()
+          document.execCommand("copy")
+          textarea.remove()
+        })
+      )
+    )
+  )
 }

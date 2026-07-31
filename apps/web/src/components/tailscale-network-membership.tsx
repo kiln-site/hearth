@@ -6,6 +6,7 @@ import {
   useSuspenseQuery,
 } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
+import { Effect } from "effect"
 import {
   Check,
   CheckCircle2,
@@ -1848,18 +1849,28 @@ async function recoverTailscaleIntegrationStatus(
   // Applying split DNS briefly changes the browser's network configuration on
   // the same Mac. Chromium cancels the successful request with
   // ERR_NETWORK_CHANGED, so verify the persisted result once networking settles.
-  for (const delay of [250, 500, 1_000, 2_000, 3_000]) {
-    await new Promise((resolve) => setTimeout(resolve, delay))
-    try {
-      const result = await getTailscaleIntegrationStatus({
-        data: { id: stackId },
-      })
-      if (tailscaleSetupVerified(result.inspection)) return result
-    } catch {
-      // The DNS transition may cancel more than one request.
-    }
-  }
-  throw originalError
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      for (const delay of [250, 500, 1_000, 2_000, 3_000]) {
+        yield* Effect.sleep(delay)
+        const result = yield* Effect.tryPromise({
+          try: () =>
+            getTailscaleIntegrationStatus({
+              data: { id: stackId },
+            }),
+          catch: (cause) => cause,
+        }).pipe(Effect.option)
+        if (
+          result._tag === "Some" &&
+          tailscaleSetupVerified(result.value.inspection)
+        ) {
+          return result.value
+        }
+        // The DNS transition may cancel more than one request.
+      }
+      return yield* Effect.fail(originalError)
+    })
+  )
 }
 
 function findBinding(
