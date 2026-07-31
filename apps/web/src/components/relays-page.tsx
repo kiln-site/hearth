@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-query"
 import type { QueryClient } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
+import { Effect } from "effect"
 import {
   Check,
   CircleAlert,
@@ -828,18 +829,30 @@ const RelayPauseButton = React.memo(function RelayPauseButton({
     pendingRef.current = true
     setPending(true)
     const relayIdentity = { id: relayId, name: relay.name }
-    try {
-      if (relay.enabled) await pauseRelay(queryClient, relayIdentity)
-      else await resumeRelay(queryClient, relayIdentity)
-    } catch (cause) {
-      showRelayError(
-        cause,
-        relay.enabled ? "Could not pause Relay" : "Could not resume Relay"
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: () =>
+          relay.enabled
+            ? pauseRelay(queryClient, relayIdentity)
+            : resumeRelay(queryClient, relayIdentity),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() =>
+            showRelayError(
+              cause,
+              relay.enabled ? "Could not pause Relay" : "Could not resume Relay"
+            )
+          )
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            pendingRef.current = false
+            setPending(false)
+          })
+        )
       )
-    } finally {
-      pendingRef.current = false
-      setPending(false)
-    }
+    )
   }
 
   if (!relay) return null
@@ -905,17 +918,29 @@ const RelayDeleteButton = React.memo(function RelayDeleteButton({
     if (!window.confirm(`Remove ${name} from Hearth?`)) return
     pendingRef.current = true
     setPending(true)
-    try {
-      await removeMutation.mutateAsync({ data: { id: relayId } })
-      dismissToast(relayPausedToastId(relayId))
-      dismissToast(relayResumedToastId(relayId))
-      dismissToast(relayResumeErrorToastId(relayId))
-    } catch (cause) {
-      showRelayError(cause, "Could not remove Relay")
-    } finally {
-      pendingRef.current = false
-      setPending(false)
-    }
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: () => removeMutation.mutateAsync({ data: { id: relayId } }),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            dismissToast(relayPausedToastId(relayId))
+            dismissToast(relayResumedToastId(relayId))
+            dismissToast(relayResumeErrorToastId(relayId))
+          })
+        ),
+        Effect.catch((cause) =>
+          Effect.sync(() => showRelayError(cause, "Could not remove Relay"))
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            pendingRef.current = false
+            setPending(false)
+          })
+        )
+      )
+    )
   }
 
   return (
@@ -1186,35 +1211,43 @@ function AddRelayDialog({
     event.preventDefault()
     setPending(true)
     setFeedback(null)
-    try {
-      if (!reviewedPairing) {
-        const form = new FormData(event.currentTarget)
-        const pairingUri = String(form.get("pairingUri") ?? "").trim()
-        const preview = await previewRelayPairing({ data: { pairingUri } })
-        setReviewedPairing({ pairingUri, preview })
-        return
-      }
-      const relay = await addMutation.mutateAsync({
-        data: { pairingUri: reviewedPairing.pairingUri },
-      })
-      const repaired = reviewedPairing.preview.mode === "repair"
-      showToast({
-        type: "success",
-        message: repaired ? `${relay.name} repaired` : `${relay.name} paired`,
-        description: repaired
-          ? "The Relay connection was repaired without replacing its Hearth data."
-          : "The Relay is now available to Hearth.",
-        duration: 4_000,
-      })
-      onOpenChange(false)
-      setFeedback(null)
-      setReviewedPairing(null)
-      formRef.current?.reset()
-    } catch (cause) {
-      setFeedback(pairingFeedbackFrom(cause))
-    } finally {
-      setPending(false)
-    }
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => {
+          if (!reviewedPairing) {
+            const form = new FormData(event.currentTarget)
+            const pairingUri = String(form.get("pairingUri") ?? "").trim()
+            const preview = await previewRelayPairing({ data: { pairingUri } })
+            setReviewedPairing({ pairingUri, preview })
+            return
+          }
+          const relay = await addMutation.mutateAsync({
+            data: { pairingUri: reviewedPairing.pairingUri },
+          })
+          const repaired = reviewedPairing.preview.mode === "repair"
+          showToast({
+            type: "success",
+            message: repaired
+              ? `${relay.name} repaired`
+              : `${relay.name} paired`,
+            description: repaired
+              ? "The Relay connection was repaired without replacing its Hearth data."
+              : "The Relay is now available to Hearth.",
+            duration: 4_000,
+          })
+          onOpenChange(false)
+          setFeedback(null)
+          setReviewedPairing(null)
+          formRef.current?.reset()
+        },
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() => setFeedback(pairingFeedbackFrom(cause)))
+        ),
+        Effect.ensuring(Effect.sync(() => setPending(false)))
+      )
+    )
   }
 
   return (
@@ -1480,38 +1513,46 @@ function EditRelayDialog({
     }
 
     setPending(true)
-    try {
-      if (parsedName.data !== relay.name) {
-        await updateName.mutateAsync({
-          data: { name: parsedName.data, relayId: relay.id },
-        })
-      }
-      await updateConnection.mutateAsync({
-        data: {
-          id: relay.id,
-          ...parsedConnection.data,
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => {
+          if (parsedName.data !== relay.name) {
+            await updateName.mutateAsync({
+              data: { name: parsedName.data, relayId: relay.id },
+            })
+          }
+          await updateConnection.mutateAsync({
+            data: {
+              id: relay.id,
+              ...parsedConnection.data,
+            },
+          })
+          if (parsedProxy?.success) {
+            await updateProxy.mutateAsync({
+              data: {
+                relayId: relay.id,
+                ...parsedProxy.data,
+              },
+            })
+          }
+          showToast({
+            type: "success",
+            message: `${parsedName.data} updated`,
+            description: "Relay connection settings were saved.",
+            duration: 4_000,
+          })
+          onOpenChange(false)
         },
-      })
-      if (parsedProxy?.success) {
-        await updateProxy.mutateAsync({
-          data: {
-            relayId: relay.id,
-            ...parsedProxy.data,
-          },
-        })
-      }
-      showToast({
-        type: "success",
-        message: `${parsedName.data} updated`,
-        description: "Relay connection settings were saved.",
-        duration: 4_000,
-      })
-      onOpenChange(false)
-    } catch (cause) {
-      setFeedback(messageFrom(cause, "Could not update Relay"))
-    } finally {
-      setPending(false)
-    }
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() =>
+            setFeedback(messageFrom(cause, "Could not update Relay"))
+          )
+        ),
+        Effect.ensuring(Effect.sync(() => setPending(false)))
+      )
+    )
   }
 
   return (
@@ -1970,12 +2011,19 @@ async function resumeRelay(
   dismissToast(relayResumeErrorToastId(relay.id))
   const pending = performRelayResume(queryClient, relay)
   pendingRelayResumes.set(relay.id, pending)
-  try {
-    await pending
-  } finally {
-    if (pendingRelayResumes.get(relay.id) === pending)
-      pendingRelayResumes.delete(relay.id)
-  }
+  await Effect.runPromise(
+    Effect.tryPromise({
+      try: () => pending,
+      catch: (cause) => cause,
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (pendingRelayResumes.get(relay.id) === pending)
+            pendingRelayResumes.delete(relay.id)
+        })
+      )
+    )
+  )
 }
 
 async function performRelayResume(

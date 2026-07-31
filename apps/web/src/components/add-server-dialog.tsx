@@ -1,6 +1,7 @@
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
+import { Effect, Result } from "effect"
 import { CircleAlert, HardDrive, LoaderCircle, Rocket } from "lucide-react"
 import {
   DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
@@ -296,28 +297,40 @@ const AddServerConfiguration = React.memo(function AddServerConfiguration({
     }
 
     submittingRef.current = true
-    try {
-      await onProvision({
-        data: {
-          diskLimitBytes,
-          name: name.trim() || "New server",
-          recipe,
-          relayId,
-          start: false,
-          variables:
-            selection.kind === "catalog"
-              ? defaultBrickVariables(selection.brick)
-              : {},
-        },
-      })
-    } catch (cause) {
-      setFailure({
-        selectionIdentity,
-        message: cause instanceof Error ? cause.message : "Could not provision",
-      })
-    } finally {
-      submittingRef.current = false
-    }
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: () =>
+          onProvision({
+            data: {
+              diskLimitBytes,
+              name: name.trim() || "New server",
+              recipe,
+              relayId,
+              start: false,
+              variables:
+                selection.kind === "catalog"
+                  ? defaultBrickVariables(selection.brick)
+                  : {},
+            },
+          }),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() =>
+            setFailure({
+              selectionIdentity,
+              message:
+                cause instanceof Error ? cause.message : "Could not provision",
+            })
+          )
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            submittingRef.current = false
+          })
+        )
+      )
+    )
   }
 
   const canProvision =
@@ -457,11 +470,10 @@ function diskLimitBytesFromFormValue(
 }
 
 function relayDisplayHost(relay: PersistedRelay): string {
-  try {
-    return new URL(relay.browserOrigin).hostname || relay.hostname
-  } catch {
-    return relay.hostname
-  }
+  return Result.getOrElse(
+    Result.try(() => new URL(relay.browserOrigin).hostname || relay.hostname),
+    () => relay.hostname
+  )
 }
 
 function relaySupportsSelection(

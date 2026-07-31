@@ -1,6 +1,7 @@
 import * as React from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import type { QueryClient } from "@tanstack/react-query"
+import { Effect } from "effect"
 import { Check, Copy, LoaderCircle, Trash2, TriangleAlert } from "lucide-react"
 
 import { Button } from "@workspace/ui/components/button"
@@ -57,34 +58,56 @@ export const ServerDeleteDialog = React.memo(function ServerDeleteDialog({
   )
 
   async function copyServerId() {
-    try {
-      await navigator.clipboard.writeText(target.id)
-      setCopied(true)
-      setError(null)
-    } catch {
-      setError("Could not copy the server ID. Select and copy it manually.")
-    }
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: () => navigator.clipboard.writeText(target.id),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.match({
+          onFailure: () =>
+            setError(
+              "Could not copy the server ID. Select and copy it manually."
+            ),
+          onSuccess: () => {
+            setCopied(true)
+            setError(null)
+          },
+        })
+      )
+    )
   }
 
   async function removeServer(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!confirmed || !password || pending) return
     setError(null)
-    try {
-      await deletion.mutateAsync({
-        data: {
-          confirmation,
-          instanceId: target.id,
-          password,
-          relayId: target.relayId,
-        },
-      })
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Could not delete the server."
+    const deleted = await Effect.runPromise(
+      Effect.tryPromise({
+        try: () =>
+          deletion.mutateAsync({
+            data: {
+              confirmation,
+              instanceId: target.id,
+              password,
+              relayId: target.relayId,
+            },
+          }),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.match({
+          onFailure: (cause) => {
+            setError(
+              cause instanceof Error
+                ? cause.message
+                : "Could not delete the server."
+            )
+            return false
+          },
+          onSuccess: () => true,
+        })
       )
-      return
-    }
+    )
+    if (!deleted) return
 
     showToast({
       type: "success",
@@ -93,11 +116,16 @@ export const ServerDeleteDialog = React.memo(function ServerDeleteDialog({
       duration: 5_000,
     })
     onOpenChange(false)
-    try {
-      await onDeleted?.()
-    } catch {
-      window.location.assign("/infra/servers")
-    }
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => onDeleted?.(),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catch(() =>
+          Effect.sync(() => window.location.assign("/infra/servers"))
+        )
+      )
+    )
   }
 
   return (
