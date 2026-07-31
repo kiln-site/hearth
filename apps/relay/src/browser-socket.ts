@@ -6,7 +6,7 @@ import {
   verify,
 } from "node:crypto"
 import type { ReadStream } from "node:fs"
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 import { WebSocket, WebSocketServer } from "ws"
 import * as Sentry from "@sentry/node"
 
@@ -34,7 +34,6 @@ import type { RelayInstanceConfig } from "./config.js"
 import type { RelayIdentity } from "./effect/identity.js"
 import type { RelayClientGrant, RelayStateStore } from "./effect/state.js"
 import type { RelaySnapshotSample } from "./snapshot-hub.js"
-import type { Effect } from "effect"
 import type { Server } from "node:http"
 import type { IncomingMessage, ServerResponse } from "node:http"
 
@@ -626,57 +625,63 @@ async function handleBrowserFileRequest(
       return true
     }
     if (method === "PUT") {
-      const uploaded = await options.filesystem.upload(instance, path, request)
+      const uploaded = await options.runEffect(
+        options.filesystem.upload(instance, path, request)
+      )
       void auditBrowserTransfer(options, authentication, method, uploaded.size)
       browserJson(response, 200, uploaded, origin)
       return true
     }
-    const download = await options.filesystem.download(instance, path)
-    try {
-      const range = parseRange(request.headers.range, download.size)
-      const headers = browserCorsHeaders(origin, {
-        "Accept-Ranges": "bytes",
-        "Cache-Control": "no-store",
-        "Content-Disposition": contentDisposition(download.name),
-        "Content-Length": String(
-          range ? range.end - range.start + 1 : download.size
-        ),
-        "Content-Type": "application/octet-stream",
-        "Last-Modified": new Date(download.modifiedAt).toUTCString(),
-        "X-Content-Type-Options": "nosniff",
-      })
-      if (range)
-        headers["Content-Range"] =
-          `bytes ${range.start}-${range.end}/${download.size}`
-      response.writeHead(range ? 206 : 200, headers)
-      if (method === "HEAD") {
-        response.end()
-        void auditBrowserTransfer(
-          options,
-          authentication,
-          method,
-          0,
-          "completed"
-        )
-        return true
-      }
-      const streamOptions = range
-        ? { autoClose: false, end: range.end, start: range.start }
-        : { autoClose: false }
-      const result = await streamDownload(
-        download.file.createReadStream(streamOptions),
-        response
+    await options.runEffect(
+      options.filesystem.withDownload(instance, path, (download) =>
+        Effect.tryPromise({
+          try: async () => {
+            const range = parseRange(request.headers.range, download.size)
+            const headers = browserCorsHeaders(origin, {
+              "Accept-Ranges": "bytes",
+              "Cache-Control": "no-store",
+              "Content-Disposition": contentDisposition(download.name),
+              "Content-Length": String(
+                range ? range.end - range.start + 1 : download.size
+              ),
+              "Content-Type": "application/octet-stream",
+              "Last-Modified": new Date(download.modifiedAt).toUTCString(),
+              "X-Content-Type-Options": "nosniff",
+            })
+            if (range)
+              headers["Content-Range"] =
+                `bytes ${range.start}-${range.end}/${download.size}`
+            response.writeHead(range ? 206 : 200, headers)
+            if (method === "HEAD") {
+              response.end()
+              void auditBrowserTransfer(
+                options,
+                authentication,
+                method,
+                0,
+                "completed"
+              )
+              return
+            }
+            const streamOptions = range
+              ? { autoClose: false, end: range.end, start: range.start }
+              : { autoClose: false }
+            const result = await streamDownload(
+              download.file.createReadStream(streamOptions),
+              response
+            )
+            void auditBrowserTransfer(
+              options,
+              authentication,
+              method,
+              result.bytes,
+              result.completed ? "completed" : "aborted"
+            )
+          },
+          catch: (cause) => cause,
+        })
       )
-      void auditBrowserTransfer(
-        options,
-        authentication,
-        method,
-        result.bytes,
-        result.completed ? "completed" : "aborted"
-      )
-    } finally {
-      await download.file.close()
-    }
+    )
   } catch (cause) {
     Sentry.captureException(cause, {
       tags: {

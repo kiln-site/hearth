@@ -93,3 +93,17 @@ export class RelayPairingError extends Schema.TaggedErrorClass<RelayPairingError
     return this.code
   }
 }
+
+export class RelayFilesystemError extends Schema.TaggedErrorClass<RelayFilesystemError>()(
+  "RelayFilesystemError",
+  {
+    code: Schema.String,
+    operation: Schema.String,
+    reason: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  }
+) {
+  override get message() {
+    return this.reason
+  }
+}

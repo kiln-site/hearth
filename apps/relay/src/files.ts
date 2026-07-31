@@ -5,8 +5,8 @@ import {
   readFile,
   realpath,
   rename,
+  rm,
   stat,
-  unlink,
   writeFile,
 } from "node:fs/promises"
 import { constants as fsConstants } from "node:fs"
@@ -15,6 +15,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { gunzip } from "node:zlib"
 import { promisify } from "node:util"
+import { Effect, Stream } from "effect"
 
 import type {
   RelayFileContent,
@@ -24,6 +25,7 @@ import type {
 } from "@workspace/contracts"
 
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
+import { RelayFilesystemError } from "./effect/errors.js"
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024
 const MAX_LOG_SHARE_BYTES = 10 * 1024 * 1024
@@ -39,297 +41,404 @@ export class FilesystemDriver {
     this.#config = config
   }
 
-  async tree(instance: RelayInstanceConfig): Promise<RelayFileTree> {
-    const root = await this.#instanceRoot(instance)
-    const paths: Array<string> = []
-    let truncated = false
+  tree(instance: RelayInstanceConfig) {
+    return Effect.gen({ self: this }, function* () {
+      const root = yield* this.#instanceRoot(instance)
+      const paths: Array<string> = []
+      let truncated = false
 
-    const visit = async (directory: string, depth: number): Promise<void> => {
-      if (paths.length >= MAX_TREE_ITEMS || depth > MAX_TREE_DEPTH) {
-        truncated = true
-        return
-      }
+      const visit = (
+        directory: string,
+        depth: number
+      ): Effect.Effect<void, RelayFilesystemError> =>
+        Effect.gen(function* () {
+          if (paths.length >= MAX_TREE_ITEMS || depth > MAX_TREE_DEPTH) {
+            truncated = true
+            return
+          }
 
-      const entries = []
-      for await (const entry of await opendir(directory)) entries.push(entry)
-      entries.sort((left, right) => {
-        if (left.isDirectory() !== right.isDirectory()) {
-          return left.isDirectory() ? -1 : 1
-        }
-        return left.name.localeCompare(right.name)
-      })
+          const entries = yield* filesystemOperation(
+            "tree.readDirectory",
+            async () => {
+              const values = []
+              for await (const entry of await opendir(directory)) {
+                values.push(entry)
+              }
+              return values
+            }
+          )
+          entries.sort((left, right) => {
+            if (left.isDirectory() !== right.isDirectory()) {
+              return left.isDirectory() ? -1 : 1
+            }
+            return left.name.localeCompare(right.name)
+          })
 
-      for (const entry of entries) {
-        if (paths.length >= MAX_TREE_ITEMS) {
-          truncated = true
-          break
-        }
-        const absolute = join(directory, entry.name)
-        const path = relative(root, absolute).split(sep).join("/")
-        if (entry.isDirectory()) {
-          paths.push(`${path}/`)
-          await visit(absolute, depth + 1)
-        } else if (entry.isFile() || entry.isSymbolicLink()) {
-          paths.push(path)
-        }
-      }
-    }
+          for (const entry of entries) {
+            if (paths.length >= MAX_TREE_ITEMS) {
+              truncated = true
+              break
+            }
+            const absolute = join(directory, entry.name)
+            const path = relative(root, absolute).split(sep).join("/")
+            if (entry.isDirectory()) {
+              paths.push(`${path}/`)
+              yield* visit(absolute, depth + 1)
+            } else if (entry.isFile() || entry.isSymbolicLink()) {
+              paths.push(path)
+            }
+          }
+        })
 
-    await visit(root, 0)
-    return {
-      instanceId: instance.id,
-      paths,
-      total: paths.length,
-      truncated,
-    }
+      yield* visit(root, 0)
+      return {
+        instanceId: instance.id,
+        paths,
+        total: paths.length,
+        truncated,
+      } satisfies RelayFileTree
+    }).pipe(Effect.withSpan("relay.files.tree"))
   }
 
-  async read(
-    instance: RelayInstanceConfig,
-    requestedPath: string
-  ): Promise<RelayFileContent> {
-    const path = await this.#existingFile(instance, requestedPath)
-    const metadata = await stat(path)
-    if (metadata.size > MAX_FILE_BYTES) {
-      throw new RelayFilesystemError(
-        "file_too_large",
-        `Files larger than ${MAX_FILE_BYTES} bytes cannot be edited`
-      )
-    }
-    const compressed = requestedPath.toLowerCase().endsWith(".log.gz")
-    if (requestedPath.toLowerCase().endsWith(".gz") && !compressed) {
-      throw new RelayFilesystemError(
-        "unsupported_file",
-        "Only Minecraft .log.gz archives can be previewed"
-      )
-    }
-
-    const source = await readFile(path)
-    let decoded = source
-    if (compressed) {
-      try {
-        decoded = await gunzipAsync(source, { maxOutputLength: MAX_FILE_BYTES })
-      } catch {
-        throw new RelayFilesystemError(
-          "invalid_gzip",
-          `The archived log is invalid or expands beyond ${MAX_FILE_BYTES} bytes`
+  read(instance: RelayInstanceConfig, requestedPath: string) {
+    return Effect.gen({ self: this }, function* () {
+      const path = yield* this.#existingFile(instance, requestedPath)
+      const metadata = yield* filesystemOperation("read.stat", () => stat(path))
+      if (metadata.size > MAX_FILE_BYTES) {
+        return yield* filesystemFailure(
+          "file_too_large",
+          "read",
+          `Files larger than ${MAX_FILE_BYTES} bytes cannot be edited`
         )
       }
-    }
+      const compressed = requestedPath.toLowerCase().endsWith(".log.gz")
+      if (requestedPath.toLowerCase().endsWith(".gz") && !compressed) {
+        return yield* filesystemFailure(
+          "unsupported_file",
+          "read",
+          "Only Minecraft .log.gz archives can be previewed"
+        )
+      }
 
-    let content: string
-    try {
-      content = new TextDecoder("utf-8", { fatal: true }).decode(decoded)
-    } catch {
-      throw new RelayFilesystemError(
-        "unsupported_file",
-        "This file is binary and cannot be previewed as text"
+      const source = yield* filesystemOperation("read.contents", () =>
+        readFile(path)
       )
-    }
+      const decoded = compressed
+        ? yield* Effect.tryPromise({
+            try: () => gunzipAsync(source, { maxOutputLength: MAX_FILE_BYTES }),
+            catch: (cause) =>
+              makeFilesystemError(
+                "invalid_gzip",
+                "read.decompress",
+                `The archived log is invalid or expands beyond ${MAX_FILE_BYTES} bytes`,
+                cause
+              ),
+          })
+        : source
+      const content = yield* Effect.try({
+        try: () => new TextDecoder("utf-8", { fatal: true }).decode(decoded),
+        catch: (cause) =>
+          makeFilesystemError(
+            "unsupported_file",
+            "read.decode",
+            "This file is binary and cannot be previewed as text",
+            cause
+          ),
+      })
 
-    return {
-      instanceId: instance.id,
-      path: requestedPath,
-      content,
-      size: metadata.size,
-      decodedSize: decoded.byteLength,
-      encoding: compressed ? "gzip" : "utf8",
-      readOnly: compressed,
-      modifiedAt: metadata.mtime.toISOString(),
-    }
+      return {
+        instanceId: instance.id,
+        path: requestedPath,
+        content,
+        size: metadata.size,
+        decodedSize: decoded.byteLength,
+        encoding: compressed ? "gzip" : "utf8",
+        readOnly: compressed,
+        modifiedAt: metadata.mtime.toISOString(),
+      } satisfies RelayFileContent
+    }).pipe(Effect.withSpan("relay.files.read"))
   }
 
-  async write(
+  write(
     instance: RelayInstanceConfig,
     requestedPath: string,
     input: RelaySaveFileInput
-  ): Promise<RelayFileContent> {
-    if (requestedPath.toLowerCase().endsWith(".log.gz")) {
-      throw new RelayFilesystemError("read_only", "Archived logs are read-only")
-    }
-    const path = await this.#existingFile(instance, requestedPath)
-    const metadata = await stat(path)
-    if (
-      input.expectedModifiedAt &&
-      metadata.mtime.toISOString() !== input.expectedModifiedAt
-    ) {
-      throw new RelayFilesystemError(
-        "file_changed",
-        "The file changed on disk after it was opened"
-      )
-    }
-
-    const temporary = `${path}.hearth-${process.pid}-${Date.now()}`
-    await writeFile(temporary, input.content, { mode: metadata.mode })
-    try {
-      await rename(temporary, path)
-    } catch (error) {
-      await unlink(temporary).catch(() => undefined)
-      throw error
-    }
-    return this.read(instance, requestedPath)
-  }
-
-  async latestLog(instance: RelayInstanceConfig): Promise<RelayLatestLog> {
-    const requestedPath = "logs/latest.log" as const
-    const path = await this.#existingFile(instance, requestedPath)
-    const metadata = await stat(path)
-    if (metadata.size > MAX_LOG_SHARE_BYTES) {
-      throw new RelayFilesystemError(
-        "log_too_large",
-        `latest.log exceeds the ${MAX_LOG_SHARE_BYTES} byte sharing limit`
-      )
-    }
-    const source = await readFile(path)
-    let content: string
-    try {
-      content = new TextDecoder("utf-8", { fatal: true }).decode(source)
-    } catch {
-      throw new RelayFilesystemError(
-        "unsupported_file",
-        "latest.log is not valid UTF-8 text"
-      )
-    }
-
-    return {
-      instanceId: instance.id,
-      path: requestedPath,
-      content,
-      size: source.byteLength,
-    }
-  }
-
-  async download(
-    instance: RelayInstanceConfig,
-    requestedPath: string
-  ): Promise<{
-    file: FileHandle
-    modifiedAt: string
-    name: string
-    size: number
-  }> {
-    requireLinuxDescriptorAnchoring()
-    validateRelativePath(requestedPath)
-    const root = await this.#instanceRoot(instance)
-    const candidate = resolve(root, requestedPath)
-    ensureContained(root, candidate)
-    const file = await open(
-      candidate,
-      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW
-    )
-    try {
-      const actual = await realpath(fileDescriptorPath(file))
-      ensureContained(root, actual)
-      const metadata = await file.stat()
-      if (!metadata.isFile()) {
-        throw new RelayFilesystemError("not_a_file", "Path is not a file")
+  ) {
+    return Effect.gen({ self: this }, function* () {
+      if (requestedPath.toLowerCase().endsWith(".log.gz")) {
+        return yield* filesystemFailure(
+          "read_only",
+          "write",
+          "Archived logs are read-only"
+        )
       }
+      const path = yield* this.#existingFile(instance, requestedPath)
+      const metadata = yield* filesystemOperation("write.stat", () =>
+        stat(path)
+      )
+      if (
+        input.expectedModifiedAt &&
+        metadata.mtime.toISOString() !== input.expectedModifiedAt
+      ) {
+        return yield* filesystemFailure(
+          "file_changed",
+          "write",
+          "The file changed on disk after it was opened"
+        )
+      }
+
+      const temporary = `${path}.hearth-${process.pid}-${randomUUID()}`
+      return yield* Effect.acquireUseRelease(
+        filesystemOperation("write.temporary", () =>
+          writeFile(temporary, input.content, { mode: metadata.mode })
+        ),
+        () =>
+          filesystemOperation("write.replace", () =>
+            rename(temporary, path)
+          ).pipe(
+            Effect.uninterruptible,
+            Effect.flatMap(() => this.read(instance, requestedPath))
+          ),
+        () => cleanupPathEffect(temporary)
+      )
+    }).pipe(Effect.withSpan("relay.files.write"))
+  }
+
+  latestLog(instance: RelayInstanceConfig) {
+    return Effect.gen({ self: this }, function* () {
+      const requestedPath = "logs/latest.log" as const
+      const path = yield* this.#existingFile(instance, requestedPath)
+      const metadata = yield* filesystemOperation("latestLog.stat", () =>
+        stat(path)
+      )
+      if (metadata.size > MAX_LOG_SHARE_BYTES) {
+        return yield* filesystemFailure(
+          "log_too_large",
+          "latestLog",
+          `latest.log exceeds the ${MAX_LOG_SHARE_BYTES} byte sharing limit`
+        )
+      }
+      const source = yield* filesystemOperation("latestLog.read", () =>
+        readFile(path)
+      )
+      const content = yield* Effect.try({
+        try: () => new TextDecoder("utf-8", { fatal: true }).decode(source),
+        catch: (cause) =>
+          makeFilesystemError(
+            "unsupported_file",
+            "latestLog.decode",
+            "latest.log is not valid UTF-8 text",
+            cause
+          ),
+      })
+
       return {
-        file,
-        modifiedAt: metadata.mtime.toISOString(),
-        name: basename(candidate),
-        size: metadata.size,
-      }
-    } catch (cause) {
-      await file.close().catch(() => undefined)
-      throw cause
-    }
+        instanceId: instance.id,
+        path: requestedPath,
+        content,
+        size: source.byteLength,
+      } satisfies RelayLatestLog
+    }).pipe(Effect.withSpan("relay.files.latestLog"))
   }
 
-  async upload(
+  withDownload<TResult, TError, TRequirements>(
+    instance: RelayInstanceConfig,
+    requestedPath: string,
+    use: (download: {
+      file: FileHandle
+      modifiedAt: string
+      name: string
+      size: number
+    }) => Effect.Effect<TResult, TError, TRequirements>
+  ) {
+    return Effect.gen({ self: this }, function* () {
+      yield* requireLinuxDescriptorAnchoring()
+      yield* validateRelativePath(requestedPath)
+      const root = yield* this.#instanceRoot(instance)
+      const candidate = resolve(root, requestedPath)
+      yield* ensureContained(root, candidate)
+
+      return yield* Effect.acquireUseRelease(
+        filesystemOperation("download.open", () =>
+          open(candidate, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+        ),
+        (file) =>
+          Effect.gen(function* () {
+            const actual = yield* filesystemOperation(
+              "download.resolveDescriptor",
+              () => realpath(fileDescriptorPath(file))
+            )
+            yield* ensureContained(root, actual)
+            const metadata = yield* filesystemOperation(
+              "download.statDescriptor",
+              () => file.stat()
+            )
+            if (!metadata.isFile()) {
+              return yield* filesystemFailure(
+                "not_a_file",
+                "download",
+                "Path is not a file"
+              )
+            }
+            return yield* use({
+              file,
+              modifiedAt: metadata.mtime.toISOString(),
+              name: basename(candidate),
+              size: metadata.size,
+            })
+          }),
+        (file) => closeHandleEffect(file, "download.close")
+      )
+    }).pipe(Effect.withSpan("relay.files.download"))
+  }
+
+  upload(
     instance: RelayInstanceConfig,
     requestedPath: string,
     source: AsyncIterable<Uint8Array>
-  ): Promise<{
-    modifiedAt: string
-    path: string
-    sha256: string
-    size: number
-  }> {
-    requireLinuxDescriptorAnchoring()
-    validateRelativePath(requestedPath)
-    const root = await this.#instanceRoot(instance)
-    const candidate = resolve(root, requestedPath)
-    ensureContained(root, candidate)
-    const parent = await realpath(dirname(candidate))
-    ensureContained(root, parent)
-    const parentHandle = await open(
-      parent,
-      fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW
-    )
-    try {
-      const anchoredParent = fileDescriptorPath(parentHandle)
-      ensureContained(root, await realpath(anchoredParent))
-      const operationParent = anchoredParent
-      const target = resolve(operationParent, basename(candidate))
-      let mode = 0o644
-      try {
-        const existing = await lstat(target)
-        if (!existing.isFile()) {
-          throw new RelayFilesystemError("not_a_file", "Path is not a file")
-        }
-        mode = existing.mode & 0o777
-      } catch (cause) {
-        if (!isMissingFile(cause)) throw cause
-      }
+  ) {
+    return Effect.gen({ self: this }, function* () {
+      yield* requireLinuxDescriptorAnchoring()
+      yield* validateRelativePath(requestedPath)
+      const root = yield* this.#instanceRoot(instance)
+      const candidate = resolve(root, requestedPath)
+      yield* ensureContained(root, candidate)
+      const parent = yield* filesystemOperation("upload.resolveParent", () =>
+        realpath(dirname(candidate))
+      )
+      yield* ensureContained(root, parent)
 
-      const temporary = resolve(operationParent, `.kiln-upload-${randomUUID()}`)
-      const file = await open(temporary, "wx", mode)
-      let size = 0
-      const digest = createHash("sha256")
-      try {
-        for await (const chunk of source) {
-          size += chunk.byteLength
-          if (size > MAX_TRANSFER_BYTES) {
-            throw new RelayFilesystemError(
-              "file_too_large",
-              "Upload exceeds the 20 GiB transfer limit"
+      return yield* Effect.acquireUseRelease(
+        filesystemOperation("upload.openParent", () =>
+          open(
+            parent,
+            fsConstants.O_RDONLY |
+              fsConstants.O_DIRECTORY |
+              fsConstants.O_NOFOLLOW
+          )
+        ),
+        (parentHandle) =>
+          Effect.gen(function* () {
+            const anchoredParent = fileDescriptorPath(parentHandle)
+            const resolvedParent = yield* filesystemOperation(
+              "upload.resolveParentDescriptor",
+              () => realpath(anchoredParent)
             )
-          }
-          digest.update(chunk)
-          await writeFully(file, chunk, null)
-        }
-        await file.sync()
-        await file.close()
-        ensureContained(root, await realpath(anchoredParent))
-        await rename(temporary, target)
-      } catch (cause) {
-        await file.close().catch(() => undefined)
-        await unlink(temporary).catch(() => undefined)
-        throw cause
-      }
-      const metadata = await stat(target)
-      return {
-        modifiedAt: metadata.mtime.toISOString(),
-        path: requestedPath,
-        sha256: digest.digest("hex"),
-        size,
-      }
-    } finally {
-      await parentHandle.close()
-    }
+            yield* ensureContained(root, resolvedParent)
+            const target = resolve(anchoredParent, basename(candidate))
+            const existing = yield* optionalFileMetadata(target)
+            if (existing && !existing.isFile()) {
+              return yield* filesystemFailure(
+                "not_a_file",
+                "upload",
+                "Path is not a file"
+              )
+            }
+            const mode = existing ? existing.mode & 0o777 : 0o644
+            const temporary = resolve(
+              anchoredParent,
+              `.kiln-upload-${randomUUID()}`
+            )
+            let size = 0
+            const digest = createHash("sha256")
+
+            yield* Effect.acquireUseRelease(
+              filesystemOperation("upload.openTemporary", () =>
+                open(temporary, "wx", mode)
+              ),
+              (file) =>
+                Effect.gen(function* () {
+                  yield* Stream.fromAsyncIterable(source, (cause) =>
+                    makeFilesystemError(
+                      "read_failed",
+                      "upload.read",
+                      errorMessage(cause),
+                      cause
+                    )
+                  ).pipe(
+                    Stream.runForEach((chunk) =>
+                      Effect.gen(function* () {
+                        size += chunk.byteLength
+                        if (size > MAX_TRANSFER_BYTES) {
+                          return yield* filesystemFailure(
+                            "file_too_large",
+                            "upload",
+                            "Upload exceeds the 20 GiB transfer limit"
+                          )
+                        }
+                        digest.update(chunk)
+                        yield* writeFully(file, chunk, null)
+                      })
+                    )
+                  )
+                  yield* filesystemOperation("upload.sync", () =>
+                    file.sync()
+                  ).pipe(Effect.uninterruptible)
+                  const currentParent = yield* filesystemOperation(
+                    "upload.verifyParent",
+                    () => realpath(anchoredParent)
+                  )
+                  yield* ensureContained(root, currentParent)
+                  yield* filesystemOperation("upload.replace", () =>
+                    rename(temporary, target)
+                  ).pipe(Effect.uninterruptible)
+                }),
+              (file) =>
+                closeHandleEffect(file, "upload.closeTemporary").pipe(
+                  Effect.andThen(cleanupPathEffect(temporary))
+                )
+            )
+
+            const metadata = yield* filesystemOperation("upload.stat", () =>
+              stat(target)
+            )
+            return {
+              modifiedAt: metadata.mtime.toISOString(),
+              path: requestedPath,
+              sha256: digest.digest("hex"),
+              size,
+            }
+          }),
+        (parentHandle) => closeHandleEffect(parentHandle, "upload.closeParent")
+      )
+    }).pipe(Effect.withSpan("relay.files.upload"))
   }
 
-  async #existingFile(
-    instance: RelayInstanceConfig,
-    requestedPath: string
-  ): Promise<string> {
-    validateRelativePath(requestedPath)
-    const root = await this.#instanceRoot(instance)
-    const candidate = await realpath(resolve(root, requestedPath))
-    ensureContained(root, candidate)
-    const metadata = await lstat(candidate)
-    if (!metadata.isFile()) {
-      throw new RelayFilesystemError("not_a_file", "Path is not a file")
-    }
-    return candidate
+  #existingFile(instance: RelayInstanceConfig, requestedPath: string) {
+    return Effect.gen({ self: this }, function* () {
+      yield* validateRelativePath(requestedPath)
+      const root = yield* this.#instanceRoot(instance)
+      const candidate = yield* filesystemOperation("path.resolveFile", () =>
+        realpath(resolve(root, requestedPath))
+      )
+      yield* ensureContained(root, candidate)
+      const metadata = yield* filesystemOperation("path.statFile", () =>
+        lstat(candidate)
+      )
+      if (!metadata.isFile()) {
+        return yield* filesystemFailure(
+          "not_a_file",
+          "path",
+          "Path is not a file"
+        )
+      }
+      return candidate
+    })
   }
 
-  async #instanceRoot(instance: RelayInstanceConfig): Promise<string> {
-    const configuredRoot = await realpath(this.#config.rootDirectory)
-    const root = await realpath(resolve(configuredRoot, instance.directory))
-    ensureContained(configuredRoot, root)
-    return root
+  #instanceRoot(instance: RelayInstanceConfig) {
+    const config = this.#config
+    return Effect.gen(function* () {
+      const configuredRoot = yield* filesystemOperation(
+        "path.resolveConfiguredRoot",
+        () => realpath(config.rootDirectory)
+      )
+      const root = yield* filesystemOperation("path.resolveInstanceRoot", () =>
+        realpath(resolve(configuredRoot, instance.directory))
+      )
+      yield* ensureContained(configuredRoot, root)
+      return root
+    })
   }
 }
 
@@ -337,37 +446,131 @@ function fileDescriptorPath(file: FileHandle): string {
   return `/proc/self/fd/${file.fd}`
 }
 
-function requireLinuxDescriptorAnchoring(): void {
-  if (process.platform !== "linux") {
-    throw new RelayFilesystemError(
-      "unsupported_platform",
-      "Secure direct file transfers require a Linux Relay host"
-    )
-  }
+function requireLinuxDescriptorAnchoring() {
+  return process.platform === "linux"
+    ? Effect.void
+    : filesystemFailure(
+        "unsupported_platform",
+        "path",
+        "Secure direct file transfers require a Linux Relay host"
+      )
 }
 
-async function writeFully(
+function writeFully(
   file: FileHandle,
   data: Uint8Array,
   position: number | null
-): Promise<void> {
+) {
   const buffer = Buffer.from(data.buffer, data.byteOffset, data.byteLength)
   let written = 0
-  while (written < buffer.length) {
-    const result = await file.write(
-      buffer,
-      written,
-      buffer.length - written,
-      position === null ? null : position + written
-    )
-    if (result.bytesWritten <= 0) {
-      throw new RelayFilesystemError(
-        "write_incomplete",
-        "Filesystem stopped before the complete upload chunk was written"
+
+  const writeNext = (): Effect.Effect<void, RelayFilesystemError> =>
+    Effect.suspend(() => {
+      if (written >= buffer.length) return Effect.void
+      return filesystemOperation("upload.write", () =>
+        file.write(
+          buffer,
+          written,
+          buffer.length - written,
+          position === null ? null : position + written
+        )
+      ).pipe(
+        // Let an in-flight driver write settle before a finalizer closes the
+        // descriptor. Interruption is observed between chunks.
+        Effect.uninterruptible,
+        Effect.flatMap((result) => {
+          if (result.bytesWritten <= 0) {
+            return filesystemFailure(
+              "write_incomplete",
+              "upload.write",
+              "Filesystem stopped before the complete upload chunk was written"
+            )
+          }
+          written += result.bytesWritten
+          return writeNext()
+        })
       )
-    }
-    written += result.bytesWritten
-  }
+    })
+
+  return writeNext()
+}
+
+function optionalFileMetadata(path: string) {
+  return Effect.tryPromise({
+    try: () => lstat(path),
+    catch: (cause) => cause,
+  }).pipe(
+    Effect.catch((cause) =>
+      isMissingFile(cause)
+        ? Effect.succeed(null)
+        : Effect.fail(
+            makeFilesystemError(
+              "io_error",
+              "upload.statTarget",
+              errorMessage(cause),
+              cause
+            )
+          )
+    )
+  )
+}
+
+function filesystemOperation<TResult>(
+  operation: string,
+  run: () => Promise<TResult>
+) {
+  return Effect.tryPromise({
+    try: run,
+    catch: (cause) =>
+      cause instanceof RelayFilesystemError
+        ? cause
+        : makeFilesystemError(
+            "io_error",
+            operation,
+            errorMessage(cause),
+            cause
+          ),
+  })
+}
+
+function closeHandleEffect(file: FileHandle, operation: string) {
+  return filesystemOperation(operation, () => file.close()).pipe(
+    Effect.catch((cause) =>
+      Effect.logWarning("Relay filesystem handle cleanup failed", cause)
+    )
+  )
+}
+
+function cleanupPathEffect(path: string) {
+  return filesystemOperation("cleanup.temporary", () =>
+    rm(path, { force: true })
+  ).pipe(
+    Effect.catch((cause) =>
+      Effect.logWarning("Relay temporary-file cleanup failed", cause)
+    )
+  )
+}
+
+function filesystemFailure(code: string, operation: string, reason: string) {
+  return Effect.fail(makeFilesystemError(code, operation, reason))
+}
+
+function makeFilesystemError(
+  code: string,
+  operation: string,
+  reason: string,
+  cause?: unknown
+) {
+  return RelayFilesystemError.make({
+    code,
+    operation,
+    reason,
+    ...(cause === undefined ? {} : { cause }),
+  })
+}
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : "Filesystem operation failed"
 }
 
 function isMissingFile(cause: unknown): boolean {
@@ -379,36 +582,27 @@ function isMissingFile(cause: unknown): boolean {
   )
 }
 
-export class RelayFilesystemError extends Error {
-  readonly code: string
-
-  constructor(code: string, message: string) {
-    super(message)
-    this.code = code
-  }
-}
-
-function validateRelativePath(path: string): void {
+function validateRelativePath(path: string) {
   if (
-    !path ||
-    path.includes("\0") ||
-    path.startsWith("/") ||
-    path.split(/[\\/]/u).includes("..")
+    path &&
+    !path.includes("\0") &&
+    !path.startsWith("/") &&
+    !path.split(/[\\/]/u).includes("..")
   ) {
-    throw new RelayFilesystemError("invalid_path", "Invalid relative path")
+    return Effect.void
   }
+  return filesystemFailure("invalid_path", "path", "Invalid relative path")
 }
 
-function ensureContained(root: string, candidate: string): void {
+function ensureContained(root: string, candidate: string) {
   const normalizedRoot = resolve(root)
   const normalizedCandidate = resolve(candidate)
-  if (
-    normalizedCandidate !== normalizedRoot &&
-    !normalizedCandidate.startsWith(`${normalizedRoot}${sep}`)
-  ) {
-    throw new RelayFilesystemError(
-      "path_outside_instance",
-      "Path resolves outside the instance directory"
-    )
-  }
+  return normalizedCandidate === normalizedRoot ||
+    normalizedCandidate.startsWith(`${normalizedRoot}${sep}`)
+    ? Effect.void
+    : filesystemFailure(
+        "path_outside_instance",
+        "path",
+        "Path resolves outside the instance directory"
+      )
 }

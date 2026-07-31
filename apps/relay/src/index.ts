@@ -1015,17 +1015,26 @@ async function executeControlRequest(
       }
     }
     case "instance.files.list":
-      return filesystem.tree(await requiredInstance(payload))
+      return runRelayEffect(
+        "relay.files.tree",
+        filesystem.tree(await requiredInstance(payload))
+      )
     case "instance.files.read":
-      return filesystem.read(
-        await requiredInstance(payload),
-        requiredString(payload, "path")
+      return runRelayEffect(
+        "relay.files.read",
+        filesystem.read(
+          await requiredInstance(payload),
+          requiredString(payload, "path")
+        )
       )
     case "instance.files.write": {
       const instance = await requiredInstance(payload)
       const input = relaySaveFileInputSchema.parse(payload)
       return serializeInstanceMutation(instance.id, () =>
-        filesystem.write(instance, requiredString(payload, "path"), input)
+        runRelayEffect(
+          "relay.files.write",
+          filesystem.write(instance, requiredString(payload, "path"), input)
+        )
       )
     }
     case "instance.console.history":
@@ -1054,7 +1063,10 @@ async function executeControlRequest(
       )
     }
     case "instance.logs.latest":
-      return filesystem.latestLog(await requiredInstance(payload))
+      return runRelayEffect(
+        "relay.files.latestLog",
+        filesystem.latestLog(await requiredInstance(payload))
+      )
     case "instance.network.ports.reserve": {
       const instance = await requiredInstance(payload)
       const input = relayInstancePortLeaseRequestSchema.parse({
