@@ -6,7 +6,7 @@ import {
   verify,
 } from "node:crypto"
 import type { ReadStream } from "node:fs"
-import { Effect, Fiber, Schema } from "effect"
+import { Effect, Fiber, Option, Result, Schema } from "effect"
 import { WebSocket, WebSocketServer } from "ws"
 import * as Sentry from "@sentry/node"
 
@@ -87,6 +87,22 @@ const BrowserConsoleCompleteSchema = Schema.Struct({
   type: Schema.Literal("console.complete"),
   v: Schema.Literal(1),
 })
+
+const decodeBrowserMessage = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Unknown)
+)
+const decodeBrowserSubscription = Schema.decodeUnknownOption(
+  BrowserSubscribeSchema
+)
+const decodeBrowserResourceSubscription = Schema.decodeUnknownOption(
+  BrowserResourceSubscribeSchema
+)
+const decodeBrowserConsoleWrite = Schema.decodeUnknownOption(
+  BrowserConsoleWriteSchema
+)
+const decodeBrowserConsoleComplete = Schema.decodeUnknownOption(
+  BrowserConsoleCompleteSchema
+)
 
 const CapabilitySchema = Schema.Struct({
   actions: Schema.Array(Schema.String),
@@ -256,23 +272,20 @@ function authenticateBrowser(
       socket.close(4400, "Binary browser frames are not supported")
       return
     }
-    let input: unknown
-    try {
-      input = JSON.parse(data.toString()) as unknown
-    } catch {
+    const input = decodeBrowserMessage(data.toString())
+    if (Option.isNone(input)) {
       socket.close(4400, "Invalid browser message")
       return
     }
     if (!capability) {
-      void authenticate(input).catch(() =>
+      void authenticate(input.value).catch(() =>
         socket.close(4401, "Browser authentication failed")
       )
       return
     }
-    try {
-      const subscription = Schema.decodeUnknownSync(BrowserSubscribeSchema)(
-        input
-      )
+    const consoleSubscription = decodeBrowserSubscription(input.value)
+    if (Option.isSome(consoleSubscription)) {
+      const subscription = consoleSubscription.value
       if (
         subscription.instanceId !== capability.instanceId ||
         !capability.actions.includes("instance.console.read")
@@ -284,13 +297,10 @@ function authenticateBrowser(
         .subscribe(socket, subscription.instanceId)
         .catch(() => socket.close(4500, "Console stream failed"))
       return
-    } catch {
-      // Try the other supported subscription shape below.
     }
-    try {
-      const subscription = Schema.decodeUnknownSync(
-        BrowserResourceSubscribeSchema
-      )(input)
+    const resourceSubscription = decodeBrowserResourceSubscription(input.value)
+    if (Option.isSome(resourceSubscription)) {
+      const subscription = resourceSubscription.value
       if (
         subscription.instanceId !== capability.instanceId ||
         !capability.actions.includes("instance.read")
@@ -300,11 +310,10 @@ function authenticateBrowser(
       }
       resourceHubs.subscribe(socket, subscription.instanceId)
       return
-    } catch {
-      // Try the supported console operations below.
     }
-    try {
-      const request = Schema.decodeUnknownSync(BrowserConsoleWriteSchema)(input)
+    const consoleWrite = decodeBrowserConsoleWrite(input.value)
+    if (Option.isSome(consoleWrite)) {
+      const request = consoleWrite.value
       if (
         request.instanceId !== capability.instanceId ||
         !capability.actions.includes("instance.console.write")
@@ -314,13 +323,10 @@ function authenticateBrowser(
       }
       void executeConsoleWrite(socket, request, options, capability)
       return
-    } catch {
-      // Try command completion below.
     }
-    try {
-      const request = Schema.decodeUnknownSync(BrowserConsoleCompleteSchema)(
-        input
-      )
+    const consoleCompletion = decodeBrowserConsoleComplete(input.value)
+    if (Option.isSome(consoleCompletion)) {
+      const request = consoleCompletion.value
       if (
         request.instanceId !== capability.instanceId ||
         !capability.actions.includes("instance.console.write")
@@ -329,9 +335,9 @@ function authenticateBrowser(
         return
       }
       void executeConsoleCompletion(socket, request, options.docker)
-    } catch {
-      socket.close(4400, "Invalid browser operation")
+      return
     }
+    socket.close(4400, "Invalid browser operation")
   })
 
   socket.once("close", () => {
@@ -405,26 +411,34 @@ async function executeConsoleWrite(
   options: BrowserSocketOptions,
   capability: BrowserCapability
 ): Promise<void> {
-  try {
-    const instance = await options.docker.findInstance(request.instanceId)
-    if (!instance) throw new Error("Instance not found")
-    const input = relayConsoleCommandSchema.parse({ command: request.command })
-    await options.docker.sendCommand(instance, input.command)
-    void auditBrowserConsoleWrite(options, capability, instance.id)
-    send(socket, {
-      operation: "console.write",
-      payload: { accepted: true, command: input.command },
-      requestId: request.requestId,
-      type: "operation.result",
-    })
-  } catch {
-    send(socket, {
-      code: "console_write_failed",
-      message: "Command could not be sent",
-      requestId: request.requestId,
-      type: "operation.error",
-    })
-  }
+  await runBrowser(
+    browserOperation(async () => {
+      const instance = await options.docker.findInstance(request.instanceId)
+      if (!instance) throw new Error("Instance not found")
+      const input = relayConsoleCommandSchema.parse({
+        command: request.command,
+      })
+      await options.docker.sendCommand(instance, input.command)
+      void auditBrowserConsoleWrite(options, capability, instance.id)
+      send(socket, {
+        operation: "console.write",
+        payload: { accepted: true, command: input.command },
+        requestId: request.requestId,
+        type: "operation.result",
+      })
+    }).pipe(
+      Effect.catch(() =>
+        Effect.sync(() => {
+          send(socket, {
+            code: "console_write_failed",
+            message: "Command could not be sent",
+            requestId: request.requestId,
+            type: "operation.error",
+          })
+        })
+      )
+    )
+  )
 }
 
 async function auditBrowserConsoleWrite(
@@ -432,26 +446,32 @@ async function auditBrowserConsoleWrite(
   capability: BrowserCapability,
   instanceId: string
 ): Promise<void> {
-  try {
-    await options.runEffect(
-      options.state.appendAudit({
-        clientId: capability.issuer,
-        details: {
-          instanceId,
-          permission: "instance.console.write",
-          subject: capability.subject,
-        },
-        event: "browser.console.write",
-        id: randomUUID(),
-        occurredAt: Date.now(),
-        requestId: capability.capabilityId,
-      })
+  await runBrowser(
+    browserOperation(() =>
+      options.runEffect(
+        options.state.appendAudit({
+          clientId: capability.issuer,
+          details: {
+            instanceId,
+            permission: "instance.console.write",
+            subject: capability.subject,
+          },
+          event: "browser.console.write",
+          id: randomUUID(),
+          occurredAt: Date.now(),
+          requestId: capability.capabilityId,
+        })
+      )
+    ).pipe(
+      Effect.catch((cause) =>
+        Effect.sync(() => {
+          Sentry.captureException(cause, {
+            tags: { "kiln.operation": "browser.console.audit" },
+          })
+        })
+      )
     )
-  } catch (cause) {
-    Sentry.captureException(cause, {
-      tags: { "kiln.operation": "browser.console.audit" },
-    })
-  }
+  )
 }
 
 async function executeConsoleCompletion(
@@ -459,29 +479,35 @@ async function executeConsoleCompletion(
   request: typeof BrowserConsoleCompleteSchema.Type,
   docker: DockerDriver
 ): Promise<void> {
-  try {
-    const instance = await docker.findInstance(request.instanceId)
-    if (!instance) throw new Error("Instance not found")
-    const input = relayConsoleCompletionInputSchema.parse(request)
-    const payload = await docker.completeCommand(
-      instance,
-      input.input,
-      input.cursor
+  await runBrowser(
+    browserOperation(async () => {
+      const instance = await docker.findInstance(request.instanceId)
+      if (!instance) throw new Error("Instance not found")
+      const input = relayConsoleCompletionInputSchema.parse(request)
+      const payload = await docker.completeCommand(
+        instance,
+        input.input,
+        input.cursor
+      )
+      send(socket, {
+        operation: "console.complete",
+        payload,
+        requestId: request.requestId,
+        type: "operation.result",
+      })
+    }).pipe(
+      Effect.catch(() =>
+        Effect.sync(() => {
+          send(socket, {
+            code: "console_completion_failed",
+            message: "Completions are unavailable",
+            requestId: request.requestId,
+            type: "operation.error",
+          })
+        })
+      )
     )
-    send(socket, {
-      operation: "console.complete",
-      payload,
-      requestId: request.requestId,
-      type: "operation.result",
-    })
-  } catch {
-    send(socket, {
-      code: "console_completion_failed",
-      message: "Completions are unavailable",
-      requestId: request.requestId,
-      type: "operation.error",
-    })
-  }
+  )
 }
 
 function decodeCapability(value: string): {
@@ -577,21 +603,28 @@ async function handleBrowserFileRequest(
     browserJson(response, 405, { error: "Method not allowed" }, origin)
     return true
   }
-  const instanceId = decodeURIComponent(match[1])
+  const decodedInstanceId = Result.try(() => decodeURIComponent(match[1]))
+  if (Result.isFailure(decodedInstanceId)) {
+    browserJson(response, 400, { error: "Instance path is invalid" }, origin)
+    return true
+  }
+  const instanceId = decodedInstanceId.success
   const path = url.searchParams.get("path") ?? ""
-  let authentication: Awaited<ReturnType<typeof authenticateBrowserRequest>>
-  try {
-    authentication = await authenticateBrowserRequest({
-      instanceId,
-      method,
-      options,
-      origin,
-      path,
-      request,
-      pendingRequestProofs,
-      requestProofs,
-    })
-  } catch {
+  const authenticated = await runBrowser(
+    browserOperation(() =>
+      authenticateBrowserRequest({
+        instanceId,
+        method,
+        options,
+        origin,
+        path,
+        request,
+        pendingRequestProofs,
+        requestProofs,
+      })
+    ).pipe(Effect.option)
+  )
+  if (Option.isNone(authenticated)) {
     browserJson(
       response,
       401,
@@ -600,6 +633,7 @@ async function handleBrowserFileRequest(
     )
     return true
   }
+  const authentication = authenticated.value
 
   const clientId = authentication.clientId
   const clientTransfers = transfers.byClient.get(clientId) ?? 0
@@ -618,89 +652,111 @@ async function handleBrowserFileRequest(
   transfers.active += 1
   transfers.byClient.set(clientId, clientTransfers + 1)
 
-  try {
-    const instance = await options.docker.findInstance(instanceId)
-    if (!instance) {
-      browserJson(response, 404, { error: "Instance not found" }, origin)
-      return true
-    }
-    if (method === "PUT") {
-      const uploaded = await options.runEffect(
-        options.filesystem.upload(instance, path, request)
-      )
-      void auditBrowserTransfer(options, authentication, method, uploaded.size)
-      browserJson(response, 200, uploaded, origin)
-      return true
-    }
-    await options.runEffect(
-      options.filesystem.withDownload(instance, path, (download) =>
-        Effect.tryPromise({
-          try: async () => {
-            const range = parseRange(request.headers.range, download.size)
-            const headers = browserCorsHeaders(origin, {
-              "Accept-Ranges": "bytes",
-              "Cache-Control": "no-store",
-              "Content-Disposition": contentDisposition(download.name),
-              "Content-Length": String(
-                range ? range.end - range.start + 1 : download.size
-              ),
-              "Content-Type": "application/octet-stream",
-              "Last-Modified": new Date(download.modifiedAt).toUTCString(),
-              "X-Content-Type-Options": "nosniff",
-            })
-            if (range)
-              headers["Content-Range"] =
-                `bytes ${range.start}-${range.end}/${download.size}`
-            response.writeHead(range ? 206 : 200, headers)
-            if (method === "HEAD") {
-              response.end()
+  await runBrowser(
+    browserOperation(async () => {
+      const instance = await options.docker.findInstance(instanceId)
+      if (!instance) {
+        browserJson(response, 404, { error: "Instance not found" }, origin)
+        return
+      }
+      if (method === "PUT") {
+        const uploaded = await options.runEffect(
+          options.filesystem.upload(instance, path, request)
+        )
+        void auditBrowserTransfer(
+          options,
+          authentication,
+          method,
+          uploaded.size
+        )
+        browserJson(response, 200, uploaded, origin)
+        return
+      }
+      await options.runEffect(
+        options.filesystem.withDownload(instance, path, (download) =>
+          Effect.tryPromise({
+            try: async () => {
+              const range = parseRange(request.headers.range, download.size)
+              const headers = browserCorsHeaders(origin, {
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "no-store",
+                "Content-Disposition": contentDisposition(download.name),
+                "Content-Length": String(
+                  range ? range.end - range.start + 1 : download.size
+                ),
+                "Content-Type": "application/octet-stream",
+                "Last-Modified": new Date(download.modifiedAt).toUTCString(),
+                "X-Content-Type-Options": "nosniff",
+              })
+              if (range) {
+                headers["Content-Range"] =
+                  `bytes ${range.start}-${range.end}/${download.size}`
+              }
+              response.writeHead(range ? 206 : 200, headers)
+              if (method === "HEAD") {
+                response.end()
+                void auditBrowserTransfer(
+                  options,
+                  authentication,
+                  method,
+                  0,
+                  "completed"
+                )
+                return
+              }
+              const streamOptions = range
+                ? { autoClose: false, end: range.end, start: range.start }
+                : { autoClose: false }
+              const result = await streamDownload(
+                download.file.createReadStream(streamOptions),
+                response
+              )
               void auditBrowserTransfer(
                 options,
                 authentication,
                 method,
-                0,
-                "completed"
+                result.bytes,
+                result.completed ? "completed" : "aborted"
               )
-              return
-            }
-            const streamOptions = range
-              ? { autoClose: false, end: range.end, start: range.start }
-              : { autoClose: false }
-            const result = await streamDownload(
-              download.file.createReadStream(streamOptions),
-              response
+            },
+            catch: (cause) => cause,
+          })
+        )
+      )
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.sync(() => {
+          Sentry.captureException(cause, {
+            tags: {
+              "kiln.operation":
+                method === "PUT"
+                  ? "browser.file.upload"
+                  : "browser.file.download",
+              "kiln.relay_id": options.identity.fingerprint,
+            },
+          })
+          if (response.headersSent) {
+            response.destroy(cause instanceof Error ? cause : undefined)
+          } else {
+            browserJson(
+              response,
+              400,
+              { error: safeBrowserError(cause) },
+              origin
             )
-            void auditBrowserTransfer(
-              options,
-              authentication,
-              method,
-              result.bytes,
-              result.completed ? "completed" : "aborted"
-            )
-          },
-          catch: (cause) => cause,
+          }
+        })
+      ),
+      Effect.ensuring(
+        Effect.sync(() => {
+          transfers.active -= 1
+          const remaining = (transfers.byClient.get(clientId) ?? 1) - 1
+          if (remaining > 0) transfers.byClient.set(clientId, remaining)
+          else transfers.byClient.delete(clientId)
         })
       )
     )
-  } catch (cause) {
-    Sentry.captureException(cause, {
-      tags: {
-        "kiln.operation":
-          method === "PUT" ? "browser.file.upload" : "browser.file.download",
-        "kiln.relay_id": options.identity.fingerprint,
-      },
-    })
-    if (response.headersSent) {
-      response.destroy(cause instanceof Error ? cause : undefined)
-    } else {
-      browserJson(response, 400, { error: safeBrowserError(cause) }, origin)
-    }
-  } finally {
-    transfers.active -= 1
-    const remaining = (transfers.byClient.get(clientId) ?? 1) - 1
-    if (remaining > 0) transfers.byClient.set(clientId, remaining)
-    else transfers.byClient.delete(clientId)
-  }
+  )
   return true
 }
 
@@ -753,57 +809,62 @@ async function authenticateBrowserRequest(input: {
   )
     throw new Error("Browser proof was replayed")
   input.pendingRequestProofs.add(replayKey)
-  try {
-    const client = await input.options.runEffect(
-      input.options.state.findClientById(parsed.payload.issuer)
-    )
-    if (!client) throw new Error("Capability issuer was revoked")
-    validateCapability(
-      parsed,
-      client,
-      input.origin,
-      input.options.identity.fingerprint,
-      requiredAction
-    )
-    if (
-      parsed.payload.instanceId !== input.instanceId ||
-      parsed.payload.path !== input.path
-    )
-      throw new Error("Capability scope does not match the file")
+  return runBrowser(
+    browserOperation(async () => {
+      const client = await input.options.runEffect(
+        input.options.state.findClientById(parsed.payload.issuer)
+      )
+      if (!client) throw new Error("Capability issuer was revoked")
+      validateCapability(
+        parsed,
+        client,
+        input.origin,
+        input.options.identity.fingerprint,
+        requiredAction
+      )
+      if (
+        parsed.payload.instanceId !== input.instanceId ||
+        parsed.payload.path !== input.path
+      ) {
+        throw new Error("Capability scope does not match the file")
+      }
 
-    const browserKey = createPublicKey({ format: "jwk", key: publicKeyJwk })
-    const proof = Buffer.from(
-      header(input.request, "x-kiln-proof"),
-      "base64url"
+      const browserKey = createPublicKey({ format: "jwk", key: publicKeyJwk })
+      const proof = Buffer.from(
+        header(input.request, "x-kiln-proof"),
+        "base64url"
+      )
+      const valid = verify(
+        "sha256",
+        Buffer.from(
+          relayBrowserRequestProofTranscript({
+            capabilityId: parsed.payload.capabilityId,
+            expiresAt: parsed.payload.expiresAt,
+            instanceId: input.instanceId,
+            method: input.method,
+            nonce,
+            path: input.path,
+            relayId: input.options.identity.fingerprint,
+            requestedAt,
+          })
+        ),
+        { dsaEncoding: "ieee-p1363", key: browserKey },
+        proof
+      )
+      if (!valid) throw new Error("Browser request proof is invalid")
+      input.requestProofs.set(replayKey, parsed.payload.expiresAt)
+      return {
+        capabilityId: parsed.payload.capabilityId,
+        clientId: client.id,
+        instanceId: parsed.payload.instanceId,
+        subject: parsed.payload.subject,
+      }
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => input.pendingRequestProofs.delete(replayKey))
+      )
     )
-    const valid = verify(
-      "sha256",
-      Buffer.from(
-        relayBrowserRequestProofTranscript({
-          capabilityId: parsed.payload.capabilityId,
-          expiresAt: parsed.payload.expiresAt,
-          instanceId: input.instanceId,
-          method: input.method,
-          nonce,
-          path: input.path,
-          relayId: input.options.identity.fingerprint,
-          requestedAt,
-        })
-      ),
-      { dsaEncoding: "ieee-p1363", key: browserKey },
-      proof
-    )
-    if (!valid) throw new Error("Browser request proof is invalid")
-    input.requestProofs.set(replayKey, parsed.payload.expiresAt)
-    return {
-      capabilityId: parsed.payload.capabilityId,
-      clientId: client.id,
-      instanceId: parsed.payload.instanceId,
-      subject: parsed.payload.subject,
-    }
-  } finally {
-    input.pendingRequestProofs.delete(replayKey)
-  }
+  )
 }
 
 async function auditBrowserTransfer(
@@ -818,33 +879,39 @@ async function auditBrowserTransfer(
   bytes: number,
   outcome: "aborted" | "completed" = "completed"
 ): Promise<void> {
-  try {
-    await options.runEffect(
-      options.state.appendAudit({
-        clientId: authentication.clientId,
-        details: {
-          bytes,
-          instanceId: authentication.instanceId,
-          method,
-          outcome,
-          permission:
-            method === "PUT"
-              ? "instance.files.upload"
-              : "instance.files.download",
-          subject: authentication.subject,
-        },
-        event:
-          method === "PUT" ? "browser.file.upload" : "browser.file.download",
-        id: randomUUID(),
-        occurredAt: Date.now(),
-        requestId: authentication.capabilityId,
-      })
+  await runBrowser(
+    browserOperation(() =>
+      options.runEffect(
+        options.state.appendAudit({
+          clientId: authentication.clientId,
+          details: {
+            bytes,
+            instanceId: authentication.instanceId,
+            method,
+            outcome,
+            permission:
+              method === "PUT"
+                ? "instance.files.upload"
+                : "instance.files.download",
+            subject: authentication.subject,
+          },
+          event:
+            method === "PUT" ? "browser.file.upload" : "browser.file.download",
+          id: randomUUID(),
+          occurredAt: Date.now(),
+          requestId: authentication.capabilityId,
+        })
+      )
+    ).pipe(
+      Effect.catch((cause) =>
+        Effect.sync(() => {
+          Sentry.captureException(cause, {
+            tags: { "kiln.operation": "browser.file.audit" },
+          })
+        })
+      )
     )
-  } catch (cause) {
-    Sentry.captureException(cause, {
-      tags: { "kiln.operation": "browser.file.audit" },
-    })
-  }
+  )
 }
 
 function header(request: IncomingMessage, name: string): string {
@@ -853,6 +920,10 @@ function header(request: IncomingMessage, name: string): string {
     throw new Error(`${name} header is invalid`)
   }
   return value
+}
+
+function runBrowser<A, E>(effect: Effect.Effect<A, E>): Promise<A> {
+  return Effect.runPromise(effect)
 }
 
 function browserCorsHeaders(
