@@ -61,6 +61,7 @@ import {
 } from "./effect/pairing.js"
 import {
   disposeRelayRuntime,
+  forkRelayEffect,
   initializeRelayRuntime,
   runRelayEffect,
 } from "./effect/runtime.js"
@@ -155,26 +156,42 @@ await lifecycle.initializeProxy(
   startupProxySettings
 )
 let tailscaleFirewallError: string | null = null
-const reconcileTailscaleFirewalls = async () => {
-  try {
-    await lifecycle.reconcileTailscaleStackFirewalls()
-    if (tailscaleFirewallError) {
-      console.log("Relay restored Tailscale forwarding rules")
-      tailscaleFirewallError = null
-    }
-  } catch (cause) {
-    const message = cause instanceof Error ? cause.message : "unknown error"
-    if (message !== tailscaleFirewallError) {
-      console.error("Relay could not restore Tailscale forwarding rules", cause)
-      tailscaleFirewallError = message
-    }
-  }
-}
-await reconcileTailscaleFirewalls()
-const tailscaleFirewallTimer = setInterval(() => {
-  void reconcileTailscaleFirewalls()
-}, 10_000)
-tailscaleFirewallTimer.unref()
+const reconcileTailscaleFirewalls = Effect.tryPromise({
+  try: () => lifecycle.reconcileTailscaleStackFirewalls(),
+  catch: (cause) => cause,
+}).pipe(
+  Effect.matchEffect({
+    onFailure: (cause) =>
+      Effect.sync(() => {
+        const message = cause instanceof Error ? cause.message : "unknown error"
+        if (message !== tailscaleFirewallError) {
+          console.error(
+            "Relay could not restore Tailscale forwarding rules",
+            cause
+          )
+          tailscaleFirewallError = message
+        }
+      }),
+    onSuccess: () =>
+      Effect.sync(() => {
+        if (tailscaleFirewallError) {
+          console.log("Relay restored Tailscale forwarding rules")
+          tailscaleFirewallError = null
+        }
+      }),
+  })
+)
+await runRelayEffect(
+  "relay.tailscale.reconcileFirewalls.initial",
+  reconcileTailscaleFirewalls
+)
+const tailscaleFirewallFiber = forkRelayEffect(
+  "relay.tailscale.reconcileFirewalls",
+  Effect.sleep("10 seconds").pipe(
+    Effect.andThen(reconcileTailscaleFirewalls),
+    Effect.forever
+  )
+)
 const instanceMutations = new Map<string, Promise<unknown>>()
 let webRouteMutation: Promise<unknown> = Promise.resolve()
 const snapshotHub = new RelaySnapshotHub(relaySnapshot)
@@ -407,7 +424,10 @@ server.listen(config.port, config.host, () => {
     `Discovering ${config.managedLabel} containers in ${config.rootDirectory}`
   )
 })
-const tlsRefresh = scheduleTlsRefresh()
+const tlsRefreshFiber = forkRelayEffect(
+  "relay.tls.refreshLoop",
+  tlsRefreshLoop()
+)
 
 let shutdownStarted = false
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -543,34 +563,13 @@ function bootstrapDiscovery(
   return true
 }
 
-function scheduleTlsRefresh(): { close: () => void } {
+function tlsRefreshLoop() {
   if (!activeTls || !("setSecureContext" in server)) {
-    return { close: () => undefined }
+    return Effect.void
   }
-  let closed = false
-  let timer: ReturnType<typeof setTimeout> | null = null
-  const schedule = (delay: number) => {
-    if (closed) return
-    timer = setTimeout(() => void refresh(), delay)
-    timer.unref()
-  }
-  const refresh = async () => {
-    try {
-      const material = await runRelayEffect(
-        "relay.tls.refresh",
-        loadRelayTls(config)
-      )
-      if (!material) throw new Error("TLS mode changed while Relay was running")
-      if (material.fingerprint !== activeTls?.fingerprint) {
-        server.setSecureContext({
-          cert: material.certificatePem,
-          key: material.keyPem,
-        })
-        console.log(`Relay TLS certificate reloaded (${material.fingerprint})`)
-      }
-      activeTls = material
-      schedule(material.mode === "external" ? 60_000 : 6 * 60 * 60_000)
-    } catch (cause) {
+  let nextDelay = activeTls.mode === "external" ? 60_000 : 6 * 60 * 60_000
+  const recordFailure = (cause: unknown) =>
+    Effect.sync(() => {
       Sentry.captureException(cause, {
         tags: { "kiln.operation": "relay.tls.refresh" },
       })
@@ -578,22 +577,42 @@ function scheduleTlsRefresh(): { close: () => void } {
         "Relay TLS refresh failed; retaining the last valid certificate",
         cause
       )
-      schedule(60_000)
-    }
-  }
-  schedule(activeTls.mode === "external" ? 60_000 : 6 * 60 * 60_000)
-  return {
-    close: () => {
-      closed = true
-      if (timer) clearTimeout(timer)
-      timer = null
-    },
-  }
+      nextDelay = 60_000
+    })
+  return Effect.gen(function* () {
+    yield* Effect.sleep(nextDelay)
+    yield* loadRelayTls(config).pipe(
+      Effect.matchEffect({
+        onFailure: recordFailure,
+        onSuccess: (material) => {
+          if (!material) {
+            return recordFailure(
+              new Error("TLS mode changed while Relay was running")
+            )
+          }
+          return Effect.sync(() => {
+            if (material.fingerprint !== activeTls?.fingerprint) {
+              server.setSecureContext({
+                cert: material.certificatePem,
+                key: material.keyPem,
+              })
+              console.log(
+                `Relay TLS certificate reloaded (${material.fingerprint})`
+              )
+            }
+            activeTls = material
+            nextDelay = material.mode === "external" ? 60_000 : 6 * 60 * 60_000
+          })
+        },
+      })
+    )
+  }).pipe(Effect.forever)
 }
 
 async function shutdownRelay(signal: NodeJS.Signals): Promise<void> {
   console.log(`Received ${signal}; shutting down relay`)
-  tlsRefresh.close()
+  tailscaleFirewallFiber.interruptUnsafe()
+  tlsRefreshFiber.interruptUnsafe()
   lifecycle.close()
   snapshotHub.close()
   await Promise.all([

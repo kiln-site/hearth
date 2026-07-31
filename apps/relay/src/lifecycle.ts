@@ -12,7 +12,7 @@ import {
 } from "node:fs/promises"
 import { totalmem } from "node:os"
 import { join } from "node:path"
-import { Effect, Semaphore } from "effect"
+import { Effect, Fiber, Schedule, Semaphore } from "effect"
 
 import { resolveBrick } from "./bricks.js"
 import { command } from "./command.js"
@@ -242,8 +242,7 @@ export class LifecycleDriver {
   readonly #docker: DockerDriver
   readonly #resources: RelayResourceNames
   #edgeMutation: Promise<void> = Promise.resolve()
-  #edgeReconciliationPending = false
-  #edgeReconciliationTimer: NodeJS.Timeout | null = null
+  #edgeReconciliationFiber: Fiber.Fiber<void> | null = null
   #hostDataDirectoryPromise: Promise<string> | null = null
   #listenerMode: RelayProxySettings["mode"] | null = null
   readonly #gamePortSemaphore = Semaphore.makeUnsafe(1)
@@ -843,21 +842,21 @@ export class LifecycleDriver {
   }
 
   async #logoutTailscaleStack(container: string): Promise<void> {
-    let lastCause: unknown
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        await command("docker", ["exec", container, "tailscale", "logout"], {
-          timeout: 30_000,
-        })
-        return
-      } catch (cause) {
-        lastCause = cause
-        if (attempt < 2) {
-          await new Promise((resolvePromise) => setTimeout(resolvePromise, 500))
-        }
-      }
-    }
-    throw lastCause
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: () =>
+          command("docker", ["exec", container, "tailscale", "logout"], {
+            timeout: 30_000,
+          }),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.retry({
+          schedule: Schedule.spaced("500 millis"),
+          times: 2,
+        }),
+        Effect.asVoid
+      )
+    )
   }
 
   #tailscaleStackRemovalMarker(id: string): string {
@@ -979,10 +978,8 @@ export class LifecycleDriver {
   }
 
   close(): void {
-    if (this.#edgeReconciliationTimer) {
-      clearInterval(this.#edgeReconciliationTimer)
-      this.#edgeReconciliationTimer = null
-    }
+    this.#edgeReconciliationFiber?.interruptUnsafe()
+    this.#edgeReconciliationFiber = null
   }
 
   async assertPrivateProxyListener(): Promise<void> {
@@ -2783,28 +2780,28 @@ export class LifecycleDriver {
   }
 
   #scheduleEdgeReconciliation(settings: RelayProxySettings): void {
-    if (this.#edgeReconciliationTimer) {
-      clearInterval(this.#edgeReconciliationTimer)
-      this.#edgeReconciliationTimer = null
-    }
+    this.#edgeReconciliationFiber?.interruptUnsafe()
+    this.#edgeReconciliationFiber = null
     if (settings.mode !== "coolify") return
-    this.#edgeReconciliationTimer = setInterval(() => {
-      if (this.#edgeReconciliationPending) return
-      this.#edgeReconciliationPending = true
-      void this.#serializeEdgeMutation(() =>
-        this.#reconcileExternalTraefikRoutes(this.#webRoutes, settings)
-      )
-        .catch((cause: unknown) => {
+    const reconcile = Effect.tryPromise({
+      try: () =>
+        this.#serializeEdgeMutation(() =>
+          this.#reconcileExternalTraefikRoutes(this.#webRoutes, settings)
+        ),
+      catch: (cause) => cause,
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.sync(() => {
           console.error(
             "Relay could not reconcile the Coolify Traefik edge",
             cause
           )
         })
-        .finally(() => {
-          this.#edgeReconciliationPending = false
-        })
-    }, 30_000)
-    this.#edgeReconciliationTimer.unref()
+      )
+    )
+    this.#edgeReconciliationFiber = Effect.runFork(
+      Effect.sleep("30 seconds").pipe(Effect.andThen(reconcile), Effect.forever)
+    )
   }
 
   #serializeEdgeMutation(operation: () => Promise<void>): Promise<void> {

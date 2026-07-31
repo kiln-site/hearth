@@ -1,6 +1,6 @@
 import * as Sentry from "@sentry/node"
-import { ManagedRuntime } from "effect"
-import type { Effect } from "effect"
+import { Effect, ManagedRuntime } from "effect"
+import type { Fiber } from "effect"
 
 import { makeRelayStateLayer, RelayStateStore } from "./state.js"
 import type { RelayConfig } from "../config.js"
@@ -26,6 +26,16 @@ export function runRelayEffect<TResult, TError>(
   return Sentry.startSpan({ name, op: "kiln.effect" }, () =>
     activeRuntime.runPromise(effect)
   )
+}
+
+export function forkRelayEffect<TResult, TError>(
+  name: string,
+  effect: Effect.Effect<TResult, TError, RelayStateStore>
+): Fiber.Fiber<TResult, unknown> {
+  if (!runtime) {
+    throw new Error("Relay Effect runtime has not been initialized")
+  }
+  return runtime.runFork(effect.pipe(Effect.withSpan(name)))
 }
 
 export async function disposeRelayRuntime(): Promise<void> {
