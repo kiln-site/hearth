@@ -17,9 +17,11 @@ import {
   isKilnReleaseVersion,
   kilnReleaseVersionCore,
 } from "@workspace/contracts"
+import { Effect } from "effect"
 
 import { command } from "./command.js"
 import type { CommandOptions, CommandResult } from "./command.js"
+import { RelaySystemUpdateError } from "./effect/errors.js"
 import {
   KILN_IMAGE_SOURCE,
   KILN_INSTALLATION_LABEL,
@@ -91,23 +93,16 @@ export class SystemUpdateManager {
     this.#operationsDirectory = join(config.dataDirectory, "updates")
   }
 
-  async inspect(container: string): Promise<{
-    component: KilnComponent | null
-    container: string
-    currentImage: string
-    currentVersion: string | null
-    eligible: boolean
-    installationId: string | null
-    reason: string | null
-    sameInstallation: boolean
-  }> {
-    return updateEligibility(
-      await inspectContainer(container, this.#command),
-      this.#installationId
+  inspect(container: string) {
+    return inspectContainerEffect(container, this.#command).pipe(
+      Effect.map((inspected) =>
+        updateEligibility(inspected, this.#installationId)
+      ),
+      Effect.withSpan("relay.systemUpdates.inspect")
     )
   }
 
-  async start(
+  start(
     input: {
       helperImage: string
       targetContainer: string
@@ -115,174 +110,264 @@ export class SystemUpdateManager {
       version: string
     },
     signal?: AbortSignal
-  ): Promise<UpdateOperation> {
-    throwIfAborted(signal)
-    const helperComponent = releaseImageComponent(input.helperImage)
-    if (helperComponent !== "relay") {
-      throw new Error("The update helper must be an official Relay digest")
-    }
-    const targetComponent = releaseImageComponent(input.targetImage)
-    const target = await inspectContainer(input.targetContainer, this.#command)
-    const eligibility = updateEligibility(target, this.#installationId)
-    if (eligibility.component !== targetComponent) {
-      throw new Error(
-        "The selected container is not an official Kiln component"
-      )
-    }
-    if (!eligibility.eligible) {
-      throw new Error(eligibility.reason ?? "This container cannot be updated")
-    }
-    if (!isKilnReleaseVersion(input.version)) {
-      throw new Error("The requested Kiln release version is invalid")
-    }
-    if (
-      isKilnReleaseVersion(eligibility.currentVersion) &&
-      isDefiniteReleaseDowngrade(input.version, eligibility.currentVersion)
-    ) {
-      throw new Error(
-        `Refusing to downgrade ${eligibility.currentVersion} to ${input.version}`
-      )
-    }
-    const targetReference = managedImageChannel(
-      target.Config.Image,
-      targetComponent
-    )
-    if (!targetReference) {
-      throw new Error("The target no longer uses a managed channel tag")
-    }
-
-    throwIfAborted(signal)
-    await mkdir(this.#operationsDirectory, { recursive: true, mode: 0o700 })
-    const id = randomUUID()
-    const operation: UpdateOperation = {
-      component: targetComponent,
-      error: null,
-      finishedAt: null,
-      id,
-      previousImage: target.Config.Image,
-      requestedImage: input.targetImage,
-      startedAt: new Date().toISOString(),
-      status: "running",
-      targetContainer: target.Name.replace(/^\//u, ""),
-      version: input.version,
-    }
-    await acquireTargetLock(this.#operationsDirectory, operation)
-    try {
-      await writeOperation(this.#operationsDirectory, operation)
-    } catch (cause) {
-      await releaseTargetLock(
-        this.#operationsDirectory,
-        operation.targetContainer,
-        operation.id
-      )
-      throw cause
-    }
-
-    const helperName = `kiln-updater-${id}`
-    try {
-      let targetImage: ImageInspect
-      if (input.helperImage === input.targetImage) {
-        targetImage = await pullAndVerifyImage(
-          input.helperImage,
-          "relay",
-          this.#command,
-          signal
+  ) {
+    const runCommand = this.#command
+    const installationId = this.#installationId
+    const operationsDirectory = this.#operationsDirectory
+    return Effect.gen(function* () {
+      yield* ensureNotAbortedEffect(signal)
+      const helperComponent = releaseImageComponent(input.helperImage)
+      if (helperComponent !== "relay") {
+        return yield* systemUpdateFailure(
+          "start.validate",
+          "The update helper must be an official Relay digest"
         )
-      } else {
-        const [, inspectedTarget] = await Promise.all([
-          pullAndVerifyImage(input.helperImage, "relay", this.#command, signal),
-          pullAndVerifyImage(
-            input.targetImage,
-            targetComponent,
-            this.#command,
-            signal
-          ),
-        ])
-        targetImage = inspectedTarget
       }
-      const imageVersion =
-        targetImage.Config?.Labels?.["org.opencontainers.image.version"]
-      if (!imageVersionMatchesRelease(imageVersion, input.version)) {
-        throw new Error("The target image version does not match the release")
-      }
-
-      const volumesFrom =
-        targetComponent === "relay"
-          ? target
-          : await inspectContainer(hostname(), this.#command)
-      const volumesFromLabels = volumesFrom.Config.Labels ?? {}
+      const targetComponent = releaseImageComponent(input.targetImage)
+      const target = yield* inspectContainerEffect(
+        input.targetContainer,
+        runCommand
+      )
+      const eligibility = updateEligibility(target, installationId)
       if (
-        kilnComponent(volumesFromLabels["io.kiln.component"]) !== "relay" ||
-        volumesFromLabels["org.opencontainers.image.source"] !==
-          KILN_IMAGE_SOURCE
+        targetComponent === null ||
+        eligibility.component !== targetComponent
       ) {
-        throw new Error("Docker could not identify this Relay container")
+        return yield* systemUpdateFailure(
+          "start.validate",
+          "The selected container is not an official Kiln component"
+        )
+      }
+      if (!eligibility.eligible) {
+        return yield* systemUpdateFailure(
+          "start.validate",
+          eligibility.reason ?? "This container cannot be updated"
+        )
+      }
+      if (!isKilnReleaseVersion(input.version)) {
+        return yield* systemUpdateFailure(
+          "start.validate",
+          "The requested Kiln release version is invalid"
+        )
+      }
+      if (
+        isKilnReleaseVersion(eligibility.currentVersion) &&
+        isDefiniteReleaseDowngrade(input.version, eligibility.currentVersion)
+      ) {
+        return yield* systemUpdateFailure(
+          "start.validate",
+          `Refusing to downgrade ${eligibility.currentVersion} to ${input.version}`
+        )
+      }
+      const targetReference = managedImageChannel(
+        target.Config.Image,
+        targetComponent
+      )
+      if (!targetReference) {
+        return yield* systemUpdateFailure(
+          "start.validate",
+          "The target no longer uses a managed channel tag"
+        )
       }
 
-      throwIfAborted(signal)
-      await this.#command(
-        "docker",
-        [
-          "run",
-          "--detach",
-          "--name",
-          helperName,
-          "--label",
-          "io.kiln.update-helper=true",
-          "--volumes-from",
-          volumesFrom.Id,
-          "--env",
-          `KILN_UPDATE_DATA_DIR=${this.#operationsDirectory}`,
-          "--env",
-          `KILN_UPDATE_OPERATION_ID=${id}`,
-          "--env",
-          `KILN_UPDATE_TARGET_CONTAINER=${operation.targetContainer}`,
-          "--env",
-          `KILN_UPDATE_TARGET_IMAGE=${input.targetImage}`,
-          "--env",
-          `KILN_UPDATE_TARGET_REFERENCE=${targetReference}`,
-          "--env",
-          `KILN_UPDATE_VERSION=${input.version}`,
-          input.helperImage,
-          "dist/src/updater.mjs",
-        ],
-        { signal, timeout: 90_000 }
+      yield* ensureNotAbortedEffect(signal)
+      yield* systemUpdateOperation("start.createDirectory", () =>
+        mkdir(operationsDirectory, { recursive: true, mode: 0o700 })
       )
-      throwIfAborted(signal)
-      return operation
-    } catch (cause) {
-      await cleanupHelper(this.#command, id)
-      const failed: UpdateOperation = {
-        ...operation,
-        error: signal?.aborted
-          ? "The update request was cancelled before replacement started."
-          : cause instanceof Error
-            ? cause.message
-            : "Update helper failed",
-        finishedAt: new Date().toISOString(),
-        status: "failed",
+      const id = randomUUID()
+      const operation: UpdateOperation = {
+        component: targetComponent,
+        error: null,
+        finishedAt: null,
+        id,
+        previousImage: target.Config.Image,
+        requestedImage: input.targetImage,
+        startedAt: new Date().toISOString(),
+        status: "running",
+        targetContainer: target.Name.replace(/^\//u, ""),
+        version: input.version,
       }
-      await writeOperation(this.#operationsDirectory, failed)
-      await releaseTargetLock(
-        this.#operationsDirectory,
-        operation.targetContainer,
-        operation.id
+      yield* acquireTargetLockEffect(operationsDirectory, operation)
+      yield* writeOperationEffect(operationsDirectory, operation).pipe(
+        Effect.onInterrupt(() =>
+          releaseTargetLockEffect(
+            operationsDirectory,
+            operation.targetContainer,
+            operation.id
+          ).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning(
+                "System update lock release after write failure failed",
+                cause
+              )
+            )
+          )
+        )
       )
-      if (signal?.aborted) throw abortReason(signal)
-      return failed
-    }
+
+      const helperName = `kiln-updater-${id}`
+      return yield* Effect.gen(function* () {
+        const targetImage =
+          input.helperImage === input.targetImage
+            ? yield* pullAndVerifyImageEffect(
+                input.helperImage,
+                "relay",
+                runCommand,
+                signal
+              )
+            : (yield* Effect.all(
+                [
+                  pullAndVerifyImageEffect(
+                    input.helperImage,
+                    "relay",
+                    runCommand,
+                    signal
+                  ),
+                  pullAndVerifyImageEffect(
+                    input.targetImage,
+                    targetComponent,
+                    runCommand,
+                    signal
+                  ),
+                ] as const,
+                { concurrency: 2 }
+              ))[1]
+        const imageVersion =
+          targetImage.Config?.Labels?.["org.opencontainers.image.version"]
+        if (!imageVersionMatchesRelease(imageVersion, input.version)) {
+          return yield* systemUpdateFailure(
+            "start.verifyImage",
+            "The target image version does not match the release"
+          )
+        }
+
+        const volumesFrom =
+          targetComponent === "relay"
+            ? target
+            : yield* inspectContainerEffect(hostname(), runCommand)
+        const volumesFromLabels = volumesFrom.Config.Labels ?? {}
+        if (
+          kilnComponent(volumesFromLabels["io.kiln.component"]) !== "relay" ||
+          volumesFromLabels["org.opencontainers.image.source"] !==
+            KILN_IMAGE_SOURCE
+        ) {
+          return yield* systemUpdateFailure(
+            "start.verifyRelay",
+            "Docker could not identify this Relay container"
+          )
+        }
+
+        yield* ensureNotAbortedEffect(signal)
+        yield* systemUpdateOperation("start.launchHelper", () =>
+          runCommand(
+            "docker",
+            [
+              "run",
+              "--detach",
+              "--name",
+              helperName,
+              "--label",
+              "io.kiln.update-helper=true",
+              "--volumes-from",
+              volumesFrom.Id,
+              "--env",
+              `KILN_UPDATE_DATA_DIR=${operationsDirectory}`,
+              "--env",
+              `KILN_UPDATE_OPERATION_ID=${id}`,
+              "--env",
+              `KILN_UPDATE_TARGET_CONTAINER=${operation.targetContainer}`,
+              "--env",
+              `KILN_UPDATE_TARGET_IMAGE=${input.targetImage}`,
+              "--env",
+              `KILN_UPDATE_TARGET_REFERENCE=${targetReference}`,
+              "--env",
+              `KILN_UPDATE_VERSION=${input.version}`,
+              input.helperImage,
+              "dist/src/updater.mjs",
+            ],
+            { signal, timeout: 90_000 }
+          )
+        )
+        yield* ensureNotAbortedEffect(signal)
+        return operation
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.gen(function* () {
+            yield* cleanupHelperEffect(runCommand, id)
+            const failed: UpdateOperation = {
+              ...operation,
+              error: signal?.aborted
+                ? "The update request was cancelled before replacement started."
+                : cause.message,
+              finishedAt: new Date().toISOString(),
+              status: "failed",
+            }
+            yield* writeOperationEffect(operationsDirectory, failed)
+            yield* releaseTargetLockEffect(
+              operationsDirectory,
+              operation.targetContainer,
+              operation.id
+            )
+            if (signal?.aborted) {
+              return yield* systemUpdateFailure(
+                "start.cancelled",
+                abortReason(signal).message,
+                abortReason(signal)
+              )
+            }
+            return failed
+          })
+        ),
+        Effect.onError(() =>
+          Effect.all(
+            [
+              cleanupHelperEffect(runCommand, id),
+              writeOperationEffect(operationsDirectory, {
+                ...operation,
+                error:
+                  "The update request was interrupted before replacement started.",
+                finishedAt: new Date().toISOString(),
+                status: "failed",
+              }).pipe(
+                Effect.catch((cleanupCause) =>
+                  Effect.logWarning(
+                    "System update interruption record failed",
+                    cleanupCause
+                  )
+                )
+              ),
+              releaseTargetLockEffect(
+                operationsDirectory,
+                operation.targetContainer,
+                operation.id
+              ).pipe(
+                Effect.catch((cleanupCause) =>
+                  Effect.logWarning(
+                    "System update interruption lock release failed",
+                    cleanupCause
+                  )
+                )
+              ),
+            ],
+            { concurrency: 3, discard: true }
+          )
+        )
+      )
+    }).pipe(Effect.withSpan("relay.systemUpdates.start"))
   }
 
-  async status(id: string): Promise<UpdateOperation | null> {
-    if (!/^[0-9a-f-]{36}$/u.test(id)) return null
-    try {
-      const operation = await readOperation(this.#operationsDirectory, id)
+  status(id: string) {
+    const operationsDirectory = this.#operationsDirectory
+    const runCommand = this.#command
+    return Effect.gen(function* () {
+      if (!/^[0-9a-f-]{36}$/u.test(id)) return null
+      const operation = yield* readOperationEffect(operationsDirectory, id)
       if (!operation) return null
 
       if (
         operation.status === "running" &&
         operationIsStale(operation) &&
-        (await helperState(this.#command, id)) === "stopped"
+        (yield* helperStateEffect(runCommand, id)) === "stopped"
       ) {
         const failed: UpdateOperation = {
           ...operation,
@@ -291,29 +376,26 @@ export class SystemUpdateManager {
           finishedAt: new Date().toISOString(),
           status: "failed",
         }
-        await writeOperation(this.#operationsDirectory, failed)
-        await releaseTargetLock(
-          this.#operationsDirectory,
+        yield* writeOperationEffect(operationsDirectory, failed)
+        yield* releaseTargetLockEffect(
+          operationsDirectory,
           operation.targetContainer,
           operation.id
         )
-        await cleanupHelper(this.#command, id)
+        yield* cleanupHelperEffect(runCommand, id)
         return failed
       }
 
       if (operation.status !== "running") {
-        await releaseTargetLock(
-          this.#operationsDirectory,
+        yield* releaseTargetLockEffect(
+          operationsDirectory,
           operation.targetContainer,
           operation.id
         )
-        await cleanupHelper(this.#command, id)
+        yield* cleanupHelperEffect(runCommand, id)
       }
       return operation
-    } catch (cause) {
-      if (errorCode(cause) === "ENOENT") return null
-      throw cause
-    }
+    }).pipe(Effect.withSpan("relay.systemUpdates.status"))
   }
 }
 
@@ -396,181 +478,277 @@ function updateEligibility(
   }
 }
 
-async function inspectContainer(
+function inspectContainerEffect(
   container: string,
   runCommand: RunCommand
-): Promise<ContainerInspect> {
+): Effect.Effect<ContainerInspect, RelaySystemUpdateError> {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/u.test(container)) {
-    throw new Error("Invalid Docker container identifier")
-  }
-  try {
-    return await inspectContainerDirect(container, runCommand)
-  } catch (directCause) {
-    const listed = await runCommand("docker", ["ps", "--quiet"])
-    const identifiers = listed.stdout.split(/\s+/u).filter(Boolean)
-    if (identifiers.length === 0) throw directCause
-    const result = await runCommand("docker", ["inspect", ...identifiers])
-    const inspected = decodeJsonArray(result.stdout, isContainerInspect)
-    const matches = inspected.filter(
-      (candidate) => candidate.Config.Hostname === container
+    return systemUpdateFailure(
+      "inspect.validate",
+      "Invalid Docker container identifier"
     )
-    if (matches.length === 1 && matches[0]) return matches[0]
-    if (matches.length > 1) {
-      throw new Error(
-        `More than one running Docker container uses hostname ${container}`
+  }
+  return inspectContainerDirectEffect(container, runCommand).pipe(
+    Effect.catch((directCause) =>
+      Effect.gen(function* () {
+        const listed = yield* systemUpdateOperation(
+          "inspect.listContainers",
+          () => runCommand("docker", ["ps", "--quiet"])
+        )
+        const identifiers = listed.stdout.split(/\s+/u).filter(Boolean)
+        if (identifiers.length === 0) return yield* Effect.fail(directCause)
+        const result = yield* systemUpdateOperation(
+          "inspect.inspectCandidates",
+          () => runCommand("docker", ["inspect", ...identifiers])
+        )
+        const inspected = yield* decodeJsonArrayEffect(
+          "inspect.decodeCandidates",
+          result.stdout,
+          isContainerInspect
+        )
+        const matches = inspected.filter(
+          (candidate) => candidate.Config.Hostname === container
+        )
+        if (matches.length === 1 && matches[0]) return matches[0]
+        if (matches.length > 1) {
+          return yield* systemUpdateFailure(
+            "inspect.resolveHostname",
+            `More than one running Docker container uses hostname ${container}`
+          )
+        }
+        return yield* Effect.fail(directCause)
+      })
+    )
+  )
+}
+
+function inspectContainerDirectEffect(
+  container: string,
+  runCommand: RunCommand
+): Effect.Effect<ContainerInspect, RelaySystemUpdateError> {
+  return Effect.gen(function* () {
+    const result = yield* systemUpdateOperation(
+      "inspect.inspectContainer",
+      () => runCommand("docker", ["inspect", container])
+    )
+    const inspected = (yield* decodeJsonArrayEffect(
+      "inspect.decodeContainer",
+      result.stdout,
+      isContainerInspect
+    ))[0]
+    if (!inspected) {
+      return yield* systemUpdateFailure(
+        "inspect.decodeContainer",
+        "Docker could not inspect the container"
       )
     }
-    throw directCause
-  }
+    return inspected
+  })
 }
 
-async function inspectContainerDirect(
-  container: string,
-  runCommand: RunCommand
-): Promise<ContainerInspect> {
-  const result = await runCommand("docker", ["inspect", container])
-  const inspected = decodeJsonArray(result.stdout, isContainerInspect)[0]
-  if (!inspected) throw new Error("Docker could not inspect the container")
-  return inspected
-}
-
-async function pullAndVerifyImage(
+function pullAndVerifyImageEffect(
   image: string,
   expectedComponent: KilnComponent,
   runCommand: RunCommand,
   signal?: AbortSignal
-): Promise<ImageInspect> {
-  throwIfAborted(signal)
-  await runCommand("docker", ["pull", image], {
-    signal,
-    timeout: 10 * 60_000,
+): Effect.Effect<ImageInspect, RelaySystemUpdateError> {
+  return Effect.gen(function* () {
+    yield* ensureNotAbortedEffect(signal)
+    yield* systemUpdateOperation("start.pullImage", () =>
+      runCommand("docker", ["pull", image], {
+        signal,
+        timeout: 10 * 60_000,
+      })
+    )
+    yield* ensureNotAbortedEffect(signal)
+    const result = yield* systemUpdateOperation("start.inspectImage", () =>
+      runCommand("docker", ["image", "inspect", image], { signal })
+    )
+    const inspected = (yield* decodeJsonArrayEffect(
+      "start.decodeImage",
+      result.stdout,
+      isImageInspect
+    ))[0]
+    if (!inspected) {
+      return yield* systemUpdateFailure(
+        "start.decodeImage",
+        "Docker could not inspect the pulled image"
+      )
+    }
+    const labels = inspected.Config?.Labels ?? {}
+    if (
+      labels["org.opencontainers.image.source"] !== KILN_IMAGE_SOURCE ||
+      labels["io.kiln.component"] !== expectedComponent
+    ) {
+      return yield* systemUpdateFailure(
+        "start.verifyImage",
+        `The ${expectedComponent} image failed provenance checks`
+      )
+    }
+    return inspected
   })
-  throwIfAborted(signal)
-  const result = await runCommand("docker", ["image", "inspect", image], {
-    signal,
-  })
-  const inspected = decodeJsonArray(result.stdout, isImageInspect)[0]
-  if (!inspected) throw new Error("Docker could not inspect the pulled image")
-  const labels = inspected.Config?.Labels ?? {}
-  if (
-    labels["org.opencontainers.image.source"] !== KILN_IMAGE_SOURCE ||
-    labels["io.kiln.component"] !== expectedComponent
-  ) {
-    throw new Error(`The ${expectedComponent} image failed provenance checks`)
-  }
-  return inspected
 }
 
-function releaseImageComponent(image: string): KilnComponent {
+function releaseImageComponent(image: string): KilnComponent | null {
   if (!RELEASE_IMAGE.test(image)) {
-    throw new Error("Updates require an official immutable GHCR digest")
+    return null
   }
   return image.startsWith("ghcr.io/kiln-site/hearth@") ? "hearth" : "relay"
 }
 
-async function acquireTargetLock(
+function acquireTargetLockEffect(
   directory: string,
   operation: UpdateOperation
-): Promise<void> {
+): Effect.Effect<void, RelaySystemUpdateError> {
   const path = targetLockPath(directory, operation.targetContainer)
-  for (;;) {
+  return Effect.suspend(() => {
     const temporary = `${path}.${operation.id}.tmp`
-    try {
-      await writeFile(temporary, `${operation.id}\n`, {
-        flag: "wx",
-        mode: 0o600,
-      })
-      await link(temporary, path)
-      await rm(temporary, { force: true })
-      return
-    } catch (cause) {
-      await rm(temporary, { force: true })
-      if (errorCode(cause) !== "EEXIST") throw cause
-      const existingId = (await readFile(path, "utf8")).trim()
-      const existing = existingId
-        ? await readOperation(directory, existingId)
-        : null
-      if (!existing) {
-        if (await lockIsOrphaned(path)) {
-          await releaseTargetLock(
-            directory,
-            operation.targetContainer,
-            existingId
-          )
-          continue
-        }
-        throw new Error(
-          `An update is starting for ${operation.targetContainer}`
-        )
-      }
-      if (existing.status === "running") {
-        throw new Error(
-          `An update is already running for ${operation.targetContainer}`
-        )
-      }
-      await releaseTargetLock(directory, operation.targetContainer, existingId)
-    }
-  }
+    return Effect.gen(function* () {
+      yield* systemUpdateOperation("lock.writeCandidate", () =>
+        writeFile(temporary, `${operation.id}\n`, {
+          flag: "wx",
+          mode: 0o600,
+        })
+      )
+      return yield* systemUpdateOperation("lock.acquire", () =>
+        link(temporary, path)
+      ).pipe(
+        Effect.catch((cause) => {
+          if (systemErrorCode(cause) !== "EEXIST") return Effect.fail(cause)
+          return Effect.gen(function* () {
+            const existingId = (yield* systemUpdateOperation("lock.read", () =>
+              readFile(path, "utf8")
+            )).trim()
+            const existing = existingId
+              ? yield* readOperationEffect(directory, existingId)
+              : null
+            if (!existing) {
+              if (yield* lockIsOrphanedEffect(path)) {
+                yield* releaseTargetLockEffect(
+                  directory,
+                  operation.targetContainer,
+                  existingId
+                )
+                yield* removeBestEffortEffect(
+                  temporary,
+                  "System update lock cleanup failed"
+                )
+                return yield* acquireTargetLockEffect(directory, operation)
+              }
+              return yield* systemUpdateFailure(
+                "lock.acquire",
+                `An update is starting for ${operation.targetContainer}`
+              )
+            }
+            if (existing.status === "running") {
+              return yield* systemUpdateFailure(
+                "lock.acquire",
+                `An update is already running for ${operation.targetContainer}`
+              )
+            }
+            yield* releaseTargetLockEffect(
+              directory,
+              operation.targetContainer,
+              existingId
+            )
+            yield* removeBestEffortEffect(
+              temporary,
+              "System update lock cleanup failed"
+            )
+            return yield* acquireTargetLockEffect(directory, operation)
+          })
+        })
+      )
+    }).pipe(
+      Effect.uninterruptible,
+      Effect.ensuring(
+        removeBestEffortEffect(temporary, "System update lock cleanup failed")
+      )
+    )
+  })
 }
 
-async function lockIsOrphaned(path: string): Promise<boolean> {
-  try {
-    return Date.now() - (await stat(path)).mtimeMs > ORPHAN_LOCK_MS
-  } catch (cause) {
-    if (errorCode(cause) === "ENOENT") return true
-    throw cause
-  }
+function lockIsOrphanedEffect(
+  path: string
+): Effect.Effect<boolean, RelaySystemUpdateError> {
+  return systemUpdateOperation("lock.stat", () => stat(path)).pipe(
+    Effect.map((metadata) => Date.now() - metadata.mtimeMs > ORPHAN_LOCK_MS),
+    Effect.catch((cause) =>
+      systemErrorCode(cause) === "ENOENT"
+        ? Effect.succeed(true)
+        : Effect.fail(cause)
+    )
+  )
 }
 
-async function releaseTargetLock(
+function releaseTargetLockEffect(
   directory: string,
   targetContainer: string,
   operationId: string
-): Promise<void> {
+): Effect.Effect<void, RelaySystemUpdateError> {
   const path = targetLockPath(directory, targetContainer)
-  try {
-    if ((await readFile(path, "utf8")).trim() !== operationId) return
-    await rm(path, { force: true })
-  } catch (cause) {
-    if (errorCode(cause) !== "ENOENT") throw cause
-  }
+  return systemUpdateOperation("lock.readForRelease", () =>
+    readFile(path, "utf8")
+  ).pipe(
+    Effect.flatMap((owner) =>
+      owner.trim() !== operationId
+        ? Effect.void
+        : systemUpdateOperation("lock.release", () => rm(path, { force: true }))
+    ),
+    Effect.catch((cause) =>
+      systemErrorCode(cause) === "ENOENT" ? Effect.void : Effect.fail(cause)
+    )
+  )
 }
 
 function targetLockPath(directory: string, targetContainer: string): string {
   return join(directory, `${targetContainer}.lock`)
 }
 
-async function helperState(
+function helperStateEffect(
   runCommand: RunCommand,
   id: string
-): Promise<"running" | "stopped" | "unknown"> {
+): Effect.Effect<"running" | "stopped" | "unknown", RelaySystemUpdateError> {
   const helperName = `kiln-updater-${id}`
-  try {
-    const result = await runCommand("docker", ["inspect", helperName])
-    const inspected = decodeJsonArray(result.stdout, isHelperInspect)[0]
+  return Effect.gen(function* () {
+    const result = yield* systemUpdateOperation("status.inspectHelper", () =>
+      runCommand("docker", ["inspect", helperName])
+    )
+    const inspected = (yield* decodeJsonArrayEffect(
+      "status.decodeHelper",
+      result.stdout,
+      isHelperInspect
+    ))[0]
     return inspected?.State?.Running ? "running" : "stopped"
-  } catch {
-    try {
-      const result = await runCommand("docker", [
-        "ps",
-        "--all",
-        "--quiet",
-        "--filter",
-        `name=^/${helperName}$`,
-      ])
-      return result.stdout.trim() ? "unknown" : "stopped"
-    } catch {
-      return "unknown"
-    }
-  }
+  }).pipe(
+    Effect.catch(() =>
+      systemUpdateOperation("status.findHelper", () =>
+        runCommand("docker", [
+          "ps",
+          "--all",
+          "--quiet",
+          "--filter",
+          `name=^/${helperName}$`,
+        ])
+      ).pipe(
+        Effect.map((result) => (result.stdout.trim() ? "unknown" : "stopped")),
+        Effect.catch(() => Effect.succeed("unknown" as const))
+      )
+    )
+  )
 }
 
-async function cleanupHelper(
+function cleanupHelperEffect(
   runCommand: RunCommand,
   id: string
-): Promise<void> {
-  await runCommand("docker", ["rm", "--force", `kiln-updater-${id}`]).catch(
-    () => undefined
+): Effect.Effect<void> {
+  return systemUpdateOperation("helper.cleanup", () =>
+    runCommand("docker", ["rm", "--force", `kiln-updater-${id}`])
+  ).pipe(
+    Effect.asVoid,
+    Effect.catch((cause) =>
+      Effect.logWarning("System update helper cleanup failed", cause)
+    )
   )
 }
 
@@ -579,38 +757,76 @@ function operationIsStale(operation: UpdateOperation): boolean {
   return Number.isFinite(startedAt) && Date.now() - startedAt > STALE_UPDATE_MS
 }
 
-async function readOperation(
+function readOperationEffect(
   directory: string,
   id: string
-): Promise<UpdateOperation | null> {
-  try {
-    const decoded: unknown = JSON.parse(
-      await readFile(join(directory, `${id}.json`), "utf8")
+): Effect.Effect<UpdateOperation | null, RelaySystemUpdateError> {
+  return systemUpdateOperation("operation.read", () =>
+    readFile(join(directory, `${id}.json`), "utf8")
+  ).pipe(
+    Effect.flatMap((text) =>
+      Effect.try({
+        try: () => JSON.parse(text) as unknown,
+        catch: (cause) =>
+          makeSystemUpdateError(
+            "operation.decode",
+            "The update operation record is invalid",
+            cause
+          ),
+      })
+    ),
+    Effect.flatMap((decoded) =>
+      isUpdateOperation(decoded)
+        ? Effect.succeed(decoded)
+        : systemUpdateFailure(
+            "operation.decode",
+            "The update operation record is invalid"
+          )
+    ),
+    Effect.catch((cause) =>
+      systemErrorCode(cause) === "ENOENT"
+        ? Effect.succeed(null)
+        : Effect.fail(cause)
     )
-    if (!isUpdateOperation(decoded)) {
-      throw new Error("The update operation record is invalid")
-    }
-    return decoded
-  } catch (cause) {
-    if (errorCode(cause) === "ENOENT") return null
-    throw cause
-  }
+  )
 }
 
-async function writeOperation(
+function writeOperationEffect(
   directory: string,
   operation: UpdateOperation
-): Promise<void> {
+): Effect.Effect<void, RelaySystemUpdateError> {
   const path = join(directory, `${operation.id}.json`)
   const temporary = `${path}.${process.pid}.tmp`
-  await writeFile(temporary, `${JSON.stringify(operation, null, 2)}\n`, {
-    mode: 0o600,
-  })
-  await rename(temporary, path)
+  return Effect.gen(function* () {
+    yield* systemUpdateOperation("operation.writeTemporary", () =>
+      writeFile(temporary, `${JSON.stringify(operation, null, 2)}\n`, {
+        mode: 0o600,
+      })
+    )
+    yield* systemUpdateOperation("operation.commit", () =>
+      rename(temporary, path)
+    ).pipe(Effect.uninterruptible)
+  }).pipe(
+    Effect.uninterruptible,
+    Effect.ensuring(
+      removeBestEffortEffect(
+        temporary,
+        "System update operation cleanup failed"
+      )
+    )
+  )
 }
 
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) throw abortReason(signal)
+function ensureNotAbortedEffect(
+  signal: AbortSignal | undefined
+): Effect.Effect<void, RelaySystemUpdateError> {
+  return signal?.aborted
+    ? systemUpdateFailure(
+        "request.cancelled",
+        abortReason(signal).message,
+        abortReason(signal)
+      )
+    : Effect.void
 }
 
 function abortReason(signal: AbortSignal): Error {
@@ -629,6 +845,73 @@ function errorCode(cause: unknown): string | null {
     return cause.code
   }
   return null
+}
+
+function systemErrorCode(cause: RelaySystemUpdateError): string | null {
+  return errorCode(cause.cause)
+}
+
+function systemUpdateOperation<TResult>(
+  phase: string,
+  run: () => Promise<TResult>
+): Effect.Effect<TResult, RelaySystemUpdateError> {
+  return Effect.tryPromise({
+    try: run,
+    catch: (cause) => makeSystemUpdateError(phase, undefined, cause),
+  })
+}
+
+function systemUpdateFailure(
+  phase: string,
+  reason: string,
+  cause?: unknown
+): Effect.Effect<never, RelaySystemUpdateError> {
+  return Effect.fail(makeSystemUpdateError(phase, reason, cause))
+}
+
+function makeSystemUpdateError(
+  phase: string,
+  reason: string | undefined,
+  cause: unknown
+): RelaySystemUpdateError {
+  return cause instanceof RelaySystemUpdateError
+    ? cause
+    : RelaySystemUpdateError.make({
+        phase,
+        reason:
+          reason ??
+          (cause instanceof Error ? cause.message : "System update failed"),
+        cause,
+        rollbackFailures: [],
+      })
+}
+
+function removeBestEffortEffect(
+  path: string,
+  warning: string
+): Effect.Effect<void> {
+  return systemUpdateOperation("cleanup.removeTemporary", () =>
+    rm(path, { force: true })
+  ).pipe(
+    Effect.asVoid,
+    Effect.catch((cause) => Effect.logWarning(warning, cause))
+  )
+}
+
+function decodeJsonArrayEffect<T>(
+  phase: string,
+  text: string,
+  predicate: (value: unknown) => value is T
+): Effect.Effect<Array<T>, RelaySystemUpdateError> {
+  return Effect.try({
+    try: () => decodeJsonArray(text, predicate),
+    catch: (cause) =>
+      makeSystemUpdateError(
+        phase,
+        "Docker returned an invalid inspection response",
+        cause
+      ),
+  })
 }
 
 function decodeJsonArray<T>(

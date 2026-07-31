@@ -9,6 +9,8 @@ import {
 } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { it as effectIt } from "@effect/vitest"
+import { Effect, Exit, Fiber } from "effect"
 import { describe, expect, it } from "vite-plus/test"
 
 import {
@@ -121,244 +123,299 @@ describe("release image versions", () => {
     ).toBe(false)
   })
 
-  it("starts a stable update from the promoted image digest", async () => {
-    const dataDirectory = await temporaryDataDirectory()
-    try {
-      const docker = new FakeCommand()
-      const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
+  effectIt.effect("starts a stable update from the promoted image digest", () =>
+    withTemporaryDataDirectory((dataDirectory) =>
+      Effect.gen(function* () {
+        const docker = new FakeCommand()
+        const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
 
-      const operation = await manager.start({
-        helperImage: targetImage,
-        targetContainer: "kiln-relay",
-        targetImage,
-        version: "0.1.0",
-      })
-
-      expect(operation.status).toBe("running")
-      const run = docker.calls.find((arguments_) => arguments_[0] === "run")
-      expect(run).toContain("KILN_UPDATE_VERSION=0.1.0")
-      expect(run).toContain(relayContainer.Id)
-    } finally {
-      await removeTemporaryDirectory(dataDirectory)
-    }
-  })
-
-  it("refuses to downgrade a managed container", async () => {
-    const dataDirectory = await temporaryDataDirectory()
-    try {
-      const docker = new FakeCommand()
-      docker.currentVersion = "0.1.0-nightly.12"
-      const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
-
-      await expect(
-        manager.start({
+        const operation = yield* manager.start({
           helperImage: targetImage,
           targetContainer: "kiln-relay",
           targetImage,
-          version: "0.1.0-nightly.8",
+          version: "0.1.0",
         })
-      ).rejects.toThrow(
-        "Refusing to downgrade 0.1.0-nightly.12 to 0.1.0-nightly.8"
-      )
-      expect(docker.calls.some((arguments_) => arguments_[0] === "pull")).toBe(
-        false
-      )
-    } finally {
-      await removeTemporaryDirectory(dataDirectory)
-    }
-  })
 
-  it("allows a newer nightly on the same stable release line", async () => {
-    const dataDirectory = await temporaryDataDirectory()
-    try {
-      const docker = new FakeCommand()
-      docker.currentVersion = "0.1.0"
-      const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
-
-      const operation = await manager.start({
-        helperImage: targetImage,
-        targetContainer: "kiln-relay",
-        targetImage,
-        version: "0.1.0-nightly.18",
+        expect(operation.status).toBe("running")
+        const run = docker.calls.find((arguments_) => arguments_[0] === "run")
+        expect(run).toContain("KILN_UPDATE_VERSION=0.1.0")
+        expect(run).toContain(relayContainer.Id)
       })
+    )
+  )
 
-      expect(operation.status).toBe("running")
-      expect(docker.calls.some((arguments_) => arguments_[0] === "pull")).toBe(
-        true
-      )
-    } finally {
-      await removeTemporaryDirectory(dataDirectory)
-    }
-  })
+  effectIt.effect("refuses to downgrade a managed container", () =>
+    withTemporaryDataDirectory((dataDirectory) =>
+      Effect.gen(function* () {
+        const docker = new FakeCommand()
+        docker.currentVersion = "0.1.0-nightly.12"
+        const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
 
-  it("orders timestamp nightlies chronologically", async () => {
-    const dataDirectory = await temporaryDataDirectory()
-    try {
-      const docker = new FakeCommand()
-      docker.currentVersion = "0.1.0-nightly.20260726.171529"
-      docker.imageVersion = "0.1.0-nightly.20260726.171530"
-      const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
-
-      const operation = await manager.start({
-        helperImage: targetImage,
-        targetContainer: "kiln-relay",
-        targetImage,
-        version: "0.1.0-nightly.20260726.171530",
+        const failure = yield* manager
+          .start({
+            helperImage: targetImage,
+            targetContainer: "kiln-relay",
+            targetImage,
+            version: "0.1.0-nightly.8",
+          })
+          .pipe(Effect.flip)
+        expect(failure.message).toContain(
+          "Refusing to downgrade 0.1.0-nightly.12 to 0.1.0-nightly.8"
+        )
+        expect(
+          docker.calls.some((arguments_) => arguments_[0] === "pull")
+        ).toBe(false)
       })
+    )
+  )
 
-      expect(operation.status).toBe("running")
-    } finally {
-      await removeTemporaryDirectory(dataDirectory)
-    }
-  })
+  effectIt.effect(
+    "allows a newer nightly on the same stable release line",
+    () =>
+      withTemporaryDataDirectory((dataDirectory) =>
+        Effect.gen(function* () {
+          const docker = new FakeCommand()
+          docker.currentVersion = "0.1.0"
+          const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
+
+          const operation = yield* manager.start({
+            helperImage: targetImage,
+            targetContainer: "kiln-relay",
+            targetImage,
+            version: "0.1.0-nightly.18",
+          })
+
+          expect(operation.status).toBe("running")
+          expect(
+            docker.calls.some((arguments_) => arguments_[0] === "pull")
+          ).toBe(true)
+        })
+      )
+  )
+
+  effectIt.effect("orders timestamp nightlies chronologically", () =>
+    withTemporaryDataDirectory((dataDirectory) =>
+      Effect.gen(function* () {
+        const docker = new FakeCommand()
+        docker.currentVersion = "0.1.0-nightly.20260726.171529"
+        docker.imageVersion = "0.1.0-nightly.20260726.171530"
+        const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
+
+        const operation = yield* manager.start({
+          helperImage: targetImage,
+          targetContainer: "kiln-relay",
+          targetImage,
+          version: "0.1.0-nightly.20260726.171530",
+        })
+
+        expect(operation.status).toBe("running")
+      })
+    )
+  )
 })
 
 describe("update operation lifecycle", () => {
-  it("rejects a concurrent apply and records cancellation before launch", async () => {
-    const dataDirectory = await temporaryDataDirectory()
-    try {
-      const docker = new FakeCommand()
-      docker.holdPull = true
-      const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
-      const controller = new AbortController()
-      const first = manager.start(
-        {
-          helperImage: targetImage,
-          targetContainer: "kiln-relay",
-          targetImage,
-          version: "0.1.0",
-        },
-        controller.signal
-      )
-      await docker.pullStarted
+  effectIt.effect(
+    "rejects a concurrent apply and records cancellation before launch",
+    () =>
+      withTemporaryDataDirectory((dataDirectory) =>
+        Effect.gen(function* () {
+          const docker = new FakeCommand()
+          docker.holdPull = true
+          const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
+          const controller = new AbortController()
+          const first = yield* manager
+            .start(
+              {
+                helperImage: targetImage,
+                targetContainer: "kiln-relay",
+                targetImage,
+                version: "0.1.0",
+              },
+              controller.signal
+            )
+            .pipe(Effect.forkChild)
+          yield* Effect.promise(() => docker.pullStarted)
 
-      await expect(
-        manager.start({
+          const concurrentFailure = yield* manager
+            .start({
+              helperImage: targetImage,
+              targetContainer: "kiln-relay",
+              targetImage,
+              version: "0.1.0",
+            })
+            .pipe(Effect.flip)
+          expect(concurrentFailure.message).toContain("already running")
+
+          yield* Effect.sync(() => {
+            controller.abort(new Error("cancelled by Hearth"))
+          })
+          const cancelled = yield* Fiber.await(first)
+          expect(Exit.isFailure(cancelled)).toBe(true)
+          expect(
+            docker.calls.some((arguments_) => arguments_[0] === "run")
+          ).toBe(false)
+
+          const operationFiles = (yield* Effect.promise(() =>
+            readdir(join(dataDirectory, "updates"))
+          )).filter((name) => name.endsWith(".json"))
+          expect(operationFiles).toHaveLength(1)
+          expect(
+            yield* Effect.promise(() =>
+              readFile(
+                join(dataDirectory, "updates", operationFiles[0] ?? ""),
+                "utf8"
+              )
+            )
+          ).toContain('"status": "failed"')
+        })
+      )
+  )
+
+  effectIt.effect(
+    "does not time out a running helper and cleans up a stopped helper",
+    () =>
+      withTemporaryDataDirectory((dataDirectory) =>
+        Effect.gen(function* () {
+          const docker = new FakeCommand()
+          const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
+          const operation = staleOperation()
+          const updatesDirectory = join(dataDirectory, "updates")
+          yield* Effect.promise(() =>
+            mkdir(updatesDirectory, { recursive: true })
+          )
+          yield* Effect.promise(() =>
+            writeFile(
+              join(updatesDirectory, `${operation.id}.json`),
+              JSON.stringify(operation)
+            )
+          )
+
+          expect((yield* manager.status(operation.id))?.status).toBe("running")
+          expect(
+            docker.calls.some(
+              (arguments_) =>
+                arguments_[0] === "rm" &&
+                arguments_.includes(`kiln-updater-${operation.id}`)
+            )
+          ).toBe(false)
+
+          docker.helperRunning = false
+          const failed = yield* manager.status(operation.id)
+          expect(failed?.status).toBe("failed")
+          expect(
+            docker.calls.some(
+              (arguments_) =>
+                arguments_[0] === "rm" &&
+                arguments_.includes("--force") &&
+                arguments_.includes(`kiln-updater-${operation.id}`)
+            )
+          ).toBe(true)
+        })
+      )
+  )
+
+  effectIt.effect(
+    "releases the target lock when its fiber is interrupted",
+    () =>
+      withTemporaryDataDirectory((dataDirectory) =>
+        Effect.gen(function* () {
+          const docker = new FakeCommand()
+          docker.holdPull = true
+          const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
+          const controller = new AbortController()
+          const first = yield* manager
+            .start(
+              {
+                helperImage: targetImage,
+                targetContainer: "kiln-relay",
+                targetImage,
+                version: "0.1.0",
+              },
+              controller.signal
+            )
+            .pipe(Effect.forkChild)
+          yield* Effect.promise(() => docker.pullStarted)
+          yield* Effect.sync(() => {
+            first.interruptUnsafe()
+          })
+          const interrupted = yield* Fiber.await(first)
+          expect(Exit.isFailure(interrupted)).toBe(true)
+
+          docker.holdPull = false
+          const next = yield* manager.start({
+            helperImage: targetImage,
+            targetContainer: "kiln-relay",
+            targetImage,
+            version: "0.1.0",
+          })
+          expect(next.status).toBe("running")
+        })
+      )
+  )
+
+  effectIt.effect("recovers an orphaned target lock", () =>
+    withTemporaryDataDirectory((dataDirectory) =>
+      Effect.gen(function* () {
+        const docker = new FakeCommand()
+        const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
+        const updatesDirectory = join(dataDirectory, "updates")
+        const lockPath = join(updatesDirectory, "kiln-relay.lock")
+        yield* Effect.promise(() =>
+          mkdir(updatesDirectory, { recursive: true })
+        )
+        yield* Effect.promise(() =>
+          writeFile(lockPath, "22222222-2222-4222-8222-222222222222\n")
+        )
+        yield* Effect.promise(() => utimes(lockPath, new Date(0), new Date(0)))
+
+        const operation = yield* manager.start({
           helperImage: targetImage,
           targetContainer: "kiln-relay",
           targetImage,
           version: "0.1.0",
         })
-      ).rejects.toThrow("already running")
 
-      controller.abort(new Error("cancelled by Hearth"))
-      await expect(first).rejects.toThrow("cancelled by Hearth")
-      expect(docker.calls.some((arguments_) => arguments_[0] === "run")).toBe(
-        false
-      )
-
-      const operationFiles = (
-        await readdir(join(dataDirectory, "updates"))
-      ).filter((name) => name.endsWith(".json"))
-      expect(operationFiles).toHaveLength(1)
-      expect(
-        await readFile(
-          join(dataDirectory, "updates", operationFiles[0] ?? ""),
-          "utf8"
-        )
-      ).toContain('"status": "failed"')
-    } finally {
-      await removeTemporaryDirectory(dataDirectory)
-    }
-  })
-
-  it("does not time out a running helper and cleans up a stopped helper", async () => {
-    const dataDirectory = await temporaryDataDirectory()
-    try {
-      const docker = new FakeCommand()
-      const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
-      const operation = staleOperation()
-      const updatesDirectory = join(dataDirectory, "updates")
-      await mkdir(updatesDirectory, { recursive: true })
-      await writeFile(
-        join(updatesDirectory, `${operation.id}.json`),
-        JSON.stringify(operation)
-      )
-
-      expect((await manager.status(operation.id))?.status).toBe("running")
-      expect(
-        docker.calls.some(
-          (arguments_) =>
-            arguments_[0] === "rm" &&
-            arguments_.includes(`kiln-updater-${operation.id}`)
-        )
-      ).toBe(false)
-
-      docker.helperRunning = false
-      const failed = await manager.status(operation.id)
-      expect(failed?.status).toBe("failed")
-      expect(
-        docker.calls.some(
-          (arguments_) =>
-            arguments_[0] === "rm" &&
-            arguments_.includes("--force") &&
-            arguments_.includes(`kiln-updater-${operation.id}`)
-        )
-      ).toBe(true)
-    } finally {
-      await removeTemporaryDirectory(dataDirectory)
-    }
-  })
-
-  it("recovers an orphaned target lock", async () => {
-    const dataDirectory = await temporaryDataDirectory()
-    try {
-      const docker = new FakeCommand()
-      const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
-      const updatesDirectory = join(dataDirectory, "updates")
-      const lockPath = join(updatesDirectory, "kiln-relay.lock")
-      await mkdir(updatesDirectory, { recursive: true })
-      await writeFile(lockPath, "22222222-2222-4222-8222-222222222222\n")
-      await utimes(lockPath, new Date(0), new Date(0))
-
-      const operation = await manager.start({
-        helperImage: targetImage,
-        targetContainer: "kiln-relay",
-        targetImage,
-        version: "0.1.0",
+        expect(operation.status).toBe("running")
       })
-
-      expect(operation.status).toBe("running")
-    } finally {
-      await removeTemporaryDirectory(dataDirectory)
-    }
-  })
+    )
+  )
 })
 
 describe("container identity", () => {
-  it("falls back from a custom hostname to the matching Docker container", async () => {
-    const dataDirectory = await temporaryDataDirectory()
-    try {
-      const docker = new FakeCommand()
-      const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
+  effectIt.effect(
+    "falls back from a custom hostname to the matching Docker container",
+    () =>
+      withTemporaryDataDirectory((dataDirectory) =>
+        Effect.gen(function* () {
+          const docker = new FakeCommand()
+          const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
 
-      const inspection = await manager.inspect("custom-relay-hostname")
+          const inspection = yield* manager.inspect("custom-relay-hostname")
 
-      expect(inspection.container).toBe("kiln-relay")
-      expect(inspection.eligible).toBe(true)
-    } finally {
-      await removeTemporaryDirectory(dataDirectory)
-    }
-  })
-
-  it("rejects a container from another Kiln installation", async () => {
-    const dataDirectory = await temporaryDataDirectory()
-    try {
-      const docker = new FakeCommand()
-      const manager = new SystemUpdateManager(
-        { dataDirectory, installationId: "hearth-feature-a1b2c3" },
-        docker.run
+          expect(inspection.container).toBe("kiln-relay")
+          expect(inspection.eligible).toBe(true)
+        })
       )
+  )
 
-      const inspection = await manager.inspect("custom-relay-hostname")
+  effectIt.effect("rejects a container from another Kiln installation", () =>
+    withTemporaryDataDirectory((dataDirectory) =>
+      Effect.gen(function* () {
+        const docker = new FakeCommand()
+        const manager = new SystemUpdateManager(
+          { dataDirectory, installationId: "hearth-feature-a1b2c3" },
+          docker.run
+        )
 
-      expect(inspection.sameInstallation).toBe(false)
-      expect(inspection.eligible).toBe(false)
-      expect(inspection.reason).toContain("different Kiln installation")
-    } finally {
-      await removeTemporaryDirectory(dataDirectory)
-    }
-  })
+        const inspection = yield* manager.inspect("custom-relay-hostname")
+
+        expect(inspection.sameInstallation).toBe(false)
+        expect(inspection.eligible).toBe(false)
+        expect(inspection.reason).toContain("different Kiln installation")
+      })
+    )
+  )
 })
 
 function staleOperation(): UpdateOperation {
@@ -376,15 +433,21 @@ function staleOperation(): UpdateOperation {
   }
 }
 
-async function temporaryDataDirectory(): Promise<string> {
-  return mkdtemp(join(tmpdir(), "kiln-system-updates-"))
+function removeTemporaryDirectory(directory: string): Promise<void> {
+  if (!directory.startsWith(join(tmpdir(), "kiln-system-updates-"))) {
+    return Promise.reject(new Error("Refusing to remove a non-test directory"))
+  }
+  return rm(directory, { force: true, recursive: true })
 }
 
-async function removeTemporaryDirectory(directory: string): Promise<void> {
-  if (!directory.startsWith(join(tmpdir(), "kiln-system-updates-"))) {
-    throw new Error("Refusing to remove a non-test directory")
-  }
-  await rm(directory, { force: true, recursive: true })
+function withTemporaryDataDirectory<TResult, TError, TRequirements>(
+  use: (directory: string) => Effect.Effect<TResult, TError, TRequirements>
+) {
+  return Effect.acquireUseRelease(
+    Effect.promise(() => mkdtemp(join(tmpdir(), "kiln-system-updates-"))),
+    use,
+    (directory) => Effect.promise(() => removeTemporaryDirectory(directory))
+  )
 }
 
 function emptyResult(): CommandResult {

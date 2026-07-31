@@ -121,3 +121,19 @@ export class RelayPortAllocationError extends Schema.TaggedErrorClass<RelayPortA
     return this.reason
   }
 }
+
+export class RelaySystemUpdateError extends Schema.TaggedErrorClass<RelaySystemUpdateError>()(
+  "RelaySystemUpdateError",
+  {
+    phase: Schema.String,
+    reason: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+    rollbackFailures: Schema.Array(Schema.String),
+  }
+) {
+  override get message() {
+    return this.rollbackFailures.length === 0
+      ? this.reason
+      : `${this.reason}. Rollback also failed: ${this.rollbackFailures.join("; ")}`
+  }
+}

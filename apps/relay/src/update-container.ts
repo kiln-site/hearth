@@ -58,7 +58,7 @@ export function managedImageChannel(
   return image === stable || image === nightly ? image : null
 }
 
-export async function replaceContainer(
+export function replaceContainerEffect(
   input: {
     backupName: string
     targetContainer: string
@@ -67,109 +67,223 @@ export async function replaceContainer(
     targetVersion: string
   },
   docker: ContainerUpdateDocker
-): Promise<void> {
-  const current = await docker.inspectContainer(input.targetContainer)
-  const target = await docker.inspectImage(input.targetImage)
-  const networks = current.NetworkSettings?.Networks ?? {}
-  const networkNames = Object.keys(networks)
-  const configuredNetwork = current.HostConfig.NetworkMode
-  const primaryNetwork =
-    configuredNetwork && Object.hasOwn(networks, configuredNetwork)
-      ? configuredNetwork
-      : networkNames[0]
-  if (!primaryNetwork) {
-    throw new Error("The target has no Docker network to preserve")
-  }
-
-  let replacementCreated = false
-  let backupRenamed = false
-  try {
-    await docker.command([
-      "image",
-      "tag",
-      input.targetImage,
-      input.targetReference,
-    ])
-    await docker.command(
-      ["stop", "--time", "30", input.targetContainer],
-      45_000
+) {
+  return Effect.gen(function* () {
+    const [current, target] = yield* Effect.all(
+      [
+        updateOperation("replace.inspectContainer", () =>
+          docker.inspectContainer(input.targetContainer)
+        ),
+        updateOperation("replace.inspectImage", () =>
+          docker.inspectImage(input.targetImage)
+        ),
+      ] as const,
+      { concurrency: 2 }
     )
-    await docker.command(["rename", input.targetContainer, input.backupName])
-    backupRenamed = true
-
-    const preservedConfig = { ...current.Config }
-    delete preservedConfig.Cmd
-    delete preservedConfig.Entrypoint
-    delete preservedConfig.Healthcheck
-    // Docker's default hostname is the old container ID. Let Docker regenerate
-    // it so the replacement can still identify itself after its backup is gone.
-    if (isDockerGeneratedHostname(current.Config.Hostname, current.Id)) {
-      delete preservedConfig.Hostname
+    const networks = current.NetworkSettings?.Networks ?? {}
+    const networkNames = Object.keys(networks)
+    const configuredNetwork = current.HostConfig.NetworkMode
+    const primaryNetwork =
+      configuredNetwork && Object.hasOwn(networks, configuredNetwork)
+        ? configuredNetwork
+        : networkNames[0]
+    if (!primaryNetwork) {
+      return yield* updateFailure(
+        "replace.validate",
+        "The target has no Docker network to preserve"
+      )
     }
-    const targetHealthcheck = target.Config?.Healthcheck
-    await docker.createContainer(input.targetContainer, {
-      ...preservedConfig,
-      Image: input.targetReference,
-      Labels: {
-        ...current.Config.Labels,
-        ...target.Config?.Labels,
-        "org.opencontainers.image.version": input.targetVersion,
-      },
-      ...(targetHealthcheck === undefined
-        ? {}
-        : { Healthcheck: targetHealthcheck }),
-      HostConfig: {
-        ...current.HostConfig,
-        NetworkMode: primaryNetwork,
-      },
-      NetworkingConfig: {
-        EndpointsConfig: {
-          [primaryNetwork]: {
-            Aliases: networkAliases(
-              networks[primaryNetwork]?.Aliases,
-              input.targetContainer
-            ),
-          },
-        },
-      },
-    })
-    replacementCreated = true
 
-    for (const network of networkNames) {
-      if (network === primaryNetwork) continue
-      const arguments_ = ["network", "connect"]
-      for (const alias of networkAliases(
-        networks[network]?.Aliases,
-        input.targetContainer
-      )) {
-        arguments_.push("--alias", alias)
+    let replacementCreated = false
+    let backupRenamed = false
+    yield* Effect.gen(function* () {
+      yield* updateOperation("replace.tagTarget", () =>
+        docker.command([
+          "image",
+          "tag",
+          input.targetImage,
+          input.targetReference,
+        ])
+      )
+      yield* updateOperation("replace.stopCurrent", () =>
+        docker.command(["stop", "--time", "30", input.targetContainer], 45_000)
+      )
+      yield* updateOperation("replace.renameCurrent", () =>
+        docker.command(["rename", input.targetContainer, input.backupName])
+      )
+      backupRenamed = true
+
+      const preservedConfig = { ...current.Config }
+      delete preservedConfig.Cmd
+      delete preservedConfig.Entrypoint
+      delete preservedConfig.Healthcheck
+      // Docker's default hostname is the old container ID. Let Docker
+      // regenerate it after the old container becomes the backup.
+      if (isDockerGeneratedHostname(current.Config.Hostname, current.Id)) {
+        delete preservedConfig.Hostname
       }
-      arguments_.push(network, input.targetContainer)
-      await docker.command(arguments_)
-    }
+      const targetHealthcheck = target.Config?.Healthcheck
+      yield* updateOperation("replace.createTarget", () =>
+        docker.createContainer(input.targetContainer, {
+          ...preservedConfig,
+          Image: input.targetReference,
+          Labels: {
+            ...current.Config.Labels,
+            ...target.Config?.Labels,
+            "org.opencontainers.image.version": input.targetVersion,
+          },
+          ...(targetHealthcheck === undefined
+            ? {}
+            : { Healthcheck: targetHealthcheck }),
+          HostConfig: {
+            ...current.HostConfig,
+            NetworkMode: primaryNetwork,
+          },
+          NetworkingConfig: {
+            EndpointsConfig: {
+              [primaryNetwork]: {
+                Aliases: networkAliases(
+                  networks[primaryNetwork]?.Aliases,
+                  input.targetContainer
+                ),
+              },
+            },
+          },
+        })
+      )
+      replacementCreated = true
 
-    await docker.command(["start", input.targetContainer], 120_000)
-    await docker.waitUntilHealthy(input.targetContainer)
-    await docker.command(["rm", "--force", input.backupName], 90_000)
-  } catch (cause) {
-    if (replacementCreated) {
-      await docker
-        .command(["rm", "--force", input.targetContainer], 90_000)
-        .catch(() => undefined)
-    }
-    if (backupRenamed) {
-      await docker
-        .command(["rename", input.backupName, input.targetContainer])
-        .catch(() => undefined)
-      await docker
-        .command(["start", input.targetContainer], 120_000)
-        .catch(() => undefined)
-    }
-    await docker
-      .command(["image", "tag", current.Image, input.targetReference])
-      .catch(() => undefined)
-    throw cause
-  }
+      yield* Effect.forEach(
+        networkNames.filter((network) => network !== primaryNetwork),
+        (network) => {
+          const arguments_ = ["network", "connect"]
+          for (const alias of networkAliases(
+            networks[network]?.Aliases,
+            input.targetContainer
+          )) {
+            arguments_.push("--alias", alias)
+          }
+          arguments_.push(network, input.targetContainer)
+          return updateOperation("replace.connectNetwork", () =>
+            docker.command(arguments_)
+          )
+        },
+        { discard: true }
+      )
+
+      yield* updateOperation("replace.startTarget", () =>
+        docker.command(["start", input.targetContainer], 120_000)
+      )
+      yield* updateOperation("replace.waitUntilHealthy", () =>
+        docker.waitUntilHealthy(input.targetContainer)
+      )
+      yield* updateOperation("replace.removeBackup", () =>
+        docker.command(["rm", "--force", input.backupName], 90_000)
+      )
+    }).pipe(
+      Effect.catch((cause) =>
+        rollbackContainerReplacementEffect(
+          input,
+          current,
+          docker,
+          replacementCreated,
+          backupRenamed
+        ).pipe(
+          Effect.flatMap((rollbackFailures) =>
+            Effect.fail(
+              RelaySystemUpdateError.make({
+                phase: "replace",
+                reason: cause.message,
+                cause,
+                rollbackFailures,
+              })
+            )
+          )
+        )
+      ),
+      Effect.uninterruptible
+    )
+  }).pipe(Effect.withSpan("relay.update.replaceContainer"))
+}
+
+const rollbackContainerReplacementEffect = Effect.fn(
+  "relay.update.rollbackContainer"
+)(function* (
+  input: {
+    backupName: string
+    targetContainer: string
+    targetReference: string
+  },
+  current: ContainerInspect,
+  docker: ContainerUpdateDocker,
+  replacementCreated: boolean,
+  backupRenamed: boolean
+) {
+  const rollbackFailures: Array<string> = []
+  const operations = [
+    ...(replacementCreated
+      ? [
+          updateOperation("rollback.removeReplacement", () =>
+            docker.command(["rm", "--force", input.targetContainer], 90_000)
+          ),
+        ]
+      : []),
+    ...(backupRenamed
+      ? [
+          updateOperation("rollback.restoreBackup", () =>
+            docker.command(["rename", input.backupName, input.targetContainer])
+          ).pipe(
+            Effect.andThen(
+              updateOperation("rollback.startBackup", () =>
+                docker.command(["start", input.targetContainer], 120_000)
+              )
+            )
+          ),
+        ]
+      : []),
+    updateOperation("rollback.restoreReference", () =>
+      docker.command(["image", "tag", current.Image, input.targetReference])
+    ),
+  ]
+  yield* Effect.forEach(
+    operations,
+    (operation) =>
+      operation.pipe(
+        Effect.catch((error) =>
+          Effect.sync(() => {
+            rollbackFailures.push(error.message)
+          })
+        )
+      ),
+    { discard: true }
+  )
+  return rollbackFailures
+})
+
+function updateOperation<TResult>(phase: string, run: () => Promise<TResult>) {
+  return Effect.tryPromise({
+    try: run,
+    catch: (cause) =>
+      cause instanceof RelaySystemUpdateError
+        ? cause
+        : RelaySystemUpdateError.make({
+            phase,
+            reason:
+              cause instanceof Error ? cause.message : "System update failed",
+            cause,
+            rollbackFailures: [],
+          }),
+  })
+}
+
+function updateFailure(phase: string, reason: string) {
+  return Effect.fail(
+    RelaySystemUpdateError.make({
+      phase,
+      reason,
+      rollbackFailures: [],
+    })
+  )
 }
 
 function isDockerGeneratedHostname(
@@ -190,3 +304,6 @@ function networkAliases(
     ])
   )
 }
+import { Effect } from "effect"
+
+import { RelaySystemUpdateError } from "./effect/errors.js"

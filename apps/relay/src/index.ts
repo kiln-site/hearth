@@ -674,20 +674,26 @@ async function executeControlRequest(
     case "relay.snapshot":
       return snapshotHub.read()
     case "relay.system.inspect":
-      return systemUpdates.inspect(
-        typeof payload.container === "string" && payload.container.trim()
-          ? payload.container
-          : hostname()
+      return runRelayEffect(
+        "relay.systemUpdates.inspect",
+        systemUpdates.inspect(
+          typeof payload.container === "string" && payload.container.trim()
+            ? payload.container
+            : hostname()
+        )
       )
     case "relay.update.apply": {
-      const operation = await systemUpdates.start(
-        {
-          helperImage: requiredString(payload, "helperImage"),
-          targetContainer: requiredString(payload, "targetContainer"),
-          targetImage: requiredString(payload, "targetImage"),
-          version: requiredString(payload, "version"),
-        },
-        signal
+      const operation = await runRelayEffect(
+        "relay.systemUpdates.start",
+        systemUpdates.start(
+          {
+            helperImage: requiredString(payload, "helperImage"),
+            targetContainer: requiredString(payload, "targetContainer"),
+            targetImage: requiredString(payload, "targetImage"),
+            version: requiredString(payload, "version"),
+          },
+          signal
+        )
       )
       await appendRelayAudit("system.update_started", client.id, request.id, {
         component: operation.component,
@@ -698,7 +704,10 @@ async function executeControlRequest(
       return operation
     }
     case "relay.update.status":
-      return systemUpdates.status(requiredString(payload, "operationId"))
+      return runRelayEffect(
+        "relay.systemUpdates.status",
+        systemUpdates.status(requiredString(payload, "operationId"))
+      )
     case "relay.networking.read":
       return (await lifecycle.networking()) ?? null
     case "relay.networking.write":

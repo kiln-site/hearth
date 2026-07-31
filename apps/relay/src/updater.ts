@@ -1,11 +1,13 @@
 import { execFile } from "node:child_process"
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { request } from "node:http"
 import { join } from "node:path"
 import { promisify } from "node:util"
+import { Effect } from "effect"
 
+import { RelaySystemUpdateError } from "./effect/errors.js"
 import {
-  replaceContainer,
+  replaceContainerEffect,
   type ContainerInspect,
   type ContainerUpdateDocker,
   type ImageInspect,
@@ -35,43 +37,6 @@ const targetReference = requiredEnvironment("KILN_UPDATE_TARGET_REFERENCE")
 const targetVersion = requiredEnvironment("KILN_UPDATE_VERSION")
 const operationPath = join(operationsDirectory, `${operationId}.json`)
 
-async function run(): Promise<void> {
-  const operation = JSON.parse(
-    await readFile(operationPath, "utf8")
-  ) as UpdateOperation
-  const backupName = `${targetContainer}-kiln-backup-${Date.now()}`
-
-  try {
-    // Give Relay enough time to return the operation id before a self-update
-    // closes its control socket.
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_500))
-    await replaceContainer(
-      {
-        backupName,
-        targetContainer,
-        targetImage,
-        targetReference,
-        targetVersion,
-      },
-      dockerRuntime
-    )
-    await updateOperation({
-      ...operation,
-      error: null,
-      finishedAt: new Date().toISOString(),
-      status: "succeeded",
-    })
-  } catch (cause) {
-    await updateOperation({
-      ...operation,
-      error: cause instanceof Error ? cause.message : "Unknown update failure",
-      finishedAt: new Date().toISOString(),
-      status: "failed",
-    })
-    process.exitCode = 1
-  }
-}
-
 const dockerRuntime: ContainerUpdateDocker = {
   command: docker,
   createContainer: (name, configuration) =>
@@ -84,7 +49,50 @@ const dockerRuntime: ContainerUpdateDocker = {
   waitUntilHealthy,
 }
 
-await run()
+const updaterEffect = readOperationEffect().pipe(
+  Effect.flatMap((operation) => {
+    const backupName = `${targetContainer}-kiln-backup-${Date.now()}`
+    return Effect.gen(function* () {
+      // Give Relay enough time to return the operation id before a self-update
+      // closes its control socket.
+      yield* Effect.sleep("1500 millis")
+      yield* replaceContainerEffect(
+        {
+          backupName,
+          targetContainer,
+          targetImage,
+          targetReference,
+          targetVersion,
+        },
+        dockerRuntime
+      )
+      yield* updateOperationEffect({
+        ...operation,
+        error: null,
+        finishedAt: new Date().toISOString(),
+        status: "succeeded",
+      })
+    }).pipe(
+      Effect.catch((cause) =>
+        updateOperationEffect({
+          ...operation,
+          error: cause.message,
+          finishedAt: new Date().toISOString(),
+          status: "failed",
+        }).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              process.exitCode = 1
+            })
+          )
+        )
+      )
+    )
+  }),
+  Effect.withSpan("relay.updater.run")
+)
+
+await Effect.runPromise(updaterEffect)
 
 async function waitUntilHealthy(container: string): Promise<void> {
   const deadline = Date.now() + 120_000
@@ -175,13 +183,71 @@ async function dockerJson(path: string, body: unknown): Promise<void> {
   })
 }
 
-async function updateOperation(operation: UpdateOperation): Promise<void> {
-  await mkdir(operationsDirectory, { recursive: true, mode: 0o700 })
+function readOperationEffect() {
+  return updaterOperation("readOperation", () =>
+    readFile(operationPath, "utf8")
+  ).pipe(
+    Effect.flatMap((text) =>
+      Effect.try({
+        try: () => JSON.parse(text) as UpdateOperation,
+        catch: (cause) =>
+          updaterError("decodeOperation", "Invalid update operation", cause),
+      })
+    )
+  )
+}
+
+function updateOperationEffect(operation: UpdateOperation) {
   const temporary = `${operationPath}.${process.pid}.tmp`
-  await writeFile(temporary, `${JSON.stringify(operation, null, 2)}\n`, {
-    mode: 0o600,
+  return Effect.gen(function* () {
+    yield* updaterOperation("createOperationDirectory", () =>
+      mkdir(operationsDirectory, { recursive: true, mode: 0o700 })
+    )
+    yield* updaterOperation("writeOperation", () =>
+      writeFile(temporary, `${JSON.stringify(operation, null, 2)}\n`, {
+        mode: 0o600,
+      })
+    )
+    yield* updaterOperation("commitOperation", () =>
+      rename(temporary, operationPath)
+    ).pipe(Effect.uninterruptible)
+  }).pipe(
+    Effect.uninterruptible,
+    Effect.ensuring(
+      updaterOperation("cleanupOperation", () =>
+        rm(temporary, { force: true })
+      ).pipe(
+        Effect.asVoid,
+        Effect.catch((cause) =>
+          Effect.logWarning("System updater operation cleanup failed", cause)
+        )
+      )
+    )
+  )
+}
+
+function updaterOperation<TResult>(phase: string, run: () => Promise<TResult>) {
+  return Effect.tryPromise({
+    try: run,
+    catch: (cause) => updaterError(phase, undefined, cause),
   })
-  await rename(temporary, operationPath)
+}
+
+function updaterError(
+  phase: string,
+  reason: string | undefined,
+  cause: unknown
+) {
+  return cause instanceof RelaySystemUpdateError
+    ? cause
+    : RelaySystemUpdateError.make({
+        phase: `updater.${phase}`,
+        reason:
+          reason ??
+          (cause instanceof Error ? cause.message : "System update failed"),
+        cause,
+        rollbackFailures: [],
+      })
 }
 
 function requiredEnvironment(name: string): string {
