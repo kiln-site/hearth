@@ -1,3 +1,5 @@
+import { Option, Schema } from "effect"
+
 import { parseSecretKeyring } from "../../keyring.mjs"
 import type { VersionedSecret } from "../../keyring.mjs"
 
@@ -13,6 +15,7 @@ const DEFAULT_TRUSTED_ORIGINS = [
   "https://hearth.kiln.site",
   "https://hearth.hearth.orb.local",
 ] as const
+const decodeUrl = Schema.decodeUnknownOption(Schema.URLFromString)
 
 export function kilnEnvironment(): KilnEnvironment {
   return parseKilnEnvironment(process.env.KILN_ENVIRONMENT)
@@ -35,22 +38,19 @@ function parseKilnEnvironment(value: string | undefined): KilnEnvironment {
 
 export function kilnPublicUrl(): URL {
   const configured = process.env.KILN_URL?.trim() || "http://localhost:3000"
-
-  try {
-    return new URL(configured)
-  } catch {
-    throw new Error("KILN_URL must be an absolute http or https URL")
-  }
+  return Option.getOrThrowWith(
+    decodeUrl(configured),
+    () => new Error("KILN_URL must be an absolute http or https URL")
+  )
 }
 
 export function betterAuthUrl(): URL {
   const configured = process.env.BETTER_AUTH_URL?.trim()
   if (!configured) return kilnPublicUrl()
-  try {
-    return new URL(configured)
-  } catch {
-    throw new Error("BETTER_AUTH_URL must be an absolute http or https URL")
-  }
+  return Option.getOrThrowWith(
+    decodeUrl(configured),
+    () => new Error("BETTER_AUTH_URL must be an absolute http or https URL")
+  )
 }
 
 export function publicSignupEnabled(): boolean {

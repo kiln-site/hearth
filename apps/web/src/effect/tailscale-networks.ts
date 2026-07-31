@@ -1,5 +1,5 @@
 import type { RowDataPacket } from "mysql2/promise"
-import { Effect } from "effect"
+import { Effect, Option, Schema } from "effect"
 import { z } from "zod"
 
 import {
@@ -17,6 +17,9 @@ import { decryptWithKeyring, encryptWithKeyring } from "../../keyring.mjs"
 
 const TAILSCALE_OAUTH_SECRET_PURPOSE = "kiln-tailscale-oauth-client-secret"
 const stringArraySchema = z.array(z.string().min(1)).max(128)
+const decodeJsonString = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Unknown)
+)
 
 export interface TailscaleIntegration {
   clientId: string
@@ -273,11 +276,7 @@ function parseStringArray(value: unknown): Array<string> {
 
 function decodeJson(value: unknown): unknown {
   if (typeof value !== "string") return value
-  try {
-    return JSON.parse(value)
-  } catch {
-    return null
-  }
+  return Option.getOrNull(decodeJsonString(value))
 }
 
 function timestamp(value: Date | string | null): string | null {

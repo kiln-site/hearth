@@ -6,6 +6,7 @@ import { dirname, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { parseDocument } from "yaml"
+import { Result } from "effect"
 import {
   brickCatalogDocumentSchema,
   brickRecipeSchema,
@@ -427,10 +428,10 @@ function validateRecipeSemantics(recipe: BrickRecipe, source: URL): void {
         )
       }
     }
-    if (definition.rules?.pattern) {
-      try {
-        new RegExp(definition.rules.pattern, "u")
-      } catch {
+    const pattern = definition.rules?.pattern
+    if (pattern) {
+      const compiledPattern = Result.try(() => new RegExp(pattern, "u"))
+      if (Result.isFailure(compiledPattern)) {
         throw recipeError(
           "invalid_recipe",
           source.href,
@@ -535,10 +536,8 @@ function readHttpsDocument(
       },
       (response) => {
         const status = response.statusCode ?? 0
-        if (
-          [301, 302, 303, 307, 308].includes(status) &&
-          response.headers.location
-        ) {
+        const redirectLocation = response.headers.location
+        if ([301, 302, 303, 307, 308].includes(status) && redirectLocation) {
           discardResponse(response)
           if (redirects >= MAX_REDIRECTS) {
             rejectDocument(
@@ -550,10 +549,8 @@ function readHttpsDocument(
             )
             return
           }
-          let redirected: URL
-          try {
-            redirected = new URL(response.headers.location, source)
-          } catch {
+          const redirected = Result.try(() => new URL(redirectLocation, source))
+          if (Result.isFailure(redirected)) {
             rejectDocument(
               recipeError(
                 "invalid_recipe_redirect",
@@ -563,10 +560,11 @@ function readHttpsDocument(
             )
             return
           }
-          readHttpsDocument(redirected, originalSource, redirects + 1).then(
-            resolveDocument,
-            rejectDocument
-          )
+          readHttpsDocument(
+            redirected.success,
+            originalSource,
+            redirects + 1
+          ).then(resolveDocument, rejectDocument)
           return
         }
         if (status < 200 || status >= 300) {
@@ -713,11 +711,13 @@ function validateCatalogProtocol(url: URL): void {
 }
 
 function parseUrl(value: string, base: string | URL): URL {
-  try {
-    return new URL(value, base instanceof URL ? base : undefined)
-  } catch {
-    throw recipeError("invalid_recipe_url", value, `Invalid ${String(base)}`)
-  }
+  return Result.try(
+    () => new URL(value, base instanceof URL ? base : undefined)
+  ).pipe(
+    Result.getOrThrowWith(() =>
+      recipeError("invalid_recipe_url", value, `Invalid ${String(base)}`)
+    )
+  )
 }
 
 function recipeError(

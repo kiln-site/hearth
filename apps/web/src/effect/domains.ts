@@ -1,5 +1,5 @@
 import type { RowDataPacket } from "mysql2/promise"
-import { Effect } from "effect"
+import { Effect, Option, Schema } from "effect"
 
 import { Database } from "@/effect/database"
 import { CredentialError, ResourceNotFoundError } from "@/effect/errors"
@@ -11,6 +11,9 @@ import { decryptWithKeyring, encryptWithKeyring } from "../../keyring.mjs"
 
 const CLOUDFLARE_INTEGRATION_ID = "cloudflare"
 const CLOUDFLARE_API_TOKEN_PURPOSE = "kiln-cloudflare-api-token"
+const decodeJsonString = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Unknown)
+)
 
 export interface DomainIntegration {
   blacklistPatterns: Array<string>
@@ -476,11 +479,7 @@ function parseBlacklistPatterns(value: unknown): Array<string> {
 
 function decodeJson(value: unknown): unknown {
   if (typeof value !== "string") return value
-  try {
-    return JSON.parse(value)
-  } catch {
-    return null
-  }
+  return Option.getOrNull(decodeJsonString(value))
 }
 
 function timestamp(value: Date | string | null): string | null {

@@ -6,6 +6,7 @@ import type {
   RelayInstanceWebRoute,
   RelayInstanceWebRoutes,
 } from "@workspace/contracts"
+import { Result } from "effect"
 
 import type { RelayStoredWebRoute } from "./effect/state.js"
 
@@ -191,11 +192,13 @@ function parseWebRouteRecoveryValue(
 
   let name = authority.slice(0, portSeparator).slice(0, 32)
   if (nameOptions[0]) {
-    try {
-      name = decodeURIComponent(nameOptions[0].slice(NAME_OPTION_PREFIX.length))
-    } catch {
+    const decodedName = Result.try(() =>
+      decodeURIComponent(nameOptions[0]!.slice(NAME_OPTION_PREFIX.length))
+    )
+    if (Result.isFailure(decodedName)) {
       return { success: false, message: "route name is invalid" }
     }
+    name = decodedName.success
   }
 
   const parsed = relayInstanceWebRouteSchema.safeParse({

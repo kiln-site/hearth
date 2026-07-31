@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 
 import { ExternalServiceError } from "@/effect/errors"
 
@@ -90,12 +90,15 @@ function ipAddressFamily(host: string): 0 | 4 | 6 {
     return 4
   }
   if (!host.includes(":")) return 0
-  try {
-    const parsed = new URL(`http://[${host}]/`)
-    return parsed.hostname.startsWith("[") ? 6 : 0
-  } catch {
-    return 0
-  }
+  return Schema.decodeUnknownOption(Schema.URLFromString)(
+    `http://[${host}]/`
+  ).pipe(
+    Option.filter((parsed) => parsed.hostname.startsWith("[")),
+    Option.match({
+      onNone: () => 0,
+      onSome: () => 6,
+    })
+  )
 }
 
 export const resolveCloudflareZoneEffect = Effect.fn("cloudflare.zone.resolve")(

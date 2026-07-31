@@ -1,3 +1,4 @@
+import { Result } from "effect"
 import { z } from "zod"
 
 export const domainNameSchema = z
@@ -41,14 +42,17 @@ export const defaultDomainBlacklistPatterns = [
 export function validateBlacklistPatterns(
   patterns: ReadonlyArray<string>
 ): Array<string> {
-  return patterns.map((pattern, index) => {
-    try {
-      new RegExp(pattern, "iu")
-      return pattern
-    } catch {
-      throw new Error(`Blacklist pattern ${index + 1} is not valid`)
-    }
-  })
+  return patterns.map((pattern, index) =>
+    Result.getOrThrow(
+      Result.try({
+        try: () => {
+          new RegExp(pattern, "iu")
+          return pattern
+        },
+        catch: () => new Error(`Blacklist pattern ${index + 1} is not valid`),
+      })
+    )
+  )
 }
 
 export function vanityLabelAllowed(

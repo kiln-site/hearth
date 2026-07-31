@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs"
 import { Resolver } from "node:dns/promises"
 import { hostname } from "node:os"
+import { Result } from "effect"
 
 import type {
   BrickReadiness,
@@ -266,12 +267,11 @@ function relayCoolifyPublicOrigin(
 
 function parseCoolifyPublicOrigin(raw: string): string {
   const withScheme = raw.includes("://") ? raw : `https://${raw}`
-  let url: URL
-  try {
-    url = new URL(withScheme)
-  } catch (cause) {
-    throw new Error("The Coolify Relay public URL is invalid", { cause })
-  }
+  const url = Result.try(() => new URL(withScheme)).pipe(
+    Result.getOrThrowWith(
+      (cause) => new Error("The Coolify Relay public URL is invalid", { cause })
+    )
+  )
   if (
     url.protocol !== "https:" ||
     url.username ||

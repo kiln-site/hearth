@@ -1,3 +1,5 @@
+import { Option, Result, Schema } from "effect"
+
 export const appearanceCacheCookieName = "kiln_appearance"
 export const stableDefaultAccentColor = "#f97316"
 export const nightlyDefaultAccentColor = "#38bdf8"
@@ -5,6 +7,9 @@ export const maximumCustomAccentColors = 3
 
 const appearanceCacheMaxAge = 60 * 60 * 24 * 365
 const hexColorPattern = /^#[\da-f]{6}$/i
+const decodeJsonString = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Unknown)
+)
 
 export type ColorScheme = "dark" | "light" | "system"
 export type ResolvedColorScheme = Exclude<ColorScheme, "system">
@@ -220,16 +225,16 @@ export function readAppearanceCache(): AppearancePreferences {
     }
   }
 
-  try {
-    return normalizeAppearancePreferences(
-      JSON.parse(decodeURIComponent(encodedPreferences))
-    )
-  } catch {
-    return {
-      accentColor: defaultAccentColor,
-      colorScheme: defaultColorScheme,
-    }
-  }
+  return Result.try(() => decodeURIComponent(encodedPreferences)).pipe(
+    Result.match({
+      onFailure: () => defaultAppearance,
+      onSuccess: (decoded) =>
+        decodeJsonString(decoded).pipe(
+          Option.map(normalizeAppearancePreferences),
+          Option.getOrElse(() => defaultAppearance)
+        ),
+    })
+  )
 }
 
 export function saveAppearanceCache(preferences: AppearancePreferences) {

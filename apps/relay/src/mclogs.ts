@@ -83,18 +83,21 @@ export const uploadConsoleLogToMclogs = Effect.fn("mclogs.upload")(function* (
     )
   }
 
-  let result: typeof MclogsResponseSchema.Type
-  try {
-    result = Schema.decodeUnknownSync(MclogsResponseSchema)(payload)
-    new URL(result.url)
-  } catch (cause) {
-    return yield* Effect.fail(
+  const result = yield* Schema.decodeUnknownEffect(MclogsResponseSchema)(
+    payload
+  ).pipe(
+    Effect.flatMap((decoded) =>
+      Schema.decodeUnknownEffect(Schema.URLFromString)(decoded.url).pipe(
+        Effect.as(decoded)
+      )
+    ),
+    Effect.mapError((cause) =>
       MclogsUploadError.make({
         reason: responseMessage ?? "mclo.gs returned an invalid response",
         cause,
       })
     )
-  }
+  )
   return {
     expires: result.expires,
     id: result.id,

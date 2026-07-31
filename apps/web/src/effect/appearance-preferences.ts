@@ -1,5 +1,5 @@
 import type { RowDataPacket } from "mysql2/promise"
-import { Effect } from "effect"
+import { Effect, Option, Schema } from "effect"
 
 import { Database } from "@/effect/database"
 import type {
@@ -20,24 +20,26 @@ interface AppearanceSettingRow extends RowDataPacket {
   setting_value: unknown
 }
 
+const decodeJsonString = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Unknown)
+)
+
 function decodeSettingValue(value: unknown): AppearanceOverride {
-  if (typeof value !== "string") return normalizeAppearanceOverride(value)
-  try {
-    return normalizeAppearanceOverride(JSON.parse(value))
-  } catch {
-    return normalizeAppearanceOverride(null)
-  }
+  return normalizeAppearanceOverride(
+    typeof value === "string"
+      ? Option.getOrNull(decodeJsonString(value))
+      : value
+  )
 }
 
 function decodePlatformDefault(value: unknown): AppearancePreferences | null {
   if (typeof value !== "string") {
     return value === null ? null : normalizeAppearancePreferences(value)
   }
-  try {
-    return normalizeAppearancePreferences(JSON.parse(value))
-  } catch {
-    return null
-  }
+  return Option.map(
+    decodeJsonString(value),
+    normalizeAppearancePreferences
+  ).pipe(Option.getOrNull)
 }
 
 export const loadAppearanceOverrideEffect = Effect.fn(

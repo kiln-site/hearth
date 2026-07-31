@@ -8,7 +8,7 @@ import {
   timingSafeEqual,
   verify,
 } from "node:crypto"
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import * as Sentry from "@sentry/node"
 
 import {
@@ -94,6 +94,12 @@ const PairingRequestSchema = Schema.Struct({
   version: Schema.Literal(1),
 })
 
+const InitialInvitationMetadataSchema = Schema.fromJsonString(
+  Schema.Struct({
+    invitationId: Schema.String,
+  })
+)
+
 export const decodePairingRequest =
   Schema.decodeUnknownEffect(PairingRequestSchema)
 
@@ -114,10 +120,7 @@ export const initializePairing = Effect.fn("RelayPairing.initialize")(
       if (input.config.bootstrapToken && clients.length === 0) {
         const replacedInvitationId = initialInvitationId(initialized)
         if (replacedInvitationId) {
-          yield* input.state.revokeInvitation(
-            replacedInvitationId,
-            Date.now()
-          )
+          yield* input.state.revokeInvitation(replacedInvitationId, Date.now())
         }
         const invitation = yield* createPairingInvitation({
           ...input,
@@ -519,16 +522,12 @@ function hashToken(token: string): string {
 }
 
 function initialInvitationId(metadata: string): string | null {
-  try {
-    const value = JSON.parse(metadata) as unknown
-    if (!value || typeof value !== "object" || !("invitationId" in value)) {
-      return null
-    }
-    const invitationId = value.invitationId
-    return typeof invitationId === "string" ? invitationId : null
-  } catch {
-    return null
-  }
+  return Schema.decodeUnknownOption(InitialInvitationMetadataSchema)(
+    metadata
+  ).pipe(
+    Option.map((value) => value.invitationId),
+    Option.getOrNull
+  )
 }
 
 function pairingFailure(code: string) {
