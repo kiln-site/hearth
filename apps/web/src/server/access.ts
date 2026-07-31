@@ -2,11 +2,14 @@ import { createHash, randomBytes, randomUUID } from "node:crypto"
 
 import { createServerFn } from "@tanstack/react-start"
 import { relayIdSchema } from "@workspace/contracts"
+import { Effect } from "effect"
 import type { RowDataPacket } from "mysql2/promise"
 import { Resend } from "resend"
 import { z } from "zod"
 
 import { AccessInvitationEmail } from "@/emails/access-invitation-email"
+import { Database } from "@/effect/database"
+import { runAppEffect } from "@/effect/runtime"
 import {
   hasRelayPermission,
   isPlatformAdmin,
@@ -289,53 +292,57 @@ export const acceptAccessInvitation = createServerFn({ method: "POST" })
     const user = await requireAuthenticatedUser()
     if (!user.emailVerified)
       throw new Error("Verify your email before accepting")
-    const connection = await databasePool.getConnection()
-    try {
-      await connection.beginTransaction()
-      const [rows] = await connection.query<Array<InvitationRow>>(
-        `SELECT id, email, relay_id, instance_id, role, invited_by,
+    return runAppEffect(
+      "access.invitation.accept",
+      Effect.gen(function* () {
+        const database = yield* Database
+        return yield* database.transaction("access.invitation.accept", (tx) =>
+          Effect.gen(function* () {
+            const rows = yield* tx.queryRows<InvitationRow>(
+              `SELECT id, email, relay_id, instance_id, role, invited_by,
                 expires_at, accepted_at, revoked_at
            FROM ${databaseTable("invitation")} WHERE token_hash = ? FOR UPDATE`,
-        [hashToken(data.token)]
-      )
-      const invitation: InvitationRow | undefined = rows.at(0)
-      if (!invitation || !isInvitationPending(invitation)) {
-        throw new Error("This invitation is invalid or has expired")
-      }
-      if (invitation.email.toLowerCase() !== user.email.toLowerCase()) {
-        throw new Error(
-          `Sign in as ${invitation.email} to accept this invitation`
-        )
-      }
-      const resourceType = invitation.instance_id ? "instance" : "relay"
-      const resourceId = invitation.instance_id ?? invitation.relay_id
-      await connection.execute(
-        `INSERT INTO ${databaseTable("access_grant")}
+              [hashToken(data.token)]
+            )
+            const invitation = rows.at(0)
+            if (!invitation || !isInvitationPending(invitation)) {
+              return yield* Effect.fail(
+                new Error("This invitation is invalid or has expired")
+              )
+            }
+            if (invitation.email.toLowerCase() !== user.email.toLowerCase()) {
+              return yield* Effect.fail(
+                new Error(
+                  `Sign in as ${invitation.email} to accept this invitation`
+                )
+              )
+            }
+            const resourceType = invitation.instance_id ? "instance" : "relay"
+            const resourceId = invitation.instance_id ?? invitation.relay_id
+            yield* tx.execute(
+              `INSERT INTO ${databaseTable("access_grant")}
           (id, user_id, relay_id, resource_type, resource_id, role, granted_by)
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE role = VALUES(role), granted_by = VALUES(granted_by)`,
-        [
-          randomUUID(),
-          user.id,
-          invitation.relay_id,
-          resourceType,
-          resourceId,
-          invitation.role,
-          invitation.invited_by,
-        ]
-      )
-      await connection.execute(
-        `UPDATE ${databaseTable("invitation")} SET accepted_at = CURRENT_TIMESTAMP(3) WHERE id = ?`,
-        [invitation.id]
-      )
-      await connection.commit()
-      return { accepted: true }
-    } catch (cause) {
-      await connection.rollback()
-      throw cause
-    } finally {
-      connection.release()
-    }
+              [
+                randomUUID(),
+                user.id,
+                invitation.relay_id,
+                resourceType,
+                resourceId,
+                invitation.role,
+                invitation.invited_by,
+              ]
+            )
+            yield* tx.execute(
+              `UPDATE ${databaseTable("invitation")} SET accepted_at = CURRENT_TIMESTAMP(3) WHERE id = ?`,
+              [invitation.id]
+            )
+            return { accepted: true }
+          })
+        )
+      })
+    )
   })
 
 export const updateAccessGrant = createServerFn({ method: "POST" })

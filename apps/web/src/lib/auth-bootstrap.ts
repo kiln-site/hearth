@@ -1,4 +1,9 @@
-import type { ResultSetHeader, RowDataPacket } from "mysql2/promise"
+import { Effect } from "effect"
+import type {
+  PoolConnection,
+  ResultSetHeader,
+  RowDataPacket,
+} from "mysql2/promise"
 import { z } from "zod"
 
 import { auth, displayNameFromEmail } from "@/lib/auth"
@@ -87,19 +92,11 @@ export async function replacePendingAccountEmail(input: {
     return { email: currentEmail }
   }
 
-  const connection = await databasePool.getConnection()
-  let locked = false
-  try {
-    const [lockRows] = await connection.query<Array<RowDataPacket>>(
-      "SELECT GET_LOCK(?, 10) AS acquired",
-      [FIRST_USER_LOCK]
-    )
-    locked = Number(lockRows[0]?.acquired ?? 0) === 1
-    if (!locked)
-      throw new Error("Account setup is busy. Try again in a moment.")
-
-    const [rows] = await connection.query<Array<PendingCredentialRow>>(
-      `SELECT auth_user.id, auth_user.email, auth_user.emailVerified,
+  await withFirstUserLock(
+    "Account setup is busy. Try again in a moment.",
+    async (connection) => {
+      const [rows] = await connection.query<Array<PendingCredentialRow>>(
+        `SELECT auth_user.id, auth_user.email, auth_user.emailVerified,
               auth_user.role, auth_account.password
          FROM ${databaseTable("user")} AS auth_user
          JOIN ${databaseTable("account")} AS auth_account
@@ -107,46 +104,43 @@ export async function replacePendingAccountEmail(input: {
           AND auth_account.providerId = 'credential'
         WHERE auth_user.email = ?
         LIMIT 1`,
-      [currentEmail]
-    )
-    const pending = rows.at(0)
-    if (!pending || pending.emailVerified) {
-      throw new Error("This pending account can no longer be changed.")
-    }
-    const context = await auth.$context
-    const ownsAccount = Boolean(
-      pending.password &&
-      (await context.password.verify({
+        [currentEmail]
+      )
+      const pending = rows.at(0)
+      if (!pending || pending.emailVerified) {
+        throw new Error("This pending account can no longer be changed.")
+      }
+      const context = await auth.$context
+      const ownsAccount = Boolean(
+        pending.password &&
+        (await context.password.verify({
+          password: input.password,
+          hash: pending.password,
+        }))
+      )
+      if (!ownsAccount) throw new Error("The account password did not match.")
+
+      const isInitialAdmin = pending.role?.split(",").includes("admin") ?? false
+      if (!isInitialAdmin && !(await signupAllowedForEmail(nextEmail))) {
+        throw new Error("This invitation is only valid for its original email.")
+      }
+
+      const [existingRows] = await connection.query<Array<RowDataPacket>>(
+        `SELECT id FROM ${databaseTable("user")} WHERE email = ? LIMIT 1`,
+        [nextEmail]
+      )
+      if (existingRows.length)
+        throw new Error("That email address is already in use.")
+
+      await context.internalAdapter.deleteUser(pending.id)
+      await createCredentialUser({
+        email: nextEmail,
         password: input.password,
-        hash: pending.password,
-      }))
-    )
-    if (!ownsAccount) throw new Error("The account password did not match.")
-
-    const isInitialAdmin = pending.role?.split(",").includes("admin") ?? false
-    if (!isInitialAdmin && !(await signupAllowedForEmail(nextEmail))) {
-      throw new Error("This invitation is only valid for its original email.")
+        role: isInitialAdmin ? "admin" : "user",
+        verified: false,
+      })
     }
-
-    const [existingRows] = await connection.query<Array<RowDataPacket>>(
-      `SELECT id FROM ${databaseTable("user")} WHERE email = ? LIMIT 1`,
-      [nextEmail]
-    )
-    if (existingRows.length)
-      throw new Error("That email address is already in use.")
-
-    await context.internalAdapter.deleteUser(pending.id)
-    await createCredentialUser({
-      email: nextEmail,
-      password: input.password,
-      role: isInitialAdmin ? "admin" : "user",
-      verified: false,
-    })
-  } finally {
-    if (locked)
-      await connection.query("SELECT RELEASE_LOCK(?)", [FIRST_USER_LOCK])
-    connection.release()
-  }
+  )
 
   await sendEmailVerificationCode(nextEmail)
   return { email: nextEmail }
@@ -157,29 +151,18 @@ async function createFirstUser(input: {
   password: string
   verified: boolean
 }): Promise<boolean> {
-  const connection = await databasePool.getConnection()
-  let locked = false
-  try {
-    const [lockRows] = await connection.query<Array<RowDataPacket>>(
-      "SELECT GET_LOCK(?, 10) AS acquired",
-      [FIRST_USER_LOCK]
-    )
-    locked = Number(lockRows[0]?.acquired ?? 0) === 1
-    if (!locked)
-      throw new Error("Initial setup is busy. Try again in a moment.")
+  return withFirstUserLock(
+    "Initial setup is busy. Try again in a moment.",
+    async (connection) => {
+      const [countRows] = await connection.query<Array<UserCountRow>>(
+        `SELECT COUNT(*) AS user_count FROM ${databaseTable("user")}`
+      )
+      if (Number(countRows[0]?.user_count ?? 0) > 0) return false
 
-    const [countRows] = await connection.query<Array<UserCountRow>>(
-      `SELECT COUNT(*) AS user_count FROM ${databaseTable("user")}`
-    )
-    if (Number(countRows[0]?.user_count ?? 0) > 0) return false
-
-    await createCredentialUser({ ...input, role: "admin" })
-    return true
-  } finally {
-    if (locked)
-      await connection.query("SELECT RELEASE_LOCK(?)", [FIRST_USER_LOCK])
-    connection.release()
-  }
+      await createCredentialUser({ ...input, role: "admin" })
+      return true
+    }
+  )
 }
 
 async function createCredentialUser(input: {
@@ -188,29 +171,93 @@ async function createCredentialUser(input: {
   role: "admin" | "user"
   verified: boolean
 }): Promise<void> {
-  const context = await auth.$context
-  const password = await context.password.hash(input.password)
-  const user = await context.internalAdapter.createUser({
-    email: input.email,
-    emailVerified: input.verified,
-    name: displayNameFromEmail(input.email),
-    role: input.role,
-  })
-  try {
-    await context.internalAdapter.linkAccount({
-      accountId: user.id,
-      password,
-      providerId: "credential",
-      userId: user.id,
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const context = yield* promiseEffect(() => auth.$context)
+      const password = yield* promiseEffect(() =>
+        context.password.hash(input.password)
+      )
+      const user = yield* promiseEffect(() =>
+        context.internalAdapter.createUser({
+          email: input.email,
+          emailVerified: input.verified,
+          name: displayNameFromEmail(input.email),
+          role: input.role,
+        })
+      )
+      yield* Effect.gen(function* () {
+        yield* promiseEffect(() =>
+          context.internalAdapter.linkAccount({
+            accountId: user.id,
+            password,
+            providerId: "credential",
+            userId: user.id,
+          })
+        )
+        yield* promiseEffect(() =>
+          databasePool.execute<ResultSetHeader>(
+            `UPDATE ${databaseTable("user")} SET emailVerified = ?, role = ? WHERE id = ?`,
+            [input.verified, input.role, user.id]
+          )
+        )
+      }).pipe(
+        Effect.catch((cause) =>
+          promiseEffect(() => context.internalAdapter.deleteUser(user.id)).pipe(
+            Effect.option,
+            Effect.andThen(Effect.fail(cause))
+          )
+        )
+      )
     })
-    await databasePool.execute<ResultSetHeader>(
-      `UPDATE ${databaseTable("user")} SET emailVerified = ?, role = ? WHERE id = ?`,
-      [input.verified, input.role, user.id]
-    )
-  } catch (cause) {
-    await context.internalAdapter.deleteUser(user.id).catch(() => undefined)
-    throw cause
-  }
+  )
+}
+
+function withFirstUserLock<TResult>(
+  busyMessage: string,
+  use: (connection: PoolConnection) => Promise<TResult>
+): Promise<TResult> {
+  return Effect.runPromise(
+    Effect.acquireUseRelease(
+      promiseEffect(async () => ({
+        connection: await databasePool.getConnection(),
+        locked: false,
+      })),
+      (resource) =>
+        Effect.gen(function* () {
+          const [rows] = yield* promiseEffect(() =>
+            resource.connection.query<Array<RowDataPacket>>(
+              "SELECT GET_LOCK(?, 10) AS acquired",
+              [FIRST_USER_LOCK]
+            )
+          )
+          resource.locked = Number(rows[0]?.acquired ?? 0) === 1
+          if (!resource.locked)
+            return yield* Effect.fail(new Error(busyMessage))
+          return yield* promiseEffect(() => use(resource.connection))
+        }),
+      (resource) =>
+        (resource.locked
+          ? promiseEffect(() =>
+              resource.connection.query("SELECT RELEASE_LOCK(?)", [
+                FIRST_USER_LOCK,
+              ])
+            )
+          : Effect.succeed(undefined)
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              resource.connection.release()
+            })
+          )
+        )
+    ).pipe(Effect.uninterruptible)
+  )
+}
+
+function promiseEffect<TResult>(
+  run: () => PromiseLike<TResult>
+): Effect.Effect<TResult, unknown> {
+  return Effect.tryPromise({ try: run, catch: (cause) => cause })
 }
 
 async function signupAllowedForEmail(email: string): Promise<boolean> {

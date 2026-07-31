@@ -721,14 +721,21 @@ async function recordFileActivityBestEffort(
   kind: "edit" | "view",
   operation: Promise<void>
 ): Promise<void> {
-  try {
-    await operation
-  } catch (cause) {
-    console.warn(
-      `[Kiln Files] The ${kind} succeeded, but its recent-file activity could not be recorded:`,
-      cause
+  await Effect.runPromise(
+    Effect.tryPromise({
+      try: () => operation,
+      catch: (cause) => cause,
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.sync(() => {
+          console.warn(
+            `[Kiln Files] The ${kind} succeeded, but its recent-file activity could not be recorded:`,
+            cause
+          )
+        })
+      )
     )
-  }
+  )
 }
 
 async function relayRequest(
@@ -807,28 +814,45 @@ async function authorizedRelayEntry(
   user: AuthenticatedUser,
   options: { fallbackOnError: boolean; warnOnUnavailable: boolean }
 ) {
-  let snapshot: Awaited<ReturnType<typeof relaySnapshot>> | null
-  try {
-    snapshot = await relaySnapshot(relay)
-  } catch (cause) {
-    if (!options.fallbackOnError) throw cause
-    if (options.warnOnUnavailable) warnRelayUnavailable(relay.id, cause)
-    snapshot =
-      (await relayFallbackSnapshot(relay).catch(() => undefined)) ?? null
-    return {
-      relay,
-      snapshot: snapshot
-        ? await authorizeRelaySnapshot(snapshot, relay, user)
-        : null,
-      status: "unreachable" as const,
-    }
-  }
-
-  return {
-    relay,
-    snapshot: await authorizeRelaySnapshot(snapshot, relay, user),
-    status: "connected" as const,
-  }
+  return Effect.runPromise(
+    Effect.tryPromise({
+      try: () => relaySnapshot(relay),
+      catch: (cause) => cause,
+    }).pipe(
+      Effect.map((snapshot) => ({
+        snapshot,
+        status: "connected" as const,
+      })),
+      Effect.catch((cause) => {
+        if (!options.fallbackOnError) return Effect.fail(cause)
+        if (options.warnOnUnavailable) {
+          warnRelayUnavailable(relay.id, cause)
+        }
+        return Effect.tryPromise({
+          try: () => relayFallbackSnapshot(relay),
+          catch: (fallbackCause) => fallbackCause,
+        }).pipe(
+          Effect.option,
+          Effect.map((snapshot) => ({
+            snapshot: snapshot._tag === "Some" ? snapshot.value : null,
+            status: "unreachable" as const,
+          }))
+        )
+      }),
+      Effect.flatMap(({ snapshot, status }) =>
+        Effect.tryPromise({
+          try: async () => ({
+            relay,
+            snapshot: snapshot
+              ? await authorizeRelaySnapshot(snapshot, relay, user)
+              : null,
+            status,
+          }),
+          catch: (cause) => cause,
+        })
+      )
+    )
+  )
 }
 
 async function relayFetch(

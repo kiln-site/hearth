@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/tanstackstart-react"
 import { createFileRoute } from "@tanstack/react-router"
 import { relayIdSchema } from "@workspace/contracts"
+import { Effect, Result } from "effect"
 
 import { openHearthRelayConsoleStream } from "@/server/relay-console-proxy"
 import { requireAuthenticatedUser } from "@/server/auth"
@@ -11,7 +12,13 @@ export const Route = createFileRoute("/api/console/$instanceId")({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await requireAuthenticatedUser().catch(() => null)
+        const userResult = await Effect.runPromise(
+          Effect.tryPromise({
+            try: requireAuthenticatedUser,
+            catch: (cause) => cause,
+          }).pipe(Effect.option)
+        )
+        const user = userResult._tag === "Some" ? userResult.value : null
         if (!user) {
           return Response.json(
             {
@@ -35,95 +42,114 @@ export const Route = createFileRoute("/api/console/$instanceId")({
           )
         }
 
-        try {
-          const lifecycle = new AbortController()
-          const abort = () => lifecycle.abort()
-          request.signal.addEventListener("abort", abort, { once: true })
-          if (request.signal.aborted) abort()
-          const iterator = openHearthRelayConsoleStream({
-            instanceId,
-            relayId: relayId.data,
-            signal: lifecycle.signal,
-            user,
-          })
-          const first = await iterator.next()
-          if (first.done) throw new Error("Relay console stream ended early")
+        return Effect.runPromise(
+          Effect.tryPromise({
+            try: async () => {
+              const lifecycle = new AbortController()
+              const abort = () => lifecycle.abort()
+              request.signal.addEventListener("abort", abort, { once: true })
+              if (request.signal.aborted) abort()
+              const iterator = openHearthRelayConsoleStream({
+                instanceId,
+                relayId: relayId.data,
+                signal: lifecycle.signal,
+                user,
+              })
+              const first = await iterator.next()
+              if (first.done)
+                throw new Error("Relay console stream ended early")
 
-          let firstPending = true
-          let finished = false
-          const finish = () => {
-            if (finished) return
-            finished = true
-            request.signal.removeEventListener("abort", abort)
-          }
-          const body = new ReadableStream<Uint8Array>({
-            async pull(controller) {
-              try {
-                if (firstPending) {
-                  firstPending = false
-                  controller.enqueue(encodeRecord(first.value))
-                  return
-                }
-                const result = await iterator.next()
-                if (result.done) {
+              let firstPending = true
+              let finished = false
+              const finish = () => {
+                if (finished) return
+                finished = true
+                request.signal.removeEventListener("abort", abort)
+              }
+              const body = new ReadableStream<Uint8Array>({
+                pull: (controller) =>
+                  Effect.runPromise(
+                    Effect.tryPromise({
+                      try: async () => {
+                        if (firstPending) {
+                          firstPending = false
+                          controller.enqueue(encodeRecord(first.value))
+                          return
+                        }
+                        const result = await iterator.next()
+                        if (result.done) {
+                          finish()
+                          controller.close()
+                          return
+                        }
+                        if (!lifecycle.signal.aborted) {
+                          controller.enqueue(encodeRecord(result.value))
+                        }
+                      },
+                      catch: (cause) => cause,
+                    }).pipe(
+                      Effect.catch((cause) =>
+                        Effect.sync(() => {
+                          finish()
+                          if (lifecycle.signal.aborted) {
+                            controller.close()
+                            return
+                          }
+                          controller.enqueue(
+                            encodeRecord({
+                              code: "console_proxy_interrupted",
+                              message:
+                                cause instanceof Error
+                                  ? cause.message
+                                  : "The Hearth console proxy was interrupted.",
+                              type: "proxy.error",
+                            })
+                          )
+                          controller.close()
+                        })
+                      )
+                    )
+                  ),
+                async cancel() {
+                  lifecycle.abort()
                   finish()
-                  controller.close()
-                  return
-                }
-                if (!lifecycle.signal.aborted) {
-                  controller.enqueue(encodeRecord(result.value))
-                }
-              } catch (cause) {
-                finish()
-                if (lifecycle.signal.aborted) {
-                  controller.close()
-                  return
-                }
-                controller.enqueue(
-                  encodeRecord({
-                    code: "console_proxy_interrupted",
-                    message:
+                  await iterator.return(undefined)
+                },
+              })
+              return new Response(body, {
+                headers: {
+                  "Cache-Control": "no-store, no-transform",
+                  Connection: "keep-alive",
+                  "Content-Type": "application/x-ndjson; charset=utf-8",
+                  "X-Accel-Buffering": "no",
+                },
+              })
+            },
+            catch: (cause) => cause,
+          }).pipe(
+            Effect.match({
+              onFailure: (cause) => {
+                Sentry.captureException(cause, {
+                  tags: {
+                    "kiln.operation": "console.proxy.connect",
+                    "kiln.relay_id": relayId.data,
+                  },
+                })
+                return Response.json(
+                  {
+                    code: "console_proxy_failed",
+                    error:
                       cause instanceof Error
                         ? cause.message
-                        : "The Hearth console proxy was interrupted.",
-                    type: "proxy.error",
-                  })
+                        : "Hearth could not open the Relay console stream.",
+                  },
+                  { status: 502 }
                 )
-                controller.close()
-              }
-            },
-            async cancel() {
-              lifecycle.abort()
-              finish()
-              await iterator.return(undefined)
-            },
-          })
-          return new Response(body, {
-            headers: {
-              "Cache-Control": "no-store, no-transform",
-              Connection: "keep-alive",
-              "Content-Type": "application/x-ndjson; charset=utf-8",
-              "X-Accel-Buffering": "no",
-            },
-          })
-        } catch (cause) {
-          Sentry.captureException(cause, {
-            tags: {
-              "kiln.operation": "console.proxy.connect",
-              "kiln.relay_id": relayId.data,
-            },
-          })
-          return Response.json(
-            {
-              code: "console_proxy_failed",
-              error:
-                cause instanceof Error
-                  ? cause.message
-                  : "Hearth could not open the Relay console stream.",
-            },
-            { status: 502 }
+              },
+              onSuccess: (response) => response,
+            })
           )
-        }
+        )
       },
     },
   },
@@ -134,9 +160,5 @@ function encodeRecord(value: unknown): Uint8Array {
 }
 
 function decodePathSegment(value: string | undefined): string | null {
-  try {
-    return decodeURIComponent(value ?? "")
-  } catch {
-    return null
-  }
+  return Result.getOrNull(Result.try(() => decodeURIComponent(value ?? "")))
 }

@@ -13,6 +13,7 @@ import {
   relayTailscaleStacksSchema,
   relayTailscaleSubdomainSchema,
 } from "@workspace/contracts"
+import { Effect } from "effect"
 import { z } from "zod"
 
 import {
@@ -151,31 +152,30 @@ export const configureTailscaleIntegration = createServerFn({ method: "POST" })
       ...verified,
       clientSecret: data.clientSecret,
     } satisfies TailscaleOAuthCredential
-    try {
-      const result = await loadTailscaleStacks()
-      requireCompleteTailscaleDeploymentList(result.unavailableRelays)
-      const stack = result.stacks.find(({ id }) => id === data.id)
-      if (!stack) throw new Error("Tailscale network not found")
-      if (stack.domain !== data.domain) {
-        throw new Error("The network domain changed before setup completed")
-      }
-      await synchronizeTailscaleControlPlane(credential, {
-        ...stack,
-        previousDomain: data.previousDomain,
-      })
-      const inspection = await inspectTailscaleControlPlane(
-        credential,
-        stack,
-        data.previousDomain
-      )
-      return {
-        inspection,
-        stacks: await loadTailscaleStacks(),
-      }
-    } catch (cause) {
-      await recordTailscaleSync(data.id, errorMessage(cause))
-      throw cause
-    }
+    return Effect.runPromise(
+      promiseEffect(async () => {
+        const result = await loadTailscaleStacks()
+        requireCompleteTailscaleDeploymentList(result.unavailableRelays)
+        const stack = result.stacks.find(({ id }) => id === data.id)
+        if (!stack) throw new Error("Tailscale network not found")
+        if (stack.domain !== data.domain) {
+          throw new Error("The network domain changed before setup completed")
+        }
+        await synchronizeTailscaleControlPlane(credential, {
+          ...stack,
+          previousDomain: data.previousDomain,
+        })
+        const inspection = await inspectTailscaleControlPlane(
+          credential,
+          stack,
+          data.previousDomain
+        )
+        return {
+          inspection,
+          stacks: await loadTailscaleStacks(),
+        }
+      }).pipe(Effect.tapError(recordTailscaleSyncFailure(data.id)))
+    )
   })
 
 export const previewTailscaleIntegration = createServerFn({ method: "POST" })
@@ -234,13 +234,12 @@ export const syncTailscaleIntegration = createServerFn({ method: "POST" })
     requireCompleteTailscaleDeploymentList(result.unavailableRelays)
     const stack = result.stacks.find(({ id }) => id === data.id)
     if (!stack) throw new Error("Tailscale network not found")
-    try {
-      await synchronizeTailscaleControlPlane(credential, stack)
-      return loadTailscaleStacks()
-    } catch (cause) {
-      await recordTailscaleSync(data.id, errorMessage(cause))
-      throw cause
-    }
+    return Effect.runPromise(
+      promiseEffect(async () => {
+        await synchronizeTailscaleControlPlane(credential, stack)
+        return loadTailscaleStacks()
+      }).pipe(Effect.tapError(recordTailscaleSyncFailure(data.id)))
+    )
   })
 
 export const saveTailscaleStack = createServerFn({ method: "POST" })
@@ -399,69 +398,96 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
         reservedSubnets,
         beforeFinalize: async (deployments) => {
           if (integrationCredential && definition?.integration) {
-            try {
-              await synchronizeTailscaleControlPlane(
-                integrationCredential,
-                tailscaleOverviewForDeployments(
-                  nextDefinition,
-                  deployments,
-                  definition.domain
-                )
-              )
-              nextDefinition.integration = {
-                ...definition.integration,
-                lastError: null,
-                lastSyncedAt: new Date().toISOString(),
-              }
-            } catch (cause) {
-              const message = errorMessage(cause)
-              await recordTailscaleSync(id, message)
-              await restoreTailscaleControlPlane(
-                integrationCredential,
-                definition,
-                currentForStack
-              )
-              throw cause
-            }
-          }
-          try {
-            await saveTailscaleNetworkDefinition(nextDefinition)
-          } catch (cause) {
-            let domainOwnerAfterConflict: TailscaleNetworkDefinition | null =
-              null
-            try {
-              if (integrationCredential && definition) {
-                await restoreTailscaleControlPlane(
+            const integration = definition.integration
+            await Effect.runPromise(
+              promiseEffect(() =>
+                synchronizeTailscaleControlPlane(
                   integrationCredential,
-                  definition,
-                  currentForStack
-                )
-              }
-              if (
-                integrationCredential &&
-                definition?.domain !== nextDefinition.domain
-              ) {
-                domainOwnerAfterConflict =
-                  await reconcileTailscaleDomainAfterDefinitionFailure(
-                    integrationCredential,
+                  tailscaleOverviewForDeployments(
                     nextDefinition,
-                    relays
+                    deployments,
+                    definition.domain
                   )
-              }
-            } catch (recoveryCause) {
-              throw new Error(
-                `${errorMessage(cause)}. Tailscale DNS recovery also failed: ${errorMessage(recoveryCause)}`,
-                { cause: recoveryCause }
+                )
+              ).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    nextDefinition.integration = {
+                      ...integration,
+                      lastError: null,
+                      lastSyncedAt: new Date().toISOString(),
+                    }
+                  })
+                ),
+                Effect.catch((cause) =>
+                  promiseEffect(() =>
+                    recordTailscaleSync(id, errorMessage(cause))
+                  ).pipe(
+                    Effect.andThen(
+                      promiseEffect(() =>
+                        restoreTailscaleControlPlane(
+                          integrationCredential,
+                          definition,
+                          currentForStack
+                        )
+                      )
+                    ),
+                    Effect.andThen(Effect.fail(cause))
+                  )
+                )
               )
-            }
-            if (domainOwnerAfterConflict) {
-              throw new Error(
-                `Network TLD .${nextDefinition.domain} is already used by ${domainOwnerAfterConflict.name}`,
-                { cause }
-              )
-            }
-            throw cause
+            )
           }
+          await Effect.runPromise(
+            promiseEffect(() =>
+              saveTailscaleNetworkDefinition(nextDefinition)
+            ).pipe(
+              Effect.catch((cause) =>
+                Effect.gen(function* () {
+                  const domainOwnerAfterConflict = yield* Effect.gen(
+                    function* () {
+                      if (integrationCredential && definition) {
+                        yield* promiseEffect(() =>
+                          restoreTailscaleControlPlane(
+                            integrationCredential,
+                            definition,
+                            currentForStack
+                          )
+                        )
+                      }
+                      return integrationCredential &&
+                        definition?.domain !== nextDefinition.domain
+                        ? yield* promiseEffect(() =>
+                            reconcileTailscaleDomainAfterDefinitionFailure(
+                              integrationCredential,
+                              nextDefinition,
+                              relays
+                            )
+                          )
+                        : null
+                    }
+                  ).pipe(
+                    Effect.mapError(
+                      (recoveryCause) =>
+                        new Error(
+                          `${errorMessage(cause)}. Tailscale DNS recovery also failed: ${errorMessage(recoveryCause)}`,
+                          { cause: recoveryCause }
+                        )
+                    )
+                  )
+                  if (domainOwnerAfterConflict) {
+                    return yield* Effect.fail(
+                      new Error(
+                        `Network TLD .${nextDefinition.domain} is already used by ${domainOwnerAfterConflict.name}`,
+                        { cause }
+                      )
+                    )
+                  }
+                  return yield* Effect.fail(cause)
+                })
+              )
+            )
+          )
         },
       })
     )
@@ -523,15 +549,14 @@ export const removeTailscaleStack = createServerFn({ method: "POST" })
         ),
         beforeFinalize: async () => {
           if (credential && definition) {
-            try {
-              await synchronizeTailscaleControlPlane(
-                credential,
-                tailscaleOverviewForDeployments(definition, [])
-              )
-            } catch (cause) {
-              await recordTailscaleSync(data.id, errorMessage(cause))
-              throw cause
-            }
+            await Effect.runPromise(
+              promiseEffect(() =>
+                synchronizeTailscaleControlPlane(
+                  credential,
+                  tailscaleOverviewForDeployments(definition, [])
+                )
+              ).pipe(Effect.tapError(recordTailscaleSyncFailure(data.id)))
+            )
           }
         },
       })
@@ -606,64 +631,69 @@ async function loadTailscaleDeployments(
   unsupportedRelays: TailscaleStacksResult["unsupportedRelays"]
   unavailableRelays: TailscaleStacksResult["unavailableRelays"]
 }> {
-  const results = await Promise.all(
-    relays.map(async (relay) => {
-      try {
-        const snapshot = relaySnapshotSchema.parse(
-          await relayRpc(relay, "relay.snapshot", {}, 5_000)
-        )
-        if (!relaySupportsTailscaleStacks(snapshot)) {
-          return {
-            deployments: [],
-            relayId: relay.id,
-            snapshot,
-            unavailableRelay: null,
-            unsupportedRelay: {
-              id: relay.id,
-              message:
-                "Update this Relay before changing Tailscale memberships",
-              name: relay.name,
-            },
-          }
-        }
-        const stacks = relayTailscaleStacksSchema.parse(
-          await relayRpc(relay, "relay.tailscale.stack.list", {}, 5_000)
-        )
-        return {
-          deployments: stacks.map((stack) => ({
-            ...stack,
-            relayId: relay.id,
-            relayName: relay.name,
-          })),
-          relayId: relay.id,
-          snapshot,
-          unavailableRelay: null,
-          unsupportedRelay: relaySupportsTailscaleStagedRemoval(snapshot)
-            ? null
-            : {
+  const results = await Effect.runPromise(
+    Effect.forEach(
+      relays,
+      (relay) =>
+        promiseEffect(async () => {
+          const snapshot = relaySnapshotSchema.parse(
+            await relayRpc(relay, "relay.snapshot", {}, 5_000)
+          )
+          if (!relaySupportsTailscaleStacks(snapshot)) {
+            return {
+              deployments: [],
+              relayId: relay.id,
+              snapshot,
+              unavailableRelay: null,
+              unsupportedRelay: {
                 id: relay.id,
                 message:
                   "Update this Relay before changing Tailscale memberships",
                 name: relay.name,
               },
-        }
-      } catch (cause) {
-        return {
-          deployments: [],
-          relayId: relay.id,
-          snapshot: null,
-          unavailableRelay: {
-            id: relay.id,
-            message:
-              cause instanceof Error
-                ? cause.message
-                : "The Relay did not return its Tailscale deployments",
-            name: relay.name,
-          },
-          unsupportedRelay: null,
-        }
-      }
-    })
+            }
+          }
+          const stacks = relayTailscaleStacksSchema.parse(
+            await relayRpc(relay, "relay.tailscale.stack.list", {}, 5_000)
+          )
+          return {
+            deployments: stacks.map((stack) => ({
+              ...stack,
+              relayId: relay.id,
+              relayName: relay.name,
+            })),
+            relayId: relay.id,
+            snapshot,
+            unavailableRelay: null,
+            unsupportedRelay: relaySupportsTailscaleStagedRemoval(snapshot)
+              ? null
+              : {
+                  id: relay.id,
+                  message:
+                    "Update this Relay before changing Tailscale memberships",
+                  name: relay.name,
+                },
+          }
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.succeed({
+              deployments: [],
+              relayId: relay.id,
+              snapshot: null,
+              unavailableRelay: {
+                id: relay.id,
+                message:
+                  cause instanceof Error
+                    ? cause.message
+                    : "The Relay did not return its Tailscale deployments",
+                name: relay.name,
+              },
+              unsupportedRelay: null,
+            })
+          )
+        ),
+      { concurrency: "unbounded" }
+    )
   )
   const snapshots = new Map<string, RelaySnapshot>()
   for (const result of results) {
@@ -996,4 +1026,15 @@ async function reconcileTailscaleDomainAfterDefinitionFailure(
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : "Tailscale setup failed"
+}
+
+function recordTailscaleSyncFailure(id: string) {
+  return (cause: unknown) =>
+    promiseEffect(() => recordTailscaleSync(id, errorMessage(cause)))
+}
+
+function promiseEffect<TResult>(
+  run: () => PromiseLike<TResult>
+): Effect.Effect<TResult, unknown> {
+  return Effect.tryPromise({ try: run, catch: (cause) => cause })
 }
