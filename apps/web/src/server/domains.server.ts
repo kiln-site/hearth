@@ -1,6 +1,6 @@
 import type { RelayInstance } from "@workspace/contracts"
 import { relayInstanceSchema, relaySnapshotSchema } from "@workspace/contracts"
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
 import { z } from "zod"
 
 import {
@@ -212,17 +212,19 @@ export async function provisionInstanceDomainBestEffort(
   instance: RelayInstance,
   relayId: string
 ): Promise<void> {
-  try {
-    await runAppEffect(
-      "domains.instance.provision",
-      provisionInstanceDomainEffect({ ...instance, relayId })
+  await runAppEffect(
+    "domains.instance.provision",
+    provisionInstanceDomainEffect({ ...instance, relayId }).pipe(
+      Effect.catch((cause) =>
+        Effect.sync(() => {
+          console.warn(
+            `[Kiln Domains] Server ${instance.id} was provisioned, but its vanity address could not be created:`,
+            cause
+          )
+        })
+      )
     )
-  } catch (cause) {
-    console.warn(
-      `[Kiln Domains] Server ${instance.id} was provisioned, but its vanity address could not be created:`,
-      cause
-    )
-  }
+  )
 }
 
 export const applyManagedDomainAddressesEffect = Effect.fn(
@@ -847,21 +849,19 @@ async function assignedServerNames(
   }
   const snapshots = await Promise.all(
     assignedRelays.map(async (relay) => {
-      try {
-        const snapshot = await runAppEffect(
-          "relay.snapshot.domains",
-          cachedRelayJsonEffect({
-            decode: relaySnapshotSchema.parse,
-            fallbackOnError: true,
-            path: "/v1/snapshot",
-            policy: relayCachePolicy.snapshot(relay.id),
-            relay,
-          })
-        )
-        return { relayId: relay.id, snapshot }
-      } catch {
-        return null
-      }
+      const snapshot = await runAppEffect(
+        "relay.snapshot.domains",
+        cachedRelayJsonEffect({
+          decode: relaySnapshotSchema.parse,
+          fallbackOnError: true,
+          path: "/v1/snapshot",
+          policy: relayCachePolicy.snapshot(relay.id),
+          relay,
+        }).pipe(Effect.option)
+      )
+      return Option.isSome(snapshot)
+        ? { relayId: relay.id, snapshot: snapshot.value }
+        : null
     })
   )
   const serverNames = new Map<string, string>()

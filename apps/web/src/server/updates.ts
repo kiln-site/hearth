@@ -1,4 +1,5 @@
 import { createServerFn, createServerOnlyFn } from "@tanstack/react-start"
+import { Effect } from "effect"
 import { z } from "zod"
 
 import {
@@ -73,59 +74,71 @@ export const getUpdateOverview = createServerFn({ method: "GET" }).handler(
 
     const [relayTargets, hearthCandidates] = await Promise.all([
       Promise.all(
-        enabledRelays.map(async (relay) => {
-          try {
-            const inspection = systemInspectionSchema.parse(
-              await relayRpc(relay, "relay.system.inspect", {}, 5_000)
-            )
-            return {
-              ...inspection,
-              name: relay.name,
-              relayId: relay.id,
-              reachable: true as const,
-            }
-          } catch (cause) {
-            return {
-              component: "relay" as const,
-              container: "",
-              currentImage: "",
-              currentVersion: relay.nodeVersion,
-              eligible: false,
-              name: relay.name,
-              reachable: false as const,
-              reason:
-                cause instanceof Error
-                  ? cause.message
-                  : "Relay update support is unavailable",
-              relayId: relay.id,
-            }
-          }
-        })
-      ),
-      Promise.all(
-        enabledRelays.map(async (relay) => {
-          try {
-            const inspection = systemInspectionSchema.parse(
-              await relayRpc(
-                relay,
-                "relay.system.inspect",
-                { container },
-                5_000
+        enabledRelays.map((relay) =>
+          Effect.runPromise(
+            Effect.tryPromise({
+              try: async () => {
+                const inspection = systemInspectionSchema.parse(
+                  await relayRpc(relay, "relay.system.inspect", {}, 5_000)
+                )
+                return {
+                  ...inspection,
+                  name: relay.name,
+                  relayId: relay.id,
+                  reachable: true as const,
+                }
+              },
+              catch: (cause) => cause,
+            }).pipe(
+              Effect.catch((cause) =>
+                Effect.succeed({
+                  component: "relay" as const,
+                  container: "",
+                  currentImage: "",
+                  currentVersion: relay.nodeVersion,
+                  eligible: false,
+                  name: relay.name,
+                  reachable: false as const,
+                  reason:
+                    cause instanceof Error
+                      ? cause.message
+                      : "Relay update support is unavailable",
+                  relayId: relay.id,
+                })
               )
             )
-            return inspection.component === "hearth" &&
-              inspection.sameInstallation
-              ? {
-                  ...inspection,
-                  relayId: relay.id,
-                  relayName: relay.name,
-                }
-              : null
-          } catch {
-            // A remote Relay cannot see Hearth's container and is skipped.
-            return null
-          }
-        })
+          )
+        )
+      ),
+      Promise.all(
+        enabledRelays.map((relay) =>
+          Effect.runPromise(
+            Effect.tryPromise({
+              try: async () => {
+                const inspection = systemInspectionSchema.parse(
+                  await relayRpc(
+                    relay,
+                    "relay.system.inspect",
+                    { container },
+                    5_000
+                  )
+                )
+                return inspection.component === "hearth" &&
+                  inspection.sameInstallation
+                  ? {
+                      ...inspection,
+                      relayId: relay.id,
+                      relayName: relay.name,
+                    }
+                  : null
+              },
+              catch: (cause) => cause,
+            }).pipe(
+              // A remote Relay cannot see Hearth's container and is skipped.
+              Effect.catch(() => Effect.succeed(null))
+            )
+          )
+        )
       ),
     ])
     const hearthTarget = hearthCandidates.find((target) => target) ?? null
@@ -237,18 +250,27 @@ async function coLocatedRelay(
   relayRpc: typeof import("@/lib/relay-connection").relayRpc
 ): Promise<PersistedRelay> {
   const candidates = await Promise.all(
-    relays.map(async (relay) => {
-      try {
-        const inspection = systemInspectionSchema.parse(
-          await relayRpc(relay, "relay.system.inspect", { container }, 5_000)
-        )
-        return inspection.component === "hearth" && inspection.sameInstallation
-          ? relay
-          : null
-      } catch {
-        return null
-      }
-    })
+    relays.map((relay) =>
+      Effect.runPromise(
+        Effect.tryPromise({
+          try: async () => {
+            const inspection = systemInspectionSchema.parse(
+              await relayRpc(
+                relay,
+                "relay.system.inspect",
+                { container },
+                5_000
+              )
+            )
+            return inspection.component === "hearth" &&
+              inspection.sameInstallation
+              ? relay
+              : null
+          },
+          catch: (cause) => cause,
+        }).pipe(Effect.catch(() => Effect.succeed(null)))
+      )
+    )
   )
   const selected = candidates.find((relay) => relay)
   if (selected) return selected
