@@ -16,7 +16,7 @@ import { Effect, Fiber, Schedule, Semaphore } from "effect"
 
 import { resolveBrick } from "./bricks.js"
 import { command } from "./command.js"
-import { directoryApparentSize } from "./disk-usage.js"
+import { directoryApparentSizeEffect } from "./disk-usage.js"
 import type {
   RelayCreateInstance,
   RelayInstance,
@@ -112,6 +112,32 @@ function portOperation<TResult>(
 
 function portFailure(code: string, operation: string, reason: string) {
   return Effect.fail(RelayPortAllocationError.make({ code, operation, reason }))
+}
+
+function lifecycleOperation<A>(
+  run: () => Promise<A>
+): Effect.Effect<A, unknown> {
+  return Effect.tryPromise({
+    try: run,
+    catch: (cause) => cause,
+  })
+}
+
+function runLifecycle<A>(effect: Effect.Effect<A, unknown>): Promise<A> {
+  return Effect.runPromise(effect)
+}
+
+function optionalWhenMissing<A>() {
+  return (
+    effect: Effect.Effect<A, unknown>
+  ): Effect.Effect<A | null, unknown> =>
+    effect.pipe(
+      Effect.catch((cause) =>
+        hasErrorCode(cause, "ENOENT")
+          ? Effect.succeed(null)
+          : Effect.fail(cause)
+      )
+    )
 }
 
 export function nextManagedGamePort(input: {
@@ -262,17 +288,16 @@ export class LifecycleDriver {
   }
 
   async networking(): Promise<RelayNetworking | null> {
-    try {
-      return JSON.parse(
-        await readFile(
-          join(this.#config.dataDirectory, "networking.json"),
-          "utf8"
+    return runLifecycle(
+      lifecycleOperation(async () =>
+        JSON.parse(
+          await readFile(
+            join(this.#config.dataDirectory, "networking.json"),
+            "utf8"
+          )
         )
-      ) as RelayNetworking
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
-      throw error
-    }
+      ).pipe(optionalWhenMissing<RelayNetworking>())
+    )
   }
 
   async configureNetworking(input: RelayNetworking): Promise<RelayNetworking> {
@@ -289,19 +314,18 @@ export class LifecycleDriver {
   }
 
   async tailscaleSettings(): Promise<RelayTailscaleSettings | null> {
-    try {
-      return relayTailscaleSettingsSchema.parse(
-        JSON.parse(
-          await readFile(
-            join(this.#config.dataDirectory, "tailscale.json"),
-            "utf8"
+    return runLifecycle(
+      lifecycleOperation(async () =>
+        relayTailscaleSettingsSchema.parse(
+          JSON.parse(
+            await readFile(
+              join(this.#config.dataDirectory, "tailscale.json"),
+              "utf8"
+            )
           )
         )
-      )
-    } catch (cause) {
-      if (hasErrorCode(cause, "ENOENT")) return null
-      throw cause
-    }
+      ).pipe(optionalWhenMissing())
+    )
   }
 
   async tailscaleOverview(): Promise<RelayTailscaleOverview> {
@@ -446,45 +470,57 @@ export class LifecycleDriver {
       mode: 0o700,
     })
 
-    try {
-      await this.#replaceContainer(
-        this.#resources.tailscaleContainer,
-        this.#tailscaleContainerArguments(settings, hostInfrastructure, true),
-        { ...process.env, TS_AUTHKEY: authKey }
-      )
-      const connected = await this.#waitForTailscaleConnection(90_000)
-      if (!connected.status.connected || !connected.status.dnsAddress) {
-        throw new Error(
-          connected.status.message ?? "Tailscale did not connect in time"
+    return runLifecycle(
+      lifecycleOperation(async () => {
+        await this.#replaceContainer(
+          this.#resources.tailscaleContainer,
+          this.#tailscaleContainerArguments(settings, hostInfrastructure, true),
+          { ...process.env, TS_AUTHKEY: authKey }
         )
-      }
+        const connected = await this.#waitForTailscaleConnection(90_000)
+        if (!connected.status.connected || !connected.status.dnsAddress) {
+          throw new Error(
+            connected.status.message ?? "Tailscale did not connect in time"
+          )
+        }
 
-      // Once the persisted node identity is authenticated, recreate without
-      // the one-time key so it is not retained in Docker container metadata.
-      await this.#replaceContainer(
-        this.#resources.tailscaleContainer,
-        this.#tailscaleContainerArguments(settings, hostInfrastructure)
+        // Once the persisted node identity is authenticated, recreate without
+        // the one-time key so it is not retained in Docker container metadata.
+        await this.#replaceContainer(
+          this.#resources.tailscaleContainer,
+          this.#tailscaleContainerArguments(settings, hostInfrastructure)
+        )
+        const reconnected = await this.#waitForTailscaleConnection(45_000)
+        if (!reconnected.status.connected || !reconnected.status.dnsAddress) {
+          throw new Error(
+            "Tailscale did not reconnect with its persisted state"
+          )
+        }
+        await this.#ensureTailscaleDns(
+          settings,
+          reconnected.status.dnsAddress,
+          true
+        )
+        return this.tailscaleOverview()
+      }).pipe(
+        Effect.catch((cause) =>
+          lifecycleOperation(() =>
+            this.#removeOwnedContainer(this.#resources.tailscaleContainer)
+          ).pipe(
+            Effect.ignore,
+            Effect.flatMap(() => {
+              const message =
+                cause instanceof Error
+                  ? cause.message.replaceAll(authKey, "[REDACTED]")
+                  : "unknown error"
+              return Effect.fail(
+                new Error(`Could not install Tailscale: ${message}`)
+              )
+            })
+          )
+        )
       )
-      const reconnected = await this.#waitForTailscaleConnection(45_000)
-      if (!reconnected.status.connected || !reconnected.status.dnsAddress) {
-        throw new Error("Tailscale did not reconnect with its persisted state")
-      }
-      await this.#ensureTailscaleDns(
-        settings,
-        reconnected.status.dnsAddress,
-        true
-      )
-      return this.tailscaleOverview()
-    } catch (cause) {
-      await this.#removeOwnedContainer(
-        this.#resources.tailscaleContainer
-      ).catch(() => undefined)
-      const message =
-        cause instanceof Error
-          ? cause.message.replaceAll(authKey, "[REDACTED]")
-          : "unknown error"
-      throw new Error(`Could not install Tailscale: ${message}`)
-    }
+    )
   }
 
   async tailscaleStacks(): Promise<Array<RelayTailscaleStack>> {
@@ -623,58 +659,71 @@ export class LifecycleDriver {
     const previousDnsRecords = existing
       ? await this.#readTailscaleStackDnsRecords(existing)
       : []
+    const rollbackStackApply = () =>
+      this.#rollbackTailscaleStackApply(config, existing, previousDnsRecords)
 
-    try {
-      await this.#ensureTailscaleStackNetwork(config)
-      await this.#writeTailscaleStackConfig(config)
-      if (!containerExists) {
-        await this.#installTailscaleStack(config, input.authKey!)
-      } else if (
-        existing &&
-        (existing.domain !== config.domain ||
-          existing.hostname !== config.hostname ||
-          existing.name !== config.name)
-      ) {
-        await this.#restartTailscaleStack(config)
-      }
-      // Docker can attach and detach a running game container from this
-      // private bridge without recreating or restarting it.
-      await this.#reconcileTailscaleStackBindings(
-        config.id,
-        existing?.bindings ?? [],
-        config.bindings
-      )
-      await this.#configureTailscaleStackRouting(config)
-      await this.#ensureTailscaleStackDns(
-        config,
-        config.bindings.map(({ address, hostname }) => ({ address, hostname }))
-      )
-      return this.#tailscaleStack(config)
-    } catch (cause) {
-      let rollbackMessage = ""
-      try {
-        await this.#rollbackTailscaleStackApply(
-          config,
-          existing,
-          previousDnsRecords
+    return runLifecycle(
+      lifecycleOperation(async () => {
+        await this.#ensureTailscaleStackNetwork(config)
+        await this.#writeTailscaleStackConfig(config)
+        if (!containerExists) {
+          await this.#installTailscaleStack(config, input.authKey!)
+        } else if (
+          existing &&
+          (existing.domain !== config.domain ||
+            existing.hostname !== config.hostname ||
+            existing.name !== config.name)
+        ) {
+          await this.#restartTailscaleStack(config)
+        }
+        // Docker can attach and detach a running game container from this
+        // private bridge without recreating or restarting it.
+        await this.#reconcileTailscaleStackBindings(
+          config.id,
+          existing?.bindings ?? [],
+          config.bindings
         )
-      } catch (rollbackCause) {
-        rollbackMessage = ` Rollback also failed: ${
-          rollbackCause instanceof Error
-            ? rollbackCause.message
-            : "unknown error"
-        }.`
-      }
-      const message =
-        cause instanceof Error
-          ? input.authKey
-            ? cause.message.replaceAll(input.authKey, "[REDACTED]")
-            : cause.message
-          : "unknown error"
-      throw new Error(
-        `Could not apply Tailscale stack: ${message}.${rollbackMessage}`
+        await this.#configureTailscaleStackRouting(config)
+        await this.#ensureTailscaleStackDns(
+          config,
+          config.bindings.map(({ address, hostname }) => ({
+            address,
+            hostname,
+          }))
+        )
+        return this.#tailscaleStack(config)
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.gen(function* () {
+            const rollbackMessage = yield* lifecycleOperation(() =>
+              rollbackStackApply()
+            ).pipe(
+              Effect.as(""),
+              Effect.catch((rollbackCause) =>
+                Effect.succeed(
+                  ` Rollback also failed: ${
+                    rollbackCause instanceof Error
+                      ? rollbackCause.message
+                      : "unknown error"
+                  }.`
+                )
+              )
+            )
+            const message =
+              cause instanceof Error
+                ? input.authKey
+                  ? cause.message.replaceAll(input.authKey, "[REDACTED]")
+                  : cause.message
+                : "unknown error"
+            return yield* Effect.fail(
+              new Error(
+                `Could not apply Tailscale stack: ${message}.${rollbackMessage}`
+              )
+            )
+          })
+        )
       )
-    }
+    )
   }
 
   async syncTailscaleStackDns(
@@ -734,34 +783,44 @@ export class LifecycleDriver {
       await writeFile(marker, "prepared\n", { mode: 0o600 })
     }
     const network = this.#resources.tailscaleStackNetwork(id)
-    try {
-      for (const binding of config.bindings) {
-        const instance = await this.#docker.findInstance(binding.instanceId)
-        if (instance) {
-          await command("docker", [
-            "network",
-            "disconnect",
-            "--force",
-            network,
-            instance.service,
-          ]).catch(() => undefined)
+    await runLifecycle(
+      lifecycleOperation(async () => {
+        for (const binding of config.bindings) {
+          const instance = await this.#docker.findInstance(binding.instanceId)
+          if (instance) {
+            await runLifecycle(
+              lifecycleOperation(() =>
+                command("docker", [
+                  "network",
+                  "disconnect",
+                  "--force",
+                  network,
+                  instance.service,
+                ])
+              ).pipe(Effect.ignore)
+            )
+          }
         }
-      }
-      await this.#removeOwnedContainer(
-        this.#resources.tailscaleStackDnsContainer(id)
+        await this.#removeOwnedContainer(
+          this.#resources.tailscaleStackDnsContainer(id)
+        )
+        const container = this.#resources.tailscaleStackContainer(id)
+        if (await this.#containerExists(container)) {
+          await command("docker", ["stop", "--time", "10", container], {
+            timeout: 30_000,
+          })
+        }
+      }).pipe(
+        Effect.catch((cause) =>
+          (alreadyPending
+            ? Effect.void
+            : lifecycleOperation(() =>
+                this.#rollbackTailscaleStackRemoval(id)
+              ).pipe(Effect.ignore)
+          ).pipe(Effect.flatMap(() => Effect.fail(cause)))
+        )
       )
-      const container = this.#resources.tailscaleStackContainer(id)
-      if (await this.#containerExists(container)) {
-        await command("docker", ["stop", "--time", "10", container], {
-          timeout: 30_000,
-        })
-      }
-    } catch (cause) {
-      if (!alreadyPending) {
-        await this.#rollbackTailscaleStackRemoval(id).catch(() => undefined)
-      }
-      throw cause
-    }
+    )
   }
 
   async #rollbackTailscaleStackRemoval(id: string): Promise<void> {
@@ -806,19 +865,29 @@ export class LifecycleDriver {
       await command("docker", ["start", container], {
         timeout: 30_000,
       })
-      try {
-        await this.#logoutTailscaleStack(container)
-      } catch (cause) {
-        await command("docker", ["stop", "--time", "10", container], {
-          timeout: 30_000,
-        }).catch(() => undefined)
-        throw new Error(
-          `Could not log the Tailscale machine out; local identity was preserved for retry: ${
-            cause instanceof Error ? cause.message : "unknown error"
-          }`,
-          { cause }
+      await runLifecycle(
+        lifecycleOperation(() => this.#logoutTailscaleStack(container)).pipe(
+          Effect.catch((cause) =>
+            lifecycleOperation(() =>
+              command("docker", ["stop", "--time", "10", container], {
+                timeout: 30_000,
+              })
+            ).pipe(
+              Effect.ignore,
+              Effect.flatMap(() =>
+                Effect.fail(
+                  new Error(
+                    `Could not log the Tailscale machine out; local identity was preserved for retry: ${
+                      cause instanceof Error ? cause.message : "unknown error"
+                    }`,
+                    { cause }
+                  )
+                )
+              )
+            )
+          )
         )
-      }
+      )
     }
     await this.#removeOwnedContainer(
       this.#resources.tailscaleStackDnsContainer(id)
@@ -868,13 +937,18 @@ export class LifecycleDriver {
   }
 
   async #tailscaleStackRemovalPending(id: string): Promise<boolean> {
-    try {
-      await readFile(this.#tailscaleStackRemovalMarker(id))
-      return true
-    } catch (cause) {
-      if (hasErrorCode(cause, "ENOENT")) return false
-      throw cause
-    }
+    return runLifecycle(
+      lifecycleOperation(() =>
+        readFile(this.#tailscaleStackRemovalMarker(id))
+      ).pipe(
+        Effect.as(true),
+        Effect.catch((cause) =>
+          hasErrorCode(cause, "ENOENT")
+            ? Effect.succeed(false)
+            : Effect.fail(cause)
+        )
+      )
+    )
   }
 
   async #assertTailscaleStackRemovalNotPending(
@@ -890,35 +964,42 @@ export class LifecycleDriver {
   async #readTailscaleStackRemovalSnapshot(
     id: string
   ): Promise<RelayTailscaleStack | null> {
-    try {
-      return relayTailscaleStackSchema.parse(
-        JSON.parse(
-          await readFile(this.#tailscaleStackRemovalSnapshot(id), "utf8")
+    return runLifecycle(
+      lifecycleOperation(async () =>
+        relayTailscaleStackSchema.parse(
+          JSON.parse(
+            await readFile(this.#tailscaleStackRemovalSnapshot(id), "utf8")
+          )
         )
-      )
-    } catch (cause) {
-      if (hasErrorCode(cause, "ENOENT")) return null
-      throw cause
-    }
+      ).pipe(optionalWhenMissing())
+    )
   }
 
   async proxySettings(): Promise<RelayProxySettings> {
-    try {
-      return relayProxySettingsSchema.parse(
-        JSON.parse(
-          await readFile(join(this.#config.dataDirectory, "proxy.json"), "utf8")
+    return runLifecycle(
+      lifecycleOperation(async () =>
+        relayProxySettingsSchema.parse(
+          JSON.parse(
+            await readFile(
+              join(this.#config.dataDirectory, "proxy.json"),
+              "utf8"
+            )
+          )
         )
+      ).pipe(
+        Effect.catch((cause) => {
+          if (!hasErrorCode(cause, "ENOENT")) return Effect.fail(cause)
+          const seeded = relayProxySettingsSchema.parse({
+            acmeEmail: this.#config.traefikAcmeEmail,
+            mode: this.#config.proxyMode,
+            traefikImage: this.#config.traefikImage,
+          })
+          return lifecycleOperation(() =>
+            this.#writeProxySettings(seeded)
+          ).pipe(Effect.as(seeded))
+        })
       )
-    } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause
-      const seeded = relayProxySettingsSchema.parse({
-        acmeEmail: this.#config.traefikAcmeEmail,
-        mode: this.#config.proxyMode,
-        traefikImage: this.#config.traefikImage,
-      })
-      await this.#writeProxySettings(seeded)
-      return seeded
-    }
+    )
   }
 
   async configureProxy(
@@ -1302,8 +1383,10 @@ export class LifecycleDriver {
       return updated
     }
     if (action === "start" || action === "restart") {
-      const usedBytes = await directoryApparentSize(
-        join(this.#config.rootDirectory, instance.directory)
+      const usedBytes = await runLifecycle(
+        directoryApparentSizeEffect(
+          join(this.#config.rootDirectory, instance.directory)
+        )
       )
       if (usedBytes > instance.limits.diskBytes) {
         throw new Error(
@@ -1330,78 +1413,90 @@ export class LifecycleDriver {
               inspected
             )
           : null
-      try {
-        const allocations =
-          pendingPrimaryPort && pendingExternalPort
-            ? [
-                {
-                  externalPort: pendingExternalPort,
-                  id: "primary" as const,
-                  internalPort: pendingPrimaryPort.internalPort,
-                  kind: "primary" as const,
-                  name: "Default Server",
-                  protocol: pendingPrimaryPort.protocol,
-                },
-                ...instance.ports,
-              ]
-            : instance.ports
-        const desiredLabels = this.#containerWebRouteLabels(routes, settings)
-        const labels = await containerLabels(instance.service)
-        const primary = allocations.find(
-          (allocation) => allocation.kind === "primary"
-        )
-        const desiredPortLabels = primary
-          ? portAllocationContainerLabels(allocations)
-          : null
-        const portConfiguration =
-          primary && desiredPortLabels
-            ? {
-                bindings: dockerPortBindingsForAllocations(allocations),
-                labels: {
-                  ...desiredPortLabels,
-                  "kiln.traefik.service.port": String(primary.internalPort),
-                },
-              }
-            : undefined
-        if (
-          pendingExternalPort ||
-          routeLabelsRequireRestart(labels, routes, desiredLabels) ||
-          (desiredPortLabels &&
-            portLabelsRequireRestart(labels, desiredPortLabels))
-        ) {
-          const usesExternalEdge =
-            settings.mode === "none" || settings.mode === "coolify"
-          if (usesExternalEdge && routes.length > 0) {
-            await this.#ensureEdgeNetwork()
-          }
-          const updated = await this.#docker.recreateOwnedInstance(
-            instance,
-            desiredLabels,
-            usesExternalEdge && routes.length > 0
-              ? this.#resources.edgeNetwork
-              : null,
-            action,
-            portConfiguration
+      const recreated = await runLifecycle(
+        lifecycleOperation(async () => {
+          const allocations =
+            pendingPrimaryPort && pendingExternalPort
+              ? [
+                  {
+                    externalPort: pendingExternalPort,
+                    id: "primary" as const,
+                    internalPort: pendingPrimaryPort.internalPort,
+                    kind: "primary" as const,
+                    name: "Default Server",
+                    protocol: pendingPrimaryPort.protocol,
+                  },
+                  ...instance.ports,
+                ]
+              : instance.ports
+          const desiredLabels = this.#containerWebRouteLabels(routes, settings)
+          const labels = await containerLabels(instance.service)
+          const primary = allocations.find(
+            (allocation) => allocation.kind === "primary"
           )
-          if (pendingExternalPort) {
-            const networking = await this.networking()
-            if (networking?.enabled) {
-              await this.#refreshCoreDnsConfiguration(networking)
+          const desiredPortLabels = primary
+            ? portAllocationContainerLabels(allocations)
+            : null
+          const portConfiguration =
+            primary && desiredPortLabels
+              ? {
+                  bindings: dockerPortBindingsForAllocations(allocations),
+                  labels: {
+                    ...desiredPortLabels,
+                    "kiln.traefik.service.port": String(primary.internalPort),
+                  },
+                }
+              : undefined
+          if (
+            pendingExternalPort ||
+            routeLabelsRequireRestart(labels, routes, desiredLabels) ||
+            (desiredPortLabels &&
+              portLabelsRequireRestart(labels, desiredPortLabels))
+          ) {
+            const usesExternalEdge =
+              settings.mode === "none" || settings.mode === "coolify"
+            if (usesExternalEdge && routes.length > 0) {
+              await this.#ensureEdgeNetwork()
             }
-            await this.#refreshTailscaleDns()
-            if (updated.brickNetworkMode === "minecraft-backend") {
-              await this.#refreshVelocityConfigurations(networking)
+            const updated = await this.#docker.recreateOwnedInstance(
+              instance,
+              desiredLabels,
+              usesExternalEdge && routes.length > 0
+                ? this.#resources.edgeNetwork
+                : null,
+              action,
+              portConfiguration
+            )
+            if (pendingExternalPort) {
+              const networking = await this.networking()
+              if (networking?.enabled) {
+                await this.#refreshCoreDnsConfiguration(networking)
+              }
+              await this.#refreshTailscaleDns()
+              if (updated.brickNetworkMode === "minecraft-backend") {
+                await this.#refreshVelocityConfigurations(networking)
+              }
             }
+            return updated
           }
-          return updated
-        }
-      } finally {
-        if (pendingPrimaryPort && pendingExternalPort) {
-          for (const protocol of portProtocols(pendingPrimaryPort.protocol)) {
-            this.#pendingGamePorts.delete(`${protocol}:${pendingExternalPort}`)
-          }
-        }
-      }
+          return undefined
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (pendingPrimaryPort && pendingExternalPort) {
+                for (const protocol of portProtocols(
+                  pendingPrimaryPort.protocol
+                )) {
+                  this.#pendingGamePorts.delete(
+                    `${protocol}:${pendingExternalPort}`
+                  )
+                }
+              }
+            })
+          )
+        )
+      )
+      if (recreated) return recreated
     }
     return this.#docker.runAction(instance, action)
   }
@@ -1489,117 +1584,123 @@ export class LifecycleDriver {
       protocol: RelayInstancePortAllocation["protocol"]
     }> = []
     const allocations: Array<RelayInstancePortAllocation> = []
-    try {
-      for (const input of requested) {
-        const existing = input.id ? existingById.get(input.id) : undefined
-        if (input.id && !existing) {
-          if (input.id !== "primary" || hasPrimary) {
-            throw new Error(`Port allocation ${input.id} no longer exists`)
+    return runLifecycle(
+      lifecycleOperation(async () => {
+        for (const input of requested) {
+          const existing = input.id ? existingById.get(input.id) : undefined
+          if (input.id && !existing) {
+            if (input.id !== "primary" || hasPrimary) {
+              throw new Error(`Port allocation ${input.id} no longer exists`)
+            }
+            const externalPort = await this.#claimPortLease(
+              instance.id,
+              input,
+              inspected
+            )
+            pending.push({ port: externalPort, protocol: input.protocol })
+            allocations.push({
+              externalPort,
+              id: "primary",
+              internalPort: input.internalPort,
+              kind: "primary",
+              name: "Default Server",
+              protocol: input.protocol,
+            })
+            continue
           }
+          if (existing) {
+            const previousProtocols = new Set(portProtocols(existing.protocol))
+            const addedProtocols = portProtocols(input.protocol).filter(
+              (protocol) => !previousProtocols.has(protocol)
+            )
+            if (addedProtocols.length > 0) {
+              await this.#reservePublishedPortProtocols(
+                existing.externalPort,
+                addedProtocols
+              )
+              for (const protocol of addedProtocols) {
+                pending.push({ port: existing.externalPort, protocol })
+              }
+            }
+            allocations.push({
+              ...existing,
+              internalPort: input.internalPort,
+              name: input.name,
+              protocol: input.protocol,
+            })
+            continue
+          }
+
           const externalPort = await this.#claimPortLease(
             instance.id,
             input,
             inspected
           )
           pending.push({ port: externalPort, protocol: input.protocol })
-          allocations.push({
-            externalPort,
-            id: "primary",
-            internalPort: input.internalPort,
-            kind: "primary",
-            name: "Default Server",
-            protocol: input.protocol,
-          })
-          continue
-        }
-        if (existing) {
-          const previousProtocols = new Set(portProtocols(existing.protocol))
-          const addedProtocols = portProtocols(input.protocol).filter(
-            (protocol) => !previousProtocols.has(protocol)
-          )
-          if (addedProtocols.length > 0) {
-            await this.#reservePublishedPortProtocols(
-              existing.externalPort,
-              addedProtocols
-            )
-            for (const protocol of addedProtocols) {
-              pending.push({ port: existing.externalPort, protocol })
-            }
+          let id = randomBytes(4).toString("hex")
+          while (
+            existingById.has(id) ||
+            allocations.some((allocation) => allocation.id === id)
+          ) {
+            id = randomBytes(4).toString("hex")
           }
           allocations.push({
-            ...existing,
+            externalPort,
+            id,
             internalPort: input.internalPort,
+            kind: "custom",
             name: input.name,
             protocol: input.protocol,
           })
-          continue
         }
 
-        const externalPort = await this.#claimPortLease(
-          instance.id,
-          input,
-          inspected
+        const primary = allocations.find(
+          (allocation) => allocation.kind === "primary"
         )
-        pending.push({ port: externalPort, protocol: input.protocol })
-        let id = randomBytes(4).toString("hex")
-        while (
-          existingById.has(id) ||
-          allocations.some((allocation) => allocation.id === id)
-        ) {
-          id = randomBytes(4).toString("hex")
+        if (!primary) throw new Error("The primary game port is required")
+        const settings = await this.proxySettings()
+        const routeLabels = this.#containerWebRouteLabels(routes, settings)
+        const usesExternalEdge =
+          settings.mode === "none" || settings.mode === "coolify"
+        if (usesExternalEdge && routes.length > 0) {
+          await this.#ensureEdgeNetwork()
         }
-        allocations.push({
-          externalPort,
-          id,
-          internalPort: input.internalPort,
-          kind: "custom",
-          name: input.name,
-          protocol: input.protocol,
-        })
-      }
-
-      const primary = allocations.find(
-        (allocation) => allocation.kind === "primary"
+        const updated = await this.#docker.recreateOwnedInstance(
+          instance,
+          routeLabels,
+          usesExternalEdge && routes.length > 0
+            ? this.#resources.edgeNetwork
+            : null,
+          instance.desiredState === "running" ? "restart" : "stop",
+          {
+            bindings: dockerPortBindingsForAllocations(allocations),
+            labels: {
+              ...portAllocationContainerLabels(allocations),
+              "kiln.traefik.service.port": String(primary.internalPort),
+            },
+          }
+        )
+        const networking = await this.networking()
+        if (networking?.enabled) {
+          await this.#refreshCoreDnsConfiguration(networking)
+        }
+        await this.#refreshTailscaleDns()
+        if (updated.brickNetworkMode === "minecraft-backend") {
+          await this.#refreshVelocityConfigurations(networking)
+        }
+        return updated
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            for (const allocation of pending) {
+              for (const protocol of portProtocols(allocation.protocol)) {
+                this.#pendingGamePorts.delete(`${protocol}:${allocation.port}`)
+              }
+            }
+          })
+        )
       )
-      if (!primary) throw new Error("The primary game port is required")
-      const settings = await this.proxySettings()
-      const routeLabels = this.#containerWebRouteLabels(routes, settings)
-      const usesExternalEdge =
-        settings.mode === "none" || settings.mode === "coolify"
-      if (usesExternalEdge && routes.length > 0) {
-        await this.#ensureEdgeNetwork()
-      }
-      const updated = await this.#docker.recreateOwnedInstance(
-        instance,
-        routeLabels,
-        usesExternalEdge && routes.length > 0
-          ? this.#resources.edgeNetwork
-          : null,
-        instance.desiredState === "running" ? "restart" : "stop",
-        {
-          bindings: dockerPortBindingsForAllocations(allocations),
-          labels: {
-            ...portAllocationContainerLabels(allocations),
-            "kiln.traefik.service.port": String(primary.internalPort),
-          },
-        }
-      )
-      const networking = await this.networking()
-      if (networking?.enabled) {
-        await this.#refreshCoreDnsConfiguration(networking)
-      }
-      await this.#refreshTailscaleDns()
-      if (updated.brickNetworkMode === "minecraft-backend") {
-        await this.#refreshVelocityConfigurations(networking)
-      }
-      return updated
-    } finally {
-      for (const allocation of pending) {
-        for (const protocol of portProtocols(allocation.protocol)) {
-          this.#pendingGamePorts.delete(`${protocol}:${allocation.port}`)
-        }
-      }
-    }
+    )
   }
 
   reserveInstancePortEffect(
@@ -1809,24 +1910,29 @@ export class LifecycleDriver {
       timeout: 90_000,
     })
 
-    try {
-      return await this.#provisionManagedInstance({
-        diskLimitBytes,
-        grandfatheredDiskLimitBytes: existing.limits.diskBytes,
-        id: existing.id,
-        prepareDirectory: false,
-        ports: existing.ports,
-        recipe,
-        start: input.start,
-        tailscale,
-        variables: input.variables,
-      })
-    } catch (error) {
-      throw new Error(
-        `Failed to reconfigure ${existing.name}: ${error instanceof Error ? error.message : "unknown error"}`,
-        { cause: error }
+    return runLifecycle(
+      lifecycleOperation(() =>
+        this.#provisionManagedInstance({
+          diskLimitBytes,
+          grandfatheredDiskLimitBytes: existing.limits.diskBytes,
+          id: existing.id,
+          prepareDirectory: false,
+          ports: existing.ports,
+          recipe,
+          start: input.start,
+          tailscale,
+          variables: input.variables,
+        })
+      ).pipe(
+        Effect.mapError(
+          (error) =>
+            new Error(
+              `Failed to reconfigure ${existing.name}: ${error instanceof Error ? error.message : "unknown error"}`,
+              { cause: error }
+            )
+        )
       )
-    }
+    )
   }
 
   async #provisionManagedInstance(input: {
@@ -1955,11 +2061,18 @@ export class LifecycleDriver {
       await this.#ensureEdgeNetwork()
     }
     if (networking?.enabled) await this.#ensureInfrastructure(networking, false)
-    try {
-      await command("docker", ["image", "inspect", image])
-    } catch {
-      await command("docker", ["pull", image], { timeout: 300_000 })
-    }
+    await runLifecycle(
+      lifecycleOperation(() =>
+        command("docker", ["image", "inspect", image])
+      ).pipe(
+        Effect.catch(() =>
+          lifecycleOperation(() =>
+            command("docker", ["pull", image], { timeout: 300_000 })
+          )
+        ),
+        Effect.asVoid
+      )
+    )
 
     if (definition.network.mode === "minecraft-proxy") {
       await this.#writeVelocityConfig(
@@ -2147,41 +2260,58 @@ export class LifecycleDriver {
     arguments_.push(...(definition.runtime.entrypoint?.slice(1) ?? []))
     arguments_.push(...(definition.runtime.command ?? []))
 
-    try {
-      await command("docker", arguments_, { timeout: 60_000 })
-      if (usesExternalEdge && webRoutes.length > 0) {
-        await command("docker", [
-          "network",
-          "connect",
-          "--alias",
-          containerName,
-          this.#resources.edgeNetwork,
-          containerName,
-        ])
-      }
-      if (input.start) {
-        await command("docker", ["start", containerName], { timeout: 120_000 })
-      }
-      if (networking?.enabled)
-        await this.#refreshCoreDnsConfiguration(networking)
-      await this.#refreshTailscaleDns()
-      if (definition.network.mode === "minecraft-backend")
-        await this.#refreshVelocityConfigurations(networking)
-    } catch (error) {
-      await command("docker", ["rm", "--force", containerName]).catch(
-        () => undefined
-      )
-      if (input.prepareDirectory) {
-        await rm(directory, { recursive: true, force: true })
-      }
-      throw error
-    } finally {
-      for (const allocation of reservedPorts) {
-        for (const protocol of portProtocols(allocation.protocol)) {
-          this.#pendingGamePorts.delete(`${protocol}:${allocation.port}`)
+    await runLifecycle(
+      lifecycleOperation(async () => {
+        await command("docker", arguments_, { timeout: 60_000 })
+        if (usesExternalEdge && webRoutes.length > 0) {
+          await command("docker", [
+            "network",
+            "connect",
+            "--alias",
+            containerName,
+            this.#resources.edgeNetwork,
+            containerName,
+          ])
         }
-      }
-    }
+        if (input.start) {
+          await command("docker", ["start", containerName], {
+            timeout: 120_000,
+          })
+        }
+        if (networking?.enabled) {
+          await this.#refreshCoreDnsConfiguration(networking)
+        }
+        await this.#refreshTailscaleDns()
+        if (definition.network.mode === "minecraft-backend") {
+          await this.#refreshVelocityConfigurations(networking)
+        }
+      }).pipe(
+        Effect.catch((error) =>
+          lifecycleOperation(() =>
+            command("docker", ["rm", "--force", containerName])
+          ).pipe(
+            Effect.ignore,
+            Effect.flatMap(() =>
+              input.prepareDirectory
+                ? lifecycleOperation(() =>
+                    rm(directory, { recursive: true, force: true })
+                  )
+                : Effect.void
+            ),
+            Effect.flatMap(() => Effect.fail(error))
+          )
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            for (const allocation of reservedPorts) {
+              for (const protocol of portProtocols(allocation.protocol)) {
+                this.#pendingGamePorts.delete(`${protocol}:${allocation.port}`)
+              }
+            }
+          })
+        )
+      )
+    )
 
     const created = (await this.#docker.inspectInstances()).find(
       (instance) => instance.id === id
@@ -2414,7 +2544,9 @@ export class LifecycleDriver {
       )
     }
     if (input.checkExistingUsage) {
-      const usedBytes = await directoryApparentSize(input.directory)
+      const usedBytes = await runLifecycle(
+        directoryApparentSizeEffect(input.directory)
+      )
       if (usedBytes > input.diskLimitBytes) {
         throw new Error(
           `Disk quota is below this server's current ${formatAllocationBytes(usedBytes)} usage`
@@ -2457,60 +2589,76 @@ export class LifecycleDriver {
       previous: RelayTailscaleStackConfig
       records: Array<{ address: string; hostname: string }>
     }> = []
-    try {
-      if (affectedStackIds.length > 0) {
-        tailscalePrepareAttempted = true
-        await synchronizeTailscaleDns?.({
-          mode: "prepare",
-          stackIds: affectedStackIds,
-        })
-      }
-      detachedStacks = await this.#detachInstanceFromTailscaleStacks(instance)
-      await command(
-        "docker",
-        [
-          "stop",
-          "--time",
-          String(INSTANCE_STOP_TIMEOUT_SECONDS),
-          instance.service,
-        ],
-        {
-          timeout: (INSTANCE_STOP_TIMEOUT_SECONDS + 15) * 1_000,
-        }
-      ).catch(() => undefined)
-      await command("docker", ["rm", "--force", instance.service], {
-        timeout: 90_000,
-      })
-    } catch (cause) {
-      const rollbackFailures =
-        await this.#restoreInstanceTailscaleStacks(detachedStacks)
-      if (tailscalePrepareAttempted) {
-        try {
+    await runLifecycle(
+      lifecycleOperation(async () => {
+        if (affectedStackIds.length > 0) {
+          tailscalePrepareAttempted = true
           await synchronizeTailscaleDns?.({
-            mode: "rollback",
+            mode: "prepare",
             stackIds: affectedStackIds,
           })
-        } catch (rollbackCause) {
-          rollbackFailures.push(
-            `peer DNS: ${
-              rollbackCause instanceof Error
-                ? rollbackCause.message
-                : "unknown rollback error"
-            }`
-          )
         }
-      }
-      throw new Error(
-        `Could not delete the server: ${
-          cause instanceof Error ? cause.message : "unknown error"
-        }${
-          rollbackFailures.length > 0
-            ? `. Tailscale rollback also failed: ${rollbackFailures.join("; ")}`
-            : ""
-        }`,
-        { cause }
+        detachedStacks = await this.#detachInstanceFromTailscaleStacks(instance)
+        await runLifecycle(
+          lifecycleOperation(() =>
+            command(
+              "docker",
+              [
+                "stop",
+                "--time",
+                String(INSTANCE_STOP_TIMEOUT_SECONDS),
+                instance.service,
+              ],
+              {
+                timeout: (INSTANCE_STOP_TIMEOUT_SECONDS + 15) * 1_000,
+              }
+            )
+          ).pipe(Effect.ignore)
+        )
+        await command("docker", ["rm", "--force", instance.service], {
+          timeout: 90_000,
+        })
+      }).pipe(
+        Effect.catch((cause) =>
+          lifecycleOperation(async () => {
+            const rollbackFailures =
+              await this.#restoreInstanceTailscaleStacks(detachedStacks)
+            if (tailscalePrepareAttempted && synchronizeTailscaleDns) {
+              const rollbackFailure = await runLifecycle(
+                lifecycleOperation(() =>
+                  synchronizeTailscaleDns({
+                    mode: "rollback",
+                    stackIds: affectedStackIds,
+                  })
+                ).pipe(
+                  Effect.as(null),
+                  Effect.catch((rollbackCause) =>
+                    Effect.succeed(
+                      `peer DNS: ${
+                        rollbackCause instanceof Error
+                          ? rollbackCause.message
+                          : "unknown rollback error"
+                      }`
+                    )
+                  )
+                )
+              )
+              if (rollbackFailure) rollbackFailures.push(rollbackFailure)
+            }
+            throw new Error(
+              `Could not delete the server: ${
+                cause instanceof Error ? cause.message : "unknown error"
+              }${
+                rollbackFailures.length > 0
+                  ? `. Tailscale rollback also failed: ${rollbackFailures.join("; ")}`
+                  : ""
+              }`,
+              { cause }
+            )
+          })
+        )
       )
-    }
+    )
     if (deleteData) {
       await rm(join(this.#config.rootDirectory, instance.directory), {
         recursive: true,
@@ -2668,29 +2816,32 @@ export class LifecycleDriver {
       `${join(hostInfrastructure, "state")}:/var/lib/traefik`,
     ]
     arguments_.push(settings.traefikImage)
-    try {
-      await this.#ensureContainer(
-        this.#resources.traefikContainer,
-        replace,
-        arguments_
-      )
-      await connectNetwork(
-        this.#resources.traefikContainer,
-        this.#resources.relayEdgeNetwork
-      )
-      await connectNetwork(
-        this.#resources.traefikContainer,
-        this.#resources.gameNetwork
-      )
-    } catch (cause) {
-      if (isPortBindingFailure(cause)) {
-        throw new Error(
-          "Bundled Traefik could not bind ports 80 and 443. A host process may already own one of them even though Docker could not identify it. Free both ports or choose KILN_RELAY_PROXY=none for an existing/manual Traefik setup.",
-          { cause }
+    await runLifecycle(
+      lifecycleOperation(async () => {
+        await this.#ensureContainer(
+          this.#resources.traefikContainer,
+          replace,
+          arguments_
         )
-      }
-      throw cause
-    }
+        await connectNetwork(
+          this.#resources.traefikContainer,
+          this.#resources.relayEdgeNetwork
+        )
+        await connectNetwork(
+          this.#resources.traefikContainer,
+          this.#resources.gameNetwork
+        )
+      }).pipe(
+        Effect.mapError((cause) =>
+          isPortBindingFailure(cause)
+            ? new Error(
+                "Bundled Traefik could not bind ports 80 and 443. A host process may already own one of them even though Docker could not identify it. Free both ports or choose KILN_RELAY_PROXY=none for an existing/manual Traefik setup.",
+                { cause }
+              )
+            : cause
+        )
+      )
+    )
   }
 
   async #reconcileExternalTraefikRoutes(
@@ -2988,19 +3139,18 @@ export class LifecycleDriver {
   async #readTailscaleStackConfig(
     id: string
   ): Promise<RelayTailscaleStackConfig | null> {
-    try {
-      return relayTailscaleStackConfigSchema.parse(
-        JSON.parse(
-          await readFile(
-            join(this.#config.rootDirectory, id, "stack.json"),
-            "utf8"
+    return runLifecycle(
+      lifecycleOperation(async () =>
+        relayTailscaleStackConfigSchema.parse(
+          JSON.parse(
+            await readFile(
+              join(this.#config.rootDirectory, id, "stack.json"),
+              "utf8"
+            )
           )
         )
-      )
-    } catch (cause) {
-      if (hasErrorCode(cause, "ENOENT")) return null
-      throw cause
-    }
+      ).pipe(optionalWhenMissing())
+    )
   }
 
   async #tailscaleStackConfigs(): Promise<Array<RelayTailscaleStackConfig>> {
@@ -3156,38 +3306,51 @@ export class LifecycleDriver {
     )
     await mkdir(stateDirectory, { recursive: true, mode: 0o700 })
     for (const image of [TAILSCALE_IMAGE, COREDNS_IMAGE]) {
-      await command("docker", ["image", "inspect", image]).catch(() =>
-        command("docker", ["pull", image], { timeout: 300_000 })
+      await runLifecycle(
+        lifecycleOperation(() =>
+          command("docker", ["image", "inspect", image])
+        ).pipe(
+          Effect.catch(() =>
+            lifecycleOperation(() =>
+              command("docker", ["pull", image], { timeout: 300_000 })
+            )
+          ),
+          Effect.asVoid
+        )
       )
     }
     const name = this.#resources.tailscaleStackContainer(config.id)
-    try {
-      await this.#replaceContainer(
-        name,
-        await this.#tailscaleStackContainerArguments(config, true),
-        { ...process.env, TS_AUTHKEY: authKey }
-      )
-      if (!(await this.#waitForTailscaleStackConnection(config.id, 90_000))) {
-        throw new Error("Tailscale did not connect in time")
-      }
-      // Remove the one-time key from Docker metadata after the persisted
-      // machine identity has authenticated.
-      await this.#replaceContainer(
-        name,
-        await this.#tailscaleStackContainerArguments(config, false)
-      )
-      if (!(await this.#waitForTailscaleStackConnection(config.id, 45_000))) {
-        throw new Error(
-          "Tailscale did not reconnect with its persisted identity"
+    await runLifecycle(
+      lifecycleOperation(async () => {
+        await this.#replaceContainer(
+          name,
+          await this.#tailscaleStackContainerArguments(config, true),
+          { ...process.env, TS_AUTHKEY: authKey }
         )
-      }
-    } catch (cause) {
-      const message =
-        cause instanceof Error
-          ? cause.message.replaceAll(authKey, "[REDACTED]")
-          : "unknown error"
-      throw new Error(message)
-    }
+        if (!(await this.#waitForTailscaleStackConnection(config.id, 90_000))) {
+          throw new Error("Tailscale did not connect in time")
+        }
+        // Remove the one-time key from Docker metadata after the persisted
+        // machine identity has authenticated.
+        await this.#replaceContainer(
+          name,
+          await this.#tailscaleStackContainerArguments(config, false)
+        )
+        if (!(await this.#waitForTailscaleStackConnection(config.id, 45_000))) {
+          throw new Error(
+            "Tailscale did not reconnect with its persisted identity"
+          )
+        }
+      }).pipe(
+        Effect.mapError((cause) => {
+          const message =
+            cause instanceof Error
+              ? cause.message.replaceAll(authKey, "[REDACTED]")
+              : "unknown error"
+          return new Error(message)
+        })
+      )
+    )
   }
 
   async #tailscaleStackContainerArguments(
@@ -3490,22 +3653,27 @@ export class LifecycleDriver {
   }
 
   async #tailscaleStackIdentityExists(id: string): Promise<boolean> {
-    try {
-      await access(
-        join(
-          this.#config.dataDirectory,
-          "infrastructure",
-          "tailscale-stacks",
-          id,
-          "state",
-          "tailscaled.state"
+    return runLifecycle(
+      lifecycleOperation(() =>
+        access(
+          join(
+            this.#config.dataDirectory,
+            "infrastructure",
+            "tailscale-stacks",
+            id,
+            "state",
+            "tailscaled.state"
+          )
+        )
+      ).pipe(
+        Effect.as(true),
+        Effect.catch((cause) =>
+          hasErrorCode(cause, "ENOENT")
+            ? Effect.succeed(false)
+            : Effect.fail(cause)
         )
       )
-      return true
-    } catch (cause) {
-      if (hasErrorCode(cause, "ENOENT")) return false
-      throw cause
-    }
+    )
   }
 
   async #tailscaleStackContainerGeneration(id: string): Promise<string | null> {
@@ -3524,32 +3692,43 @@ export class LifecycleDriver {
   async #readTailscaleStackDnsRecords(
     config: RelayTailscaleStackConfig
   ): Promise<Array<{ address: string; hostname: string }>> {
-    try {
-      return relayTailscaleStackDnsSchema.parse(
-        JSON.parse(
-          await readFile(this.#tailscaleStackDnsRecordsPath(config.id), "utf8")
-        )
-      ).records
-    } catch (cause) {
-      if (!hasErrorCode(cause, "ENOENT")) throw cause
-    }
-    try {
-      return tailscaleStackCoreDnsRecords(
-        config.domain,
-        await readFile(
-          join(this.#config.rootDirectory, config.id, "Corefile"),
-          "utf8"
-        )
+    return runLifecycle(
+      lifecycleOperation(
+        async () =>
+          relayTailscaleStackDnsSchema.parse(
+            JSON.parse(
+              await readFile(
+                this.#tailscaleStackDnsRecordsPath(config.id),
+                "utf8"
+              )
+            )
+          ).records
+      ).pipe(
+        Effect.catch((cause) => {
+          if (!hasErrorCode(cause, "ENOENT")) return Effect.fail(cause)
+          return lifecycleOperation(async () =>
+            tailscaleStackCoreDnsRecords(
+              config.domain,
+              await readFile(
+                join(this.#config.rootDirectory, config.id, "Corefile"),
+                "utf8"
+              )
+            )
+          ).pipe(
+            Effect.catch((fallbackCause) =>
+              hasErrorCode(fallbackCause, "ENOENT")
+                ? Effect.succeed(
+                    config.bindings.map(({ address, hostname }) => ({
+                      address,
+                      hostname,
+                    }))
+                  )
+                : Effect.fail(fallbackCause)
+            )
+          )
+        })
       )
-    } catch (cause) {
-      if (hasErrorCode(cause, "ENOENT")) {
-        return config.bindings.map(({ address, hostname }) => ({
-          address,
-          hostname,
-        }))
-      }
-      throw cause
-    }
+    )
   }
 
   async #detachInstanceFromTailscaleStacks(
@@ -3569,45 +3748,51 @@ export class LifecycleDriver {
       previous: RelayTailscaleStackConfig
       records: Array<{ address: string; hostname: string }>
     }> = []
-    try {
-      for (const previous of configs) {
-        if (await this.#tailscaleStackRemovalPending(previous.id)) {
-          throw new Error(
-            `Finish removing ${previous.name} from Tailscale before deleting this server`
+    return runLifecycle(
+      lifecycleOperation(async () => {
+        for (const previous of configs) {
+          if (await this.#tailscaleStackRemovalPending(previous.id)) {
+            throw new Error(
+              `Finish removing ${previous.name} from Tailscale before deleting this server`
+            )
+          }
+          const records = await this.#readTailscaleStackDnsRecords(previous)
+          const detached = tailscaleStackWithoutInstance(
+            previous,
+            records,
+            instance.id
           )
+          const next = detached.config
+          completed.push({ next, previous, records })
+          await this.#reconcileTailscaleStackBindings(
+            previous.id,
+            previous.bindings,
+            next.bindings
+          )
+          await this.#writeTailscaleStackConfig(next)
+          await this.#configureTailscaleStackRouting(next)
+          await this.#ensureTailscaleStackDns(next, detached.records)
         }
-        const records = await this.#readTailscaleStackDnsRecords(previous)
-        const detached = tailscaleStackWithoutInstance(
-          previous,
-          records,
-          instance.id
+        return completed
+      }).pipe(
+        Effect.catch((cause) =>
+          lifecycleOperation(async () => {
+            const rollbackFailures =
+              await this.#restoreInstanceTailscaleStacks(completed)
+            throw new Error(
+              `Could not remove the server from its Tailscale networks: ${
+                cause instanceof Error ? cause.message : "unknown error"
+              }${
+                rollbackFailures.length > 0
+                  ? `. Rollback also failed: ${rollbackFailures.join("; ")}`
+                  : ""
+              }`,
+              { cause }
+            )
+          })
         )
-        const next = detached.config
-        completed.push({ next, previous, records })
-        await this.#reconcileTailscaleStackBindings(
-          previous.id,
-          previous.bindings,
-          next.bindings
-        )
-        await this.#writeTailscaleStackConfig(next)
-        await this.#configureTailscaleStackRouting(next)
-        await this.#ensureTailscaleStackDns(next, detached.records)
-      }
-      return completed
-    } catch (cause) {
-      const rollbackFailures =
-        await this.#restoreInstanceTailscaleStacks(completed)
-      throw new Error(
-        `Could not remove the server from its Tailscale networks: ${
-          cause instanceof Error ? cause.message : "unknown error"
-        }${
-          rollbackFailures.length > 0
-            ? `. Rollback also failed: ${rollbackFailures.join("; ")}`
-            : ""
-        }`,
-        { cause }
       )
-    }
+    )
   }
 
   async #restoreInstanceTailscaleStacks(
@@ -3619,20 +3804,28 @@ export class LifecycleDriver {
   ): Promise<Array<string>> {
     const failures: Array<string> = []
     for (const change of [...changes].reverse()) {
-      try {
-        await this.#writeTailscaleStackConfig(change.previous)
-        await this.#reconcileTailscaleStackBindings(
-          change.previous.id,
-          change.next.bindings,
-          change.previous.bindings
+      await runLifecycle(
+        lifecycleOperation(async () => {
+          await this.#writeTailscaleStackConfig(change.previous)
+          await this.#reconcileTailscaleStackBindings(
+            change.previous.id,
+            change.next.bindings,
+            change.previous.bindings
+          )
+          await this.#configureTailscaleStackRouting(change.previous)
+          await this.#ensureTailscaleStackDns(change.previous, change.records)
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.sync(() => {
+              failures.push(
+                cause instanceof Error
+                  ? cause.message
+                  : "unknown rollback error"
+              )
+            })
+          )
         )
-        await this.#configureTailscaleStackRouting(change.previous)
-        await this.#ensureTailscaleStackDns(change.previous, change.records)
-      } catch (cause) {
-        failures.push(
-          cause instanceof Error ? cause.message : "unknown rollback error"
-        )
-      }
+      )
     }
     return failures
   }
@@ -3867,18 +4060,21 @@ export class LifecycleDriver {
   async #resolveHostDataDirectory(): Promise<string> {
     const containerId = process.env.HOSTNAME?.trim()
     if (containerId) {
-      try {
-        const inspected = await command("docker", ["inspect", containerId])
-        const containers = JSON.parse(inspected.stdout) as Array<{
-          Mounts?: Array<{ Destination: string; Source: string }>
-        }>
-        const dataMount = containers[0]?.Mounts?.find(
-          (mount) => mount.Destination === this.#config.dataDirectory
+      const source = await runLifecycle(
+        lifecycleOperation(async () => {
+          const inspected = await command("docker", ["inspect", containerId])
+          const containers = JSON.parse(inspected.stdout) as Array<{
+            Mounts?: Array<{ Destination: string; Source: string }>
+          }>
+          return containers[0]?.Mounts?.find(
+            (mount) => mount.Destination === this.#config.dataDirectory
+          )?.Source
+        }).pipe(
+          // A host-run Relay can use its local data path directly.
+          Effect.catch(() => Effect.succeed(undefined))
         )
-        if (dataMount?.Source) return dataMount.Source
-      } catch {
-        // A host-run Relay can use its local data path directly.
-      }
+      )
+      if (source) return source
     }
     return this.#config.dataDirectory
   }
@@ -3969,11 +4165,15 @@ function escapeRegex(value: string): string {
 }
 
 async function ensureProtectedFile(path: string): Promise<void> {
-  try {
-    await writeFile(path, "{}\n", { flag: "wx", mode: 0o600 })
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause
-  }
+  await runLifecycle(
+    lifecycleOperation(() =>
+      writeFile(path, "{}\n", { flag: "wx", mode: 0o600 })
+    ).pipe(
+      Effect.catch((cause) =>
+        hasErrorCode(cause, "EEXIST") ? Effect.void : Effect.fail(cause)
+      )
+    )
+  )
   await chmod(path, 0o600)
 }
 
