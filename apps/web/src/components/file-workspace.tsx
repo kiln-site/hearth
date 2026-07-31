@@ -1991,21 +1991,22 @@ function FileTreePanel({
         Effect.forEach(
           files,
           (file) =>
-            Effect.tryPromise({
-              try: () =>
-                uploadRelayFile({
-                  file,
-                  instanceId: instance.id,
-                  path: file.name,
-                  relayId: instance.relayId,
-                }),
-              catch: (cause) => cause,
-            }).pipe(
-              Effect.uninterruptible,
-              Effect.tap(() =>
-                Effect.sync(() => {
-                  uploaded += 1
-                })
+            Effect.uninterruptible(
+              Effect.tryPromise({
+                try: () =>
+                  uploadRelayFile({
+                    file,
+                    instanceId: instance.id,
+                    path: file.name,
+                    relayId: instance.relayId,
+                  }),
+                catch: (cause) => cause,
+              }).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    uploaded += 1
+                  })
+                )
               )
             ),
           { concurrency: 3, discard: true }
