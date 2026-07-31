@@ -1,4 +1,5 @@
 import * as React from "react"
+import { Effect } from "effect"
 import {
   Check,
   Fingerprint,
@@ -82,76 +83,88 @@ export function AuthPage({
       .toLowerCase()
     const password = String(form.get("password") ?? "")
 
-    try {
-      if (mode === "forgot-password") {
-        const result = await authClient.emailOtp.requestPasswordReset({ email })
-        if (result.error) throw new Error(readAuthError(result.error))
-        setRecoveryEmail(email)
-        return
-      }
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => {
+          if (mode === "forgot-password") {
+            const result = await authClient.emailOtp.requestPasswordReset({
+              email,
+            })
+            if (result.error) throw new Error(readAuthError(result.error))
+            setRecoveryEmail(email)
+            return
+          }
 
-      if (mode === "setup" || mode === "sign-up") {
-        const confirmPassword = String(form.get("confirmPassword") ?? "")
-        validateNewPassword(password, confirmPassword)
+          if (mode === "setup" || mode === "sign-up") {
+            const confirmPassword = String(form.get("confirmPassword") ?? "")
+            validateNewPassword(password, confirmPassword)
 
-        if (mode === "setup") {
-          const result = await createInitialAdministrator({
-            data: { email, password },
-          })
-          if (result.verificationRequired) {
-            setVerification({
-              email: result.email,
+            if (mode === "setup") {
+              const result = await createInitialAdministrator({
+                data: { email, password },
+              })
+              if (result.verificationRequired) {
+                setVerification({
+                  email: result.email,
+                  password,
+                  registeredEmail: result.email,
+                  source: "setup",
+                })
+                return
+              }
+              await signIn(email, password, redirectPath)
+              return
+            }
+
+            const result = await authClient.signUp.email({
+              name: displayNameFromEmail(email),
+              email,
               password,
-              registeredEmail: result.email,
-              source: "setup",
+              callbackURL: destination(redirectPath),
+            })
+            if (result.error) throw new Error(readAuthError(result.error))
+            setVerification({
+              email,
+              password,
+              registeredEmail: email,
+              source: "sign-up",
             })
             return
           }
-          await signIn(email, password, redirectPath)
-          return
-        }
 
-        const result = await authClient.signUp.email({
-          name: displayNameFromEmail(email),
-          email,
-          password,
-          callbackURL: destination(redirectPath),
-        })
-        if (result.error) throw new Error(readAuthError(result.error))
-        setVerification({
-          email,
-          password,
-          registeredEmail: email,
-          source: "sign-up",
-        })
-        return
-      }
-
-      const result = await authClient.signIn.email({
-        email,
-        password,
-        callbackURL: destination(redirectPath),
-      })
-      if (result.error) {
-        if (isUnverifiedError(result.error)) {
-          setVerification({
+          const result = await authClient.signIn.email({
             email,
             password,
-            registeredEmail: email,
-            source: "sign-up",
+            callbackURL: destination(redirectPath),
           })
-          return
-        }
-        throw new Error(readAuthError(result.error))
-      }
-      if (!("twoFactorRedirect" in result.data)) {
-        window.location.assign(destination(redirectPath))
-      }
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Authentication failed")
-    } finally {
-      setPending(null)
-    }
+          if (result.error) {
+            if (isUnverifiedError(result.error)) {
+              setVerification({
+                email,
+                password,
+                registeredEmail: email,
+                source: "sign-up",
+              })
+              return
+            }
+            throw new Error(readAuthError(result.error))
+          }
+          if (!("twoFactorRedirect" in result.data)) {
+            window.location.assign(destination(redirectPath))
+          }
+        },
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() =>
+            setError(
+              cause instanceof Error ? cause.message : "Authentication failed"
+            )
+          )
+        ),
+        Effect.ensuring(Effect.sync(() => setPending(null)))
+      )
+    )
   }
 
   async function verifyEmail(event: React.FormEvent<HTMLFormElement>) {
@@ -162,87 +175,106 @@ export function AuthPage({
     const form = new FormData(event.currentTarget)
     const code = String(form.get("code") ?? "").replace(/\s/gu, "")
     const nextEmail = verification.email.trim().toLowerCase()
-    try {
-      if (nextEmail !== verification.registeredEmail) {
-        const result = await replacePendingAccountEmail({
-          data: {
-            currentEmail: verification.registeredEmail,
-            nextEmail,
-            password: verification.password,
-          },
-        })
-        setVerification({
-          ...verification,
-          email: result.email,
-          registeredEmail: result.email,
-        })
-        setVerificationFeedback({
-          message: "Email updated. A new verification code is ready.",
-          tone: "success",
-        })
-        return
-      }
-      if (!/^\d{6}$/u.test(code)) throw new Error("Enter the six-digit code")
-      const result = await authClient.emailOtp.verifyEmail({
-        email: verification.registeredEmail,
-        otp: code,
-      })
-      if (result.error) throw new Error(readAuthError(result.error))
-      await signIn(
-        verification.registeredEmail,
-        verification.password,
-        redirectPath
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => {
+          if (nextEmail !== verification.registeredEmail) {
+            const result = await replacePendingAccountEmail({
+              data: {
+                currentEmail: verification.registeredEmail,
+                nextEmail,
+                password: verification.password,
+              },
+            })
+            setVerification({
+              ...verification,
+              email: result.email,
+              registeredEmail: result.email,
+            })
+            setVerificationFeedback({
+              message: "Email updated. A new verification code is ready.",
+              tone: "success",
+            })
+            return
+          }
+          if (!/^\d{6}$/u.test(code))
+            throw new Error("Enter the six-digit code")
+          const result = await authClient.emailOtp.verifyEmail({
+            email: verification.registeredEmail,
+            otp: code,
+          })
+          if (result.error) throw new Error(readAuthError(result.error))
+          await signIn(
+            verification.registeredEmail,
+            verification.password,
+            redirectPath
+          )
+        },
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() =>
+            setVerificationFeedback({
+              message:
+                cause instanceof Error ? cause.message : "Could not verify",
+              tone: "error",
+            })
+          )
+        ),
+        Effect.ensuring(Effect.sync(() => setPending(null)))
       )
-    } catch (cause) {
-      setVerificationFeedback({
-        message: cause instanceof Error ? cause.message : "Could not verify",
-        tone: "error",
-      })
-    } finally {
-      setPending(null)
-    }
+    )
   }
 
   async function resendVerificationCode() {
     if (!verification) return
     setPending("resend")
     setVerificationFeedback(null)
-    try {
-      const nextEmail = verification.email.trim().toLowerCase()
-      if (nextEmail !== verification.registeredEmail) {
-        const result = await replacePendingAccountEmail({
-          data: {
-            currentEmail: verification.registeredEmail,
-            nextEmail,
-            password: verification.password,
-          },
-        })
-        setVerification({
-          ...verification,
-          email: result.email,
-          registeredEmail: result.email,
-        })
-      } else {
-        const result = await authClient.emailOtp.sendVerificationOtp({
-          email: verification.registeredEmail,
-          type: "email-verification",
-        })
-        if (result.error) throw new Error(readAuthError(result.error))
-      }
-      setVerificationFeedback({
-        message: emailDeliveryEnabled
-          ? "A fresh code is on its way."
-          : "A fresh code was written to the Hearth container logs.",
-        tone: "success",
-      })
-    } catch (cause) {
-      setVerificationFeedback({
-        message: cause instanceof Error ? cause.message : "Could not resend",
-        tone: "error",
-      })
-    } finally {
-      setPending(null)
-    }
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => {
+          const nextEmail = verification.email.trim().toLowerCase()
+          if (nextEmail !== verification.registeredEmail) {
+            const result = await replacePendingAccountEmail({
+              data: {
+                currentEmail: verification.registeredEmail,
+                nextEmail,
+                password: verification.password,
+              },
+            })
+            setVerification({
+              ...verification,
+              email: result.email,
+              registeredEmail: result.email,
+            })
+          } else {
+            const result = await authClient.emailOtp.sendVerificationOtp({
+              email: verification.registeredEmail,
+              type: "email-verification",
+            })
+            if (result.error) throw new Error(readAuthError(result.error))
+          }
+          setVerificationFeedback({
+            message: emailDeliveryEnabled
+              ? "A fresh code is on its way."
+              : "A fresh code was written to the Hearth container logs.",
+            tone: "success",
+          })
+        },
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() =>
+            setVerificationFeedback({
+              message:
+                cause instanceof Error ? cause.message : "Could not resend",
+              tone: "error",
+            })
+          )
+        ),
+        Effect.ensuring(Effect.sync(() => setPending(null)))
+      )
+    )
   }
 
   async function resetPassword(event: React.FormEvent<HTMLFormElement>) {
@@ -254,23 +286,34 @@ export function AuthPage({
     const confirmation = String(form.get("confirmPassword") ?? "")
     setPending("reset")
     setError(null)
-    try {
-      validateNewPassword(password, confirmation)
-      if (!/^\d{6}$/u.test(code)) throw new Error("Enter the six-digit code")
-      const result = await authClient.emailOtp.resetPassword({
-        email: recoveryEmail,
-        otp: code,
-        password,
-      })
-      if (result.error) throw new Error(readAuthError(result.error))
-      setRecoveryComplete(true)
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Could not reset password"
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => {
+          validateNewPassword(password, confirmation)
+          if (!/^\d{6}$/u.test(code))
+            throw new Error("Enter the six-digit code")
+          const result = await authClient.emailOtp.resetPassword({
+            email: recoveryEmail,
+            otp: code,
+            password,
+          })
+          if (result.error) throw new Error(readAuthError(result.error))
+          setRecoveryComplete(true)
+        },
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() =>
+            setError(
+              cause instanceof Error
+                ? cause.message
+                : "Could not reset password"
+            )
+          )
+        ),
+        Effect.ensuring(Effect.sync(() => setPending(null)))
       )
-    } finally {
-      setPending(null)
-    }
+    )
   }
 
   async function signInWithPasskey() {
@@ -288,17 +331,28 @@ export function AuthPage({
   async function skipForDevelopment() {
     setPending("development")
     setError(null)
-    try {
-      await enableDevelopmentBypass()
-      const state = await getAuthState()
-      if (!state.user?.isDevelopmentBypass) {
-        throw new Error("Development access could not be verified")
-      }
-      window.location.replace(destination(redirectPath))
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not continue")
-      setPending(null)
-    }
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => {
+          await enableDevelopmentBypass()
+          const state = await getAuthState()
+          if (!state.user?.isDevelopmentBypass) {
+            throw new Error("Development access could not be verified")
+          }
+          window.location.replace(destination(redirectPath))
+        },
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() => {
+            setError(
+              cause instanceof Error ? cause.message : "Could not continue"
+            )
+            setPending(null)
+          })
+        )
+      )
+    )
   }
 
   return (

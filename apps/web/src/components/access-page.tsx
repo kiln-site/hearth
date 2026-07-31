@@ -4,6 +4,7 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query"
+import { Effect } from "effect"
 import {
   Check,
   CircleAlert,
@@ -137,71 +138,75 @@ export function AccessPage({
       setPending(null)
       return false
     }
-    try {
-      const result = await inviteMutation.mutateAsync({
-        data: {
-          email: form.email,
-          instanceId: target.instanceId,
-          relayId: target.relayId,
-          resourceName: target.resourceName,
-          role: form.role,
-        },
-      })
-      setMessage(
-        result.inviteUrl
-          ? `Invitation created for ${form.email}. Copy the link below.`
-          : `Invitation sent to ${form.email}`
+    return Effect.runPromise(
+      Effect.tryPromise({
+        try: () =>
+          inviteMutation.mutateAsync({
+            data: {
+              email: form.email,
+              instanceId: target.instanceId,
+              relayId: target.relayId,
+              resourceName: target.resourceName,
+              role: form.role,
+            },
+          }),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.match({
+          onFailure: (cause) => {
+            setError(
+              cause instanceof Error
+                ? cause.message
+                : "Could not send invitation"
+            )
+            return false
+          },
+          onSuccess: (result) => {
+            setMessage(
+              result.inviteUrl
+                ? `Invitation created for ${form.email}. Copy the link below.`
+                : `Invitation sent to ${form.email}`
+            )
+            setInviteLink(result.inviteUrl)
+            return true
+          },
+        }),
+        Effect.ensuring(Effect.sync(() => setPending(null)))
       )
-      setInviteLink(result.inviteUrl)
-      return true
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Could not send invitation"
-      )
-      return false
-    } finally {
-      setPending(null)
-    }
+    )
   }
 
   async function changeRole(id: string, relayId: string, role: AccessRole) {
     setPending(`grant:${id}`)
     setError(null)
-    try {
-      await updateGrantMutation.mutateAsync({ data: { id, relayId, role } })
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not update role")
-    } finally {
-      setPending(null)
-    }
+    await runAccessAction(
+      () => updateGrantMutation.mutateAsync({ data: { id, relayId, role } }),
+      "Could not update role",
+      setError,
+      setPending
+    )
   }
 
   async function removeGrant(id: string, relayId: string) {
     setPending(`grant:${id}`)
     setError(null)
-    try {
-      await removeGrantMutation.mutateAsync({ data: { id, relayId } })
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Could not remove access"
-      )
-    } finally {
-      setPending(null)
-    }
+    await runAccessAction(
+      () => removeGrantMutation.mutateAsync({ data: { id, relayId } }),
+      "Could not remove access",
+      setError,
+      setPending
+    )
   }
 
   async function revokeInvitation(id: string, relayId: string) {
     setPending(`invite:${id}`)
     setError(null)
-    try {
-      await revokeInvitationMutation.mutateAsync({ data: { id, relayId } })
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Could not revoke invitation"
-      )
-    } finally {
-      setPending(null)
-    }
+    await runAccessAction(
+      () => revokeInvitationMutation.mutateAsync({ data: { id, relayId } }),
+      "Could not revoke invitation",
+      setError,
+      setPending
+    )
   }
 
   return (
@@ -577,6 +582,24 @@ function PendingInvitationList({
         })}
       </div>
     </section>
+  )
+}
+
+async function runAccessAction<TResult>(
+  run: () => Promise<TResult>,
+  fallbackMessage: string,
+  setError: (message: string) => void,
+  setPending: (value: null) => void
+): Promise<void> {
+  await Effect.runPromise(
+    Effect.tryPromise({ try: run, catch: (cause) => cause }).pipe(
+      Effect.catch((cause) =>
+        Effect.sync(() =>
+          setError(cause instanceof Error ? cause.message : fallbackMessage)
+        )
+      ),
+      Effect.ensuring(Effect.sync(() => setPending(null)))
+    )
   )
 }
 
