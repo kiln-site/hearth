@@ -1,6 +1,6 @@
 import { randomUUID, sign, verify } from "node:crypto"
 import * as Sentry from "@sentry/tanstackstart-react"
-import { Schema } from "effect"
+import { Effect, Fiber, Option, Schema } from "effect"
 import { WebSocket } from "ws"
 
 import {
@@ -24,6 +24,8 @@ import {
   relayControlEndpoint,
   type RelayEndpoint,
 } from "@/lib/relay-control-endpoint"
+import { RelayUnavailableError } from "@/effect/errors"
+import { forkAppEffect, runAppEffect } from "@/effect/runtime"
 import type { RelayCredentials } from "@/lib/relay-registry"
 import { resolveSftpAuthorization } from "@/lib/sftp-authorization"
 
@@ -85,7 +87,10 @@ export async function relayRpc(
     connection = new RelayConnection(effectiveRelay)
     connections.set(relay.id, connection)
   }
-  return connection.request(operation, payload, timeoutMs, subject)
+  return runAppEffect(
+    `relay.rpc.${operation}`,
+    connection.request(operation, payload, timeoutMs, subject)
+  )
 }
 
 export function relayConnectionState(relayId: string): RelayConnectionState {
@@ -106,22 +111,26 @@ export function closeRelayConnection(relayId: string): void {
 class RelayConnection {
   #attempt = 0
   #closed = false
-  #connecting: Promise<void> | null = null
+  #connecting: Fiber.Fiber<void, unknown> | null = null
   #credentials: RelayCredentials | null = null
   #pending = new Map<
     string,
     {
-      reject: (cause: Error) => void
-      resolve: (value: unknown) => void
-      timer: ReturnType<typeof setTimeout>
+      resume: (effect: Effect.Effect<unknown, RelayUnavailableError>) => void
     }
   >()
-  #reverseInFlight = new Map<string, AbortController>()
+  #reverseInFlight = new Map<
+    string,
+    {
+      controller: AbortController
+      fiber: Fiber.Fiber<void, unknown> | null
+    }
+  >()
   #hasPushedSnapshot = false
   #pushedSnapshot: unknown = null
   #eventSequence = 0
   #relay: RelayEndpoint
-  #reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  #reconnectFiber: Fiber.Fiber<void, unknown> | null = null
   #socket: WebSocket | null = null
   #state: RelayConnectionState = {
     lastError: null,
@@ -145,64 +154,87 @@ class RelayConnection {
     )
   }
 
-  async request(
+  request(
     operation: RelayControlOperation,
     payload: unknown,
     timeoutMs: number,
     subject?: string
-  ): Promise<unknown> {
-    await this.#connect()
-    if (operation === "relay.snapshot" && this.#hasPushedSnapshot) {
-      const snapshot = this.#pushedSnapshot
-      this.#hasPushedSnapshot = false
-      return snapshot
-    }
-    const socket = this.#socket
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      throw new Error("Relay control socket is not connected")
-    }
-    const id = randomUUID()
-    const duration = Math.min(
-      Math.max(timeoutMs, 1),
-      relayControlDeadlineMs(operation)
-    )
-    const request: RelayControlRequest = {
-      deadline: Date.now() + duration,
-      id,
-      operation,
-      payload,
-      ...(subject ? { subject } : {}),
-      timeoutMs: duration,
-      type: "request",
-      v: 1,
-    }
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.#pending.delete(id)
-        socket.send(
-          JSON.stringify({
-            id: randomUUID(),
-            replyTo: id,
-            type: "cancel",
-            v: 1,
-          })
+  ) {
+    return this.#connectEffect().pipe(
+      Effect.flatMap(() => {
+        if (operation === "relay.snapshot" && this.#hasPushedSnapshot) {
+          const snapshot = this.#pushedSnapshot
+          this.#hasPushedSnapshot = false
+          return Effect.succeed(snapshot)
+        }
+        const socket = this.#socket
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          return relayConnectionFailure("Relay control socket is not connected")
+        }
+        const id = randomUUID()
+        const duration = Math.min(
+          Math.max(timeoutMs, 1),
+          relayControlDeadlineMs(operation)
         )
-        reject(new Error(`Relay request timed out after ${duration}ms`))
-      }, duration)
-      this.#pending.set(id, { reject, resolve, timer })
-      socket.send(JSON.stringify(request), (cause) => {
-        if (!cause) return
-        clearTimeout(timer)
-        this.#pending.delete(id)
-        reject(cause)
+        const request: RelayControlRequest = {
+          deadline: Date.now() + duration,
+          id,
+          operation,
+          payload,
+          ...(subject ? { subject } : {}),
+          timeoutMs: duration,
+          type: "request",
+          v: 1,
+        }
+        return Effect.callback<unknown, RelayUnavailableError>((resume) => {
+          this.#pending.set(id, { resume })
+          socket.send(JSON.stringify(request), (cause) => {
+            if (!cause) return
+            this.#pending.delete(id)
+            resume(
+              relayConnectionFailure(
+                cause.message || "Relay request could not be sent",
+                cause
+              )
+            )
+          })
+          return Effect.sync(() => {
+            if (!this.#pending.delete(id)) return
+            if (socket.readyState === WebSocket.OPEN) {
+              socket.send(
+                JSON.stringify({
+                  id: randomUUID(),
+                  replyTo: id,
+                  type: "cancel",
+                  v: 1,
+                })
+              )
+            }
+          })
+        }).pipe(
+          Effect.timeout(duration),
+          Effect.catchTag("TimeoutError", () =>
+            relayConnectionFailure(
+              `Relay request timed out after ${duration}ms`
+            )
+          )
+        )
+      }),
+      Effect.withSpan("hearth.relay.request", {
+        attributes: {
+          "relay.id": this.#relay.id,
+          "relay.operation": operation,
+        },
       })
-    })
+    )
   }
 
   close(): void {
     this.#closed = true
-    if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer)
-    this.#reconnectTimer = null
+    this.#connecting?.interruptUnsafe()
+    this.#connecting = null
+    this.#reconnectFiber?.interruptUnsafe()
+    this.#reconnectFiber = null
     this.#socket?.close(1000, "Hearth connection closed")
     this.#socket = null
     this.#abortReverseRequests()
@@ -210,143 +242,231 @@ class RelayConnection {
     this.#setState("disconnected", null)
   }
 
-  #connect(): Promise<void> {
+  #connectEffect(): Effect.Effect<void, RelayUnavailableError> {
     if (
       this.#socket?.readyState === WebSocket.OPEN &&
       this.#state.status === "authenticated"
     ) {
-      return Promise.resolve()
+      return Effect.void
     }
-    this.#connecting ??= this.#open().finally(() => {
-      this.#connecting = null
-    })
-    return this.#connecting
+    if (!this.#connecting) {
+      let connecting: Fiber.Fiber<void, unknown>
+      connecting = forkAppEffect(
+        "relay.connection.open",
+        this.#openEffect().pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (this.#connecting === connecting) {
+                this.#connecting = null
+              }
+            })
+          )
+        )
+      )
+      this.#connecting = connecting
+    }
+    return Fiber.join(this.#connecting).pipe(
+      Effect.mapError((cause) =>
+        cause instanceof RelayUnavailableError
+          ? cause
+          : RelayUnavailableError.make({
+              message: asError(cause).message,
+              cause,
+            })
+      )
+    )
   }
 
-  async #open(): Promise<void> {
-    this.#setState("connecting", null)
-    this.#eventSequence = 0
-    this.#hasPushedSnapshot = false
-    this.#socket = null
+  #openEffect(): Effect.Effect<void, RelayUnavailableError> {
     let socket: WebSocket | null = null
-    try {
-      const { loadRelayCredentials } = await import("@/lib/relay-registry")
-      const credentials = await loadRelayCredentials(this.#relay.id)
+    return Effect.gen({ self: this }, function* () {
+      this.#setState("connecting", null)
+      this.#eventSequence = 0
+      this.#hasPushedSnapshot = false
+      this.#socket = null
+      const { loadRelayCredentials } = yield* Effect.tryPromise({
+        try: () => import("@/lib/relay-registry"),
+        catch: (cause) =>
+          RelayUnavailableError.make({
+            message: "Relay credentials could not be loaded",
+            cause,
+          }),
+      })
+      const credentials = yield* Effect.tryPromise({
+        try: () => loadRelayCredentials(this.#relay.id),
+        catch: (cause) =>
+          RelayUnavailableError.make({
+            message: asError(cause).message,
+            cause,
+          }),
+      })
       if (this.#closed) return
       this.#credentials = credentials
       const protocol = this.#relay.useTls ? "wss" : "ws"
-      const activeSocket = new WebSocket(
-        `${protocol}://${formatHost(this.#relay.hostname)}:${this.#relay.port}/v1/socket`,
-        relayControlProtocol,
-        {
-          ca: this.#credentials.caCertificatePem ?? undefined,
-          handshakeTimeout: 5_000,
-          maxPayload: 1024 * 1024,
-          perMessageDeflate: false,
-          rejectUnauthorized: this.#relay.useTls,
-        }
-      )
+      const activeSocket = yield* Effect.try({
+        try: () =>
+          new WebSocket(
+            `${protocol}://${formatHost(this.#relay.hostname)}:${this.#relay.port}/v1/socket`,
+            relayControlProtocol,
+            {
+              ca: credentials.caCertificatePem ?? undefined,
+              handshakeTimeout: 5_000,
+              maxPayload: 1024 * 1024,
+              perMessageDeflate: false,
+              rejectUnauthorized: this.#relay.useTls,
+            }
+          ),
+        catch: (cause) =>
+          RelayUnavailableError.make({
+            message: asError(cause).message,
+            cause,
+          }),
+      })
       socket = activeSocket
       this.#socket = activeSocket
-      await new Promise<void>((resolve, reject) => {
-        let authenticated = false
-        let challengeAnswered = false
-        const authenticationTimer = setTimeout(
-          () => reject(new Error("Relay authentication timed out")),
-          relayAuthenticationWindowMs
+      yield* this.#authenticateEffect(activeSocket).pipe(
+        Effect.timeout(relayAuthenticationWindowMs),
+        Effect.catchTag("TimeoutError", () =>
+          relayConnectionFailure("Relay authentication timed out")
         )
-        activeSocket.on("message", (data, binary) => {
-          if (binary) {
-            reject(new Error("Relay sent an unsupported binary control frame"))
-            return
-          }
-          let message: typeof RelayControlServerMessageSchema.Type
-          try {
-            message = Schema.decodeUnknownSync(RelayControlServerMessageSchema)(
-              JSON.parse(data.toString()) as unknown
-            )
-          } catch {
-            reject(new Error("Relay sent an invalid control message"))
-            return
-          }
-          if (message.type === "auth.challenge") {
-            if (challengeAnswered) {
-              reject(new Error("Relay repeated its authentication challenge"))
-              return
-            }
-            try {
-              this.#answerChallenge(activeSocket, message)
-              challengeAnswered = true
-            } catch (cause) {
-              reject(asError(cause))
-            }
-            return
-          }
-          if (message.type === "auth.ready") {
-            if (
-              !challengeAnswered ||
-              message.clientId !== this.#credentials?.clientId
-            ) {
-              reject(new Error("Relay authenticated the wrong Hearth identity"))
-              return
-            }
-            this.#attempt = 0
-            this.#setState("authenticated", null)
-            authenticated = true
-            if (this.#hasPushedSnapshot) {
-              clearTimeout(authenticationTimer)
-              resolve()
-            }
-            return
-          }
-          if (!authenticated) {
-            reject(
-              new Error("Relay sent a control message before authentication")
-            )
-            activeSocket.close(4401, "Relay authentication is incomplete")
-            return
-          }
-          if (message.type === "event") {
-            if (message.seq <= this.#eventSequence) {
-              reject(new Error("Relay event sequence moved backwards"))
-              return
-            }
-            this.#eventSequence = message.seq
-            if (message.event === "relay.snapshot") {
-              this.#pushedSnapshot = message.payload
-              this.#hasPushedSnapshot = true
-              if (authenticated) {
-                clearTimeout(authenticationTimer)
-                resolve()
-              }
-            }
-            return
-          }
-          void this.#handleMessage(message)
-        })
-        activeSocket.once("error", reject)
-        activeSocket.once("close", (code, reason) => {
-          clearTimeout(authenticationTimer)
-          const error = new Error(
-            `Relay connection closed (${code}${reason.length ? `: ${reason.toString()}` : ""})`
-          )
-          this.#socket = null
-          this.#abortReverseRequests()
-          this.#rejectPending(error)
-          this.#setState("unreachable", error.message)
-          this.#attempt += 1
+      )
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.sync(() => {
+          socket?.terminate()
+          if (!socket) this.#attempt += 1
+          this.#setState("unreachable", cause.message)
           this.#scheduleReconnect()
-          reject(error)
-        })
+        }).pipe(Effect.andThen(Effect.fail(cause)))
+      )
+    )
+  }
+
+  #authenticateEffect(
+    activeSocket: WebSocket
+  ): Effect.Effect<void, RelayUnavailableError> {
+    return Effect.callback<void, RelayUnavailableError>((resume) => {
+      let authenticated = false
+      let challengeAnswered = false
+      activeSocket.on("message", (data, binary) => {
+        if (binary) {
+          resume(
+            relayConnectionFailure(
+              "Relay sent an unsupported binary control frame"
+            )
+          )
+          return
+        }
+        const decoded = decodeRelayControlMessage(data.toString())
+        if (Option.isNone(decoded)) {
+          resume(
+            relayConnectionFailure("Relay sent an invalid control message")
+          )
+          return
+        }
+        const message = decoded.value
+        if (message.type === "auth.challenge") {
+          if (challengeAnswered) {
+            resume(
+              relayConnectionFailure(
+                "Relay repeated its authentication challenge"
+              )
+            )
+            return
+          }
+          const answered = Effect.runSync(
+            Effect.try({
+              try: () => this.#answerChallenge(activeSocket, message),
+              catch: asError,
+            }).pipe(
+              Effect.match({
+                onFailure: (cause) => Option.some(cause),
+                onSuccess: () => Option.none<Error>(),
+              })
+            )
+          )
+          if (Option.isSome(answered)) {
+            resume(
+              relayConnectionFailure(answered.value.message, answered.value)
+            )
+            return
+          }
+          challengeAnswered = true
+          return
+        }
+        if (message.type === "auth.ready") {
+          if (
+            !challengeAnswered ||
+            message.clientId !== this.#credentials?.clientId
+          ) {
+            resume(
+              relayConnectionFailure(
+                "Relay authenticated the wrong Hearth identity"
+              )
+            )
+            return
+          }
+          this.#attempt = 0
+          this.#setState("authenticated", null)
+          authenticated = true
+          if (this.#hasPushedSnapshot) resume(Effect.void)
+          return
+        }
+        if (!authenticated) {
+          resume(
+            relayConnectionFailure(
+              "Relay sent a control message before authentication"
+            )
+          )
+          activeSocket.close(4401, "Relay authentication is incomplete")
+          return
+        }
+        if (message.type === "event") {
+          if (message.seq <= this.#eventSequence) {
+            resume(
+              relayConnectionFailure("Relay event sequence moved backwards")
+            )
+            return
+          }
+          this.#eventSequence = message.seq
+          if (message.event === "relay.snapshot") {
+            this.#pushedSnapshot = message.payload
+            this.#hasPushedSnapshot = true
+            if (authenticated) resume(Effect.void)
+          }
+          return
+        }
+        this.#handleMessage(message)
       })
-    } catch (cause) {
-      socket?.terminate()
-      const error = asError(cause)
-      if (!socket) this.#attempt += 1
-      this.#setState("unreachable", error.message)
-      this.#scheduleReconnect()
-      throw error
-    }
+      activeSocket.once("error", (cause) => {
+        resume(relayConnectionFailure(cause.message, cause))
+      })
+      activeSocket.once("close", (code, reason) => {
+        const error = new Error(
+          `Relay connection closed (${code}${reason.length ? `: ${reason.toString()}` : ""})`
+        )
+        this.#socket = null
+        this.#abortReverseRequests()
+        this.#rejectPending(error)
+        if (this.#closed) {
+          this.#setState("disconnected", null)
+          resume(relayConnectionFailure(error.message, error))
+          return
+        }
+        this.#setState("unreachable", error.message)
+        this.#attempt += 1
+        this.#scheduleReconnect()
+        resume(relayConnectionFailure(error.message, error))
+      })
+      return Effect.sync(() => {
+        if (
+          this.#state.status !== "authenticated" &&
+          activeSocket.readyState !== WebSocket.CLOSED
+        ) {
+          activeSocket.terminate()
+        }
+      })
+    })
   }
 
   #answerChallenge(socket: WebSocket, challenge: RelayAuthChallenge): void {
@@ -379,105 +499,176 @@ class RelayConnection {
     )
   }
 
-  async #handleMessage(
-    message: typeof RelayControlServerMessageSchema.Type
-  ): Promise<void> {
+  #handleMessage(message: typeof RelayControlServerMessageSchema.Type): void {
     if (message.type === "response") {
       const pending = this.#pending.get(message.replyTo)
       if (!pending) return
-      clearTimeout(pending.timer)
       this.#pending.delete(message.replyTo)
-      pending.resolve(message.payload)
+      pending.resume(Effect.succeed(message.payload))
       return
     }
     if (message.type === "error" && message.replyTo) {
       const pending = this.#pending.get(message.replyTo)
       if (!pending) return
-      clearTimeout(pending.timer)
       this.#pending.delete(message.replyTo)
-      pending.reject(new Error(message.message))
+      pending.resume(relayConnectionFailure(message.message))
       return
     }
     if (message.type === "cancel") {
-      this.#reverseInFlight.get(message.replyTo)?.abort()
+      const inFlight = this.#reverseInFlight.get(message.replyTo)
+      inFlight?.controller.abort()
+      inFlight?.fiber?.interruptUnsafe()
       return
     }
     if (message.type === "request") {
       const controller = new AbortController()
-      this.#reverseInFlight.set(message.id, controller)
-      try {
-        await this.#handleRelayRequest(message, controller)
-      } finally {
+      const inFlight: {
+        controller: AbortController
+        fiber: Fiber.Fiber<void, unknown> | null
+      } = { controller, fiber: null }
+      this.#reverseInFlight.set(message.id, inFlight)
+      const socket = this.#socket
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
         this.#reverseInFlight.delete(message.id)
+        return
       }
+      inFlight.fiber = forkAppEffect(
+        `relay.reverse.${message.operation}`,
+        Effect.yieldNow.pipe(
+          Effect.andThen(
+            this.#handleRelayRequestEffect(message, controller, socket)
+          ),
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (this.#reverseInFlight.get(message.id) === inFlight) {
+                this.#reverseInFlight.delete(message.id)
+              }
+            })
+          )
+        )
+      )
     }
   }
 
-  async #handleRelayRequest(
+  #handleRelayRequestEffect(
     request: RelayControlRequest,
-    controller: AbortController
-  ): Promise<void> {
-    const socket = this.#socket
-    if (!socket || socket.readyState !== WebSocket.OPEN) return
-    let timer: ReturnType<typeof setTimeout> | null = null
-    try {
-      const duration = relayControlRequestTimeoutMs(request, Date.now())
-      if (duration === null) throw new Error("Relay request timeout is invalid")
-      timer = setTimeout(() => controller.abort(), duration)
-      timer.unref()
-      if (request.operation === "hearth.tailscale.instance.detach") {
-        const input = tailscaleInstanceDetachSchema.parse(request.payload)
-        const { synchronizeTailscaleInstanceDeletion } =
-          await import("@/server/tailscale-instance-deletion")
-        await synchronizeTailscaleInstanceDeletion(
-          {
-            ...input,
-            relayId: this.#relay.id,
-          },
-          (relay, operation, payload, timeoutMs) =>
-            relayRpc(relay, operation, payload, timeoutMs, request.subject),
-          controller.signal
-        )
-        throwIfRelayRequestCancelled(controller.signal)
-        socket.send(
-          JSON.stringify({
-            id: randomUUID(),
-            payload: { synchronized: true },
-            replyTo: request.id,
-            type: "response",
-            v: 1,
-          })
-        )
-        return
-      }
-      if (request.operation !== "sftp.authorization.resolve") {
-        throw new Error("Relay operation is not available from Hearth")
-      }
-      const payload = objectRecord(request.payload)
-      const username = payload.username
-      if (typeof username !== "string") {
-        throw new Error("SFTP username is required")
-      }
-      const timeout = new Promise<never>((_, reject) => {
-        if (controller.signal.aborted) {
-          reject(new RelayRequestTimeoutError("Relay request timed out"))
-          return
-        }
-        controller.signal.addEventListener(
-          "abort",
-          () => reject(new RelayRequestTimeoutError("Relay request timed out")),
-          { once: true }
+    controller: AbortController,
+    socket: WebSocket
+  ): Effect.Effect<void> {
+    const duration = relayControlRequestTimeoutMs(request, Date.now())
+    const operation =
+      duration === null
+        ? reverseRequestFailure("Relay request timeout is invalid")
+        : this.#executeRelayRequestEffect(request, controller, socket).pipe(
+            Effect.onInterrupt(() =>
+              Effect.sync(() => {
+                controller.abort()
+              })
+            ),
+            Effect.timeout(duration),
+            Effect.catchTag("TimeoutError", () =>
+              Effect.fail(
+                new RelayRequestTimeoutError("Relay request timed out")
+              )
+            )
+          )
+    return operation.pipe(
+      Effect.catch((cause) => {
+        const error = asError(cause)
+        const cancelled =
+          controller.signal.aborted || error instanceof RelayRequestTimeoutError
+        return Effect.sync(() => {
+          if (!cancelled) {
+            Sentry.captureException(error, {
+              tags: {
+                "kiln.operation": request.operation,
+                "kiln.relay_id": this.#relay.id,
+              },
+            })
+          }
+        }).pipe(
+          Effect.andThen(
+            socket.readyState !== WebSocket.OPEN
+              ? Effect.void
+              : sendSocketEffect(socket, {
+                  code: cancelled
+                    ? "request_cancelled"
+                    : "hearth_operation_failed",
+                  id: randomUUID(),
+                  message: error.message,
+                  replyTo: request.id,
+                  retryable: false,
+                  type: "error",
+                  v: 1,
+                }).pipe(
+                  Effect.catch((sendCause) =>
+                    Effect.logWarning(
+                      "Relay reverse-request response failed",
+                      sendCause
+                    )
+                  )
+                )
+          )
         )
       })
-      const authorizationRequest = resolveSftpAuthorization(
-        this.#relay.id,
-        username
+    )
+  }
+
+  #executeRelayRequestEffect(
+    request: RelayControlRequest,
+    controller: AbortController,
+    socket: WebSocket
+  ): Effect.Effect<void, Error> {
+    if (request.operation === "hearth.tailscale.instance.detach") {
+      return Effect.gen({ self: this }, function* () {
+        const input = yield* Effect.try({
+          try: () => tailscaleInstanceDetachSchema.parse(request.payload),
+          catch: asError,
+        })
+        const { synchronizeTailscaleInstanceDeletion } =
+          yield* Effect.tryPromise({
+            try: () => import("@/server/tailscale-instance-deletion"),
+            catch: asError,
+          })
+        yield* Effect.tryPromise({
+          try: () =>
+            synchronizeTailscaleInstanceDeletion(
+              {
+                ...input,
+                relayId: this.#relay.id,
+              },
+              (relay, operation, payload, timeoutMs) =>
+                relayRpc(relay, operation, payload, timeoutMs, request.subject),
+              controller.signal
+            ),
+          catch: asError,
+        })
+        yield* ensureRelayRequestActive(controller.signal)
+        yield* sendSocketEffect(socket, {
+          id: randomUUID(),
+          payload: { synchronized: true },
+          replyTo: request.id,
+          type: "response",
+          v: 1,
+        })
+      })
+    }
+    if (request.operation !== "sftp.authorization.resolve") {
+      return reverseRequestFailure(
+        "Relay operation is not available from Hearth"
       )
-      // The database lookup cannot be cancelled, so observe failures after timeout wins.
-      void authorizationRequest.catch(() => undefined)
-      const authorization = await Promise.race([authorizationRequest, timeout])
-      socket.send(
-        JSON.stringify({
+    }
+    const payload = objectRecord(request.payload)
+    const username = payload.username
+    if (typeof username !== "string") {
+      return reverseRequestFailure("SFTP username is required")
+    }
+    return Effect.tryPromise({
+      try: () => resolveSftpAuthorization(this.#relay.id, username),
+      catch: asError,
+    }).pipe(
+      Effect.flatMap((authorization) =>
+        sendSocketEffect(socket, {
           id: randomUUID(),
           payload: authorization,
           replyTo: request.id,
@@ -485,45 +676,20 @@ class RelayConnection {
           v: 1,
         })
       )
-    } catch (cause) {
-      const error = asError(cause)
-      const cancelled =
-        controller.signal.aborted || error instanceof RelayRequestTimeoutError
-      if (!cancelled) {
-        Sentry.captureException(error, {
-          tags: {
-            "kiln.operation": request.operation,
-            "kiln.relay_id": this.#relay.id,
-          },
-        })
-      }
-      socket.send(
-        JSON.stringify({
-          code: cancelled ? "request_cancelled" : "hearth_operation_failed",
-          id: randomUUID(),
-          message: error.message,
-          replyTo: request.id,
-          retryable: false,
-          type: "error",
-          v: 1,
-        })
-      )
-    } finally {
-      if (timer) clearTimeout(timer)
-    }
+    )
   }
 
   #rejectPending(cause: Error): void {
     for (const pending of this.#pending.values()) {
-      clearTimeout(pending.timer)
-      pending.reject(cause)
+      pending.resume(relayConnectionFailure(cause.message, cause))
     }
     this.#pending.clear()
   }
 
   #abortReverseRequests(): void {
-    for (const controller of this.#reverseInFlight.values()) {
+    for (const { controller, fiber } of this.#reverseInFlight.values()) {
       controller.abort()
+      fiber?.interruptUnsafe()
     }
     this.#reverseInFlight.clear()
   }
@@ -539,14 +705,28 @@ class RelayConnection {
   }
 
   #scheduleReconnect(): void {
-    if (this.#closed || this.#reconnectTimer) return
+    if (this.#closed || this.#reconnectFiber) return
     const maximum = Math.min(MAX_BACKOFF_MS, 500 * 2 ** this.#attempt)
-    const delay = Math.floor(Math.random() * Math.max(maximum, 500))
-    this.#reconnectTimer = setTimeout(() => {
-      this.#reconnectTimer = null
-      void this.#connect().catch(() => undefined)
-    }, delay)
-    this.#reconnectTimer.unref()
+    const delay = Math.max(
+      1,
+      Math.floor(Math.random() * Math.max(maximum, 500))
+    )
+    let reconnecting: Fiber.Fiber<void, unknown>
+    reconnecting = forkAppEffect(
+      "relay.connection.reconnect",
+      Effect.sleep(delay).pipe(
+        Effect.andThen(Effect.suspend(() => this.#connectEffect())),
+        Effect.catch(() => Effect.void),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (this.#reconnectFiber === reconnecting) {
+              this.#reconnectFiber = null
+            }
+          })
+        )
+      )
+    )
+    this.#reconnectFiber = reconnecting
   }
 }
 
@@ -560,11 +740,49 @@ function asError(cause: unknown): Error {
   return cause instanceof Error ? cause : new Error("Relay connection failed")
 }
 
-function throwIfRelayRequestCancelled(signal: AbortSignal): void {
-  if (signal.aborted) {
-    throw new RelayRequestTimeoutError("Relay request was cancelled")
-  }
+function reverseRequestFailure(message: string): Effect.Effect<never, Error> {
+  return Effect.fail(new Error(message))
 }
+
+function ensureRelayRequestActive(
+  signal: AbortSignal
+): Effect.Effect<void, RelayRequestTimeoutError> {
+  return signal.aborted
+    ? Effect.fail(new RelayRequestTimeoutError("Relay request was cancelled"))
+    : Effect.void
+}
+
+function sendSocketEffect(
+  socket: WebSocket,
+  message: unknown
+): Effect.Effect<void, Error> {
+  return Effect.try({
+    try: () => {
+      socket.send(JSON.stringify(message))
+    },
+    catch: asError,
+  })
+}
+
+function relayConnectionFailure(
+  message: string,
+  cause?: unknown
+): Effect.Effect<never, RelayUnavailableError> {
+  return Effect.fail(
+    RelayUnavailableError.make({
+      message,
+      ...(cause === undefined ? {} : { cause }),
+    })
+  )
+}
+
+const decodeRelayControlMessage = (
+  text: string
+): Option.Option<typeof RelayControlServerMessageSchema.Type> =>
+  Option.flatMap(
+    Schema.decodeUnknownOption(Schema.UnknownFromJsonString)(text),
+    Schema.decodeUnknownOption(RelayControlServerMessageSchema)
+  )
 
 function objectRecord(value: unknown): Readonly<Record<string, unknown>> {
   return value && typeof value === "object" && !Array.isArray(value)
