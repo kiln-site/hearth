@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/tanstackstart-react"
+import { Result } from "effect"
 
 export const fileEditorFontSizes = [10, 11, 12, 14, 16]
 const fileEditorFontSizeStorageKey = "kiln:file-editor-font-size"
@@ -145,28 +146,26 @@ export function createFileEditorPreferencesStore(): FileEditorPreferencesStore {
       return
     }
     fontSize = nextFontSize
-    try {
+    Result.try(() =>
       window.localStorage.setItem(
         fileEditorFontSizeStorageKey,
         String(nextFontSize)
       )
-    } catch {
-      // The editor remains usable when browser storage is unavailable.
-    }
+    )
+    // The editor remains usable when browser storage is unavailable.
     notify()
   }
   return {
     getFontSizeSnapshot: () => fontSize,
     hydrate: () => {
-      try {
+      Result.try(() => {
         const storedValue = Number.parseInt(
           window.localStorage.getItem(fileEditorFontSizeStorageKey) ?? "",
           10
         )
         setFontSize(storedValue)
-      } catch {
-        // Keep the default when browser storage is unavailable.
-      }
+      })
+      // Keep the default when browser storage is unavailable.
     },
     setFontSize,
     subscribe: (listener) => {

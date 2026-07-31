@@ -2,6 +2,7 @@ import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useRouter } from "@tanstack/react-router"
 import { FileTree, useFileTree, useFileTreeSearch } from "@pierre/trees/react"
+import { Effect, Result } from "effect"
 import type {
   RelayFileActivity,
   RelayFileActivityEntry,
@@ -172,19 +173,52 @@ function defaultFileTreeWidth() {
 }
 
 async function copyToClipboard(value: string) {
-  try {
-    await navigator.clipboard.writeText(value)
-  } catch {
-    const textarea = document.createElement("textarea")
-    textarea.value = value
-    textarea.style.position = "fixed"
-    textarea.style.opacity = "0"
-    document.body.append(textarea)
-    textarea.select()
-    const copied = document.execCommand("copy")
-    textarea.remove()
-    if (!copied) throw new Error("Could not copy to clipboard")
-  }
+  await Effect.runPromise(
+    Effect.tryPromise({
+      try: () => navigator.clipboard.writeText(value),
+      catch: (cause) => cause,
+    }).pipe(
+      Effect.catch(() =>
+        Effect.try({
+          try: () => {
+            const textarea = document.createElement("textarea")
+            textarea.value = value
+            textarea.style.position = "fixed"
+            textarea.style.opacity = "0"
+            document.body.append(textarea)
+            textarea.select()
+            const copied = document.execCommand("copy")
+            textarea.remove()
+            if (!copied) throw new Error("Could not copy to clipboard")
+          },
+          catch: (cause) => cause,
+        })
+      )
+    )
+  )
+}
+
+async function runEditorSave(
+  save: () => Promise<unknown>,
+  sessionStore: EditorSessionStore,
+  fallbackMessage: string
+): Promise<void> {
+  await Effect.runPromise(
+    Effect.tryPromise({ try: save, catch: (cause) => cause }).pipe(
+      Effect.catch((cause) =>
+        Effect.sync(() =>
+          sessionStore.setSaveError(
+            cause instanceof Error ? cause.message : fallbackMessage
+          )
+        )
+      ),
+      Effect.ensuring(
+        Effect.sync(() => {
+          sessionStore.setSaving(false)
+        })
+      )
+    )
+  )
 }
 
 function FileTreeRevealButton({ onClick }: { onClick: () => void }) {
@@ -517,15 +551,11 @@ function EditorDiskConflictNotice({
     if (sessionStore.getSavingSnapshot()) return
     sessionStore.setSaving(true)
     sessionStore.setSaveError(null)
-    try {
-      await saveFile(sessionStore.getValue(), undefined)
-    } catch (cause) {
-      sessionStore.setSaveError(
-        cause instanceof Error ? cause.message : "Overwrite failed"
-      )
-    } finally {
-      sessionStore.setSaving(false)
-    }
+    await runEditorSave(
+      () => saveFile(sessionStore.getValue(), undefined),
+      sessionStore,
+      "Overwrite failed"
+    )
   }
 
   return (
@@ -785,22 +815,29 @@ function useEditorShareAction({
 
   async function handleShare() {
     setState("uploading")
-    try {
-      const result = await uploadToMclogs({
-        data: {
-          content: redactSensitiveText(sessionStore.getValue()),
-          instanceId: instance.id,
-          relayId: instance.relayId,
-          path,
-          implementation: instance.implementation,
-          version: instance.version,
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => {
+          const result = await uploadToMclogs({
+            data: {
+              content: redactSensitiveText(sessionStore.getValue()),
+              instanceId: instance.id,
+              relayId: instance.relayId,
+              path,
+              implementation: instance.implementation,
+              version: instance.version,
+            },
+          })
+          await copyToClipboard(result.url)
         },
-      })
-      await copyToClipboard(result.url)
-      setState("copied")
-    } catch {
-      setState("error")
-    }
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.match({
+          onFailure: () => setState("error"),
+          onSuccess: () => setState("copied"),
+        })
+      )
+    )
     if (resetTimer.current) window.clearTimeout(resetTimer.current)
     resetTimer.current = window.setTimeout(() => setState("idle"), 2800)
   }
@@ -1177,24 +1214,31 @@ function EditorDownloadActionMenuItem({
   const [downloading, setDownloading] = React.useState(false)
   const download = React.useCallback(async () => {
     setDownloading(true)
-    try {
-      await downloadRelayFile({
-        instanceId: instance.id,
-        path,
-        relayId: instance.relayId,
-      })
-    } catch (cause) {
-      showToast({
-        type: "error",
-        message: "Could not download file",
-        description:
-          cause instanceof Error
-            ? cause.message
-            : "The Relay could not complete the download.",
-      })
-    } finally {
-      setDownloading(false)
-    }
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: () =>
+          downloadRelayFile({
+            instanceId: instance.id,
+            path,
+            relayId: instance.relayId,
+          }),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() =>
+            showToast({
+              type: "error",
+              message: "Could not download file",
+              description:
+                cause instanceof Error
+                  ? cause.message
+                  : "The Relay could not complete the download.",
+            })
+          )
+        ),
+        Effect.ensuring(Effect.sync(() => setDownloading(false)))
+      )
+    )
   }, [instance.id, instance.relayId, path])
 
   return (
@@ -1646,16 +1690,12 @@ function EditorSaveButton({
     }
     sessionStore.setSaving(true)
     sessionStore.setSaveError(null)
-    try {
-      const value = sessionStore.getValue()
-      await saveFile(value, sessionStore.getExpectedModifiedAt())
-    } catch (cause) {
-      sessionStore.setSaveError(
-        cause instanceof Error ? cause.message : "Save failed"
-      )
-    } finally {
-      sessionStore.setSaving(false)
-    }
+    await runEditorSave(
+      () =>
+        saveFile(sessionStore.getValue(), sessionStore.getExpectedModifiedAt()),
+      sessionStore,
+      "Save failed"
+    )
   }
 
   return (
@@ -1947,52 +1987,60 @@ function FileTreePanel({
       if (!files.length || !canWrite) return
       setUploading(true)
       let uploaded = 0
-      try {
-        const queue = [...files]
-        let failure: unknown = null
-        const uploadNext = async (): Promise<void> => {
-          if (failure) return
-          const file = queue.shift()
-          if (!file) return
-          try {
-            await uploadRelayFile({
-              file,
-              instanceId: instance.id,
-              path: file.name,
-              relayId: instance.relayId,
+      await Effect.runPromise(
+        Effect.forEach(
+          files,
+          (file) =>
+            Effect.tryPromise({
+              try: () =>
+                uploadRelayFile({
+                  file,
+                  instanceId: instance.id,
+                  path: file.name,
+                  relayId: instance.relayId,
+                }),
+              catch: (cause) => cause,
+            }).pipe(
+              Effect.uninterruptible,
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  uploaded += 1
+                })
+              )
+            ),
+          { concurrency: 3, discard: true }
+        ).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              showToast({
+                type: "success",
+                message:
+                  uploaded === 1
+                    ? "File uploaded"
+                    : `${uploaded} files uploaded`,
+                description: "Transferred directly to the Relay instance root.",
+              })
+              onRefresh()
             })
-            uploaded += 1
-            await uploadNext()
-          } catch (cause) {
-            failure ??= cause
-          }
-        }
-        await Promise.all(
-          Array.from({ length: Math.min(3, files.length) }, uploadNext)
+          ),
+          Effect.catch((cause) =>
+            Effect.sync(() => {
+              showToast({
+                type: "error",
+                message: uploaded
+                  ? "Some files could not be uploaded"
+                  : "Upload failed",
+                description:
+                  cause instanceof Error
+                    ? cause.message
+                    : "The Relay could not complete the upload.",
+              })
+              if (uploaded) onRefresh()
+            })
+          ),
+          Effect.ensuring(Effect.sync(() => setUploading(false)))
         )
-        if (failure) throw failure
-        showToast({
-          type: "success",
-          message:
-            uploaded === 1 ? "File uploaded" : `${uploaded} files uploaded`,
-          description: "Transferred directly to the Relay instance root.",
-        })
-        onRefresh()
-      } catch (cause) {
-        showToast({
-          type: "error",
-          message: uploaded
-            ? "Some files could not be uploaded"
-            : "Upload failed",
-          description:
-            cause instanceof Error
-              ? cause.message
-              : "The Relay could not complete the upload.",
-        })
-        if (uploaded) onRefresh()
-      } finally {
-        setUploading(false)
-      }
+      )
     },
     [canWrite, instance.id, instance.relayId, onRefresh]
   )
@@ -2150,11 +2198,8 @@ function FileTreePanel({
     panel.dataset.resizing = "true"
     panel.style.transition = "none"
     event.currentTarget.dataset.resizing = "true"
-    try {
-      event.currentTarget.setPointerCapture(event.pointerId)
-    } catch {
-      // Pointer capture is progressive enhancement; pointer events still work.
-    }
+    // Pointer capture is progressive enhancement; pointer events still work.
+    Result.try(() => event.currentTarget.setPointerCapture(event.pointerId))
   }
 
   function handleResizePointerMove(event: React.PointerEvent<HTMLDivElement>) {
@@ -2165,13 +2210,12 @@ function FileTreePanel({
 
   function handleResizePointerEnd(event: React.PointerEvent<HTMLDivElement>) {
     if (resizeSession.current?.pointerId !== event.pointerId) return
-    try {
+    // The pointer may already have been released by the browser.
+    Result.try(() => {
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId)
       }
-    } catch {
-      // The pointer may already have been released by the browser.
-    }
+    })
     finishResize(event.pointerId)
   }
 
