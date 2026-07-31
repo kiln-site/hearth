@@ -2,6 +2,8 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { it as effectIt } from "@effect/vitest"
+import { Effect } from "effect"
 import { afterEach, describe, expect, it, vi } from "vite-plus/test"
 import {
   relayInstanceSchema,
@@ -212,75 +214,114 @@ describe("instance port lifecycle", () => {
     )
   })
 
-  it("reclaims abandoned port leases and releases closed ones", async () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date("2026-07-30T12:00:00.000Z"))
-    const dataDirectory = await mkdtemp(join(tmpdir(), "kiln-port-lease-"))
-    temporaryDirectories.push(dataDirectory)
-    const config = loadConfig({
-      KILN_RELAY_DATA_DIR: dataDirectory,
-      KILN_RELAY_GAME_PORT_RANGE: "32125-32125",
-      KILN_RELAY_PROXY: "hearth",
-      KILN_RELAY_RESOURCE_NAMESPACE: "port-lease-test",
-      NODE_ENV: "test",
-    })
-    const first = relayInstanceSchema.parse({
-      brickNetworkMode: "direct",
-      connectAddress: "first.test",
-      containerId: "first-container",
-      desiredState: "stopped",
-      directory: "c".repeat(40),
-      game: "Minecraft",
-      id: "c".repeat(40),
-      implementation: "Paper",
-      javaVersion: "21",
-      managedByRelay: true,
-      name: "First server",
-      observedState: "stopped",
-      publicHost: "first.test",
-      service: "kiln-first",
-      shortId: "cccccccc",
-      startedAt: null,
-      status: "created",
-      version: "1.21.11",
-    })
-    const second = relayInstanceSchema.parse({
-      ...first,
-      connectAddress: "second.test",
-      containerId: "second-container",
-      directory: "d".repeat(40),
-      id: "d".repeat(40),
-      name: "Second server",
-      publicHost: "second.test",
-      service: "kiln-second",
-      shortId: "dddddddd",
-    })
-    const docker = {
-      inspectInstances: vi.fn(async () => [first, second]),
-      publishedHostPorts: vi.fn(async () => []),
-    } as unknown as DockerDriver
-    const lifecycle = new LifecycleDriver(config, docker, {} as BrickCatalog)
+  effectIt.effect(
+    "reclaims abandoned port leases and releases closed ones",
+    () =>
+      Effect.gen(function* () {
+        vi.useFakeTimers()
+        vi.setSystemTime(new Date("2026-07-30T12:00:00.000Z"))
+        const dataDirectory = yield* Effect.tryPromise(() =>
+          mkdtemp(join(tmpdir(), "kiln-port-lease-"))
+        )
+        temporaryDirectories.push(dataDirectory)
+        const config = loadConfig({
+          KILN_RELAY_DATA_DIR: dataDirectory,
+          KILN_RELAY_GAME_PORT_RANGE: "32125-32125",
+          KILN_RELAY_PROXY: "hearth",
+          KILN_RELAY_RESOURCE_NAMESPACE: "port-lease-test",
+          NODE_ENV: "test",
+        })
+        const first = relayInstanceSchema.parse({
+          brickNetworkMode: "direct",
+          connectAddress: "first.test",
+          containerId: "first-container",
+          desiredState: "stopped",
+          directory: "c".repeat(40),
+          game: "Minecraft",
+          id: "c".repeat(40),
+          implementation: "Paper",
+          javaVersion: "21",
+          managedByRelay: true,
+          name: "First server",
+          observedState: "stopped",
+          publicHost: "first.test",
+          service: "kiln-first",
+          shortId: "cccccccc",
+          startedAt: null,
+          status: "created",
+          version: "1.21.11",
+        })
+        const second = relayInstanceSchema.parse({
+          ...first,
+          connectAddress: "second.test",
+          containerId: "second-container",
+          directory: "d".repeat(40),
+          id: "d".repeat(40),
+          name: "Second server",
+          publicHost: "second.test",
+          service: "kiln-second",
+          shortId: "dddddddd",
+        })
+        const docker = {
+          inspectInstances: vi.fn(async () => [first, second]),
+          publishedHostPorts: vi.fn(async () => []),
+        } as unknown as DockerDriver
+        const lifecycle = new LifecycleDriver(
+          config,
+          docker,
+          {} as BrickCatalog
+        )
 
-    const abandoned = await lifecycle.reserveInstancePort(first.id, {
-      protocol: "tcp",
-    })
-    expect(abandoned.externalPort).toBe(32_125)
-    await expect(
-      lifecycle.reserveInstancePort(second.id, { protocol: "tcp" })
-    ).rejects.toThrow("No game ports are available")
+        const abandoned = yield* lifecycle.reserveInstancePortEffect(first.id, {
+          protocol: "tcp",
+        })
+        expect(abandoned.externalPort).toBe(32_125)
+        const renewalFailure = yield* lifecycle
+          .reserveInstancePortEffect(first.id, {
+            externalPort: 32_126,
+            leaseId: abandoned.id,
+            protocol: "tcp",
+          })
+          .pipe(Effect.flip)
+        expect(renewalFailure.code).toBe("allocation_failed")
+        const unavailable = yield* lifecycle
+          .reserveInstancePortEffect(second.id, { protocol: "tcp" })
+          .pipe(Effect.flip)
+        expect(unavailable.message).toContain("No game ports are available")
 
-    await vi.advanceTimersByTimeAsync(120_001)
-    const reclaimed = await lifecycle.reserveInstancePort(second.id, {
-      protocol: "tcp",
-    })
-    expect(reclaimed.externalPort).toBe(32_125)
+        yield* Effect.tryPromise(() => vi.advanceTimersByTimeAsync(120_001))
+        const reclaimed = yield* lifecycle.reserveInstancePortEffect(
+          second.id,
+          { protocol: "tcp" }
+        )
+        expect(reclaimed.externalPort).toBe(32_125)
 
-    await lifecycle.releaseInstancePort(second.id, reclaimed.id)
-    const released = await lifecycle.reserveInstancePort(first.id, {
-      protocol: "tcp",
-    })
-    expect(released.externalPort).toBe(32_125)
-  })
+        yield* lifecycle.releaseInstancePortEffect(second.id, reclaimed.id)
+        const released = yield* lifecycle.reserveInstancePortEffect(first.id, {
+          protocol: "tcp",
+        })
+        expect(released.externalPort).toBe(32_125)
+
+        const ownershipFailure = yield* lifecycle
+          .releaseInstancePortEffect(second.id, released.id)
+          .pipe(Effect.flip)
+        expect(ownershipFailure.code).toBe("lease_owner_mismatch")
+        yield* lifecycle.releaseInstancePortEffect(first.id, released.id)
+
+        vi.useRealTimers()
+        const [failures, concurrent] = yield* Effect.partition(
+          [first.id, second.id],
+          (instanceId) =>
+            lifecycle.reserveInstancePortEffect(instanceId, {
+              protocol: "tcp",
+            }),
+          { concurrency: "unbounded" }
+        )
+        expect(failures).toHaveLength(1)
+        expect(concurrent).toHaveLength(1)
+        expect(concurrent[0]?.externalPort).toBe(32_125)
+      })
+  )
 
   it("stages a missing primary port without requiring a free public port", async () => {
     const dataDirectory = await mkdtemp(join(tmpdir(), "kiln-primary-port-"))

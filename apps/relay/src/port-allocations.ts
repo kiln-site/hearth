@@ -3,6 +3,7 @@ import {
   relayInstancePortIdSchema,
   relayInstancePortMetadataListSchema,
 } from "@workspace/contracts"
+import { Option, Schema } from "effect"
 import type {
   RelayInstancePortAllocation,
   RelayInstancePortMetadata,
@@ -14,6 +15,9 @@ export const PRIMARY_PORT_LABEL = "kiln.brick.primary-port"
 
 const LEGACY_INSTANCE_PORT_ALLOCATIONS_LABEL = "kiln.instance.ports"
 const LEGACY_PRIMARY_PORT_PROTOCOL_LABEL = "kiln.brick.primary-port-protocol"
+const decodeJsonOption = Schema.decodeUnknownOption(
+  Schema.UnknownFromJsonString
+)
 
 type PortBindings = Readonly<
   Record<
@@ -152,23 +156,19 @@ function recoverablePortMetadata(
         label.slice(INSTANCE_CUSTOM_ROUTE_LABEL_PREFIX.length)
       )
       if (!id.success || id.data === "primary" || value === undefined) return []
-      try {
-        const decoded: unknown = JSON.parse(value)
-        const route = relayInstanceCustomRouteLabelSchema.safeParse(decoded)
-        if (!route.success) return []
-        return [
-          {
-            id: id.data,
-            internalPort: route.data.internal,
-            kind: id.data.startsWith("brick-") ? "brick" : "custom",
-            labelledPublicPort: route.data.public,
-            name: route.data.name,
-            protocol: route.data.protocol,
-          },
-        ]
-      } catch {
-        return []
-      }
+      const decoded = Option.getOrUndefined(decodeJsonOption(value))
+      const route = relayInstanceCustomRouteLabelSchema.safeParse(decoded)
+      if (!route.success) return []
+      return [
+        {
+          id: id.data,
+          internalPort: route.data.internal,
+          kind: id.data.startsWith("brick-") ? "brick" : "custom",
+          labelledPublicPort: route.data.public,
+          name: route.data.name,
+          protocol: route.data.protocol,
+        },
+      ]
     })
 
   if (primary || routes.length > 0) {
@@ -209,13 +209,9 @@ function parseLegacyPortMetadata(
   label: string | undefined
 ): Array<RecoverablePortMetadata> {
   if (!label) return []
-  try {
-    const value: unknown = JSON.parse(label)
-    const parsed = relayInstancePortMetadataListSchema.safeParse(value)
-    return parsed.success ? parsed.data : []
-  } catch {
-    return []
-  }
+  const value = Option.getOrUndefined(decodeJsonOption(label))
+  const parsed = relayInstancePortMetadataListSchema.safeParse(value)
+  return parsed.success ? parsed.data : []
 }
 
 function discoverPublishedPort(

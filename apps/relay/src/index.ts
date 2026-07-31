@@ -1074,14 +1074,20 @@ async function executeControlRequest(
         leaseId: payload.leaseId,
         protocol: payload.protocol,
       })
-      return lifecycle.reserveInstancePort(instance.id, input)
+      return runRelayEffect(
+        "relay.ports.reserve",
+        lifecycle.reserveInstancePortEffect(instance.id, input)
+      )
     }
     case "instance.network.ports.release": {
       const instance = await requiredInstance(payload)
       const input = relayInstancePortLeaseReleaseSchema.parse({
         leaseId: payload.leaseId,
       })
-      await lifecycle.releaseInstancePort(instance.id, input.leaseId)
+      await runRelayEffect(
+        "relay.ports.release",
+        lifecycle.releaseInstancePortEffect(instance.id, input.leaseId)
+      )
       return { released: true }
     }
     case "instance.network.ports.write": {

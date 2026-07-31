@@ -254,6 +254,18 @@ describe("instance port allocations", () => {
     ).toEqual([])
   })
 
+  it("ignores malformed JSON labels without throwing", () => {
+    expect(
+      discoverPortAllocations({
+        bindings: {},
+        labels: {
+          "kiln.instance.custom-routes.deadbeef": "{not-json",
+          "kiln.instance.ports": "[not-json",
+        },
+      })
+    ).toEqual([])
+  })
+
   it("builds Docker bindings for each protocol and internal port", () => {
     expect(dockerPortBindingsForAllocations(allocations)).toEqual({
       "24454/udp": [{ HostIp: "", HostPort: "30001" }],

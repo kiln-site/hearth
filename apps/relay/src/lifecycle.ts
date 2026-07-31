@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises"
 import { totalmem } from "node:os"
 import { join } from "node:path"
+import { Effect, Semaphore } from "effect"
 
 import { resolveBrick } from "./bricks.js"
 import { command } from "./command.js"
@@ -66,6 +67,7 @@ import {
   type RelayResourceNames,
 } from "./relay-resources.js"
 import type { RelayStoredWebRoute } from "./effect/state.js"
+import { RelayPortAllocationError } from "./effect/errors.js"
 import {
   WEB_ROUTE_LABEL_PREFIX,
   WEB_ROUTE_REVISION_LABEL,
@@ -87,6 +89,29 @@ interface PortLeaseRecord {
   id: string
   instanceId: string
   protocol: RelayInstancePortAllocation["protocol"]
+}
+
+function portOperation<TResult>(
+  operation: string,
+  run: () => Promise<TResult>
+) {
+  return Effect.tryPromise({
+    try: run,
+    catch: (cause) =>
+      cause instanceof RelayPortAllocationError
+        ? cause
+        : RelayPortAllocationError.make({
+            code: "allocation_failed",
+            operation,
+            reason:
+              cause instanceof Error ? cause.message : "Port allocation failed",
+            cause,
+          }),
+  })
+}
+
+function portFailure(code: string, operation: string, reason: string) {
+  return Effect.fail(RelayPortAllocationError.make({ code, operation, reason }))
 }
 
 export function nextManagedGamePort(input: {
@@ -221,7 +246,7 @@ export class LifecycleDriver {
   #edgeReconciliationTimer: NodeJS.Timeout | null = null
   #hostDataDirectoryPromise: Promise<string> | null = null
   #listenerMode: RelayProxySettings["mode"] | null = null
-  #gamePortMutation: Promise<void> = Promise.resolve()
+  readonly #gamePortSemaphore = Semaphore.makeUnsafe(1)
   readonly #pendingGamePorts = new Set<string>()
   readonly #portLeases = new Map<string, PortLeaseRecord>()
   readonly #portLeaseTimers = new Map<string, NodeJS.Timeout>()
@@ -1580,25 +1605,38 @@ export class LifecycleDriver {
     }
   }
 
-  async reserveInstancePort(
+  reserveInstancePortEffect(
     instanceId: string,
     input: RelayInstancePortLeaseRequest
-  ): Promise<RelayInstancePortLease> {
-    return this.#withGamePortLock(async () => {
+  ) {
+    let reserved: Pick<PortLeaseRecord, "externalPort" | "protocol"> | undefined
+    const criticalSection = Effect.gen({ self: this }, function* () {
       const now = Date.now()
       this.#pruneExpiredPortLeases(now)
-      const inspected = await this.#docker.inspectInstances()
+      const inspected = yield* portOperation("lease.inspectInstances", () =>
+        this.#docker.inspectInstances()
+      )
       const instance = inspected.find(
         (candidate) => candidate.id === instanceId
       )
-      if (!instance) throw new Error("Instance not found")
+      if (!instance) {
+        return yield* portFailure(
+          "instance_not_found",
+          "lease.reserve",
+          "Instance not found"
+        )
+      }
       if (!instance.managedByRelay) {
-        throw new Error(
+        return yield* portFailure(
+          "instance_unmanaged",
+          "lease.reserve",
           "Relay can only reserve ports for containers it created"
         )
       }
       if (instance.brickId === builtinTailscaleBrickId) {
-        throw new Error(
+        return yield* portFailure(
+          "tailscale_managed",
+          "lease.reserve",
           "Configure this Tailscale network from Infrastructure → Tailscale"
         )
       }
@@ -1607,22 +1645,23 @@ export class LifecycleDriver {
         ? this.#portLeases.get(input.leaseId)
         : undefined
       if (previous && previous.instanceId !== instanceId) {
-        throw new Error("Port reservation does not belong to this server")
+        return yield* portFailure(
+          "lease_owner_mismatch",
+          "lease.reserve",
+          "Port reservation does not belong to this server"
+        )
       }
       if (previous) this.#removePendingPort(previous)
 
-      let externalPort: number
-      try {
-        externalPort = await this.#reserveGamePortUnlocked(
+      const externalPort = yield* portOperation("lease.reservePort", () =>
+        this.#reserveGamePortUnlocked(
           instanceId,
           input.protocol,
           inspected,
           input.externalPort ?? previous?.externalPort
         )
-      } catch (error) {
-        if (previous) this.#addPendingPort(previous)
-        throw error
-      }
+      )
+      reserved = { externalPort, protocol: input.protocol }
 
       const id = previous?.id ?? randomBytes(16).toString("hex")
       const lease: PortLeaseRecord = {
@@ -1634,29 +1673,56 @@ export class LifecycleDriver {
       }
       this.#portLeases.set(id, lease)
       this.#schedulePortLeaseExpiry(lease)
+      reserved = undefined
       return {
         expiresAt: new Date(lease.expiresAt).toISOString(),
         externalPort: lease.externalPort,
         id: lease.id,
         protocol: lease.protocol,
-      }
-    })
+      } satisfies RelayInstancePortLease
+    }).pipe(
+      Effect.onError(() =>
+        Effect.sync(() => {
+          if (reserved) this.#removePendingPort(reserved)
+          const previous = input.leaseId
+            ? this.#portLeases.get(input.leaseId)
+            : undefined
+          if (previous && previous.instanceId === instanceId) {
+            this.#addPendingPort(previous)
+          }
+        })
+      ),
+      // Once the permit is held, complete or compensate the reservation before
+      // observing interruption so the pending-port set cannot be stranded.
+      Effect.uninterruptible
+    )
+    return this.#gamePortSemaphore
+      .withPermit(criticalSection)
+      .pipe(Effect.withSpan("relay.ports.reserve"))
   }
 
-  async releaseInstancePort(
-    instanceId: string,
-    leaseId: string
-  ): Promise<void> {
-    await this.#withGamePortLock(() => {
-      this.#pruneExpiredPortLeases(Date.now())
-      const lease = this.#portLeases.get(leaseId)
-      if (!lease) return Promise.resolve()
-      if (lease.instanceId !== instanceId) {
-        throw new Error("Port reservation does not belong to this server")
-      }
-      this.#deletePortLease(lease)
-      return Promise.resolve()
-    })
+  releaseInstancePortEffect(instanceId: string, leaseId: string) {
+    return this.#gamePortSemaphore
+      .withPermit(
+        Effect.sync(() => {
+          this.#pruneExpiredPortLeases(Date.now())
+          return this.#portLeases.get(leaseId)
+        }).pipe(
+          Effect.flatMap((lease) => {
+            if (!lease) return Effect.void
+            if (lease.instanceId !== instanceId) {
+              return portFailure(
+                "lease_owner_mismatch",
+                "lease.release",
+                "Port reservation does not belong to this server"
+              )
+            }
+            return Effect.sync(() => this.#deletePortLease(lease))
+          }),
+          Effect.uninterruptible
+        )
+      )
+      .pipe(Effect.withSpan("relay.ports.release"))
   }
 
   async createInstance(input: RelayCreateInstance): Promise<RelayInstance> {
@@ -2306,12 +2372,14 @@ export class LifecycleDriver {
   }
 
   #withGamePortLock<Result>(action: () => Promise<Result>): Promise<Result> {
-    const result = this.#gamePortMutation.then(action, action)
-    this.#gamePortMutation = result.then(
-      () => undefined,
-      () => undefined
+    return Effect.runPromise(
+      this.#gamePortSemaphore.withPermit(
+        Effect.tryPromise({
+          try: action,
+          catch: (cause) => cause,
+        })
+      )
     )
-    return result
   }
 
   async #assertAllocationAvailable(input: {
