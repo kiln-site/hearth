@@ -6,6 +6,7 @@ import {
   relayConsoleStreamEventSchema,
 } from "@workspace/contracts"
 import type { RelayConsoleStreamEvent } from "@workspace/contracts"
+import { Effect, Result, Stream } from "effect"
 
 import { issueConsoleCapability } from "@/server/relay-capability"
 
@@ -39,71 +40,68 @@ export class RelayConsoleConnectionError extends Error {
   }
 }
 
-export async function* openRelayConsoleStream(
+export function openRelayConsoleStream(
   relayId: string,
   instanceId: string,
   signal: AbortSignal
 ): AsyncGenerator<KilnConsoleStreamEvent> {
   if (!navigator.onLine) {
-    throw new RelayConsoleConnectionError(
-      "browser_offline",
-      "You're offline. Reconnect to the internet to resume the console."
+    const offline = Stream.toAsyncIterable(
+      Stream.fail(
+        new RelayConsoleConnectionError(
+          "browser_offline",
+          "You're offline. Reconnect to the internet to resume the console."
+        )
+      )
     )
+    return (async function* () {
+      yield* offline
+    })()
   }
 
-  let directFailure: Error | null = null
-  try {
-    const direct = openDirectRelayConsoleStream(relayId, instanceId, signal)
-    const first = await direct.next()
-    if (first.done) throw new Error("Direct Relay console stream ended early")
-    yield { message: null, transport: "direct", type: "transport" }
-    yield first.value
-    for (;;) {
-      // Console frames are a single ordered stream.
-      // oxlint-disable-next-line react-doctor/async-await-in-loop
-      const result = await direct.next()
-      if (result.done) throw new Error("Direct Relay console stream closed")
-      yield result.value
-    }
-  } catch (cause) {
-    if (signal.aborted) throw asError(cause)
-    directFailure = asError(cause)
-  }
-
-  try {
-    const proxied = openHearthConsoleStream(relayId, instanceId, signal)
-    const first = await proxied.next()
-    if (first.done) throw new Error("Hearth console proxy ended early")
-    yield {
-      message: directFallbackMessage(directFailure),
-      transport: "hearth",
-      type: "transport",
-    }
-    yield first.value
-    for (;;) {
-      // Hearth preserves the Relay stream ordering.
-      // oxlint-disable-next-line react-doctor/async-await-in-loop
-      const result = await proxied.next()
-      if (result.done) throw new Error("Hearth console proxy closed")
-      yield result.value
-    }
-  } catch (cause) {
-    if (signal.aborted) throw asError(cause)
-    throw new RelayConsoleConnectionError(
-      "hearth_proxy_failed",
-      directFailure
-        ? "Hearth can reach this Relay, but neither the secure direct stream nor the Hearth fallback could read the console."
-        : "Hearth could not open the Relay console stream.",
-      { cause }
+  const direct = Stream.fromAsyncIterable(
+    openDirectRelayConsoleStream(relayId, instanceId, signal),
+    asError
+  )
+  const stream = Stream.toAsyncIterable(
+    direct.pipe(
+      Stream.catch((directCause) => {
+        if (signal.aborted) return Stream.fail(asError(directCause))
+        const directFailure = asError(directCause)
+        return Stream.fromAsyncIterable(
+          openHearthConsoleStream(
+            relayId,
+            instanceId,
+            signal,
+            directFallbackMessage(directFailure)
+          ),
+          asError
+        ).pipe(
+          Stream.catch((cause) =>
+            Stream.fail(
+              signal.aborted
+                ? asError(cause)
+                : new RelayConsoleConnectionError(
+                    "hearth_proxy_failed",
+                    "Hearth can reach this Relay, but neither the secure direct stream nor the Hearth fallback could read the console.",
+                    { cause }
+                  )
+            )
+          )
+        )
+      })
     )
-  }
+  )
+  return (async function* () {
+    yield* stream
+  })()
 }
 
 async function* openDirectRelayConsoleStream(
   relayId: string,
   instanceId: string,
   signal: AbortSignal
-): AsyncGenerator<RelayConsoleStreamEvent> {
+): AsyncGenerator<KilnConsoleStreamEvent> {
   const keys = await crypto.subtle.generateKey(
     { name: "ECDSA", namedCurve: "P-256" },
     false,
@@ -134,67 +132,73 @@ async function* openDirectRelayConsoleStream(
   const socket = new WebSocket(relayOrigin, [...relayBrowserConsoleProtocols])
   const inbox = createSocketInbox(socket, signal)
 
-  try {
-    const challenge = await nextAuthenticationMessage(inbox, "challenge")
-    if (
-      challenge.type !== "auth.challenge" ||
-      challenge.relayId !== relayId ||
-      typeof challenge.sessionId !== "string" ||
-      typeof challenge.nonce !== "string" ||
-      typeof challenge.expiresAt !== "number" ||
-      challenge.expiresAt <= Date.now()
-    ) {
-      throw new Error("Relay returned an invalid browser challenge")
-    }
-    const proof = await crypto.subtle.sign(
-      { hash: "SHA-256", name: "ECDSA" },
-      keys.privateKey,
-      new TextEncoder().encode(
-        relayBrowserProofTranscript(
-          {
-            capabilityId: capabilityId(capability.capability),
-            expiresAt: challenge.expiresAt,
-            nonce: challenge.nonce,
-            relayId,
-            sessionId: challenge.sessionId,
-          },
-          socket.protocol === relayBrowserConsoleProtocol
-            ? relayBrowserConsoleProtocol
-            : relayBrowserProtocol
+  yield* managedAsyncIterable(
+    (async function* () {
+      const challenge = await nextAuthenticationMessage(inbox, "challenge")
+      if (
+        challenge.type !== "auth.challenge" ||
+        challenge.relayId !== relayId ||
+        typeof challenge.sessionId !== "string" ||
+        typeof challenge.nonce !== "string" ||
+        typeof challenge.expiresAt !== "number" ||
+        challenge.expiresAt <= Date.now()
+      ) {
+        throw new Error("Relay returned an invalid browser challenge")
+      }
+      const proof = await crypto.subtle.sign(
+        { hash: "SHA-256", name: "ECDSA" },
+        keys.privateKey,
+        new TextEncoder().encode(
+          relayBrowserProofTranscript(
+            {
+              capabilityId: capabilityId(capability.capability),
+              expiresAt: challenge.expiresAt,
+              nonce: challenge.nonce,
+              relayId,
+              sessionId: challenge.sessionId,
+            },
+            socket.protocol === relayBrowserConsoleProtocol
+              ? relayBrowserConsoleProtocol
+              : relayBrowserProtocol
+          )
         )
       )
-    )
-    socket.send(
-      JSON.stringify({
-        capability: capability.capability,
-        publicKeyJwk: {
-          crv: "P-256",
-          kty: "EC",
-          x: requiredJwkCoordinate(publicKeyJwk.x),
-          y: requiredJwkCoordinate(publicKeyJwk.y),
-        },
-        signature: bytesToBase64Url(new Uint8Array(proof)),
-        type: "auth",
-        v: 1,
-      })
-    )
-    const ready = await nextAuthenticationMessage(inbox, "confirmation")
-    if (ready.type !== "auth.ready" || ready.instanceId !== instanceId) {
-      throw new Error("Relay browser authentication failed")
-    }
-    socket.send(JSON.stringify({ instanceId, type: "console.subscribe", v: 1 }))
+      socket.send(
+        JSON.stringify({
+          capability: capability.capability,
+          publicKeyJwk: {
+            crv: "P-256",
+            kty: "EC",
+            x: requiredJwkCoordinate(publicKeyJwk.x),
+            y: requiredJwkCoordinate(publicKeyJwk.y),
+          },
+          signature: bytesToBase64Url(new Uint8Array(proof)),
+          type: "auth",
+          v: 1,
+        })
+      )
+      const ready = await nextAuthenticationMessage(inbox, "confirmation")
+      if (ready.type !== "auth.ready" || ready.instanceId !== instanceId) {
+        throw new Error("Relay browser authentication failed")
+      }
+      socket.send(
+        JSON.stringify({ instanceId, type: "console.subscribe", v: 1 })
+      )
+      yield { message: null, transport: "direct", type: "transport" } as const
 
-    // Console frames are a single ordered stream; concurrent reads could reorder them.
-    for (;;) {
-      // This is an ordered, unbounded socket stream; parallel reads would reorder frames.
-      // oxlint-disable-next-line react-doctor/async-await-in-loop
-      const message = await inbox.next()
-      yield relayConsoleStreamEventSchema.parse(message)
+      // Console frames are a single ordered stream; concurrent reads could reorder them.
+      for (;;) {
+        // This is an ordered, unbounded socket stream; parallel reads would reorder frames.
+        // oxlint-disable-next-line react-doctor/async-await-in-loop
+        const message = await inbox.next()
+        yield relayConsoleStreamEventSchema.parse(message)
+      }
+    })(),
+    () => {
+      inbox.close()
+      socket.close(1000, "Console view closed")
     }
-  } finally {
-    inbox.close()
-    socket.close(1000, "Console view closed")
-  }
+  )
 }
 
 async function nextAuthenticationMessage(
@@ -202,26 +206,36 @@ async function nextAuthenticationMessage(
   stage: string
 ): Promise<Record<string, unknown>> {
   let timer: number | undefined
-  try {
-    return await Promise.race([
-      inbox.next(),
-      new Promise<never>((_, reject) => {
-        timer = window.setTimeout(
-          () => reject(new Error(`Relay authentication ${stage} timed out`)),
-          AUTHENTICATION_TIMEOUT_MS
-        )
-      }),
-    ])
-  } finally {
-    if (timer !== undefined) window.clearTimeout(timer)
-  }
+  return Effect.runPromise(
+    Effect.tryPromise({
+      try: () =>
+        Promise.race([
+          inbox.next(),
+          new Promise<never>((_, reject) => {
+            timer = window.setTimeout(
+              () =>
+                reject(new Error(`Relay authentication ${stage} timed out`)),
+              AUTHENTICATION_TIMEOUT_MS
+            )
+          }),
+        ]),
+      catch: asError,
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (timer !== undefined) window.clearTimeout(timer)
+        })
+      )
+    )
+  )
 }
 
 async function* openHearthConsoleStream(
   relayId: string,
   instanceId: string,
-  signal: AbortSignal
-): AsyncGenerator<RelayConsoleStreamEvent> {
+  signal: AbortSignal,
+  fallbackMessage: string
+): AsyncGenerator<KilnConsoleStreamEvent> {
   const response = await fetch(
     `/api/console/${encodeURIComponent(instanceId)}?relayId=${encodeURIComponent(relayId)}`,
     { cache: "no-store", signal }
@@ -240,39 +254,41 @@ async function* openHearthConsoleStream(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffered = ""
-  try {
-    for (;;) {
-      // NDJSON chunks can split records at arbitrary byte boundaries.
-      // oxlint-disable-next-line react-doctor/async-await-in-loop
-      const result = await reader.read()
-      buffered += decoder.decode(result.value, { stream: !result.done })
-      const lines = buffered.split("\n")
-      buffered = lines.pop() ?? ""
-      for (const line of lines) {
-        if (!line) continue
-        const value = JSON.parse(line) as unknown
-        if (
-          value &&
-          typeof value === "object" &&
-          "type" in value &&
-          value.type === "proxy.error"
-        ) {
-          const message =
-            "message" in value && typeof value.message === "string"
-              ? value.message
-              : "Hearth console proxy was interrupted"
-          throw new Error(message)
+  yield { message: fallbackMessage, transport: "hearth", type: "transport" }
+  yield* managedAsyncIterable(
+    (async function* () {
+      for (;;) {
+        // NDJSON chunks can split records at arbitrary byte boundaries.
+        // oxlint-disable-next-line react-doctor/async-await-in-loop
+        const result = await reader.read()
+        buffered += decoder.decode(result.value, { stream: !result.done })
+        const lines = buffered.split("\n")
+        buffered = lines.pop() ?? ""
+        for (const line of lines) {
+          if (!line) continue
+          const value = JSON.parse(line) as unknown
+          if (
+            value &&
+            typeof value === "object" &&
+            "type" in value &&
+            value.type === "proxy.error"
+          ) {
+            const message =
+              "message" in value && typeof value.message === "string"
+                ? value.message
+                : "Hearth console proxy was interrupted"
+            throw new Error(message)
+          }
+          yield relayConsoleStreamEventSchema.parse(value)
         }
-        yield relayConsoleStreamEventSchema.parse(value)
+        if (result.done) break
       }
-      if (result.done) break
-    }
-    if (buffered.trim()) {
-      yield relayConsoleStreamEventSchema.parse(JSON.parse(buffered))
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined)
-  }
+      if (buffered.trim()) {
+        yield relayConsoleStreamEventSchema.parse(JSON.parse(buffered))
+      }
+    })(),
+    () => reader.cancel()
+  )
 }
 
 function directFallbackMessage(cause: Error): string {
@@ -294,7 +310,7 @@ export function createSocketInbox(socket: WebSocket, signal: AbortSignal) {
     for (const waiter of waiters.splice(0)) waiter.reject(cause)
   }
   socket.addEventListener("message", (event) => {
-    try {
+    Result.try(() => {
       const value = JSON.parse(String(event.data)) as unknown
       if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new Error("Relay returned an invalid browser message")
@@ -303,9 +319,12 @@ export function createSocketInbox(socket: WebSocket, signal: AbortSignal) {
       const waiter = waiters.shift()
       if (waiter) waiter.resolve(message)
       else messages.push(message)
-    } catch (cause) {
-      fail(asError(cause))
-    }
+    }).pipe(
+      Result.match({
+        onFailure: (cause) => fail(asError(cause)),
+        onSuccess: () => undefined,
+      })
+    )
   })
   socket.addEventListener("error", () =>
     fail(new Error("Unable to connect to Relay"))
@@ -372,4 +391,20 @@ function asError(cause: unknown): Error {
   return cause instanceof Error
     ? cause
     : new Error("Relay browser connection failed")
+}
+
+function managedAsyncIterable<A>(
+  iterable: AsyncIterable<A>,
+  cleanup: () => void | Promise<unknown>
+): AsyncIterable<A> {
+  return Stream.toAsyncIterable(
+    Stream.fromAsyncIterable(iterable, asError).pipe(
+      Stream.ensuring(
+        Effect.tryPromise({
+          try: async () => cleanup(),
+          catch: asError,
+        }).pipe(Effect.ignore)
+      )
+    )
+  )
 }

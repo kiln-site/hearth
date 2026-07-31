@@ -12,7 +12,7 @@ import { request as httpRequest } from "node:http"
 import { request as httpsRequest } from "node:https"
 import { TLSSocket } from "node:tls"
 import type { RowDataPacket } from "mysql2/promise"
-import { Effect } from "effect"
+import { Effect, Result } from "effect"
 import { z } from "zod"
 
 import {
@@ -684,26 +684,32 @@ async function pairWithEnvelope(
       ]
     )
   }
-  try {
-    if (!existing && initialName !== response.relayName) {
-      await renamePersistedRelay(
-        {
-          name: initialName,
-          relayId: envelope.relayFingerprint,
-        },
-        subject
+  return Effect.runPromise(
+    registryOperation(async () => {
+      if (!existing && initialName !== response.relayName) {
+        await renamePersistedRelay(
+          {
+            name: initialName,
+            relayId: envelope.relayFingerprint,
+          },
+          subject
+        )
+      }
+      return checkPersistedRelay(envelope.relayFingerprint)
+    }).pipe(
+      Effect.catch((cause) =>
+        (existing
+          ? Effect.void
+          : registryOperation(() =>
+              databasePool.execute(
+                `DELETE FROM ${databaseTable("relay")} WHERE id = ?`,
+                [envelope.relayFingerprint]
+              )
+            ).pipe(Effect.asVoid)
+        ).pipe(Effect.flatMap(() => Effect.fail(cause)))
       )
-    }
-    return await checkPersistedRelay(envelope.relayFingerprint)
-  } catch (cause) {
-    if (!existing) {
-      await databasePool.execute(
-        `DELETE FROM ${databaseTable("relay")} WHERE id = ?`,
-        [envelope.relayFingerprint]
-      )
-    }
-    throw cause
-  }
+    )
+  )
 }
 
 export async function updatePersistedRelay(input: {
@@ -780,34 +786,41 @@ export async function checkPersistedRelay(id: string): Promise<PersistedRelay> {
   if (!relay.enabled) return relay
 
   let error: string | null = null
-  try {
-    const { relayRpc } = await import("@/lib/relay-connection")
-    const snapshot = relaySnapshotSchema.parse(
-      await relayRpc(relay, "relay.snapshot", {}, 5_000)
-    )
-    await databasePool.execute(
-      `UPDATE ${databaseTable("relay")}
+  await Effect.runPromise(
+    registryOperation(async () => {
+      const { relayRpc } = await import("@/lib/relay-connection")
+      const snapshot = relaySnapshotSchema.parse(
+        await relayRpc(relay, "relay.snapshot", {}, 5_000)
+      )
+      await databasePool.execute(
+        `UPDATE ${databaseTable("relay")}
           SET last_connected_at = ?, last_error = NULL,
               name = ?, managed_ember_count = ?, node_arch = ?,
               node_platform = ?, node_version = ?
         WHERE id = ?`,
-      [
-        new Date(),
-        snapshot.node.name,
-        snapshot.instances.filter((instance) => instance.managedByRelay).length,
-        snapshot.node.arch,
-        snapshot.node.platform,
-        snapshot.node.version,
-        id,
-      ]
+        [
+          new Date(),
+          snapshot.node.name,
+          snapshot.instances.filter((instance) => instance.managedByRelay)
+            .length,
+          snapshot.node.arch,
+          snapshot.node.platform,
+          snapshot.node.version,
+          id,
+        ]
+      )
+    }).pipe(
+      Effect.catch((cause) => {
+        error = cause instanceof Error ? cause.message : "Could not reach Relay"
+        return registryOperation(() =>
+          databasePool.execute(
+            `UPDATE ${databaseTable("relay")} SET last_error = ? WHERE id = ?`,
+            [(error ?? "Could not reach Relay").slice(0, 512), id]
+          )
+        ).pipe(Effect.asVoid)
+      })
     )
-  } catch (cause) {
-    error = cause instanceof Error ? cause.message : "Could not reach Relay"
-    await databasePool.execute(
-      `UPDATE ${databaseTable("relay")} SET last_error = ? WHERE id = ?`,
-      [error.slice(0, 512), id]
-    )
-  }
+  )
   const checked = (await listPersistedRelays()).find((item) => item.id === id)
   if (!checked) throw new Error("Relay not found")
   return checked
@@ -944,7 +957,7 @@ async function postPairingRequest(
             reject(edgeError)
             return
           }
-          try {
+          Result.try(() => {
             const payload = JSON.parse(text) as unknown
             if (statusCode !== 201) {
               const message = z.object({ error: z.string() }).safeParse(payload)
@@ -954,10 +967,8 @@ async function postPairingRequest(
                   : `Relay pairing failed with HTTP ${statusCode}`
               )
             }
-            resolve(payload)
-          } catch (cause) {
-            reject(cause)
-          }
+            return payload
+          }).pipe(Result.match({ onFailure: reject, onSuccess: resolve }))
         })
       }
     )
@@ -1000,26 +1011,33 @@ async function getBootstrapDiscovery(url: URL): Promise<{
         })
         response.once("error", reject)
         response.once("end", () => {
-          try {
+          Result.try(() => {
             if (response.statusCode !== 200) {
               throw new Error(
                 `Relay automatic pairing returned HTTP ${response.statusCode}`
               )
             }
-            resolve({
+            return {
               payload: JSON.parse(
                 Buffer.concat(chunks).toString("utf8")
               ) as unknown,
               tlsFingerprint: fingerprint,
-            })
-          } catch (cause) {
-            reject(cause)
-          }
+            }
+          }).pipe(Result.match({ onFailure: reject, onSuccess: resolve }))
         })
       }
     )
     outgoing.once("error", reject)
     outgoing.end()
+  })
+}
+
+function registryOperation<A>(
+  run: () => Promise<A>
+): Effect.Effect<A, unknown> {
+  return Effect.tryPromise({
+    try: run,
+    catch: (cause) => cause,
   })
 }
 

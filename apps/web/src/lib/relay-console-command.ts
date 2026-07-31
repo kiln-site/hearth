@@ -8,6 +8,7 @@ import type {
   RelayConsoleCompletion,
   RelayConsoleCommandResult,
 } from "@workspace/contracts"
+import { Effect, Result } from "effect"
 
 import { issueConsoleCapability } from "@/server/relay-capability"
 import {
@@ -22,16 +23,25 @@ export async function sendDirectRelayCommand(
   instanceId: string,
   command: string
 ): Promise<RelayConsoleCommandResult> {
-  let session: ConsoleCommandSession
-  try {
-    session = await commandSession(relayId, instanceId)
-  } catch {
-    return sendRelayConsoleCommand({
-      data: { command, instanceId, relayId },
-    })
-  }
+  const session = await runCommand(
+    commandOperation(() => commandSession(relayId, instanceId)).pipe(
+      Effect.catch(() =>
+        commandOperation(() =>
+          sendRelayConsoleCommand({
+            data: { command, instanceId, relayId },
+          })
+        ).pipe(Effect.map((fallback) => ({ fallback })))
+      ),
+      Effect.map((connected) =>
+        "fallback" in connected
+          ? connected
+          : { session: connected as ConsoleCommandSession }
+      )
+    )
+  )
+  if ("fallback" in session) return session.fallback
   return relayConsoleCommandResultSchema.parse(
-    await session.request("console.write", { command })
+    await session.session.request("console.write", { command })
   )
 }
 
@@ -41,16 +51,25 @@ export async function completeDirectRelayCommand(
   input: string,
   cursor: number
 ): Promise<RelayConsoleCompletion> {
-  let session: ConsoleCommandSession
-  try {
-    session = await commandSession(relayId, instanceId)
-  } catch {
-    return completeRelayConsoleCommand({
-      data: { cursor, input, instanceId, relayId },
-    })
-  }
+  const session = await runCommand(
+    commandOperation(() => commandSession(relayId, instanceId)).pipe(
+      Effect.catch(() =>
+        commandOperation(() =>
+          completeRelayConsoleCommand({
+            data: { cursor, input, instanceId, relayId },
+          })
+        ).pipe(Effect.map((fallback) => ({ fallback })))
+      ),
+      Effect.map((connected) =>
+        "fallback" in connected
+          ? connected
+          : { session: connected as ConsoleCommandSession }
+      )
+    )
+  )
+  if ("fallback" in session) return session.fallback
   return relayConsoleCompletionSchema.parse(
-    await session.request("console.complete", { cursor, input })
+    await session.session.request("console.complete", { cursor, input })
   )
 }
 
@@ -226,34 +245,38 @@ class ConsoleCommandSession {
   }
 
   async #read(): Promise<void> {
-    try {
-      for (;;) {
-        // Operation responses are one ordered stream.
-        // oxlint-disable-next-line react-doctor/async-await-in-loop
-        const message = await this.#inbox.next()
-        const requestId = message.requestId
-        if (typeof requestId !== "string") continue
-        const pending = this.#pending.get(requestId)
-        if (!pending) continue
-        clearTimeout(pending.timer)
-        this.#pending.delete(requestId)
-        if (message.type === "operation.result")
-          pending.resolve(message.payload)
-        else if (message.type === "operation.error") {
-          pending.reject(
-            new Error(
-              typeof message.message === "string"
-                ? message.message
-                : "Relay operation failed"
+    await runCommand(
+      commandOperation(async () => {
+        for (;;) {
+          // Operation responses are one ordered stream.
+          // oxlint-disable-next-line react-doctor/async-await-in-loop
+          const message = await this.#inbox.next()
+          const requestId = message.requestId
+          if (typeof requestId !== "string") continue
+          const pending = this.#pending.get(requestId)
+          if (!pending) continue
+          clearTimeout(pending.timer)
+          this.#pending.delete(requestId)
+          if (message.type === "operation.result")
+            pending.resolve(message.payload)
+          else if (message.type === "operation.error") {
+            pending.reject(
+              new Error(
+                typeof message.message === "string"
+                  ? message.message
+                  : "Relay operation failed"
+              )
             )
-          )
+          }
         }
-      }
-    } catch (cause) {
-      this.close(
-        cause instanceof Error ? cause : new Error("Relay connection failed")
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() => {
+            this.close(cause)
+          })
+        )
       )
-    }
+    )
   }
 }
 
@@ -267,7 +290,7 @@ function createSocketInbox(socket: WebSocket) {
     for (const waiter of waiters.splice(0)) waiter.reject(cause)
   }
   const receive = (event: MessageEvent) => {
-    try {
+    Result.try(() => {
       const value = JSON.parse(String(event.data)) as unknown
       if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new Error("Relay returned an invalid browser message")
@@ -276,9 +299,15 @@ function createSocketInbox(socket: WebSocket) {
       const waiter = waiters.shift()
       if (waiter) waiter.resolve(message)
       else messages.push(message)
-    } catch (cause) {
-      fail(cause instanceof Error ? cause : new Error("Invalid Relay message"))
-    }
+    }).pipe(
+      Result.match({
+        onFailure: (cause) =>
+          fail(
+            cause instanceof Error ? cause : new Error("Invalid Relay message")
+          ),
+        onSuccess: () => undefined,
+      })
+    )
   }
   const failed = () => fail(new Error("Unable to connect to Relay"))
   const closed = (event: CloseEvent) =>
@@ -332,4 +361,16 @@ function bytesToBase64Url(value: Uint8Array): string {
     .replaceAll("+", "-")
     .replaceAll("/", "_")
     .replace(/=+$/u, "")
+}
+
+function commandOperation<A>(run: () => Promise<A>): Effect.Effect<A, Error> {
+  return Effect.tryPromise({
+    try: run,
+    catch: (cause) =>
+      cause instanceof Error ? cause : new Error("Relay command failed"),
+  })
+}
+
+function runCommand<A>(effect: Effect.Effect<A, Error>): Promise<A> {
+  return Effect.runPromise(effect)
 }

@@ -1,4 +1,5 @@
 import { relayBrowserRequestProofTranscript } from "@workspace/contracts"
+import { Effect } from "effect"
 
 import { issueFileCapability } from "@/server/relay-capability"
 import { getRelayFile, saveRelayFile } from "@/server/relay"
@@ -16,37 +17,48 @@ interface FileTransferInput {
 export async function downloadRelayFile(
   input: FileTransferInput
 ): Promise<void> {
-  let blob: Blob
-  try {
-    const response = await relayFileRequest(input, "GET")
-    if (!response.ok) throw await transferError(response, "download")
-    blob = await response.blob()
-  } catch (cause) {
-    if (!isDirectConnectionFailure(cause)) throw cause
-    try {
-      const file = await getRelayFile({ data: input })
-      if (file.encoding !== "utf8") {
-        throw new Error("Archived files require the direct transfer edge")
-      }
-      blob = new Blob([file.content], { type: "text/plain;charset=utf-8" })
-    } catch (fallbackCause) {
-      throw directTransferUnavailable("download", fallbackCause)
-    }
-  }
+  const blob = await runTransfer(
+    transferOperation(async () => {
+      const response = await relayFileRequest(input, "GET")
+      if (!response.ok) throw await transferError(response, "download")
+      return response.blob()
+    }).pipe(
+      Effect.catchIf(isDirectConnectionFailure, () =>
+        transferOperation(async () => {
+          const file = await getRelayFile({ data: input })
+          if (file.encoding !== "utf8") {
+            throw new Error("Archived files require the direct transfer edge")
+          }
+          return new Blob([file.content], { type: "text/plain;charset=utf-8" })
+        }).pipe(
+          Effect.mapError((cause) =>
+            directTransferUnavailable("download", cause)
+          )
+        )
+      )
+    )
+  )
   triggerDownload(blob, input.path)
 }
 
 function triggerDownload(blob: Blob, path: string): void {
-  const objectUrl = URL.createObjectURL(blob)
-  try {
-    const anchor = document.createElement("a")
-    anchor.href = objectUrl
-    anchor.download = path.split("/").filter(Boolean).at(-1) || "download"
-    anchor.rel = "noopener"
-    anchor.click()
-  } finally {
-    setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000)
-  }
+  Effect.runSync(
+    Effect.acquireUseRelease(
+      Effect.sync(() => URL.createObjectURL(blob)),
+      (objectUrl) =>
+        Effect.sync(() => {
+          const anchor = document.createElement("a")
+          anchor.href = objectUrl
+          anchor.download = path.split("/").filter(Boolean).at(-1) || "download"
+          anchor.rel = "noopener"
+          anchor.click()
+        }),
+      (objectUrl) =>
+        Effect.sync(() => {
+          setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000)
+        })
+    )
+  )
 }
 
 export async function uploadRelayFile(
@@ -59,40 +71,46 @@ export async function uploadRelayFile(
   sha256: string
   size: number
 }> {
-  let result: unknown
-  try {
-    const response = await relayFileRequest(input, "PUT", input.file)
-    if (!response.ok) throw await transferError(response, "upload")
-    result = (await response.json()) as unknown
-  } catch (cause) {
-    if (!isDirectConnectionFailure(cause)) throw cause
-    if (input.file.size > HEARTH_FILE_FALLBACK_LIMIT) {
-      throw directTransferUnavailable("upload", cause)
-    }
-    try {
-      const bytes = new Uint8Array(await input.file.arrayBuffer())
-      const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes)
-      const saved = await saveRelayFile({
-        data: {
-          content,
-          instanceId: input.instanceId,
-          path: input.path,
-          relayId: input.relayId,
-        },
+  const result = await runTransfer(
+    transferOperation(async () => {
+      const response = await relayFileRequest(input, "PUT", input.file)
+      if (!response.ok) throw await transferError(response, "upload")
+      return (await response.json()) as unknown
+    }).pipe(
+      Effect.catchIf(isDirectConnectionFailure, (cause) => {
+        if (input.file.size > HEARTH_FILE_FALLBACK_LIMIT) {
+          return Effect.fail(directTransferUnavailable("upload", cause))
+        }
+        return transferOperation(async () => {
+          const bytes = new Uint8Array(await input.file.arrayBuffer())
+          const content = new TextDecoder("utf-8", { fatal: true }).decode(
+            bytes
+          )
+          const saved = await saveRelayFile({
+            data: {
+              content,
+              instanceId: input.instanceId,
+              path: input.path,
+              relayId: input.relayId,
+            },
+          })
+          const digest = await crypto.subtle.digest("SHA-256", bytes)
+          return {
+            modifiedAt: saved.modifiedAt,
+            path: saved.path,
+            sha256: Array.from(new Uint8Array(digest), (byte) =>
+              byte.toString(16).padStart(2, "0")
+            ).join(""),
+            size: bytes.byteLength,
+          }
+        }).pipe(
+          Effect.mapError((fallbackCause) =>
+            directTransferUnavailable("upload", fallbackCause)
+          )
+        )
       })
-      const digest = await crypto.subtle.digest("SHA-256", bytes)
-      return {
-        modifiedAt: saved.modifiedAt,
-        path: saved.path,
-        sha256: Array.from(new Uint8Array(digest), (byte) =>
-          byte.toString(16).padStart(2, "0")
-        ).join(""),
-        size: bytes.byteLength,
-      }
-    } catch (fallbackCause) {
-      throw directTransferUnavailable("upload", fallbackCause)
-    }
-  }
+    )
+  )
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     throw new Error("Relay returned an invalid upload response")
   }
@@ -170,27 +188,32 @@ async function relayFileRequest(
     issued.browserOrigin
   )
   url.searchParams.set("path", input.path)
-  try {
-    return await fetch(url, {
-      ...(body === undefined ? {} : { body }),
-      headers: {
-        Authorization: `Kiln ${issued.capability}`,
-        "X-Kiln-Nonce": nonce,
-        "X-Kiln-Proof": bytesToBase64Url(new Uint8Array(proof)),
-        "X-Kiln-Public-Key": bytesToBase64Url(
-          new TextEncoder().encode(JSON.stringify(publicKeyJwk))
-        ),
-        "X-Kiln-Requested-At": String(requestedAt),
-      },
-      method,
-      mode: "cors",
-    })
-  } catch (cause) {
-    throw new DirectRelayTransferError(
-      "The browser could not establish the direct Relay transfer",
-      { cause }
+  return runTransfer(
+    transferOperation(() =>
+      fetch(url, {
+        ...(body === undefined ? {} : { body }),
+        headers: {
+          Authorization: `Kiln ${issued.capability}`,
+          "X-Kiln-Nonce": nonce,
+          "X-Kiln-Proof": bytesToBase64Url(new Uint8Array(proof)),
+          "X-Kiln-Public-Key": bytesToBase64Url(
+            new TextEncoder().encode(JSON.stringify(publicKeyJwk))
+          ),
+          "X-Kiln-Requested-At": String(requestedAt),
+        },
+        method,
+        mode: "cors",
+      })
+    ).pipe(
+      Effect.mapError(
+        (cause) =>
+          new DirectRelayTransferError(
+            "The browser could not establish the direct Relay transfer",
+            { cause }
+          )
+      )
     )
-  }
+  )
 }
 
 function isDirectConnectionFailure(cause: unknown): boolean {
@@ -205,6 +228,19 @@ function directTransferUnavailable(
     `The secure direct ${operation} edge is unavailable, and Hearth could not safely proxy this file. Configure bundled Traefik or a trusted existing Traefik edge and try again.`,
     { cause }
   )
+}
+
+function transferOperation<A>(
+  run: () => Promise<A>
+): Effect.Effect<A, unknown> {
+  return Effect.tryPromise({
+    try: run,
+    catch: (cause) => cause,
+  })
+}
+
+function runTransfer<A>(effect: Effect.Effect<A, unknown>): Promise<A> {
+  return Effect.runPromise(effect)
 }
 
 function capabilityPayload(capability: string): {

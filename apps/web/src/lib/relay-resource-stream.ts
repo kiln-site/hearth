@@ -4,6 +4,7 @@ import {
   relayResourceStreamEventSchema,
 } from "@workspace/contracts"
 import type { RelayResourceStreamEvent } from "@workspace/contracts"
+import { Effect, Result, Stream } from "effect"
 
 import { issueResourceCapability } from "@/server/relay-capability"
 import { getRelayInstanceResources } from "@/server/relay"
@@ -41,65 +42,77 @@ export async function* openRelayResourceStream(
   const socket = new WebSocket(relayOrigin, relayBrowserProtocol)
   const inbox = createSocketInbox(socket, signal)
 
-  try {
-    const challenge = await inbox.next()
-    if (
-      challenge.type !== "auth.challenge" ||
-      challenge.relayId !== relayId ||
-      typeof challenge.sessionId !== "string" ||
-      typeof challenge.nonce !== "string" ||
-      typeof challenge.expiresAt !== "number" ||
-      challenge.expiresAt <= Date.now()
-    ) {
-      throw new Error("Relay returned an invalid browser challenge")
-    }
-    const proof = await crypto.subtle.sign(
-      { hash: "SHA-256", name: "ECDSA" },
-      keys.privateKey,
-      new TextEncoder().encode(
-        relayBrowserProofTranscript({
-          capabilityId: capabilityId(capability.capability),
-          expiresAt: challenge.expiresAt,
-          nonce: challenge.nonce,
-          relayId,
-          sessionId: challenge.sessionId,
+  const direct = managedAsyncIterable(
+    (async function* () {
+      const challenge = await inbox.next()
+      if (
+        challenge.type !== "auth.challenge" ||
+        challenge.relayId !== relayId ||
+        typeof challenge.sessionId !== "string" ||
+        typeof challenge.nonce !== "string" ||
+        typeof challenge.expiresAt !== "number" ||
+        challenge.expiresAt <= Date.now()
+      ) {
+        throw new Error("Relay returned an invalid browser challenge")
+      }
+      const proof = await crypto.subtle.sign(
+        { hash: "SHA-256", name: "ECDSA" },
+        keys.privateKey,
+        new TextEncoder().encode(
+          relayBrowserProofTranscript({
+            capabilityId: capabilityId(capability.capability),
+            expiresAt: challenge.expiresAt,
+            nonce: challenge.nonce,
+            relayId,
+            sessionId: challenge.sessionId,
+          })
+        )
+      )
+      socket.send(
+        JSON.stringify({
+          capability: capability.capability,
+          publicKeyJwk: {
+            crv: "P-256",
+            kty: "EC",
+            x: requiredCoordinate(publicKeyJwk.x),
+            y: requiredCoordinate(publicKeyJwk.y),
+          },
+          signature: bytesToBase64Url(new Uint8Array(proof)),
+          type: "auth",
+          v: 1,
         })
       )
-    )
-    socket.send(
-      JSON.stringify({
-        capability: capability.capability,
-        publicKeyJwk: {
-          crv: "P-256",
-          kty: "EC",
-          x: requiredCoordinate(publicKeyJwk.x),
-          y: requiredCoordinate(publicKeyJwk.y),
-        },
-        signature: bytesToBase64Url(new Uint8Array(proof)),
-        type: "auth",
-        v: 1,
-      })
-    )
-    const ready = await inbox.next()
-    if (ready.type !== "auth.ready" || ready.instanceId !== instanceId) {
-      throw new Error("Relay browser authentication failed")
-    }
-    socket.send(
-      JSON.stringify({ instanceId, type: "resource.subscribe", v: 1 })
-    )
+      const ready = await inbox.next()
+      if (ready.type !== "auth.ready" || ready.instanceId !== instanceId) {
+        throw new Error("Relay browser authentication failed")
+      }
+      socket.send(
+        JSON.stringify({ instanceId, type: "resource.subscribe", v: 1 })
+      )
 
-    for (;;) {
-      // Resource samples are ordered; concurrent reads could reorder them.
-      // oxlint-disable-next-line react-doctor/async-await-in-loop
-      yield relayResourceStreamEventSchema.parse(await inbox.next())
+      for (;;) {
+        // Resource samples are ordered; concurrent reads could reorder them.
+        // oxlint-disable-next-line react-doctor/async-await-in-loop
+        yield relayResourceStreamEventSchema.parse(await inbox.next())
+      }
+    })(),
+    () => {
+      inbox.close()
+      socket.close(1000, "Resource view closed")
     }
-  } catch (cause) {
-    if (signal.aborted) throw cause
-    yield* openHearthResourceStream(relayId, instanceId, signal)
-  } finally {
-    inbox.close()
-    socket.close(1000, "Resource view closed")
-  }
+  )
+  yield* Stream.toAsyncIterable(
+    Stream.fromAsyncIterable(direct, asError).pipe(
+      Stream.catch((cause) =>
+        signal.aborted
+          ? Stream.fail(cause)
+          : Stream.fromAsyncIterable(
+              openHearthResourceStream(relayId, instanceId, signal),
+              asError
+            )
+      )
+    )
+  )
 }
 
 async function* openHearthResourceStream(
@@ -157,7 +170,7 @@ function createSocketInbox(socket: WebSocket, signal: AbortSignal) {
     for (const waiter of waiters.splice(0)) waiter.reject(cause)
   }
   socket.addEventListener("message", (event) => {
-    try {
+    Result.try(() => {
       const value = JSON.parse(String(event.data)) as unknown
       if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new Error("Relay returned an invalid browser message")
@@ -166,9 +179,12 @@ function createSocketInbox(socket: WebSocket, signal: AbortSignal) {
       const waiter = waiters.shift()
       if (waiter) waiter.resolve(message)
       else messages.push(message)
-    } catch (cause) {
-      fail(cause instanceof Error ? cause : new Error("Invalid Relay message"))
-    }
+    }).pipe(
+      Result.match({
+        onFailure: (cause) => fail(asError(cause)),
+        onSuccess: () => undefined,
+      })
+    )
   })
   socket.addEventListener("error", () =>
     fail(new Error("Unable to connect to Relay"))
@@ -191,6 +207,26 @@ function createSocketInbox(socket: WebSocket, signal: AbortSignal) {
       )
     },
   }
+}
+
+function managedAsyncIterable<A>(
+  iterable: AsyncIterable<A>,
+  cleanup: () => void | Promise<unknown>
+): AsyncIterable<A> {
+  return Stream.toAsyncIterable(
+    Stream.fromAsyncIterable(iterable, asError).pipe(
+      Stream.ensuring(
+        Effect.tryPromise({
+          try: async () => cleanup(),
+          catch: asError,
+        }).pipe(Effect.ignore)
+      )
+    )
+  )
+}
+
+function asError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error("Invalid Relay message")
 }
 
 function capabilityId(capability: string): string {
