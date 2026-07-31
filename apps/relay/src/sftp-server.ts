@@ -17,6 +17,7 @@ import type { Stats } from "node:fs"
 import type { AddressInfo } from "node:net"
 import { dirname, posix, resolve, sep } from "node:path"
 import * as Sentry from "@sentry/node"
+import { Effect, Fiber } from "effect"
 import ssh2 from "ssh2"
 import type { Attributes, Connection, FileEntry, SFTPWrapper } from "ssh2"
 import type { FileHandle } from "node:fs/promises"
@@ -99,10 +100,26 @@ export async function attachSftpServer(options: {
         return
       }
       connections.add(client)
+      const connectionFibers = new Set<Fiber.Fiber<void, never>>()
       let grants: ReadonlyArray<SftpGrant> | null = null
       let authenticatedUsername: string | null = null
-      let authorizationTimer: NodeJS.Timeout | null = null
-      let authorizationPending = false
+
+      const forkConnection = (
+        effect: Effect.Effect<void>
+      ): Fiber.Fiber<void, never> => {
+        let fiber: Fiber.Fiber<void, never>
+        fiber = Effect.runFork(
+          effect.pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                connectionFibers.delete(fiber)
+              })
+            )
+          )
+        )
+        connectionFibers.add(fiber)
+        return fiber
+      }
 
       client.on("authentication", (context) => {
         if (
@@ -113,31 +130,38 @@ export async function attachSftpServer(options: {
           context.reject(["password"])
           return
         }
-        void authorizeUsername(
-          options.control,
-          context.username,
-          options.clientActions
+        forkConnection(
+          sftpOperation(() =>
+            authorizeUsername(
+              options.control,
+              context.username,
+              options.clientActions
+            )
+          ).pipe(
+            Effect.match({
+              onSuccess: (authorized) => {
+                if (!authorized.length) {
+                  context.reject(["password"])
+                  return
+                }
+                grants = authorized
+                authenticatedUsername = context.username.trim().toLowerCase()
+                Sentry.addBreadcrumb({
+                  category: "relay.sftp",
+                  level: "info",
+                  message: "SFTP authentication accepted",
+                })
+                context.accept()
+              },
+              onFailure: (cause) => {
+                Sentry.captureException(cause, {
+                  tags: { "kiln.operation": "sftp.authentication" },
+                })
+                context.reject(["password"])
+              },
+            })
+          )
         )
-          .then((authorized) => {
-            if (!authorized.length) {
-              context.reject(["password"])
-              return
-            }
-            grants = authorized
-            authenticatedUsername = context.username.trim().toLowerCase()
-            Sentry.addBreadcrumb({
-              category: "relay.sftp",
-              level: "info",
-              message: "SFTP authentication accepted",
-            })
-            context.accept()
-          })
-          .catch((cause: unknown) => {
-            Sentry.captureException(cause, {
-              tags: { "kiln.operation": "sftp.authentication" },
-            })
-            context.reject(["password"])
-          })
       })
 
       client.on("ready", () => {
@@ -145,45 +169,61 @@ export async function attachSftpServer(options: {
           client.end()
           return
         }
-        authorizationTimer = setInterval(() => {
-          if (authorizationPending || !authenticatedUsername || !grants) return
-          authorizationPending = true
-          void authorizeUsername(
-            options.control,
-            authenticatedUsername,
-            options.clientActions
-          )
-            .then((authorized) => {
-              if (!grants || !sameGrants(grants, authorized)) client.end()
-            })
-            .catch((cause: unknown) => {
-              Sentry.captureException(cause, {
-                tags: { "kiln.operation": "sftp.authorization.refresh" },
+        forkConnection(
+          Effect.sleep("15 seconds").pipe(
+            Effect.andThen(
+              Effect.suspend(() => {
+                if (!authenticatedUsername || !grants) return Effect.void
+                return sftpOperation(() =>
+                  authorizeUsername(
+                    options.control,
+                    authenticatedUsername as string,
+                    options.clientActions
+                  )
+                ).pipe(
+                  Effect.match({
+                    onSuccess: (authorized) => {
+                      if (!grants || !sameGrants(grants, authorized)) {
+                        client.end()
+                      }
+                    },
+                    onFailure: (cause) => {
+                      Sentry.captureException(cause, {
+                        tags: {
+                          "kiln.operation": "sftp.authorization.refresh",
+                        },
+                      })
+                      client.end()
+                    },
+                  })
+                )
               })
-              client.end()
-            })
-            .finally(() => {
-              authorizationPending = false
-            })
-        }, 15_000)
-        authorizationTimer.unref()
+            ),
+            Effect.forever
+          )
+        )
         client.on("session", (accept) => {
           const session = accept()
           session.on("sftp", (acceptSftp) => {
-            void resolveGrants(options, grants ?? [])
-              .then((resolved) => {
-                if (!resolved.length) {
-                  session.end()
-                  return
-                }
-                serveSftp(acceptSftp(), resolved)
-              })
-              .catch((cause: unknown) => {
-                Sentry.captureException(cause, {
-                  tags: { "kiln.operation": "sftp.session" },
+            forkConnection(
+              sftpOperation(() => resolveGrants(options, grants ?? [])).pipe(
+                Effect.match({
+                  onSuccess: (resolved) => {
+                    if (!resolved.length) {
+                      session.end()
+                      return
+                    }
+                    serveSftp(acceptSftp(), resolved)
+                  },
+                  onFailure: (cause) => {
+                    Sentry.captureException(cause, {
+                      tags: { "kiln.operation": "sftp.session" },
+                    })
+                    session.end()
+                  },
                 })
-                session.end()
-              })
+              )
+            )
           })
           session.on("shell", (_accept, reject) => reject())
           session.on("exec", (_accept, reject) => reject())
@@ -199,7 +239,8 @@ export async function attachSftpServer(options: {
         })
       })
       client.once("close", () => {
-        if (authorizationTimer) clearInterval(authorizationTimer)
+        for (const fiber of connectionFibers) fiber.interruptUnsafe()
+        connectionFibers.clear()
         connections.delete(client)
         Sentry.addBreadcrumb({
           category: "relay.sftp",
@@ -210,16 +251,12 @@ export async function attachSftpServer(options: {
     }
   )
 
-  await new Promise<void>((resolveListen, reject) => {
-    server.once("error", reject)
-    server.listen(options.config.sftpPort, options.config.host, () => {
-      server.off("error", reject)
-      server.on("error", (cause: Error) => {
-        Sentry.captureException(cause, {
-          tags: { "kiln.operation": "sftp.server" },
-        })
-      })
-      resolveListen()
+  await Effect.runPromise(
+    listenSftpServerEffect(server, options.config.sftpPort, options.config.host)
+  )
+  server.on("error", (cause: Error) => {
+    Sentry.captureException(cause, {
+      tags: { "kiln.operation": "sftp.server" },
     })
   })
   const address = server.address() as AddressInfo
@@ -233,12 +270,12 @@ export async function attachSftpServer(options: {
     `Relay SFTP listening on ${options.config.host}:${port} (${hostKeyFingerprint})`
   )
   return {
-    close: async () => {
-      for (const connection of connections) connection.end()
-      await new Promise<void>((resolveClose, reject) => {
-        server.close((cause) => (cause ? reject(cause) : resolveClose()))
-      })
-    },
+    close: () =>
+      Effect.runPromise(
+        Effect.sync(() => {
+          for (const connection of connections) connection.end()
+        }).pipe(Effect.andThen(closeSftpServerEffect(server)))
+      ),
     hostKeyFingerprint,
     port,
   }
@@ -272,58 +309,73 @@ export function generateSftpHostKey(
   )
 }
 
-async function loadOrCreateHostKey(config: RelayConfig): Promise<Buffer> {
+function loadOrCreateHostKey(config: RelayConfig): Promise<Buffer> {
   const directory = resolve(config.dataDirectory, "network", "sftp")
   const path = resolve(directory, "host.key")
-  await mkdir(directory, { mode: 0o700, recursive: true })
-  let existing: Buffer | null = null
-  try {
-    existing = await readFile(path)
-  } catch (cause) {
-    if (!isMissing(cause)) throw cause
-  }
-  if (existing) {
-    const parseError = hostKeyParseError(existing)
-    if (!parseError) return existing
-    console.warn(
-      `Relay SFTP host key at ${path} is invalid and will be replaced: ${parseError.message}`
-    )
-    return replaceHostKey(path)
-  }
-
-  const generated = generateSftpHostKey()
-  try {
-    await writeFile(path, generated, { flag: "wx", mode: 0o600 })
-  } catch (cause) {
-    if (errorCode(cause) === "EEXIST") {
-      const concurrent = await readFile(path)
-      const parseError = hostKeyParseError(concurrent)
-      if (!parseError) return concurrent
-      console.warn(
-        `Relay SFTP host key at ${path} is invalid and will be replaced: ${parseError.message}`
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      yield* sftpOperation(() =>
+        mkdir(directory, { mode: 0o700, recursive: true })
       )
-      return replaceHostKey(path)
-    }
-    throw cause
-  }
-  await chmod(path, 0o600)
-  return generated
+      const existing = yield* sftpOperation(() => readFile(path)).pipe(
+        Effect.catch((cause) =>
+          isMissing(cause) ? Effect.succeed(null) : Effect.fail(cause)
+        )
+      )
+      if (existing) {
+        const parseError = hostKeyParseError(existing)
+        if (!parseError) return existing
+        console.warn(
+          `Relay SFTP host key at ${path} is invalid and will be replaced: ${parseError.message}`
+        )
+        return yield* replaceHostKeyEffect(path)
+      }
+
+      const generated = generateSftpHostKey()
+      const created = yield* sftpOperation(() =>
+        writeFile(path, generated, { flag: "wx", mode: 0o600 })
+      ).pipe(
+        Effect.as(true),
+        Effect.catch((cause) =>
+          errorCode(cause) === "EEXIST"
+            ? Effect.succeed(false)
+            : Effect.fail(cause)
+        )
+      )
+      if (!created) {
+        const concurrent = yield* sftpOperation(() => readFile(path))
+        const parseError = hostKeyParseError(concurrent)
+        if (!parseError) return concurrent
+        console.warn(
+          `Relay SFTP host key at ${path} is invalid and will be replaced: ${parseError.message}`
+        )
+        return yield* replaceHostKeyEffect(path)
+      }
+      yield* sftpOperation(() => chmod(path, 0o600))
+      return generated
+    })
+  )
 }
 
-async function replaceHostKey(path: string): Promise<Buffer> {
+function replaceHostKeyEffect(path: string): Effect.Effect<Buffer, Error> {
   const generated = generateSftpHostKey()
   const temporaryPath = `${path}.${randomUUID()}.tmp`
-  try {
-    await writeFile(temporaryPath, generated, { flag: "wx", mode: 0o600 })
-    await rename(temporaryPath, path)
-  } catch (cause) {
-    try {
-      await unlink(temporaryPath)
-    } catch {}
-    throw cause
-  }
-  await chmod(path, 0o600)
-  return generated
+  return Effect.acquireUseRelease(
+    Effect.succeed(temporaryPath),
+    (temporary) =>
+      Effect.gen(function* () {
+        yield* sftpOperation(() =>
+          writeFile(temporary, generated, { flag: "wx", mode: 0o600 })
+        )
+        yield* sftpOperation(() => rename(temporary, path))
+        yield* sftpOperation(() => chmod(path, 0o600))
+        return generated
+      }),
+    (temporary) =>
+      sftpOperation(() => unlink(temporary)).pipe(
+        Effect.catch(() => Effect.void)
+      )
+  )
 }
 
 function hostKeyParseError(hostKey: Buffer): Error | null {
@@ -331,45 +383,67 @@ function hostKeyParseError(hostKey: Buffer): Error | null {
   return parsed instanceof Error ? parsed : null
 }
 
-async function authorizeUsername(
+function authorizeUsername(
   control: Pick<ControlSocketServer, "requestClients">,
   username: string,
   clientActions: (clientId: string) => Promise<ReadonlyArray<string>>
 ): Promise<ReadonlyArray<SftpGrant>> {
-  const responses = await control.requestClients(
-    "sftp.authorization.resolve",
-    { username },
-    5_000
-  )
-  const authorizations: Array<ReadonlyArray<SftpGrant>> = []
-  for (const response of responses) {
-    const payload = record(response.payload)
-    if (!payload || typeof payload.username !== "string") continue
-    if (payload.username.toLowerCase() !== username.trim().toLowerCase())
-      continue
-    if (!Array.isArray(payload.instances)) continue
-    const clientGrant = new Set(await clientActions(response.clientId))
-    if (!clientGrant.has("instance.sftp.connect")) continue
-    const grants = new Map<string, Set<string>>()
-    for (const item of payload.instances) {
-      const grant = record(item)
-      if (!grant || typeof grant.id !== "string" || !grant.id) continue
-      if (!Array.isArray(grant.actions)) continue
-      const actions = grant.actions.filter(
-        (action): action is string =>
-          typeof action === "string" && clientGrant.has(action)
-      )
-      if (!actions.includes("instance.files.list")) continue
-      const current = grants.get(grant.id) ?? new Set<string>()
-      for (const action of actions) current.add(action)
-      grants.set(grant.id, current)
-    }
-    authorizations.push(
-      [...grants].map(([id, actions]) => ({ actions: [...actions].sort(), id }))
+  return Effect.runPromise(
+    sftpOperation(() =>
+      control.requestClients("sftp.authorization.resolve", { username }, 5_000)
+    ).pipe(
+      Effect.flatMap((responses) =>
+        Effect.forEach(
+          responses,
+          (response) => {
+            const payload = record(response.payload)
+            if (
+              !payload ||
+              typeof payload.username !== "string" ||
+              payload.username.toLowerCase() !==
+                username.trim().toLowerCase() ||
+              !Array.isArray(payload.instances)
+            ) {
+              return Effect.succeed(null)
+            }
+            return sftpOperation(() => clientActions(response.clientId)).pipe(
+              Effect.map((actions) => {
+                const clientGrant = new Set(actions)
+                if (!clientGrant.has("instance.sftp.connect")) return null
+                const grants = new Map<string, Set<string>>()
+                for (const item of payload.instances as Array<unknown>) {
+                  const grant = record(item)
+                  if (!grant || typeof grant.id !== "string" || !grant.id) {
+                    continue
+                  }
+                  if (!Array.isArray(grant.actions)) continue
+                  const allowed = grant.actions.filter(
+                    (action): action is string =>
+                      typeof action === "string" && clientGrant.has(action)
+                  )
+                  if (!allowed.includes("instance.files.list")) continue
+                  const current = grants.get(grant.id) ?? new Set<string>()
+                  for (const action of allowed) current.add(action)
+                  grants.set(grant.id, current)
+                }
+                return [...grants].map(([id, grantActions]) => ({
+                  actions: [...grantActions].sort(),
+                  id,
+                }))
+              })
+            )
+          },
+          { concurrency: 8 }
+        )
+      ),
+      Effect.map((authorizations) => {
+        const authorized = authorizations.flatMap((grants) =>
+          grants === null ? [] : [grants]
+        )
+        return authorized.length === 1 ? (authorized[0] ?? []) : []
+      })
     )
-  }
-  if (authorizations.length !== 1) return []
-  return authorizations[0] ?? []
+  )
 }
 
 function sameGrants(
@@ -385,24 +459,45 @@ function sameGrants(
   )
 }
 
-async function resolveGrants(
+function resolveGrants(
   options: { config: RelayConfig; docker: Pick<DockerDriver, "findInstance"> },
   grants: ReadonlyArray<SftpGrant>
 ): Promise<ReadonlyArray<ResolvedGrant>> {
-  const rootDirectory = await realpath(options.config.rootDirectory)
-  const resolved: Array<ResolvedGrant> = []
-  for (const grant of grants) {
-    const instance = await options.docker.findInstance(grant.id)
-    if (!instance) continue
-    const root = await realpath(resolve(rootDirectory, instance.directory))
-    ensureContained(rootDirectory, root)
-    resolved.push({ ...grant, root })
-  }
-  return resolved.sort((left, right) => left.id.localeCompare(right.id))
+  return Effect.runPromise(
+    sftpOperation(() => realpath(options.config.rootDirectory)).pipe(
+      Effect.flatMap((rootDirectory) =>
+        Effect.forEach(
+          grants,
+          (grant) =>
+            sftpOperation(() => options.docker.findInstance(grant.id)).pipe(
+              Effect.flatMap((instance) =>
+                instance
+                  ? sftpOperation(() =>
+                      realpath(resolve(rootDirectory, instance.directory))
+                    ).pipe(
+                      Effect.map((root) => {
+                        ensureContained(rootDirectory, root)
+                        return { ...grant, root }
+                      })
+                    )
+                  : Effect.succeed(null)
+              )
+            ),
+          { concurrency: 8 }
+        )
+      ),
+      Effect.map((resolved) =>
+        resolved
+          .filter((grant): grant is ResolvedGrant => grant !== null)
+          .sort((left, right) => left.id.localeCompare(right.id))
+      )
+    )
+  )
 }
 
 function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
   const handles = new Map<number, OpenResource>()
+  const operations = new Set<Fiber.Fiber<void, never>>()
   let nextHandle = 1
 
   stream.on("REALPATH", (requestId, requestedPath) => {
@@ -426,16 +521,17 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
         stream.attrs(requestId, virtualDirectoryAttributes())
         return
       }
-      const file = await open(
-        target.physicalPath,
-        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW
+      await withOpenFile(
+        () =>
+          open(
+            target.physicalPath as string,
+            fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW
+          ),
+        async (file) => {
+          await verifyOpenPath(target.grant?.root ?? "", file)
+          stream.attrs(requestId, attributes(await file.stat()))
+        }
       )
-      try {
-        await verifyOpenPath(target.grant?.root ?? "", file)
-        stream.attrs(requestId, attributes(await file.stat()))
-      } finally {
-        await file.close()
-      }
     })
   }
   stream.on("STAT", statPath)
@@ -504,12 +600,7 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
             sanitizeMode(inputAttributes.mode, 0o644)
           )
       )
-      try {
-        await verifyOpenPath(target.grant.root, file)
-      } catch (cause) {
-        await file.close()
-        throw cause
-      }
+      await verifyRetainedFile(target.grant.root, file)
       const handle = nextHandle++
       handles.set(handle, {
         actions: target.grant.actions,
@@ -632,18 +723,19 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
       )
         throw permissionDenied()
       requireAction(target.grant, "instance.files.chmod")
-      const file = await withAnchoredParent(
-        target.grant.root,
-        target.physicalPath,
-        (anchoredPath) =>
-          open(anchoredPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+      await withOpenFile(
+        () =>
+          withAnchoredParent(
+            target.grant!.root,
+            target.physicalPath as string,
+            (anchoredPath) =>
+              open(anchoredPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+          ),
+        async (file) => {
+          await verifyOpenPath(target.grant!.root, file)
+          await file.chmod(sanitizeMode(inputAttributes.mode, 0o644))
+        }
       )
-      try {
-        await verifyOpenPath(target.grant.root, file)
-        await file.chmod(sanitizeMode(inputAttributes.mode, 0o644))
-      } finally {
-        await file.close()
-      }
       stream.status(requestId, STATUS_CODE.OK)
     })
   })
@@ -670,20 +762,40 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
   }
 
   stream.once("close", () => {
-    for (const resource of handles.values()) {
-      if (resource.kind === "file") void resource.file.close()
-    }
-    handles.clear()
+    Effect.runFork(
+      Effect.forEach(operations, (fiber) => Fiber.interrupt(fiber), {
+        concurrency: 16,
+        discard: true,
+      }).pipe(
+        Effect.andThen(
+          Effect.suspend(() => {
+            operations.clear()
+            const resources = [...handles.values()]
+            handles.clear()
+            return Effect.forEach(
+              resources,
+              (resource) =>
+                resource.kind === "file"
+                  ? sftpOperation(() => resource.file.close()).pipe(
+                      Effect.ignore
+                    )
+                  : Effect.void,
+              { concurrency: 16, discard: true }
+            )
+          })
+        )
+      )
+    )
   })
 
-  async function mutate(
+  function mutate(
     requestId: number,
     requestedPath: string,
     action: string,
     operation: (path: string) => Promise<unknown>,
     mustExist = true
-  ) {
-    await respond(requestId, async () => {
+  ): void {
+    respond(requestId, async () => {
       const target = await resolvePath(grants, requestedPath, mustExist)
       if (!target.grant || !target.physicalPath) {
         throw permissionDenied()
@@ -704,13 +816,25 @@ function serveSftp(stream: SFTPWrapper, grants: ReadonlyArray<ResolvedGrant>) {
     })
   }
 
-  async function respond(requestId: number, operation: () => Promise<void>) {
-    try {
-      await operation()
-    } catch (cause) {
-      const status = statusForError(cause)
-      stream.status(requestId, status, safeErrorMessage(cause))
-    }
+  function respond(requestId: number, operation: () => Promise<void>): void {
+    let operationFiber: Fiber.Fiber<void, never>
+    operationFiber = Effect.runFork(
+      sftpOperation(operation).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() => {
+            const status = statusForError(cause)
+            stream.status(requestId, status, safeErrorMessage(cause))
+          })
+        ),
+        Effect.uninterruptible,
+        Effect.ensuring(
+          Effect.sync(() => {
+            operations.delete(operationFiber)
+          })
+        )
+      )
+    )
+    operations.add(operationFiber)
   }
 }
 
@@ -753,86 +877,133 @@ function normalizeVirtualPath(value: string): string {
   return posix.resolve("/", value || ".")
 }
 
-async function physicalDirectoryEntries(
+function physicalDirectoryEntries(
   root: string,
   path: string
 ): Promise<Array<FileEntry>> {
-  const directory = await open(
-    path,
-    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW
+  return Effect.runPromise(
+    Effect.acquireUseRelease(
+      sftpOperation(() =>
+        open(
+          path,
+          fsConstants.O_RDONLY |
+            fsConstants.O_DIRECTORY |
+            fsConstants.O_NOFOLLOW
+        )
+      ),
+      (directory) =>
+        Effect.gen(function* () {
+          const anchored = fdPath(directory)
+          yield* sftpOperation(() => verifyOpenPath(root, directory))
+          const entries = yield* sftpOperation(() =>
+            readdir(anchored, { withFileTypes: true })
+          )
+          if (entries.length > MAX_DIRECTORY_ENTRIES) {
+            return yield* Effect.fail(
+              new Error("Directory contains too many entries")
+            )
+          }
+          return yield* Effect.forEach(
+            entries,
+            (entry) =>
+              sftpOperation(() => lstat(resolve(anchored, entry.name))).pipe(
+                Effect.map((metadata) => ({
+                  attrs: attributes(metadata),
+                  filename: entry.name,
+                  longname: longname(entry.name, metadata),
+                }))
+              ),
+            { concurrency: 16 }
+          )
+        }),
+      (directory) => sftpOperation(() => directory.close()).pipe(Effect.ignore)
+    )
   )
-  try {
-    const anchored = fdPath(directory)
-    await verifyOpenPath(root, directory)
-    const entries = await readdir(anchored, { withFileTypes: true })
-    if (entries.length > MAX_DIRECTORY_ENTRIES) {
-      throw new Error("Directory contains too many entries")
-    }
-    const result: Array<FileEntry> = []
-    for (let index = 0; index < entries.length; index += DIRECTORY_BATCH_SIZE) {
-      const batch = entries.slice(index, index + DIRECTORY_BATCH_SIZE)
-      result.push(
-        ...(await Promise.all(
-          batch.map(async (entry) => {
-            const metadata = await lstat(resolve(anchored, entry.name))
-            return {
-              attrs: attributes(metadata),
-              filename: entry.name,
-              longname: longname(entry.name, metadata),
-            }
-          })
-        ))
-      )
-    }
-    return result
-  } finally {
-    await directory.close()
-  }
 }
 
-async function withAnchoredParent<T>(
+function withAnchoredParent<T>(
   root: string,
   path: string,
   operation: (anchoredPath: string) => Promise<T>
 ): Promise<T> {
-  const parent = await open(
-    dirname(path),
-    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW
-  )
-  try {
-    const anchoredParent = fdPath(parent)
-    await verifyOpenPath(root, parent)
-    return await operation(
-      resolve(anchoredParent, posix.basename(path))
+  return Effect.runPromise(
+    Effect.acquireUseRelease(
+      sftpOperation(() =>
+        open(
+          dirname(path),
+          fsConstants.O_RDONLY |
+            fsConstants.O_DIRECTORY |
+            fsConstants.O_NOFOLLOW
+        )
+      ),
+      (parent) =>
+        Effect.gen(function* () {
+          const anchoredParent = fdPath(parent)
+          yield* sftpOperation(() => verifyOpenPath(root, parent))
+          return yield* sftpOperation(() =>
+            operation(resolve(anchoredParent, posix.basename(path)))
+          )
+        }),
+      (parent) => sftpOperation(() => parent.close()).pipe(Effect.ignore)
     )
-  } finally {
-    await parent.close()
-  }
+  )
+}
+
+function withOpenFile<T>(
+  acquire: () => Promise<FileHandle>,
+  use: (file: FileHandle) => Promise<T>
+): Promise<T> {
+  return Effect.runPromise(
+    Effect.acquireUseRelease(
+      sftpOperation(acquire),
+      (file) => sftpOperation(() => use(file)),
+      (file) => sftpOperation(() => file.close()).pipe(Effect.ignore)
+    )
+  )
+}
+
+function verifyRetainedFile(root: string, file: FileHandle): Promise<void> {
+  return Effect.runPromise(
+    sftpOperation(() => verifyOpenPath(root, file)).pipe(
+      Effect.onError(() =>
+        sftpOperation(() => file.close()).pipe(Effect.ignore)
+      )
+    )
+  )
 }
 
 function fdPath(file: FileHandle): string {
   return `/proc/self/fd/${file.fd}`
 }
 
-async function writeFully(
+function writeFully(
   file: FileHandle,
   data: Uint8Array,
   position: number
 ): Promise<void> {
   const buffer = Buffer.from(data.buffer, data.byteOffset, data.byteLength)
-  let written = 0
-  while (written < buffer.length) {
-    const result = await file.write(
-      buffer,
-      written,
-      buffer.length - written,
-      position + written
-    )
-    if (result.bytesWritten <= 0) {
-      throw new Error("Filesystem stopped before the SFTP block was complete")
-    }
-    written += result.bytesWritten
-  }
+  const writeFrom = (written: number): Effect.Effect<void, Error> =>
+    written >= buffer.length
+      ? Effect.void
+      : sftpOperation(() =>
+          file.write(
+            buffer,
+            written,
+            buffer.length - written,
+            position + written
+          )
+        ).pipe(
+          Effect.flatMap((result) =>
+            result.bytesWritten <= 0
+              ? Effect.fail(
+                  new Error(
+                    "Filesystem stopped before the SFTP block was complete"
+                  )
+                )
+              : Effect.suspend(() => writeFrom(written + result.bytesWritten))
+          )
+        )
+  return Effect.runPromise(writeFrom(0))
 }
 
 async function verifyOpenPath(root: string, file: FileHandle): Promise<void> {
@@ -984,4 +1155,45 @@ function record(value: unknown): Readonly<Record<string, unknown>> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Readonly<Record<string, unknown>>)
     : null
+}
+
+function listenSftpServerEffect(
+  server: InstanceType<typeof Server>,
+  port: number,
+  host: string
+): Effect.Effect<void, Error> {
+  return Effect.callback<void, Error>((resume) => {
+    const failed = (cause: Error) => {
+      resume(Effect.fail(cause))
+    }
+    server.once("error", failed)
+    server.listen(port, host, () => {
+      server.off("error", failed)
+      resume(Effect.void)
+    })
+    return Effect.sync(() => {
+      server.off("error", failed)
+      server.close()
+    })
+  })
+}
+
+function closeSftpServerEffect(
+  server: InstanceType<typeof Server>
+): Effect.Effect<void, Error> {
+  return Effect.callback<void, Error>((resume) => {
+    server.close((cause) => {
+      resume(cause ? Effect.fail(cause) : Effect.void)
+    })
+  })
+}
+
+function sftpOperation<TResult>(
+  run: () => Promise<TResult>
+): Effect.Effect<TResult, Error> {
+  return Effect.tryPromise({
+    try: run,
+    catch: (cause) =>
+      cause instanceof Error ? cause : new Error("SFTP operation failed"),
+  })
 }

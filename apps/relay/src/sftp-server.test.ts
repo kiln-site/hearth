@@ -125,6 +125,41 @@ describeLinux("Relay SFTP server", () => {
     }
   })
 
+  it("closes active connections before server shutdown completes", async () => {
+    const dataDirectory = await temporaryDirectory()
+    await mkdir(resolve(dataDirectory, "instances"), { recursive: true })
+    const server = await attachSftpServer({
+      clientActions: allowFileAccess,
+      config: testConfig(dataDirectory),
+      control: {
+        requestClients: async () => [
+          {
+            clientId: "hearth-test",
+            payload: {
+              instances: [
+                {
+                  actions: ["instance.files.list"],
+                  id: "a".repeat(40),
+                },
+              ],
+              userId: "user-test",
+              username: "user@example.test",
+            },
+          },
+        ],
+      },
+      docker: { findInstance: async () => null },
+    })
+    const client = await connect(server.port, "dev123")
+    const closed = new Promise<void>((resolveClose) => {
+      client.once("close", () => resolveClose())
+    })
+
+    await server.close()
+    await closed
+    await expect(connect(server.port, "dev123")).rejects.toThrow()
+  })
+
   it("rejects a Hearth without the SFTP connection action", async () => {
     const dataDirectory = await temporaryDirectory()
     await mkdir(resolve(dataDirectory, "instances"), { recursive: true })
