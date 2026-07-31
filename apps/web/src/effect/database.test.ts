@@ -24,6 +24,7 @@ const database = vi.hoisted(() => {
   return {
     connection,
     getConnection: vi.fn(async () => connection),
+    result,
   }
 })
 
@@ -96,6 +97,52 @@ describe("Database transactions", () => {
 
         yield* Deferred.await(started)
         yield* Fiber.interrupt(fiber)
+        yield* Fiber.await(fiber)
+
+        assert.strictEqual(database.connection.commit.mock.calls.length, 0)
+        assert.strictEqual(database.connection.rollback.mock.calls.length, 1)
+        assert.strictEqual(database.connection.release.mock.calls.length, 1)
+      })
+    )
+
+    it.effect("waits for an in-flight query before rollback and release", () =>
+      Effect.gen(function* () {
+        let markQueryStarted: () => void = () => undefined
+        const queryStarted = new Promise<void>((resolve) => {
+          markQueryStarted = resolve
+        })
+        let completeQuery: (() => void) | undefined
+        database.connection.execute.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              markQueryStarted()
+              completeQuery = () => resolve([database.result, []])
+            })
+        )
+
+        const service = yield* Database
+        const fiber = yield* Effect.forkChild(
+          service.transaction(
+            "database.test.inFlightInterrupt",
+            (transaction) =>
+              transaction.execute("UPDATE kiln_test SET value = 1")
+          )
+        )
+
+        yield* Effect.promise(() => queryStarted)
+        yield* Effect.sync(() => {
+          fiber.interruptUnsafe()
+        })
+        yield* Effect.yieldNow
+
+        assert.strictEqual(database.connection.rollback.mock.calls.length, 0)
+        assert.strictEqual(database.connection.release.mock.calls.length, 0)
+
+        const finishQuery = completeQuery
+        if (!finishQuery) {
+          return yield* Effect.die("Query completion was not registered")
+        }
+        yield* Effect.sync(finishQuery)
         yield* Fiber.await(fiber)
 
         assert.strictEqual(database.connection.commit.mock.calls.length, 0)

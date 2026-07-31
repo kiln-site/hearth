@@ -128,5 +128,9 @@ function databasePromise<TResult>(
   return Effect.tryPromise({
     try: run,
     catch: (cause) => DatabaseError.make({ operation, cause }),
-  })
+  }).pipe(
+    // mysql2 does not consume Effect's AbortSignal. Wait for active driver
+    // work to settle before an interrupt can rollback or release its connection.
+    Effect.uninterruptible
+  )
 }
