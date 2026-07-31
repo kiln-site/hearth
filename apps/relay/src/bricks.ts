@@ -6,7 +6,7 @@ import { dirname, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { parseDocument } from "yaml"
-import { Result } from "effect"
+import { Effect, Result } from "effect"
 import {
   brickCatalogDocumentSchema,
   brickRecipeSchema,
@@ -16,6 +16,7 @@ import {
 } from "@workspace/contracts"
 
 import { BrickRecipeError } from "./effect/errors.js"
+import { promiseEffect } from "./effect/promise.js"
 import type { IncomingMessage } from "node:http"
 import type { LookupFunction } from "node:net"
 import type {
@@ -560,11 +561,20 @@ function readHttpsDocument(
             )
             return
           }
-          readHttpsDocument(
-            redirected.success,
-            originalSource,
-            redirects + 1
-          ).then(resolveDocument, rejectDocument)
+          Effect.runFork(
+            promiseEffect(() =>
+              readHttpsDocument(
+                redirected.success,
+                originalSource,
+                redirects + 1
+              )
+            ).pipe(
+              Effect.match({
+                onFailure: rejectDocument,
+                onSuccess: resolveDocument,
+              })
+            )
+          )
           return
         }
         if (status < 200 || status >= 300) {
@@ -590,9 +600,15 @@ function readHttpsDocument(
           )
           return
         }
-        readResponseDocument(response, originalSource.href).then(
-          resolveDocument,
-          rejectDocument
+        Effect.runFork(
+          promiseEffect(() =>
+            readResponseDocument(response, originalSource.href)
+          ).pipe(
+            Effect.match({
+              onFailure: rejectDocument,
+              onSuccess: resolveDocument,
+            })
+          )
         )
       }
     )

@@ -35,6 +35,26 @@ test("production TypeScript uses Effect recovery boundaries", async () => {
   )
 })
 
+test("boundary inspection catches Promise rejection handlers", () => {
+  assert.deepEqual(
+    inspectSource(
+      "example.ts",
+      [
+        "pending.then(onFulfilled, onRejected)",
+        "pending.then(onFulfilled)",
+        "Effect.catch(onRejected)",
+      ].join("\n")
+    ),
+    [
+      {
+        file: "example.ts",
+        line: 1,
+        message: "Promise-style .then(_, onRejected)",
+      },
+    ]
+  )
+})
+
 async function collectTypeScriptFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true })
   const files = await Promise.all(
@@ -64,6 +84,10 @@ function isProductionTypeScript(name) {
 async function inspectFile(file) {
   const path = fileURLToWorkspacePath(file)
   const source = await readFile(file, "utf8")
+  return inspectSource(path, source)
+}
+
+function inspectSource(path, source) {
   const sourceFile = ts.createSourceFile(
     path,
     source,
@@ -84,17 +108,22 @@ async function inspectFile(file) {
     }
     if (
       ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression) &&
-      (node.expression.name.text === "catch" ||
-        node.expression.name.text === "finally")
+      ts.isPropertyAccessExpression(node.expression)
     ) {
+      const method = node.expression.name.text
       const receiver = node.expression.expression
       const isStaticEffectOperator =
         ts.isIdentifier(receiver) &&
         staticEffectNamespaces.has(receiver.text) &&
-        node.expression.name.text === "catch"
-      if (!isStaticEffectOperator) {
-        report(node, `Promise-style .${node.expression.name.text}()`)
+        method === "catch"
+      if (
+        (method === "catch" || method === "finally") &&
+        !isStaticEffectOperator
+      ) {
+        report(node, `Promise-style .${method}()`)
+      }
+      if (method === "then" && node.arguments.length >= 2) {
+        report(node, "Promise-style .then(_, onRejected)")
       }
     }
     ts.forEachChild(node, visit)
