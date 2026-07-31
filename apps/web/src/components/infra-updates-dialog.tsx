@@ -7,6 +7,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query"
 import { useRouterState } from "@tanstack/react-router"
+import { Effect, Result } from "effect"
 import {
   Check,
   CloudDownload,
@@ -183,16 +184,14 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
       showUpdateSuccess(completedUpdate, completedUpdate.version)
     }
 
-    const stored = window.localStorage.getItem(activeSystemUpdateStorageKey)
-    if (!stored) return
-    try {
-      const parsed: unknown = JSON.parse(stored)
-      const restored = parseActiveUpdates(parsed)
-      if (restored.length > 0) {
-        for (const update of restored) announceUpdateStarted(update)
-        replaceActive(restored)
-      } else window.localStorage.removeItem(activeSystemUpdateStorageKey)
-    } catch {
+    const restored = Result.try(() => {
+      const stored = window.localStorage.getItem(activeSystemUpdateStorageKey)
+      return stored ? parseActiveUpdates(JSON.parse(stored) as unknown) : []
+    })
+    if (Result.isSuccess(restored) && restored.success.length > 0) {
+      for (const update of restored.success) announceUpdateStarted(update)
+      replaceActive(restored.success)
+    } else {
       window.localStorage.removeItem(activeSystemUpdateStorageKey)
     }
   }, [replaceActive])
@@ -1528,36 +1527,46 @@ async function startUpdate(
   onStarted: (update: ActiveUpdate) => void,
   onFailure: () => void
 ): Promise<UpdateStartAttempt> {
-  let started: Awaited<ReturnType<typeof startSystemUpdate>>
-  try {
-    started = await startSystemUpdate({
-      data: {
-        component: target.component,
-        relayId: target.relayId,
-      },
-    })
-  } catch (cause) {
-    onFailure()
-    return {
-      failure: {
-        message:
-          cause instanceof Error ? cause.message : "Update could not start.",
-        target,
-      },
-    }
-  }
-
-  const active = {
-    component: started.operation.component,
-    name: target.name,
-    operationId: started.operation.id,
-    previousVersion: target.currentVersion,
-    relayId: started.relayId,
-    targetVersion: latestVersion,
-    targetKey: target.key,
-  } satisfies ActiveUpdate
-  onStarted(active)
-  return { active }
+  return Effect.runPromise(
+    Effect.tryPromise({
+      try: () =>
+        startSystemUpdate({
+          data: {
+            component: target.component,
+            relayId: target.relayId,
+          },
+        }),
+      catch: (cause) => cause,
+    }).pipe(
+      Effect.match({
+        onFailure: (cause): UpdateStartAttempt => {
+          onFailure()
+          return {
+            failure: {
+              message:
+                cause instanceof Error
+                  ? cause.message
+                  : "Update could not start.",
+              target,
+            },
+          }
+        },
+        onSuccess: (started): UpdateStartAttempt => {
+          const active = {
+            component: started.operation.component,
+            name: target.name,
+            operationId: started.operation.id,
+            previousVersion: target.currentVersion,
+            relayId: started.relayId,
+            targetVersion: latestVersion,
+            targetKey: target.key,
+          } satisfies ActiveUpdate
+          onStarted(active)
+          return { active }
+        },
+      })
+    )
+  )
 }
 
 function announceUpdateStarted(update: ActiveUpdate): void {
@@ -1652,37 +1661,37 @@ function storeCompletedUpdate(update: ActiveUpdate, version: string): void {
 }
 
 function readCompletedUpdate(): CompletedUpdate | null {
-  const stored = window.sessionStorage.getItem(completedUpdateStorageKey)
-  if (!stored) return null
-  window.sessionStorage.removeItem(completedUpdateStorageKey)
-  try {
-    const value: unknown = JSON.parse(stored)
-    if (
-      typeof value === "object" &&
-      value !== null &&
-      "component" in value &&
-      (value.component === "hearth" || value.component === "relay") &&
-      "name" in value &&
-      typeof value.name === "string" &&
-      "relayId" in value &&
-      typeof value.relayId === "string" &&
-      "targetKey" in value &&
-      typeof value.targetKey === "string" &&
-      "version" in value &&
-      typeof value.version === "string"
-    ) {
-      return {
-        component: value.component,
-        name: value.name,
-        relayId: value.relayId,
-        targetKey: value.targetKey,
-        version: value.version,
+  return Result.getOrNull(
+    Result.try(() => {
+      const stored = window.sessionStorage.getItem(completedUpdateStorageKey)
+      if (!stored) return null
+      window.sessionStorage.removeItem(completedUpdateStorageKey)
+      const value: unknown = JSON.parse(stored)
+      if (
+        typeof value === "object" &&
+        value !== null &&
+        "component" in value &&
+        (value.component === "hearth" || value.component === "relay") &&
+        "name" in value &&
+        typeof value.name === "string" &&
+        "relayId" in value &&
+        typeof value.relayId === "string" &&
+        "targetKey" in value &&
+        typeof value.targetKey === "string" &&
+        "version" in value &&
+        typeof value.version === "string"
+      ) {
+        return {
+          component: value.component,
+          name: value.name,
+          relayId: value.relayId,
+          targetKey: value.targetKey,
+          version: value.version,
+        } satisfies CompletedUpdate
       }
-    }
-  } catch {
-    return null
-  }
-  return null
+      return null
+    })
+  )
 }
 
 function showUpdateFailure(
@@ -2146,18 +2155,19 @@ function resetUpdateFailureCount(targetKey: string): void {
 }
 
 function readStorageRecord<Value>(key: string): Record<string, Value> {
-  try {
-    const stored = window.localStorage.getItem(key)
-    if (!stored) return {}
-    const parsed: unknown = JSON.parse(stored)
-    return typeof parsed === "object" &&
-      parsed !== null &&
-      !Array.isArray(parsed)
-      ? (parsed as Record<string, Value>)
-      : {}
-  } catch {
-    return {}
-  }
+  return Result.getOrElse(
+    Result.try(() => {
+      const stored = window.localStorage.getItem(key)
+      if (!stored) return {}
+      const parsed: unknown = JSON.parse(stored)
+      return typeof parsed === "object" &&
+        parsed !== null &&
+        !Array.isArray(parsed)
+        ? (parsed as Record<string, Value>)
+        : {}
+    }),
+    () => ({})
+  )
 }
 
 function displayVersion(version: string | null): string {
