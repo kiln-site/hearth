@@ -8,6 +8,7 @@ import {
 import type { RelayConsoleStreamEvent } from "@workspace/contracts"
 import { Effect, Result, Stream } from "effect"
 
+import { recoverPromise } from "@/effect/promise"
 import { issueConsoleCapability } from "@/server/relay-capability"
 
 const AUTHENTICATION_TIMEOUT_MS = 10_000
@@ -241,7 +242,10 @@ async function* openHearthConsoleStream(
     { cache: "no-store", signal }
   )
   if (!response.ok || !response.body) {
-    const problem = (await response.json().catch(() => null)) as {
+    const problem = (await recoverPromise(
+      () => response.json(),
+      () => null
+    )) as {
       error?: unknown
     } | null
     throw new Error(

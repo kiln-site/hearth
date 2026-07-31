@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
+import { Result } from "effect"
 import { defineConfig } from "vite-plus"
 
 const repositoryRoot = resolve(import.meta.dirname, "../..")
@@ -70,32 +71,36 @@ function resolveBuildCommit(): string {
 
   if (configured) return configured
 
-  try {
-    const head = readFileSync(
-      resolve(repositoryRoot, ".git/HEAD"),
-      "utf8"
-    ).trim()
-    if (!head.startsWith("ref: ")) return head
-
-    const reference = head.slice(5)
-    try {
-      return readFileSync(
-        resolve(repositoryRoot, `.git/${reference}`),
+  return Result.getOrElse(
+    Result.try(() => {
+      const head = readFileSync(
+        resolve(repositoryRoot, ".git/HEAD"),
         "utf8"
       ).trim()
-    } catch {
-      const packedReferences = readFileSync(
-        resolve(repositoryRoot, ".git/packed-refs"),
-        "utf8"
+      if (!head.startsWith("ref: ")) return head
+
+      const reference = head.slice(5)
+      return Result.getOrElse(
+        Result.try(() =>
+          readFileSync(
+            resolve(repositoryRoot, `.git/${reference}`),
+            "utf8"
+          ).trim()
+        ),
+        () => {
+          const packedReferences = readFileSync(
+            resolve(repositoryRoot, ".git/packed-refs"),
+            "utf8"
+          )
+          return (
+            packedReferences
+              .split("\n")
+              .find((line) => line.endsWith(` ${reference}`))
+              ?.split(" ")[0] ?? ""
+          )
+        }
       )
-      return (
-        packedReferences
-          .split("\n")
-          .find((line) => line.endsWith(` ${reference}`))
-          ?.split(" ")[0] ?? ""
-      )
-    }
-  } catch {
-    return ""
-  }
+    }),
+    () => ""
+  )
 }

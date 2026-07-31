@@ -32,6 +32,7 @@ import {
 import type { FilesystemDriver } from "./files.js"
 import type { RelayInstanceConfig } from "./config.js"
 import type { RelayIdentity } from "./effect/identity.js"
+import { forkPromise } from "./effect/promise.js"
 import type { RelayClientGrant, RelayStateStore } from "./effect/state.js"
 import type { RelaySnapshotSample } from "./snapshot-hub.js"
 import type { Server } from "node:http"
@@ -278,8 +279,9 @@ function authenticateBrowser(
       return
     }
     if (!capability) {
-      void authenticate(input.value).catch(() =>
-        socket.close(4401, "Browser authentication failed")
+      forkPromise(
+        () => authenticate(input.value),
+        () => socket.close(4401, "Browser authentication failed")
       )
       return
     }
@@ -293,9 +295,10 @@ function authenticateBrowser(
         socket.close(4403, "Console capability does not allow this instance")
         return
       }
-      void hubs
-        .subscribe(socket, subscription.instanceId)
-        .catch(() => socket.close(4500, "Console stream failed"))
+      forkPromise(
+        () => hubs.subscribe(socket, subscription.instanceId),
+        () => socket.close(4500, "Console stream failed")
+      )
       return
     }
     const resourceSubscription = decodeBrowserResourceSubscription(input.value)

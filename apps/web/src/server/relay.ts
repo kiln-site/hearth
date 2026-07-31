@@ -683,7 +683,11 @@ const uploadLogEffect = Effect.fn("mclogs.upload")(function* (
       }),
   })
 
-  const payload = yield* Effect.promise(() => response.json().catch(() => null))
+  const decodedPayload = yield* Effect.tryPromise({
+    try: () => response.json(),
+    catch: (cause) => cause,
+  }).pipe(Effect.option)
+  const payload = decodedPayload._tag === "Some" ? decodedPayload.value : null
   const errorPayload = z
     .object({ error: z.string().optional() })
     .nullable()
@@ -883,12 +887,16 @@ async function authorize(
 }
 
 async function instanceRelayAccess(relayId: string) {
-  const user = await requireAuthenticatedUser().catch((cause) => {
-    throw AuthenticationError.make({
-      message: "Authentication required",
-      cause,
+  const user = await Effect.runPromise(
+    Effect.tryPromise({
+      try: requireAuthenticatedUser,
+      catch: (cause) =>
+        AuthenticationError.make({
+          message: "Authentication required",
+          cause,
+        }),
     })
-  })
+  )
   const relay = (await listPersistedRelays()).find(
     (item) => item.enabled && item.id === relayId
   )

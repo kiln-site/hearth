@@ -38,6 +38,7 @@ import type {
 } from "@workspace/contracts"
 
 import { Button } from "@workspace/ui/components/button"
+import { forkPromise, recoverPromise } from "@/effect/promise"
 import {
   Dialog,
   DialogClose,
@@ -1862,30 +1863,44 @@ function usePortLease({
       data: { instanceId, protocol, relayId },
     })
     leasePromiseRef.current = leasePromise
-    void leasePromise
-      .then((nextLease) => {
-        if (generation.current !== currentGeneration) {
-          void releaseInstancePort({
-            data: { instanceId, leaseId: nextLease.id, relayId },
-          }).catch(() => undefined)
-          return
-        }
-        leaseRef.current = nextLease
-        setLease(nextLease)
-        portValueRef.current = String(nextLease.externalPort)
-        setPortValueState(portValueRef.current)
-      })
-      .catch((cause: unknown) => {
-        if (generation.current === currentGeneration) {
-          setError(errorMessage(cause))
-        }
-      })
-      .finally(() => {
-        if (generation.current === currentGeneration) {
-          leasePromiseRef.current = null
-          setPending(false)
-        }
-      })
+    Effect.runFork(
+      Effect.tryPromise({
+        try: () => leasePromise,
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.tap((nextLease) =>
+          Effect.sync(() => {
+            if (generation.current !== currentGeneration) {
+              forkPromise(() =>
+                releaseInstancePort({
+                  data: { instanceId, leaseId: nextLease.id, relayId },
+                })
+              )
+              return
+            }
+            leaseRef.current = nextLease
+            setLease(nextLease)
+            portValueRef.current = String(nextLease.externalPort)
+            setPortValueState(portValueRef.current)
+          })
+        ),
+        Effect.catch((cause) =>
+          Effect.sync(() => {
+            if (generation.current === currentGeneration) {
+              setError(errorMessage(cause))
+            }
+          })
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (generation.current === currentGeneration) {
+              leasePromiseRef.current = null
+              setPending(false)
+            }
+          })
+        )
+      )
+    )
 
     return () => {
       generation.current += 1
@@ -1894,9 +1909,11 @@ function usePortLease({
       leaseRef.current = null
       portValueRef.current = ""
       if (currentLease) {
-        void releaseInstancePort({
-          data: { instanceId, leaseId: currentLease.id, relayId },
-        }).catch(() => undefined)
+        forkPromise(() =>
+          releaseInstancePort({
+            data: { instanceId, leaseId: currentLease.id, relayId },
+          })
+        )
       }
     }
   }, [enabled, instanceId, protocol, relayId])
@@ -1928,16 +1945,20 @@ function usePortLease({
             Effect.sync(() => {
               if (sealedRef.current) {
                 if (nextLease.id !== currentLease.id) {
-                  void releaseInstancePort({
-                    data: { instanceId, leaseId: nextLease.id, relayId },
-                  }).catch(() => undefined)
+                  forkPromise(() =>
+                    releaseInstancePort({
+                      data: { instanceId, leaseId: nextLease.id, relayId },
+                    })
+                  )
                 }
                 return
               }
               if (cancelled || leaseRef.current?.id !== currentLease.id) {
-                void releaseInstancePort({
-                  data: { instanceId, leaseId: nextLease.id, relayId },
-                }).catch(() => undefined)
+                forkPromise(() =>
+                  releaseInstancePort({
+                    data: { instanceId, leaseId: nextLease.id, relayId },
+                  })
+                )
                 return
               }
               leaseRef.current = nextLease
@@ -2012,9 +2033,11 @@ function usePortLease({
             },
           })
           if (generation.current !== currentGeneration) {
-            void releaseInstancePort({
-              data: { instanceId, leaseId: nextLease.id, relayId },
-            }).catch(() => undefined)
+            forkPromise(() =>
+              releaseInstancePort({
+                data: { instanceId, leaseId: nextLease.id, relayId },
+              })
+            )
             throw new Error("Port reservation dialog was closed")
           }
           leaseRef.current = nextLease
@@ -2248,14 +2271,15 @@ function AddNetworkRouteDialog({
                 })
                 setValidationError(null)
                 setSubmitted(true)
-                const lease = await portLease
-                  .commitForSubmit()
-                  .catch((cause: unknown) => {
+                const lease = await recoverPromise(
+                  portLease.commitForSubmit,
+                  (cause) => {
                     onCancelSubmit()
                     setSubmitted(false)
                     setValidationError(errorMessage(cause))
                     return null
-                  })
+                  }
+                )
                 if (!lease) return
                 const parsed = relayInstancePortInputSchema.safeParse({
                   externalPort: lease.externalPort,
@@ -2274,10 +2298,13 @@ function AddNetworkRouteDialog({
                   return
                 }
                 setValidationError(null)
-                await onSubmitPort(parsed.data).catch(() => {
-                  onCancelSubmit()
-                  onOpenChange(false)
-                })
+                await recoverPromise(
+                  () => onSubmitPort(parsed.data),
+                  () => {
+                    onCancelSubmit()
+                    onOpenChange(false)
+                  }
+                )
                 return
               }
 
@@ -2307,14 +2334,22 @@ function AddNetworkRouteDialog({
                 })
                 setSubmitted(true)
               }
-              await onSubmitWebRoute(parsed.data)
-                .then(() => onOpenChange(false))
-                .catch(() => {
-                  if (!webRoute) {
-                    onCancelSubmit()
-                    setSubmitted(false)
-                  }
-                })
+              await Effect.runPromise(
+                Effect.tryPromise({
+                  try: () => onSubmitWebRoute(parsed.data),
+                  catch: (cause) => cause,
+                }).pipe(
+                  Effect.tap(() => Effect.sync(() => onOpenChange(false))),
+                  Effect.catch(() =>
+                    Effect.sync(() => {
+                      if (!webRoute) {
+                        onCancelSubmit()
+                        setSubmitted(false)
+                      }
+                    })
+                  )
+                )
+              )
             })()
           }}
           className="space-y-4"
@@ -2358,7 +2393,7 @@ function AddNetworkRouteDialog({
                     value={portLease.portValue}
                     onBlur={() => {
                       if (canEditPublicPort && portLease.lease) {
-                        void portLease.commit().catch(() => undefined)
+                        forkPromise(portLease.commit)
                       }
                     }}
                     onChange={(event) =>
@@ -2551,7 +2586,10 @@ function PortAllocationDialog({
               return
             }
             setValidationError(null)
-            await onSubmit(parsed.data).catch(() => undefined)
+            await recoverPromise(
+              () => onSubmit(parsed.data),
+              () => undefined
+            )
           }}
           className="space-y-4"
         >

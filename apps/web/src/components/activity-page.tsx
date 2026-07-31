@@ -2,6 +2,7 @@ import * as React from "react"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { useVirtualizer } from "@tanstack/react-virtual"
+import { ensuringPromise, forkPromise } from "@/effect/promise"
 import {
   ArrowLeftRight,
   CalendarDays,
@@ -496,19 +497,18 @@ const ActivitySyncButton = React.memo(function ActivitySyncButton({
     setManualSyncing(true)
     const startedAt = performance.now()
 
-    void refetch().finally(() => {
-      if (!mountedRef.current) return
-      const elapsed = performance.now() - startedAt
-      const remaining = Math.max(
-        0,
-        minimumActivitySyncFeedbackMs - elapsed
-      )
-      feedbackTimeoutRef.current = window.setTimeout(() => {
-        manualSyncingRef.current = false
-        setManualSyncing(false)
-        feedbackTimeoutRef.current = undefined
-      }, remaining)
-    })
+    forkPromise(() =>
+      ensuringPromise(refetch, () => {
+        if (!mountedRef.current) return
+        const elapsed = performance.now() - startedAt
+        const remaining = Math.max(0, minimumActivitySyncFeedbackMs - elapsed)
+        feedbackTimeoutRef.current = window.setTimeout(() => {
+          manualSyncingRef.current = false
+          setManualSyncing(false)
+          feedbackTimeoutRef.current = undefined
+        }, remaining)
+      })
+    )
   }, [refetch])
 
   return (
@@ -892,10 +892,7 @@ const ActivityRow = React.memo(function ActivityRow({
             <span className="tracking-[0.06em] uppercase">{details.label}</span>
             {entry.permission ? (
               <>
-                <span
-                  aria-hidden="true"
-                  className="px-1 text-muted-foreground"
-                >
+                <span aria-hidden="true" className="px-1 text-muted-foreground">
                   /
                 </span>
                 <code className="text-muted-foreground">

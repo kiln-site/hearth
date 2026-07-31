@@ -5,6 +5,7 @@ import {
   useSuspenseQuery,
 } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
+import { ensuringPromise, forkPromise } from "@/effect/promise"
 import {
   Folder,
   ListTodo,
@@ -270,16 +271,18 @@ const ServerSyncButton = React.memo(function ServerSyncButton({
     setManualSyncing(true)
     const startedAt = performance.now()
 
-    void refetch().finally(() => {
-      if (!mountedRef.current) return
-      const elapsed = performance.now() - startedAt
-      const remaining = Math.max(0, minimumManualSyncFeedbackMs - elapsed)
-      feedbackTimeoutRef.current = window.setTimeout(() => {
-        manualSyncingRef.current = false
-        setManualSyncing(false)
-        feedbackTimeoutRef.current = undefined
-      }, remaining)
-    })
+    forkPromise(() =>
+      ensuringPromise(refetch, () => {
+        if (!mountedRef.current) return
+        const elapsed = performance.now() - startedAt
+        const remaining = Math.max(0, minimumManualSyncFeedbackMs - elapsed)
+        feedbackTimeoutRef.current = window.setTimeout(() => {
+          manualSyncingRef.current = false
+          setManualSyncing(false)
+          feedbackTimeoutRef.current = undefined
+        }, remaining)
+      })
+    )
   }, [disabled, refetch])
 
   return (

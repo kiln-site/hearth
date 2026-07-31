@@ -7,6 +7,7 @@ import type { RelayControlOperation } from "@workspace/contracts"
 
 import type { RelayEndpoint } from "@/lib/relay-control-endpoint"
 import { listPersistedRelays } from "@/lib/relay-registry"
+import { tapPromiseError } from "@/effect/promise"
 import { runAppEffect } from "@/effect/runtime"
 import {
   synchronizeInstanceDeletionDnsEffect,
@@ -40,28 +41,35 @@ export async function synchronizeTailscaleInstanceDeletion(
     throw new Error("The deleting server's Relay is unavailable")
   }
 
-  const results = await Promise.all(
-    relays.map(async (relay) => {
-      const snapshot = relaySnapshotSchema.parse(
-        await relayRpc(relay, "relay.snapshot", {}, 5_000)
+  const results = await tapPromiseError(
+    () =>
+      Promise.all(
+        relays.map(async (relay) => {
+          const snapshot = relaySnapshotSchema.parse(
+            await relayRpc(relay, "relay.snapshot", {}, 5_000)
+          )
+          if (!snapshot.node.capabilities.includes("tailscale-stacks"))
+            return []
+          return relayTailscaleStacksSchema
+            .parse(
+              await relayRpc(relay, "relay.tailscale.stack.list", {}, 5_000)
+            )
+            .map<TailscaleDeletionDeployment>((deployment) => ({
+              ...deployment,
+              relayId: relay.id,
+              relayName: relay.name,
+            }))
+        })
+      ),
+    (cause) => {
+      throw new Error(
+        `Could not inspect every Relay before deleting the server: ${
+          cause instanceof Error ? cause.message : "unknown Relay error"
+        }`,
+        { cause }
       )
-      if (!snapshot.node.capabilities.includes("tailscale-stacks")) return []
-      return relayTailscaleStacksSchema
-        .parse(await relayRpc(relay, "relay.tailscale.stack.list", {}, 5_000))
-        .map<TailscaleDeletionDeployment>((deployment) => ({
-          ...deployment,
-          relayId: relay.id,
-          relayName: relay.name,
-        }))
-    })
-  ).catch((cause) => {
-    throw new Error(
-      `Could not inspect every Relay before deleting the server: ${
-        cause instanceof Error ? cause.message : "unknown Relay error"
-      }`,
-      { cause }
-    )
-  })
+    }
+  )
   throwIfTailscalePrepareCancelled(input.mode, signal)
   const current = results.flat()
   const operations: Pick<

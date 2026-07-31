@@ -28,6 +28,7 @@ import {
 } from "lucide-react"
 
 import { Button } from "@workspace/ui/components/button"
+import { forkPromise } from "@/effect/promise"
 import {
   Dialog,
   DialogContent,
@@ -2062,17 +2063,22 @@ function showPausedRelayToast(
       label: "Reconnect",
       onClick: (event) => {
         event.preventDefault()
-        void resumeRelay(queryClient, relay).catch((cause: unknown) => {
-          showToast({
-            type: "error",
-            message: (
-              <RelayToastTitle name={relay.name} state="could not be resumed" />
-            ),
-            id: relayResumeErrorToastId(relay.id),
-            description: messageFrom(cause, "Try reconnecting again."),
-            duration: 6_000,
-          })
-        })
+        forkPromise(
+          () => resumeRelay(queryClient, relay),
+          (cause) =>
+            showToast({
+              type: "error",
+              message: (
+                <RelayToastTitle
+                  name={relay.name}
+                  state="could not be resumed"
+                />
+              ),
+              id: relayResumeErrorToastId(relay.id),
+              description: messageFrom(cause, "Try reconnecting again."),
+              duration: 6_000,
+            })
+        )
       },
     },
   })

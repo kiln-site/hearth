@@ -6,6 +6,7 @@ import {
   useSuspenseQuery,
 } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
+import { ensuringPromise, forkPromise } from "@/effect/promise"
 import {
   Check,
   CircleAlert,
@@ -223,9 +224,15 @@ const TailscaleSyncButton = React.memo(function TailscaleSyncButton() {
           disabled={syncing}
           onClick={() => {
             setSyncing(true)
-            void queryClient
-              .invalidateQueries({ queryKey: queryKeys.tailscaleStacks })
-              .finally(() => setSyncing(false))
+            forkPromise(() =>
+              ensuringPromise(
+                () =>
+                  queryClient.invalidateQueries({
+                    queryKey: queryKeys.tailscaleStacks,
+                  }),
+                () => setSyncing(false)
+              )
+            )
           }}
         >
           <RefreshCw className={syncing ? "animate-spin" : undefined} />
@@ -280,10 +287,7 @@ const TailscaleTable = React.memo(function TailscaleTable({
   )
   const renderEmpty = React.useCallback(
     (searchActive: boolean) => (
-      <EmptyTailscaleTable
-        searchActive={searchActive}
-        onAdd={onAdd}
-      />
+      <EmptyTailscaleTable searchActive={searchActive} onAdd={onAdd} />
     ),
     [onAdd]
   )
@@ -430,12 +434,7 @@ function EmptyTailscaleTable({
           : "No Tailscale networks"}
       </p>
       {!searchActive ? (
-        <Button
-          type="button"
-          size="sm"
-          className="mt-4"
-          onClick={onAdd}
-        >
+        <Button type="button" size="sm" className="mt-4" onClick={onAdd}>
           <Plus />
           Add Network
         </Button>

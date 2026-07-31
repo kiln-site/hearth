@@ -2,6 +2,7 @@ import { createFileRoute, redirect } from "@tanstack/react-router"
 import { z } from "zod"
 
 import { AuthPage } from "@/components/auth-page"
+import { recoverPromise } from "@/effect/promise"
 import { pageTitle } from "@/lib/page-title"
 import { relayConnectionQueryOptions } from "@/lib/query-options"
 import {
@@ -31,9 +32,10 @@ export const Route = createFileRoute("/")({
           "http://kiln.local"
         ).searchParams.get("token")
         if (token) {
-          const invitation = await getInvitationPreview({
-            data: { token },
-          }).catch(() => null)
+          const invitation = await recoverPromise(
+            () => getInvitationPreview({ data: { token } }),
+            () => null
+          )
           invitationSignup = Boolean(
             invitation &&
             search.email &&

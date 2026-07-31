@@ -6,6 +6,7 @@ import {
 } from "@workspace/contracts"
 
 import { requireRelayPermission } from "@/lib/access-control"
+import { recoverPromise } from "@/effect/promise"
 import type { AuthenticatedUser } from "@/lib/auth-session"
 import { kilnPublicUrl } from "@/lib/environment"
 import { listPersistedRelays, loadRelayCredentials } from "@/lib/relay-registry"
@@ -129,16 +130,18 @@ async function createBrowserCapability(input: {
     import("@/lib/relay-connection"),
     loadRelayCredentials(input.relay.id),
   ])
-  const proxy = await relayRpc(input.relay, "relay.proxy.read", {}, 5_000)
-    .then((value) => {
+  const proxy = await recoverPromise(
+    async () => {
+      const value = await relayRpc(input.relay, "relay.proxy.read", {}, 5_000)
       if (!value || typeof value !== "object") return null
       const response = Object.fromEntries(Object.entries(value))
       return {
         diagnostics: relayProxyDiagnosticsSchema.parse(response.diagnostics),
         settings: relayProxySettingsSchema.parse(response.settings),
       }
-    })
-    .catch(() => null)
+    },
+    () => null
+  )
   const proxyMode = proxy?.settings.mode ?? "none"
   const now = Date.now()
   const payload = {
@@ -162,7 +165,8 @@ async function createBrowserCapability(input: {
     credentials.clientPrivateKeyPem
   ).toString("base64url")
   return {
-    browserOrigin: proxy?.diagnostics.browserOrigin ?? input.relay.browserOrigin,
+    browserOrigin:
+      proxy?.diagnostics.browserOrigin ?? input.relay.browserOrigin,
     capability: `${encoded}.${signature}`,
     expiresAt: payload.expiresAt,
     proxyMode,

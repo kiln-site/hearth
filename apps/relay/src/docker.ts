@@ -10,6 +10,7 @@ import { Cause, Effect, Option, Queue, Result, Semaphore, Stream } from "effect"
 
 import { command } from "./command.js"
 import { directoryApparentSizeEffect } from "./disk-usage.js"
+import { ensuringPromise } from "./effect/promise.js"
 import type {
   BrickVariableValue,
   RelayConsole,
@@ -1282,11 +1283,13 @@ export class DockerDriver {
       if (this.#consoleSizeStarts.get(containerId) === state.StartedAt) return
     }
 
-    const resize = this.#resizeConsole(containerId)
-      .then(() => {
+    const resize = ensuringPromise(
+      async () => {
+        await this.#resizeConsole(containerId)
         this.#consoleSizeStarts.set(containerId, state.StartedAt)
-      })
-      .finally(() => this.#consoleSizePending.delete(containerId))
+      },
+      () => this.#consoleSizePending.delete(containerId)
+    )
     this.#consoleSizePending.set(containerId, resize)
     await resize
   }

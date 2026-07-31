@@ -28,6 +28,7 @@ import {
 } from "lucide-react"
 
 import { Button } from "@workspace/ui/components/button"
+import { ensuringPromise, forkPromise } from "@/effect/promise"
 import {
   Dialog,
   DialogContent,
@@ -313,11 +314,20 @@ const TailscaleSetupDialog = React.memo(function TailscaleSetupDialog({
         previousDomain: stack.domain,
         tag: tag.trim(),
       }
-      const result = await configureTailscaleIntegration({ data: input }).catch(
-        async (cause: unknown) => {
-          if (!isNetworkChangeError(cause)) throw cause
-          return recoverTailscaleIntegrationStatus(stack.id, cause)
-        }
+      const result = await Effect.runPromise(
+        Effect.tryPromise({
+          try: () => configureTailscaleIntegration({ data: input }),
+          catch: (cause) => cause,
+        }).pipe(
+          Effect.catch((cause) =>
+            isNetworkChangeError(cause)
+              ? Effect.tryPromise({
+                  try: () => recoverTailscaleIntegrationStatus(stack.id, cause),
+                  catch: (recoveryCause) => recoveryCause,
+                })
+              : Effect.fail(cause)
+          )
+        )
       )
       if (!tailscaleSetupVerified(result.inspection)) {
         throw new Error(
@@ -1193,14 +1203,20 @@ const TailscaleMembershipSyncButton = React.memo(
             disabled={syncing}
             onClick={() => {
               setSyncing(true)
-              void Promise.all([
-                queryClient.invalidateQueries({
-                  queryKey: queryKeys.tailscaleStacks,
-                }),
-                queryClient.invalidateQueries({
-                  queryKey: queryKeys.relay.snapshot,
-                }),
-              ]).finally(() => setSyncing(false))
+              forkPromise(() =>
+                ensuringPromise(
+                  () =>
+                    Promise.all([
+                      queryClient.invalidateQueries({
+                        queryKey: queryKeys.tailscaleStacks,
+                      }),
+                      queryClient.invalidateQueries({
+                        queryKey: queryKeys.relay.snapshot,
+                      }),
+                    ]),
+                  () => setSyncing(false)
+                )
+              )
             }}
           >
             <RefreshCw className={syncing ? "animate-spin" : undefined} />
@@ -1522,14 +1538,16 @@ const GameServerMembershipRow = React.memo(function GameServerMembershipRow({
               variant="ghost"
               disabled={disabled}
               onClick={() =>
-                void onSave({
-                  bindings: stack.bindings.filter(
-                    (candidate) =>
-                      candidate.relayId !== relayId ||
-                      candidate.instanceId !== serverId
-                  ),
-                  stack,
-                }).catch(() => undefined)
+                forkPromise(() =>
+                  onSave({
+                    bindings: stack.bindings.filter(
+                      (candidate) =>
+                        candidate.relayId !== relayId ||
+                        candidate.instanceId !== serverId
+                    ),
+                    stack,
+                  })
+                )
               }
             >
               {pending ? <LoaderCircle className="animate-spin" /> : <Unplug />}
@@ -1630,10 +1648,9 @@ const JoinNetworkDialog = React.memo(function JoinNetworkDialog({
               pending || !hostname.trim() || (needsAuth && !authKey.trim())
             }
             onClick={() =>
-              void onJoin(
-                hostname.trim(),
-                needsAuth ? authKey.trim() : undefined
-              ).catch(() => undefined)
+              forkPromise(() =>
+                onJoin(hostname.trim(), needsAuth ? authKey.trim() : undefined)
+              )
             }
           >
             {pending ? <LoaderCircle className="animate-spin" /> : <Network />}
@@ -1692,7 +1709,7 @@ const AuthKeyDialog = React.memo(function AuthKeyDialog({
           <Button
             type="button"
             disabled={pending || !authKey.trim()}
-            onClick={() => void onSubmit(authKey.trim()).catch(() => undefined)}
+            onClick={() => forkPromise(() => onSubmit(authKey.trim()))}
           >
             {pending ? <LoaderCircle className="animate-spin" /> : <Network />}
             Add node

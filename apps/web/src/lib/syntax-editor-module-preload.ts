@@ -1,21 +1,25 @@
+import { forkPromise, tapPromiseError } from "@/effect/promise"
+
 let syntaxCodeEditorModulePromise:
   | Promise<typeof import("@/components/syntax-code-editor")>
   | undefined
 
 export function loadSyntaxCodeEditorModule() {
   if (!syntaxCodeEditorModulePromise) {
-    syntaxCodeEditorModulePromise =
-      import("@/components/syntax-code-editor").catch((error: unknown) => {
+    syntaxCodeEditorModulePromise = tapPromiseError(
+      () => import("@/components/syntax-code-editor"),
+      (error) => {
         syntaxCodeEditorModulePromise = undefined
         throw error
-      })
+      }
+    )
   }
 
   return syntaxCodeEditorModulePromise
 }
 
 export function warmSyntaxCodeEditorModule() {
-  void loadSyntaxCodeEditorModule().catch(() => undefined)
+  forkPromise(loadSyntaxCodeEditorModule)
 }
 
 export function warmSyntaxCodeEditorModuleWhenIdle() {

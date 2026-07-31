@@ -1,11 +1,14 @@
+import { forkPromise, tapPromiseError } from "@/effect/promise"
+
 let fileWorkspaceModulePromise:
   | Promise<typeof import("@/components/file-workspace")>
   | undefined
 
 export function loadFileWorkspaceModule() {
   if (!fileWorkspaceModulePromise) {
-    fileWorkspaceModulePromise = import("@/components/file-workspace").catch(
-      (error: unknown) => {
+    fileWorkspaceModulePromise = tapPromiseError(
+      () => import("@/components/file-workspace"),
+      (error) => {
         fileWorkspaceModulePromise = undefined
         throw error
       }
@@ -16,5 +19,5 @@ export function loadFileWorkspaceModule() {
 }
 
 export function warmFileWorkspaceModule() {
-  void loadFileWorkspaceModule().catch(() => undefined)
+  forkPromise(loadFileWorkspaceModule)
 }

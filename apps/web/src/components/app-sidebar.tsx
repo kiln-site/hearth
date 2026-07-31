@@ -19,6 +19,7 @@ import {
   UserRoundCog,
 } from "lucide-react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
+import { forkPromise } from "@/effect/promise"
 
 import { Avatar, AvatarFallback } from "@workspace/ui/components/avatar"
 import {
@@ -732,9 +733,10 @@ function SignOutButton({
           disabled={signingOut}
           onClick={() => {
             setSigningOut(true)
-            void signOut(developmentBypass).catch(() => {
-              setSigningOut(false)
-            })
+            forkPromise(
+              () => signOut(developmentBypass),
+              () => setSigningOut(false)
+            )
           }}
         >
           {signingOut ? (

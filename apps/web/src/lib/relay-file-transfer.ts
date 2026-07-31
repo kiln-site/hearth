@@ -1,6 +1,7 @@
 import { relayBrowserRequestProofTranscript } from "@workspace/contracts"
 import { Effect } from "effect"
 
+import { recoverPromise } from "@/effect/promise"
 import { issueFileCapability } from "@/server/relay-capability"
 import { getRelayFile, saveRelayFile } from "@/server/relay"
 
@@ -86,15 +87,17 @@ export async function uploadRelayFile(
           const content = new TextDecoder("utf-8", { fatal: true }).decode(
             bytes
           )
-          const saved = await saveRelayFile({
-            data: {
-              content,
-              instanceId: input.instanceId,
-              path: input.path,
-              relayId: input.relayId,
-            },
-          })
-          const digest = await crypto.subtle.digest("SHA-256", bytes)
+          const [saved, digest] = await Promise.all([
+            saveRelayFile({
+              data: {
+                content,
+                instanceId: input.instanceId,
+                path: input.path,
+                relayId: input.relayId,
+              },
+            }),
+            crypto.subtle.digest("SHA-256", bytes),
+          ])
           return {
             modifiedAt: saved.modifiedAt,
             path: saved.path,
@@ -269,7 +272,10 @@ async function transferError(
   response: Response,
   operation: string
 ): Promise<Error> {
-  const body = (await response.json().catch(() => null)) as unknown
+  const body = await recoverPromise(
+    () => response.json(),
+    () => null
+  )
   const message =
     body &&
     typeof body === "object" &&

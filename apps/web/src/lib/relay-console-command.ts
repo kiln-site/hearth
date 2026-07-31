@@ -10,6 +10,7 @@ import type {
 } from "@workspace/contracts"
 import { Effect, Result } from "effect"
 
+import { tapPromiseError } from "@/effect/promise"
 import { issueConsoleCapability } from "@/server/relay-capability"
 import {
   completeRelayConsoleCommand,
@@ -80,12 +81,15 @@ async function commandSession(
   const key = `${relayId}:${instanceId}`
   const existing = sessions.get(key)
   if (existing) return existing
-  const created = ConsoleCommandSession.connect(relayId, instanceId, () => {
-    if (sessions.get(key) === created) sessions.delete(key)
-  }).catch((cause) => {
-    if (sessions.get(key) === created) sessions.delete(key)
-    throw cause
-  })
+  const created = tapPromiseError(
+    () =>
+      ConsoleCommandSession.connect(relayId, instanceId, () => {
+        if (sessions.get(key) === created) sessions.delete(key)
+      }),
+    () => {
+      if (sessions.get(key) === created) sessions.delete(key)
+    }
+  )
   sessions.set(key, created)
   return created
 }

@@ -17,6 +17,7 @@ import { Effect, Fiber, Schedule, Semaphore } from "effect"
 import { resolveBrick } from "./bricks.js"
 import { command } from "./command.js"
 import { directoryApparentSizeEffect } from "./disk-usage.js"
+import { recoverPromise, tapPromiseError } from "./effect/promise.js"
 import type {
   RelayCreateInstance,
   RelayInstance,
@@ -524,13 +525,17 @@ export class LifecycleDriver {
   }
 
   async tailscaleStacks(): Promise<Array<RelayTailscaleStack>> {
-    const entries = await readdir(this.#config.rootDirectory, {
-      encoding: "utf8",
-      withFileTypes: true,
-    }).catch((cause: unknown) => {
-      if (hasErrorCode(cause, "ENOENT")) return []
-      throw cause
-    })
+    const entries = await recoverPromise(
+      () =>
+        readdir(this.#config.rootDirectory, {
+          encoding: "utf8",
+          withFileTypes: true,
+        }),
+      (cause) => {
+        if (hasErrorCode(cause, "ENOENT")) return []
+        throw cause
+      }
+    )
     const stacks = await Promise.all(
       entries
         .filter(
@@ -1071,17 +1076,21 @@ export class LifecycleDriver {
         "Proxy TLS mode could not identify the Relay container to verify that private HTTP port 4100 is not published."
       )
     }
-    const inspected = await command("docker", [
-      "inspect",
-      "--format",
-      "{{json .HostConfig.PortBindings}}",
-      reference,
-    ]).catch((cause: unknown) => {
-      throw new Error(
-        "Proxy TLS mode could not inspect its Relay container through the Docker socket. Keep the socket mounted so Relay can verify its private listener.",
-        { cause }
-      )
-    })
+    const inspected = await tapPromiseError(
+      () =>
+        command("docker", [
+          "inspect",
+          "--format",
+          "{{json .HostConfig.PortBindings}}",
+          reference,
+        ]),
+      (cause) => {
+        throw new Error(
+          "Proxy TLS mode could not inspect its Relay container through the Docker socket. Keep the socket mounted so Relay can verify its private listener.",
+          { cause }
+        )
+      }
+    )
     const bindings = JSON.parse(inspected.stdout) as Record<
       string,
       Array<{ HostIp?: string; HostPort?: string }> | null
@@ -1144,14 +1153,18 @@ export class LifecycleDriver {
         }
       })
     )
-    const bundledContainerRunning = await command("docker", [
-      "inspect",
-      "--format",
-      "{{.State.Running}}",
-      this.#resources.traefikContainer,
-    ])
-      .then((result) => result.stdout.trim() === "true")
-      .catch(() => false)
+    const bundledContainerRunning = await recoverPromise(
+      async () =>
+        (
+          await command("docker", [
+            "inspect",
+            "--format",
+            "{{.State.Running}}",
+            this.#resources.traefikContainer,
+          ])
+        ).stdout.trim() === "true",
+      () => false
+    )
     const coolifyProxy =
       settings.mode === "coolify"
         ? await this.#externalTraefikContainer(settings)
@@ -1362,7 +1375,10 @@ export class LifecycleDriver {
       }
       const coreDns = this.#resources.tailscaleStackDnsContainer(instance.id)
       if (action === "stop" || action === "kill") {
-        await command("docker", [action, coreDns]).catch(() => undefined)
+        await recoverPromise(
+          () => command("docker", [action, coreDns]),
+          () => undefined
+        )
         return this.#docker.runAction(instance, action)
       }
       const updated = await this.#docker.runAction(instance, action)
@@ -1376,10 +1392,14 @@ export class LifecycleDriver {
         )
       }
       if (config) await this.#configureTailscaleStackRouting(config)
-      await command("docker", [
-        action === "restart" ? "restart" : "start",
-        coreDns,
-      ]).catch(() => undefined)
+      await recoverPromise(
+        () =>
+          command("docker", [
+            action === "restart" ? "restart" : "start",
+            coreDns,
+          ]),
+        () => undefined
+      )
       return updated
     }
     if (action === "start" || action === "restart") {
@@ -1894,18 +1914,22 @@ export class LifecycleDriver {
       memoryLimitBytes: dockerMemoryBytes(resolved.memory),
     })
 
-    await command(
-      "docker",
-      [
-        "stop",
-        "--time",
-        String(INSTANCE_STOP_TIMEOUT_SECONDS),
-        existing.service,
-      ],
-      {
-        timeout: (INSTANCE_STOP_TIMEOUT_SECONDS + 15) * 1_000,
-      }
-    ).catch(() => undefined)
+    await recoverPromise(
+      () =>
+        command(
+          "docker",
+          [
+            "stop",
+            "--time",
+            String(INSTANCE_STOP_TIMEOUT_SECONDS),
+            existing.service,
+          ],
+          {
+            timeout: (INSTANCE_STOP_TIMEOUT_SECONDS + 15) * 1_000,
+          }
+        ),
+      () => undefined
+    )
     await command("docker", ["rm", "--force", existing.service], {
       timeout: 90_000,
     })
@@ -2956,8 +2980,14 @@ export class LifecycleDriver {
   }
 
   #serializeEdgeMutation(operation: () => Promise<void>): Promise<void> {
-    const result = this.#edgeMutation.catch(() => undefined).then(operation)
-    this.#edgeMutation = result.catch(() => undefined)
+    const result = recoverPromise(
+      () => this.#edgeMutation,
+      () => undefined
+    ).then(operation)
+    this.#edgeMutation = recoverPromise(
+      () => result,
+      () => undefined
+    )
     return result
   }
 
@@ -3154,13 +3184,17 @@ export class LifecycleDriver {
   }
 
   async #tailscaleStackConfigs(): Promise<Array<RelayTailscaleStackConfig>> {
-    const entries = await readdir(this.#config.rootDirectory, {
-      encoding: "utf8",
-      withFileTypes: true,
-    }).catch((cause: unknown) => {
-      if (hasErrorCode(cause, "ENOENT")) return []
-      throw cause
-    })
+    const entries = await recoverPromise(
+      () =>
+        readdir(this.#config.rootDirectory, {
+          encoding: "utf8",
+          withFileTypes: true,
+        }),
+      (cause) => {
+        if (hasErrorCode(cause, "ENOENT")) return []
+        throw cause
+      }
+    )
     const configs = await Promise.all(
       entries
         .filter(
@@ -3203,13 +3237,17 @@ export class LifecycleDriver {
     config: RelayTailscaleStackConfig
   ): Promise<void> {
     const name = this.#resources.tailscaleStackNetwork(config.id)
-    const inspected = await command("docker", [
-      "network",
-      "inspect",
-      "--format",
-      "{{json .Labels}}",
-      name,
-    ]).catch(() => null)
+    const inspected = await recoverPromise(
+      () =>
+        command("docker", [
+          "network",
+          "inspect",
+          "--format",
+          "{{json .Labels}}",
+          name,
+        ]),
+      () => null
+    )
     if (inspected) {
       const labels = stringLabels(JSON.parse(inspected.stdout))
       if (
@@ -3255,13 +3293,17 @@ export class LifecycleDriver {
       if (replacement?.address === binding.address) continue
       const instance = await this.#docker.findInstance(binding.instanceId)
       if (!instance) continue
-      await command("docker", [
-        "network",
-        "disconnect",
-        "--force",
-        network,
-        instance.service,
-      ]).catch(() => undefined)
+      await recoverPromise(
+        () =>
+          command("docker", [
+            "network",
+            "disconnect",
+            "--force",
+            network,
+            instance.service,
+          ]),
+        () => undefined
+      )
     }
     for (const binding of desired) {
       const prior = previousById.get(binding.instanceId)
@@ -3485,18 +3527,23 @@ export class LifecycleDriver {
     const container = this.#resources.tailscaleStackContainer(config.id)
     const chain = TAILSCALE_STACK_FORWARD_CHAIN
     const [hook, specification] = await Promise.all([
-      command("docker", [
-        "exec",
-        container,
-        "iptables",
-        "-C",
-        "FORWARD",
-        "-i",
-        "tailscale0",
-        "-j",
-        chain,
-      ]).catch(() => null),
-      command("docker", ["exec", container, "iptables", "-S", chain]).catch(
+      recoverPromise(
+        () =>
+          command("docker", [
+            "exec",
+            container,
+            "iptables",
+            "-C",
+            "FORWARD",
+            "-i",
+            "tailscale0",
+            "-j",
+            chain,
+          ]),
+        () => null
+      ),
+      recoverPromise(
+        () => command("docker", ["exec", container, "iptables", "-S", chain]),
         () => null
       ),
     ])
@@ -3510,7 +3557,8 @@ export class LifecycleDriver {
     ) {
       return
     }
-    await command("docker", ["exec", container, "iptables", "-N", chain]).catch(
+    await recoverPromise(
+      () => command("docker", ["exec", container, "iptables", "-N", chain]),
       () => undefined
     )
     if (!hook) {
@@ -3677,13 +3725,17 @@ export class LifecycleDriver {
   }
 
   async #tailscaleStackContainerGeneration(id: string): Promise<string | null> {
-    const inspected = await command("docker", [
-      "container",
-      "inspect",
-      "--format",
-      "{{.Id}}|{{.State.StartedAt}}|{{.State.Running}}",
-      this.#resources.tailscaleStackContainer(id),
-    ]).catch(() => null)
+    const inspected = await recoverPromise(
+      () =>
+        command("docker", [
+          "container",
+          "inspect",
+          "--format",
+          "{{.Id}}|{{.State.StartedAt}}|{{.State.Running}}",
+          this.#resources.tailscaleStackContainer(id),
+        ]),
+      () => null
+    )
     if (!inspected) return null
     const generation = inspected.stdout.trim()
     return generation.endsWith("|true") ? generation : null
@@ -3849,12 +3901,20 @@ export class LifecycleDriver {
   }> {
     const name = this.#resources.tailscaleStackContainer(id)
     const [ipv4, ipv6] = await Promise.all([
-      command("docker", ["exec", name, "tailscale", "ip", "-4"], {
-        timeout: 10_000,
-      }).catch(() => null),
-      command("docker", ["exec", name, "tailscale", "ip", "-6"], {
-        timeout: 10_000,
-      }).catch(() => null),
+      recoverPromise(
+        () =>
+          command("docker", ["exec", name, "tailscale", "ip", "-4"], {
+            timeout: 10_000,
+          }),
+        () => null
+      ),
+      recoverPromise(
+        () =>
+          command("docker", ["exec", name, "tailscale", "ip", "-6"], {
+            timeout: 10_000,
+          }),
+        () => null
+      ),
     ])
     return {
       ipv4Address: ipv4?.stdout.trim().split("\n")[0] || null,
@@ -3910,24 +3970,32 @@ export class LifecycleDriver {
   }
 
   async #containerExists(name: string): Promise<boolean> {
-    const inspected = await command("docker", [
-      "container",
-      "inspect",
-      "--format",
-      "{{.Id}}",
-      name,
-    ]).catch(() => null)
+    const inspected = await recoverPromise(
+      () =>
+        command("docker", [
+          "container",
+          "inspect",
+          "--format",
+          "{{.Id}}",
+          name,
+        ]),
+      () => null
+    )
     return Boolean(inspected?.stdout.trim())
   }
 
   async #containerRunning(name: string): Promise<boolean> {
-    const inspected = await command("docker", [
-      "container",
-      "inspect",
-      "--format",
-      "{{.State.Running}}",
-      name,
-    ]).catch(() => null)
+    const inspected = await recoverPromise(
+      () =>
+        command("docker", [
+          "container",
+          "inspect",
+          "--format",
+          "{{.State.Running}}",
+          name,
+        ]),
+      () => null
+    )
     return inspected?.stdout.trim() === "true"
   }
 
@@ -3956,13 +4024,17 @@ export class LifecycleDriver {
     arguments_: Array<string>
   ): Promise<void> {
     if (!replace) {
-      const inspected = await command("docker", [
-        "container",
-        "inspect",
-        "--format",
-        "{{json .Config.Labels}}",
-        name,
-      ]).catch(() => null)
+      const inspected = await recoverPromise(
+        () =>
+          command("docker", [
+            "container",
+            "inspect",
+            "--format",
+            "{{json .Config.Labels}}",
+            name,
+          ]),
+        () => null
+      )
       if (inspected) {
         if (
           !relayOwnsLabels(
@@ -3981,13 +4053,17 @@ export class LifecycleDriver {
   }
 
   async #removeOwnedContainer(name: string): Promise<void> {
-    const inspected = await command("docker", [
-      "container",
-      "inspect",
-      "--format",
-      "{{json .Config.Labels}}",
-      name,
-    ]).catch(() => null)
+    const inspected = await recoverPromise(
+      () =>
+        command("docker", [
+          "container",
+          "inspect",
+          "--format",
+          "{{json .Config.Labels}}",
+          name,
+        ]),
+      () => null
+    )
     if (!inspected) return
     const labels = stringLabels(JSON.parse(inspected.stdout))
     if (!relayOwnsLabels(this.#config, labels)) {
@@ -3999,13 +4075,17 @@ export class LifecycleDriver {
   }
 
   async #ensureOwnedNetwork(name: string, kind: string): Promise<void> {
-    const inspected = await command("docker", [
-      "network",
-      "inspect",
-      "--format",
-      "{{json .Labels}}",
-      name,
-    ]).catch(() => null)
+    const inspected = await recoverPromise(
+      () =>
+        command("docker", [
+          "network",
+          "inspect",
+          "--format",
+          "{{json .Labels}}",
+          name,
+        ]),
+      () => null
+    )
     if (inspected) {
       const labels = stringLabels(JSON.parse(inspected.stdout))
       const legacyGameNetwork =
@@ -4035,13 +4115,17 @@ export class LifecycleDriver {
   }
 
   async #removeOwnedNetwork(name: string): Promise<void> {
-    const inspected = await command("docker", [
-      "network",
-      "inspect",
-      "--format",
-      "{{json .Labels}}",
-      name,
-    ]).catch(() => null)
+    const inspected = await recoverPromise(
+      () =>
+        command("docker", [
+          "network",
+          "inspect",
+          "--format",
+          "{{json .Labels}}",
+          name,
+        ]),
+      () => null
+    )
     if (!inspected) return
     const labels = stringLabels(JSON.parse(inspected.stdout))
     if (!relayOwnsLabels(this.#config, labels)) {
@@ -4194,26 +4278,34 @@ export async function discoverExternalTraefikContainer(
     return firstTraefikContainer(["coolify-proxy"], runCommand)
   }
   if (input.resourceNamespace) {
-    const attached = await runCommand("docker", [
-      "network",
-      "inspect",
-      "--format",
-      "{{range .Containers}}{{println .Name}}{{end}}",
-      input.edgeNetwork,
-    ]).catch(() => ({ stderr: "", stdout: "" }))
+    const attached = await recoverPromise(
+      () =>
+        runCommand("docker", [
+          "network",
+          "inspect",
+          "--format",
+          "{{range .Containers}}{{println .Name}}{{end}}",
+          input.edgeNetwork,
+        ]),
+      () => ({ stderr: "", stdout: "" })
+    )
     return firstTraefikContainer(containerNames(attached.stdout), runCommand)
   }
 
   const candidates = ["coolify-proxy"]
   const ports = await Promise.all(
     [80, 443].map((port) =>
-      runCommand("docker", [
-        "ps",
-        "--filter",
-        `publish=${port}`,
-        "--format",
-        "{{.Names}}",
-      ]).catch(() => ({ stderr: "", stdout: "" }))
+      recoverPromise(
+        () =>
+          runCommand("docker", [
+            "ps",
+            "--filter",
+            `publish=${port}`,
+            "--format",
+            "{{.Names}}",
+          ]),
+        () => ({ stderr: "", stdout: "" })
+      )
     )
   )
   for (const result of ports) {
@@ -4227,14 +4319,20 @@ async function firstTraefikContainer(
   runCommand: LifecycleCommand
 ): Promise<string | null> {
   for (const name of names) {
-    const inspected = await runCommand("docker", [
-      "inspect",
-      "--format",
-      "{{.State.Running}} {{.Config.Image}}",
-      name,
-    ])
-      .then((result) => result.stdout.trim().toLowerCase())
-      .catch(() => "")
+    const inspected = await recoverPromise(
+      async () =>
+        (
+          await runCommand("docker", [
+            "inspect",
+            "--format",
+            "{{.State.Running}} {{.Config.Image}}",
+            name,
+          ])
+        ).stdout
+          .trim()
+          .toLowerCase(),
+      () => ""
+    )
     if (
       inspected.startsWith("true traefik:") ||
       inspected.startsWith("true traefik@")
@@ -4256,30 +4354,36 @@ async function containerUsesNetwork(
   name: string,
   network: string
 ): Promise<boolean> {
-  return command("docker", [
-    "inspect",
-    "--format",
-    "{{json .NetworkSettings.Networks}}",
-    name,
-  ])
-    .then((result) => {
+  return recoverPromise(
+    async () => {
+      const result = await command("docker", [
+        "inspect",
+        "--format",
+        "{{json .NetworkSettings.Networks}}",
+        name,
+      ])
       const networks = JSON.parse(result.stdout) as unknown
       return Boolean(
         networks && typeof networks === "object" && network in networks
       )
-    })
-    .catch(() => false)
+    },
+    () => false
+  )
 }
 
 async function containerLabels(name: string): Promise<Record<string, string>> {
-  return command("docker", [
-    "inspect",
-    "--format",
-    "{{json .Config.Labels}}",
-    name,
-  ])
-    .then((result) => stringLabels(JSON.parse(result.stdout)))
-    .catch(() => ({}))
+  return recoverPromise(
+    async () => {
+      const result = await command("docker", [
+        "inspect",
+        "--format",
+        "{{json .Config.Labels}}",
+        name,
+      ])
+      return stringLabels(JSON.parse(result.stdout))
+    },
+    () => ({})
+  )
 }
 
 function stringLabels(value: unknown): Record<string, string> {
@@ -4320,21 +4424,23 @@ async function containerUsesNetworkAlias(
   network: string,
   alias: string
 ): Promise<boolean> {
-  return command("docker", [
-    "inspect",
-    "--format",
-    "{{json .NetworkSettings.Networks}}",
-    name,
-  ])
-    .then((result) => {
+  return recoverPromise(
+    async () => {
+      const result = await command("docker", [
+        "inspect",
+        "--format",
+        "{{json .NetworkSettings.Networks}}",
+        name,
+      ])
       const networks = JSON.parse(result.stdout) as Record<
         string,
         { Aliases?: unknown }
       >
       const aliases = networks[network]?.Aliases
       return Array.isArray(aliases) && aliases.includes(alias)
-    })
-    .catch(() => false)
+    },
+    () => false
+  )
 }
 
 async function disconnectNetwork(name: string, network: string): Promise<void> {

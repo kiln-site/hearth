@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
+import { Result } from "effect"
 import { defineConfig, lazyPlugins } from "vite-plus"
 import { sentryTanstackStart } from "@sentry/tanstackstart-react/vite"
 import { devtools } from "@tanstack/devtools-vite"
@@ -150,44 +151,47 @@ function resolveBuildCommit(): string {
 
   if (configured) return configured
 
-  try {
-    const head = readFileSync(
-      resolve(repositoryRoot, ".git/HEAD"),
-      "utf8"
-    ).trim()
-    if (!head.startsWith("ref: ")) return head
-
-    const reference = head.slice(5)
-    try {
-      return readFileSync(
-        resolve(repositoryRoot, `.git/${reference}`),
+  return Result.getOrElse(
+    Result.try(() => {
+      const head = readFileSync(
+        resolve(repositoryRoot, ".git/HEAD"),
         "utf8"
       ).trim()
-    } catch {
-      const packedReferences = readFileSync(
-        resolve(repositoryRoot, ".git/packed-refs"),
-        "utf8"
+      if (!head.startsWith("ref: ")) return head
+
+      const reference = head.slice(5)
+      return Result.getOrElse(
+        Result.try(() =>
+          readFileSync(
+            resolve(repositoryRoot, `.git/${reference}`),
+            "utf8"
+          ).trim()
+        ),
+        () => {
+          const packedReferences = readFileSync(
+            resolve(repositoryRoot, ".git/packed-refs"),
+            "utf8"
+          )
+          return (
+            packedReferences
+              .split("\n")
+              .find((line) => line.endsWith(` ${reference}`))
+              ?.split(" ")[0] ?? ""
+          )
+        }
       )
-      return (
-        packedReferences
-          .split("\n")
-          .find((line) => line.endsWith(` ${reference}`))
-          ?.split(" ")[0] ?? ""
-      )
-    }
-  } catch {
-    return ""
-  }
+    }),
+    () => ""
+  )
 }
 
 function developmentHosts(): Array<string> {
   const hosts = new Set(["localhost", "hearth.hearth.orb.local"])
   const configured = process.env.KILN_URL?.trim()
   if (!configured) return [...hosts]
-  try {
+  Result.try(() => {
     hosts.add(new URL(configured).hostname)
-  } catch {
-    // Application startup reports the invalid KILN_URL with more context.
-  }
+  })
+  // Application startup reports the invalid KILN_URL with more context.
   return [...hosts]
 }

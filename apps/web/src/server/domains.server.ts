@@ -14,6 +14,7 @@ import {
   updateCloudflareAddressRecordEffect,
   updateCloudflareSrvRecordEffect,
 } from "@/effect/cloudflare-api"
+import { recoverPromise } from "@/effect/promise"
 import {
   activateInstanceDomainAssignmentEffect,
   deleteInstanceDomainAssignmentEffect,
@@ -147,10 +148,14 @@ export async function configureDomainIntegrationHandler(
   const apiToken =
     data.apiToken ??
     (
-      await runAppEffect(
-        "domains.integration.credential",
-        loadCloudflareIntegrationCredentialEffect()
-      ).catch(() => null)
+      await recoverPromise(
+        () =>
+          runAppEffect(
+            "domains.integration.credential",
+            loadCloudflareIntegrationCredentialEffect()
+          ),
+        () => null
+      )
     )?.apiToken
   if (!apiToken) throw new Error("Enter a Cloudflare API token")
   const zone = await runAppEffect(

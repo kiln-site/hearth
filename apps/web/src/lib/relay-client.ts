@@ -84,9 +84,11 @@ export const relayFetchEffect = Effect.fn("relay.fetch")(function* (
   })
 
   if (!response.ok) {
-    const problem = yield* Effect.promise(() =>
-      response.json().catch(() => null)
-    )
+    const decodedProblem = yield* Effect.tryPromise({
+      try: () => response.json(),
+      catch: (cause) => cause,
+    }).pipe(Effect.option)
+    const problem = decodedProblem._tag === "Some" ? decodedProblem.value : null
     const parsed = z
       .object({ error: z.string().optional() })
       .nullable()
