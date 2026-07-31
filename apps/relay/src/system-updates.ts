@@ -318,7 +318,7 @@ export class SystemUpdateManager {
             return failed
           })
         ),
-        Effect.onError(() =>
+        Effect.onInterrupt(() =>
           Effect.all(
             [
               cleanupHelperEffect(runCommand, id),

@@ -260,14 +260,19 @@ describe("update operation lifecycle", () => {
             readdir(join(dataDirectory, "updates"))
           )).filter((name) => name.endsWith(".json"))
           expect(operationFiles).toHaveLength(1)
-          expect(
+          const cancelledOperation = JSON.parse(
             yield* Effect.promise(() =>
               readFile(
                 join(dataDirectory, "updates", operationFiles[0] ?? ""),
                 "utf8"
               )
             )
-          ).toContain('"status": "failed"')
+          ) as UpdateOperation
+          expect(cancelledOperation).toMatchObject({
+            error:
+              "The update request was cancelled before replacement started.",
+            status: "failed",
+          })
         })
       )
   )
