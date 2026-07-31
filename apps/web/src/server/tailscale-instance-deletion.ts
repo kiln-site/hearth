@@ -7,8 +7,9 @@ import type { RelayControlOperation } from "@workspace/contracts"
 
 import type { RelayEndpoint } from "@/lib/relay-control-endpoint"
 import { listPersistedRelays } from "@/lib/relay-registry"
+import { runAppEffect } from "@/effect/runtime"
 import {
-  synchronizeInstanceDeletionDns,
+  synchronizeInstanceDeletionDnsEffect,
   type TailscaleDeploymentOperations,
   type TailscaleDeploymentState,
 } from "@/server/tailscale-orchestration"
@@ -87,15 +88,18 @@ export async function synchronizeTailscaleInstanceDeletion(
     },
   }
 
-  await synchronizeInstanceDeletionDns({
-    current,
-    instanceId: input.instanceId,
-    mode: input.mode,
-    operations,
-    relayId: input.relayId,
-    signal,
-    stackIds: input.stackIds,
-  })
+  await runAppEffect(
+    "tailscale.instanceDeletion.synchronizeDns",
+    synchronizeInstanceDeletionDnsEffect({
+      current,
+      instanceId: input.instanceId,
+      mode: input.mode,
+      operations,
+      relayId: input.relayId,
+      signal,
+      stackIds: input.stackIds,
+    })
+  )
 }
 
 function throwIfTailscalePrepareCancelled(

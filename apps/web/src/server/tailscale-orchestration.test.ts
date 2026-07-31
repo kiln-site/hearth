@@ -1,8 +1,12 @@
+import { assert, it as effectIt } from "@effect/vitest"
+import { Effect } from "effect"
 import { describe, expect, it } from "vite-plus/test"
 
+import { TailscaleOrchestrationError } from "@/effect/errors"
+
 import {
-  applyTailscaleDeploymentPlan,
-  synchronizeInstanceDeletionDns,
+  applyTailscaleDeploymentPlanEffect,
+  synchronizeInstanceDeletionDnsEffect,
   type DesiredTailscaleDeployment,
   type TailscaleDeploymentState,
 } from "./tailscale-orchestration"
@@ -11,7 +15,41 @@ interface TestDeployment extends TailscaleDeploymentState {
   revision: string
 }
 
+const applyTailscaleDeploymentPlan = <
+  TDeployment extends TailscaleDeploymentState,
+>(
+  input: Parameters<typeof applyTailscaleDeploymentPlanEffect<TDeployment>>[0]
+) => Effect.runPromise(applyTailscaleDeploymentPlanEffect(input))
+
+const synchronizeInstanceDeletionDns = <
+  TDeployment extends TailscaleDeploymentState,
+>(
+  input: Parameters<typeof synchronizeInstanceDeletionDnsEffect<TDeployment>>[0]
+) => Effect.runPromise(synchronizeInstanceDeletionDnsEffect(input))
+
 describe("Tailscale deployment orchestration", () => {
+  effectIt.effect("keeps validation failures in the typed error channel", () =>
+    Effect.gen(function* () {
+      const failure = yield* applyTailscaleDeploymentPlanEffect({
+        authKey: "one-off-key",
+        current: [],
+        desired: [target("relay-a"), target("relay-b")],
+        domain: "test",
+        id: "a".repeat(40),
+        name: "Test network",
+        operations: {
+          apply: async (desired) => deployment(desired.relayId, "applied"),
+          remove: async () => undefined,
+          syncDns: async (value) => value,
+        },
+      }).pipe(Effect.flip)
+
+      assert.instanceOf(failure, TailscaleOrchestrationError)
+      assert.strictEqual(failure.phase, "validation")
+      assert.include(failure.message, "one new Relay at a time")
+    })
+  )
+
   it("applies nodes sequentially and sends the auth key only to new nodes", async () => {
     const calls: Array<{ authKey?: string; relayId: string }> = []
     let active = 0

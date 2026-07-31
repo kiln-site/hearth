@@ -41,7 +41,7 @@ import type { PersistedRelay } from "@/lib/relay-registry"
 import { listPersistedRelays } from "@/lib/relay-registry"
 import { requireAuthenticatedUser } from "@/server/auth"
 import {
-  applyTailscaleDeploymentPlan,
+  applyTailscaleDeploymentPlanEffect,
   type DesiredTailscaleDeployment,
   type TailscaleDeploymentOperations,
 } from "@/server/tailscale-orchestration"
@@ -372,95 +372,99 @@ export const saveTailscaleStack = createServerFn({ method: "POST" })
       if (deployment.id !== id) reservedSubnets.add(deployment.subnet)
     }
     requireStagedRemovalSupport(removed, currentResult.snapshots, relayById)
-    const synchronized = await applyTailscaleDeploymentPlan({
-      authKey: data.authKey,
-      authKeyForTarget: integrationCredential
-        ? async (target) =>
-            createTailscaleNodeAuthKey(integrationCredential, target.hostname)
-        : undefined,
-      current: currentForStack,
-      desired,
-      domain: data.domain,
-      id,
-      name: data.name,
-      operations: tailscaleDeploymentOperations(
-        relayById,
-        user.id,
-        integrationCredential
-          ? (deployment) =>
-              removeTailscaleControlPlaneDevice(
+    const synchronized = await runAppEffect(
+      "tailscale.deployment.save",
+      applyTailscaleDeploymentPlanEffect({
+        authKey: data.authKey,
+        authKeyForTarget: integrationCredential
+          ? async (target) =>
+              createTailscaleNodeAuthKey(integrationCredential, target.hostname)
+          : undefined,
+        current: currentForStack,
+        desired,
+        domain: data.domain,
+        id,
+        name: data.name,
+        operations: tailscaleDeploymentOperations(
+          relayById,
+          user.id,
+          integrationCredential
+            ? (deployment) =>
+                removeTailscaleControlPlaneDevice(
+                  integrationCredential,
+                  deployment
+                )
+            : undefined
+        ),
+        reservedSubnets,
+        beforeFinalize: async (deployments) => {
+          if (integrationCredential && definition?.integration) {
+            try {
+              await synchronizeTailscaleControlPlane(
                 integrationCredential,
-                deployment
+                tailscaleOverviewForDeployments(
+                  nextDefinition,
+                  deployments,
+                  definition.domain
+                )
               )
-          : undefined
-      ),
-      reservedSubnets,
-      beforeFinalize: async (deployments) => {
-        if (integrationCredential && definition?.integration) {
-          try {
-            await synchronizeTailscaleControlPlane(
-              integrationCredential,
-              tailscaleOverviewForDeployments(
-                nextDefinition,
-                deployments,
-                definition.domain
-              )
-            )
-            nextDefinition.integration = {
-              ...definition.integration,
-              lastError: null,
-              lastSyncedAt: new Date().toISOString(),
-            }
-          } catch (cause) {
-            const message = errorMessage(cause)
-            await recordTailscaleSync(id, message)
-            await restoreTailscaleControlPlane(
-              integrationCredential,
-              definition,
-              currentForStack
-            )
-            throw cause
-          }
-        }
-        try {
-          await saveTailscaleNetworkDefinition(nextDefinition)
-        } catch (cause) {
-          let domainOwnerAfterConflict: TailscaleNetworkDefinition | null = null
-          try {
-            if (integrationCredential && definition) {
+              nextDefinition.integration = {
+                ...definition.integration,
+                lastError: null,
+                lastSyncedAt: new Date().toISOString(),
+              }
+            } catch (cause) {
+              const message = errorMessage(cause)
+              await recordTailscaleSync(id, message)
               await restoreTailscaleControlPlane(
                 integrationCredential,
                 definition,
                 currentForStack
               )
+              throw cause
             }
-            if (
-              integrationCredential &&
-              definition?.domain !== nextDefinition.domain
-            ) {
-              domainOwnerAfterConflict =
-                await reconcileTailscaleDomainAfterDefinitionFailure(
+          }
+          try {
+            await saveTailscaleNetworkDefinition(nextDefinition)
+          } catch (cause) {
+            let domainOwnerAfterConflict: TailscaleNetworkDefinition | null =
+              null
+            try {
+              if (integrationCredential && definition) {
+                await restoreTailscaleControlPlane(
                   integrationCredential,
-                  nextDefinition,
-                  relays
+                  definition,
+                  currentForStack
                 )
+              }
+              if (
+                integrationCredential &&
+                definition?.domain !== nextDefinition.domain
+              ) {
+                domainOwnerAfterConflict =
+                  await reconcileTailscaleDomainAfterDefinitionFailure(
+                    integrationCredential,
+                    nextDefinition,
+                    relays
+                  )
+              }
+            } catch (recoveryCause) {
+              throw new Error(
+                `${errorMessage(cause)}. Tailscale DNS recovery also failed: ${errorMessage(recoveryCause)}`,
+                { cause: recoveryCause }
+              )
             }
-          } catch (recoveryCause) {
-            throw new Error(
-              `${errorMessage(cause)}. Tailscale DNS recovery also failed: ${errorMessage(recoveryCause)}`,
-              { cause: recoveryCause }
-            )
+            if (domainOwnerAfterConflict) {
+              throw new Error(
+                `Network TLD .${nextDefinition.domain} is already used by ${domainOwnerAfterConflict.name}`,
+                { cause }
+              )
+            }
+            throw cause
           }
-          if (domainOwnerAfterConflict) {
-            throw new Error(
-              `Network TLD .${nextDefinition.domain} is already used by ${domainOwnerAfterConflict.name}`,
-              { cause }
-            )
-          }
-          throw cause
-        }
-      },
-    })
+        },
+      })
+    )
 
     await invalidateRelaySnapshots([
       ...desiredRelayIds,
@@ -501,34 +505,37 @@ export const removeTailscaleStack = createServerFn({ method: "POST" })
       ? await loadTailscaleNetworkCredential(data.id)
       : null
     const fallback = deployments[0]
-    await applyTailscaleDeploymentPlan({
-      current: deployments,
-      desired: [],
-      domain: definition?.domain ?? fallback?.domain ?? "test",
-      id: data.id,
-      name: definition?.name ?? fallback?.name ?? "Tailscale network",
-      operations: tailscaleDeploymentOperations(
-        relayById,
-        user.id,
-        credential
-          ? (deployment) =>
-              removeTailscaleControlPlaneDevice(credential, deployment)
-          : undefined
-      ),
-      beforeFinalize: async () => {
-        if (credential && definition) {
-          try {
-            await synchronizeTailscaleControlPlane(
-              credential,
-              tailscaleOverviewForDeployments(definition, [])
-            )
-          } catch (cause) {
-            await recordTailscaleSync(data.id, errorMessage(cause))
-            throw cause
+    await runAppEffect(
+      "tailscale.deployment.remove",
+      applyTailscaleDeploymentPlanEffect({
+        current: deployments,
+        desired: [],
+        domain: definition?.domain ?? fallback?.domain ?? "test",
+        id: data.id,
+        name: definition?.name ?? fallback?.name ?? "Tailscale network",
+        operations: tailscaleDeploymentOperations(
+          relayById,
+          user.id,
+          credential
+            ? (deployment) =>
+                removeTailscaleControlPlaneDevice(credential, deployment)
+            : undefined
+        ),
+        beforeFinalize: async () => {
+          if (credential && definition) {
+            try {
+              await synchronizeTailscaleControlPlane(
+                credential,
+                tailscaleOverviewForDeployments(definition, [])
+              )
+            } catch (cause) {
+              await recordTailscaleSync(data.id, errorMessage(cause))
+              throw cause
+            }
           }
-        }
-      },
-    })
+        },
+      })
+    )
     await removeTailscaleNetworkDefinition(data.id)
     await invalidateRelaySnapshots(deployments.map(({ relayId }) => relayId))
     return { removed: true }

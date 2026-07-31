@@ -92,6 +92,27 @@ export class ExternalServiceError extends Schema.TaggedErrorClass<ExternalServic
   }
 ) {}
 
+export class TailscaleOrchestrationError extends Schema.TaggedErrorClass<TailscaleOrchestrationError>()(
+  "TailscaleOrchestrationError",
+  {
+    phase: Schema.Literals([
+      "validation",
+      "apply",
+      "dns",
+      "prepare",
+      "rollback",
+      "finalize",
+      "cleanup",
+    ]),
+    reason: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  }
+) {
+  override get message() {
+    return this.reason
+  }
+}
+
 export type AppError =
   | AuthenticationError
   | CacheError
@@ -103,3 +124,4 @@ export type AppError =
   | RelayResponseError
   | RelayUnavailableError
   | ResourceNotFoundError
+  | TailscaleOrchestrationError

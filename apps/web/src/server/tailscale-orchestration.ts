@@ -1,7 +1,11 @@
+import { Effect } from "effect"
+
 import type {
   RelayTailscaleStackApply,
   RelayTailscaleStackDns,
 } from "@workspace/contracts"
+
+import { TailscaleOrchestrationError } from "@/effect/errors"
 
 interface TailscaleBindingState {
   address: string
@@ -43,9 +47,9 @@ export interface TailscaleDeploymentOperations<
   ) => Promise<TDeployment>
 }
 
-export async function synchronizeInstanceDeletionDns<
-  TDeployment extends TailscaleDeploymentState,
->({
+export const synchronizeInstanceDeletionDnsEffect = Effect.fn(
+  "tailscale.instanceDeletion.synchronizeDns"
+)(function* <TDeployment extends TailscaleDeploymentState>({
   current,
   instanceId,
   mode,
@@ -61,8 +65,8 @@ export async function synchronizeInstanceDeletionDns<
   relayId: string
   signal?: AbortSignal
   stackIds: ReadonlyArray<string>
-}): Promise<void> {
-  throwIfPrepareCancelled(mode, signal)
+}) {
+  yield* ensurePrepareActive(mode, signal)
   const requestedStackIds = new Set(stackIds)
   const deploymentsByStack = new Map<string, Array<TDeployment>>()
   for (const deployment of current) {
@@ -78,10 +82,13 @@ export async function synchronizeInstanceDeletionDns<
     targets: Array<TDeployment>
   }> = []
   for (const stackId of requestedStackIds) {
-    throwIfPrepareCancelled(mode, signal)
+    yield* ensurePrepareActive(mode, signal)
     const deployments = deploymentsByStack.get(stackId)
     if (!deployments?.length) {
-      throw new Error(`Tailscale network ${stackId.slice(0, 8)} is unavailable`)
+      return yield* orchestrationFailure(
+        "validation",
+        `Tailscale network ${stackId.slice(0, 8)} is unavailable`
+      )
     }
     if (
       mode === "prepare" &&
@@ -93,7 +100,8 @@ export async function synchronizeInstanceDeletionDns<
           )
       )
     ) {
-      throw new Error(
+      return yield* orchestrationFailure(
+        "validation",
         `Tailscale network ${deploymentLabel(deployments)} no longer contains this server`
       )
     }
@@ -125,23 +133,19 @@ export async function synchronizeInstanceDeletionDns<
     const tasks = plans.flatMap((plan) =>
       plan.targets.map((deployment) => ({ deployment, records: plan.records }))
     )
-    const results = await Promise.allSettled(
-      tasks.map(({ deployment, records }) =>
-        operations.syncDns(deployment, records)
-      )
-    )
-    const failures = results.flatMap((result, index) =>
-      result.status === "rejected"
-        ? [
-            rollbackFailure(
-              tasks[index]?.deployment.relayName ?? "Unknown Relay",
-              result.reason
-            ),
-          ]
-        : []
+    const [failures] = yield* Effect.partition(
+      tasks,
+      ({ deployment, records }) =>
+        syncDnsEffect(operations, deployment, records, "rollback").pipe(
+          Effect.mapError((error) =>
+            rollbackFailure(deployment.relayName, error)
+          )
+        ),
+      { concurrency: "unbounded" }
     )
     if (failures.length > 0) {
-      throw new Error(
+      return yield* orchestrationFailure(
+        "rollback",
         `Could not restore Tailscale DNS after server deletion failed: ${failures.join("; ")}`
       )
     }
@@ -152,60 +156,69 @@ export async function synchronizeInstanceDeletionDns<
     deployment: TDeployment
     previousRecords: RelayTailscaleStackDns["records"]
   }> = []
-  try {
-    await runSequentially(plans, (plan) =>
-      runSequentially(plan.targets, async (deployment) => {
-        throwIfPrepareCancelled(mode, signal)
-        const updated = await operations.syncDns(deployment, plan.records)
-        synchronized.push({
-          deployment: updated,
-          previousRecords: plan.previousRecords,
-        })
-        throwIfPrepareCancelled(mode, signal)
-      })
-    )
-  } catch (cause) {
-    const rollbackTargets = [...synchronized].reverse()
-    const rollbackResults = await Promise.allSettled(
-      rollbackTargets.map(({ deployment, previousRecords }) =>
-        operations.syncDns(deployment, previousRecords)
+
+  yield* Effect.forEach(
+    plans,
+    (plan) =>
+      Effect.forEach(
+        plan.targets,
+        (deployment) =>
+          Effect.gen(function* () {
+            yield* ensurePrepareActive(mode, signal)
+            const updated = yield* syncDnsEffect(
+              operations,
+              deployment,
+              plan.records,
+              "prepare"
+            )
+            synchronized.push({
+              deployment: updated,
+              previousRecords: plan.previousRecords,
+            })
+            yield* ensurePrepareActive(mode, signal)
+          }),
+        { discard: true }
+      ),
+    { discard: true }
+  ).pipe(
+    Effect.catch((cause) => {
+      const rollbackTargets = [...synchronized].reverse()
+      return Effect.partition(
+        rollbackTargets,
+        ({ deployment, previousRecords }) =>
+          syncDnsEffect(
+            operations,
+            deployment,
+            previousRecords,
+            "rollback"
+          ).pipe(
+            Effect.mapError((error) =>
+              rollbackFailure(deployment.relayName, error)
+            )
+          ),
+        { concurrency: "unbounded" }
+      ).pipe(
+        Effect.flatMap(([rollbackFailures]) =>
+          orchestrationFailure(
+            "prepare",
+            `Could not prepare Tailscale DNS for server deletion: ${errorMessage(
+              cause
+            )}${
+              rollbackFailures.length
+                ? `. DNS rollback also failed: ${rollbackFailures.join("; ")}`
+                : ""
+            }`,
+            cause
+          )
+        )
       )
-    )
-    const rollbackFailures = rollbackResults.flatMap((result, index) =>
-      result.status === "rejected"
-        ? [
-            rollbackFailure(
-              rollbackTargets[index]?.deployment.relayName ?? "Unknown Relay",
-              result.reason
-            ),
-          ]
-        : []
-    )
-    throw new Error(
-      `Could not prepare Tailscale DNS for server deletion: ${
-        cause instanceof Error ? cause.message : "unknown error"
-      }${
-        rollbackFailures.length
-          ? `. DNS rollback also failed: ${rollbackFailures.join("; ")}`
-          : ""
-      }`,
-      { cause }
-    )
-  }
-}
+    })
+  )
+})
 
-function throwIfPrepareCancelled(
-  mode: "prepare" | "rollback",
-  signal?: AbortSignal
-): void {
-  if (mode === "prepare" && signal?.aborted) {
-    throw new Error("Tailscale DNS preparation was cancelled")
-  }
-}
-
-export async function applyTailscaleDeploymentPlan<
-  TDeployment extends TailscaleDeploymentState,
->({
+export const applyTailscaleDeploymentPlanEffect = Effect.fn(
+  "tailscale.deployment.applyPlan"
+)(function* <TDeployment extends TailscaleDeploymentState>({
   authKey,
   authKeyForTarget,
   current,
@@ -229,7 +242,7 @@ export async function applyTailscaleDeploymentPlan<
   operations: TailscaleDeploymentOperations<TDeployment>
   beforeFinalize?: (deployments: ReadonlyArray<TDeployment>) => Promise<void>
   reservedSubnets?: ReadonlySet<string>
-}): Promise<Array<TDeployment>> {
+}) {
   const previousByRelay = new Map(
     current.map((deployment) => [deployment.relayId, deployment])
   )
@@ -237,44 +250,52 @@ export async function applyTailscaleDeploymentPlan<
   const removed = current.filter(({ relayId }) => !desiredRelayIds.has(relayId))
   const applied: Array<TDeployment> = []
   const preparedRemovals: Array<TDeployment> = []
-  let synchronized: Array<TDeployment> = []
   const newTargetCount = desired.filter(
     ({ relayId }) => !previousByRelay.has(relayId)
   ).length
   if (newTargetCount > 1 && !authKeyForTarget) {
-    throw new Error(
+    return yield* orchestrationFailure(
+      "validation",
       "A manual auth key can add one new Relay at a time. Generate a separate key for each Relay."
     )
   }
 
-  try {
+  const synchronized = yield* Effect.gen(function* () {
     // A later node may reject a one-time key or fail during installation.
     // Applying one node at a time lets us compensate every completed peer.
-    await runSequentially(desired, async (target) => {
-      const previous = previousByRelay.get(target.relayId)
-      const targetAuthKey = previous
-        ? undefined
-        : authKeyForTarget
-          ? await authKeyForTarget(target)
-          : authKey
-      const deployment = await operations.apply(target, {
-        ...(targetAuthKey ? { authKey: targetAuthKey } : {}),
-        bindings: target.bindings,
-        domain,
-        hostname: target.hostname,
-        id,
-        name,
-      })
-      applied.push(deployment)
-      const peer = applied
-        .slice(0, -1)
-        .find((candidate) => candidate.subnet === deployment.subnet)
-      if (reservedSubnets.has(deployment.subnet) || peer) {
-        throw new Error(
-          `${deployment.subnet} is already assigned to another Tailscale node`
-        )
-      }
-    })
+    yield* Effect.forEach(
+      desired,
+      (target) =>
+        Effect.gen(function* () {
+          const previous = previousByRelay.get(target.relayId)
+          const targetAuthKey = previous
+            ? undefined
+            : authKeyForTarget
+              ? yield* promiseOperation("apply", () => authKeyForTarget(target))
+              : authKey
+          const deployment = yield* promiseOperation("apply", () =>
+            operations.apply(target, {
+              ...(targetAuthKey ? { authKey: targetAuthKey } : {}),
+              bindings: target.bindings,
+              domain,
+              hostname: target.hostname,
+              id,
+              name,
+            })
+          )
+          const peer = applied.find(
+            (candidate) => candidate.subnet === deployment.subnet
+          )
+          applied.push(deployment)
+          if (reservedSubnets.has(deployment.subnet) || peer) {
+            return yield* orchestrationFailure(
+              "validation",
+              `${deployment.subnet} is already assigned to another Tailscale node`
+            )
+          }
+        }),
+      { discard: true }
+    )
 
     const records = applied.flatMap((deployment) =>
       deployment.bindings.map(({ address, hostname }) => ({
@@ -282,156 +303,197 @@ export async function applyTailscaleDeploymentPlan<
         hostname,
       }))
     )
-    const syncResults = await Promise.allSettled(
-      applied.map((deployment) => operations.syncDns(deployment, records))
+    const [dnsFailures, synchronizedDeployments] = yield* Effect.partition(
+      applied,
+      (deployment) => syncDnsEffect(operations, deployment, records, "dns"),
+      { concurrency: "unbounded" }
     )
-    synchronized = []
-    for (const result of syncResults) {
-      if (result.status === "rejected") throw result.reason
-      synchronized.push(result.value)
+    const firstDnsFailure = dnsFailures[0]
+    if (firstDnsFailure !== undefined) {
+      return yield* Effect.fail(firstDnsFailure)
     }
 
     // Preparing a removal keeps its identity on disk, so every prepared node
     // can be restored if a later node or control-plane update fails.
-    await runSequentially(removed, async (deployment) => {
-      preparedRemovals.push(deployment)
-      await operations.remove(deployment, "prepare")
-    })
-    await beforeFinalize?.(synchronized)
-  } catch (cause) {
-    const rollbackFailures = await rollbackTailscaleDeploymentPlan(
-      current,
-      applied,
-      preparedRemovals,
-      operations
+    yield* Effect.forEach(
+      removed,
+      (deployment) =>
+        Effect.gen(function* () {
+          preparedRemovals.push(deployment)
+          yield* promiseOperation("prepare", () =>
+            operations.remove(deployment, "prepare")
+          )
+        }),
+      { discard: true }
     )
-    const message =
-      cause instanceof Error ? cause.message : "Unknown Tailscale error"
-    const rollbackMessage = rollbackFailures.length
-      ? ` Rollback also failed: ${rollbackFailures.join("; ")}`
-      : ""
-    throw new Error(
-      `Could not update Tailscale network: ${message}.${rollbackMessage}`,
-      {
-        cause,
-      }
+    if (beforeFinalize) {
+      yield* promiseOperation("finalize", () =>
+        beforeFinalize(synchronizedDeployments)
+      )
+    }
+    return synchronizedDeployments
+  }).pipe(
+    Effect.catch((cause) =>
+      rollbackTailscaleDeploymentPlanEffect(
+        current,
+        applied,
+        preparedRemovals,
+        operations
+      ).pipe(
+        Effect.flatMap((rollbackFailures) =>
+          orchestrationFailure(
+            "apply",
+            `Could not update Tailscale network: ${errorMessage(cause)}.${
+              rollbackFailures.length
+                ? ` Rollback also failed: ${rollbackFailures.join("; ")}`
+                : ""
+            }`,
+            cause
+          )
+        )
+      )
     )
-  }
+  )
 
   // Cleanup starts only after the desired state is durable. It is retried and
   // reported separately because rolling back here would disagree with the
   // already-finalized database and Tailscale control plane.
-  const cleanupResults = await Promise.allSettled(
-    preparedRemovals.map((deployment) =>
-      commitRemovalWithRetry(deployment, operations)
-    )
-  )
-  const cleanupFailures = cleanupResults.flatMap((result, index) =>
-    result.status === "rejected"
-      ? [
-          rollbackFailure(
-            preparedRemovals[index]?.relayName ?? "Unknown Relay",
-            result.reason
-          ),
-        ]
-      : []
+  const [cleanupFailures] = yield* Effect.partition(
+    preparedRemovals,
+    (deployment) =>
+      promiseOperation("cleanup", () =>
+        operations.remove(deployment, "commit")
+      ).pipe(
+        Effect.retry({ times: 2 }),
+        Effect.mapError((error) => rollbackFailure(deployment.relayName, error))
+      ),
+    { concurrency: "unbounded" }
   )
   if (cleanupFailures.length > 0) {
-    throw new Error(
+    return yield* orchestrationFailure(
+      "cleanup",
       `Tailscale network was updated, but Relay cleanup failed after 3 attempts: ${cleanupFailures.join("; ")}. Retry the change to finish cleanup.`
     )
   }
   return synchronized
-}
+})
 
-async function commitRemovalWithRetry<
-  TDeployment extends TailscaleDeploymentState,
->(
-  deployment: TDeployment,
-  operations: TailscaleDeploymentOperations<TDeployment>,
-  attempt = 1
-): Promise<void> {
-  try {
-    await operations.remove(deployment, "commit")
-  } catch (cause) {
-    if (attempt >= 3) throw cause
-    await commitRemovalWithRetry(deployment, operations, attempt + 1)
-  }
-}
-
-async function rollbackTailscaleDeploymentPlan<
-  TDeployment extends TailscaleDeploymentState,
->(
+const rollbackTailscaleDeploymentPlanEffect = Effect.fn(
+  "tailscale.deployment.rollbackPlan"
+)(function* <TDeployment extends TailscaleDeploymentState>(
   current: ReadonlyArray<TDeployment>,
   applied: ReadonlyArray<TDeployment>,
   preparedRemovals: ReadonlyArray<TDeployment>,
   operations: TailscaleDeploymentOperations<TDeployment>
-): Promise<Array<string>> {
+) {
   const previousByRelay = new Map(
     current.map((deployment) => [deployment.relayId, deployment])
   )
-  const failures: Array<string> = []
 
   const removalRollbacks = [...preparedRemovals].reverse()
-  const removalRollbackResults = await Promise.allSettled(
-    removalRollbacks.map((deployment) =>
-      operations.remove(deployment, "rollback")
-    )
+  const [removalFailures] = yield* Effect.partition(
+    removalRollbacks,
+    (deployment) =>
+      promiseOperation("rollback", () =>
+        operations.remove(deployment, "rollback")
+      ).pipe(
+        Effect.mapError((error) => rollbackFailure(deployment.relayName, error))
+      ),
+    { concurrency: "unbounded" }
   )
-  for (const [index, result] of removalRollbackResults.entries()) {
-    if (result.status === "rejected") {
-      const deployment = removalRollbacks[index]
-      failures.push(
-        rollbackFailure(deployment?.relayName ?? "Unknown Relay", result.reason)
-      )
-    }
-  }
 
   const rollbackDeployments = [...applied].reverse()
-  const rollbackResults = await Promise.allSettled(
-    rollbackDeployments.map(async (deployment) => {
+  const [deploymentFailures] = yield* Effect.partition(
+    rollbackDeployments,
+    (deployment) => {
       const previous = previousByRelay.get(deployment.relayId)
-      if (previous) {
-        await operations.apply(deploymentTarget(previous), {
-          bindings: previous.bindings.map(({ hostname, instanceId }) => ({
-            hostname,
-            instanceId,
-          })),
-          domain: previous.domain,
-          hostname: previous.hostname,
-          id: previous.id,
-          name: previous.name,
-        })
-      } else {
-        await operations.remove(deployment, "prepare")
-        await operations.remove(deployment, "commit")
-      }
-    })
-  )
-  for (const [index, result] of rollbackResults.entries()) {
-    if (result.status === "rejected") {
-      const deployment = rollbackDeployments[index]
-      failures.push(
-        rollbackFailure(deployment?.relayName ?? "Unknown Relay", result.reason)
+      const rollback = previous
+        ? promiseOperation("rollback", () =>
+            operations.apply(deploymentTarget(previous), {
+              bindings: previous.bindings.map(({ hostname, instanceId }) => ({
+                hostname,
+                instanceId,
+              })),
+              domain: previous.domain,
+              hostname: previous.hostname,
+              id: previous.id,
+              name: previous.name,
+            })
+          )
+        : Effect.gen(function* () {
+            yield* promiseOperation("rollback", () =>
+              operations.remove(deployment, "prepare")
+            )
+            yield* promiseOperation("rollback", () =>
+              operations.remove(deployment, "commit")
+            )
+          })
+      return rollback.pipe(
+        Effect.mapError((error) => rollbackFailure(deployment.relayName, error))
       )
-    }
-  }
+    },
+    { concurrency: "unbounded" }
+  )
 
   const records = current.flatMap((deployment) =>
     deployment.bindings.map(({ address, hostname }) => ({ address, hostname }))
   )
-  const syncResults = await Promise.allSettled(
-    current.map((deployment) => operations.syncDns(deployment, records))
+  const [dnsFailures] = yield* Effect.partition(
+    current,
+    (deployment) =>
+      syncDnsEffect(operations, deployment, records, "rollback").pipe(
+        Effect.mapError((error) => rollbackFailure(deployment.relayName, error))
+      ),
+    { concurrency: "unbounded" }
   )
-  for (const [index, result] of syncResults.entries()) {
-    if (result.status === "rejected") {
-      const deployment = current[index]
-      failures.push(
-        rollbackFailure(deployment?.relayName ?? "Unknown Relay", result.reason)
-      )
-    }
-  }
-  return failures
+  return [...removalFailures, ...deploymentFailures, ...dnsFailures]
+})
+
+function syncDnsEffect<TDeployment extends TailscaleDeploymentState>(
+  operations: Pick<TailscaleDeploymentOperations<TDeployment>, "syncDns">,
+  deployment: TDeployment,
+  records: RelayTailscaleStackDns["records"],
+  phase: "dns" | "prepare" | "rollback"
+) {
+  return promiseOperation(phase, () => operations.syncDns(deployment, records))
+}
+
+function promiseOperation<TResult>(
+  phase: TailscaleOrchestrationError["phase"],
+  run: () => Promise<TResult>
+) {
+  return Effect.tryPromise({
+    try: run,
+    catch: (cause) =>
+      TailscaleOrchestrationError.make({
+        phase,
+        reason: errorMessage(cause),
+        cause,
+      }),
+  })
+}
+
+function ensurePrepareActive(
+  mode: "prepare" | "rollback",
+  signal?: AbortSignal
+) {
+  return mode === "prepare" && signal?.aborted
+    ? orchestrationFailure("prepare", "Tailscale DNS preparation was cancelled")
+    : Effect.void
+}
+
+function orchestrationFailure(
+  phase: TailscaleOrchestrationError["phase"],
+  reason: string,
+  cause?: unknown
+) {
+  return Effect.fail(
+    TailscaleOrchestrationError.make({
+      phase,
+      reason,
+      ...(cause === undefined ? {} : { cause }),
+    })
+  )
 }
 
 function deploymentTarget(
@@ -449,8 +511,11 @@ function deploymentTarget(
 }
 
 function rollbackFailure(relayName: string, cause: unknown): string {
-  const message = cause instanceof Error ? cause.message : "unknown error"
-  return `${relayName}: ${message}`
+  return `${relayName}: ${errorMessage(cause)}`
+}
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : "unknown error"
 }
 
 function deploymentLabel(
@@ -473,15 +538,4 @@ function deploymentRecords(
       relayId: deployment.relayId,
     }))
   )
-}
-
-async function runSequentially<TValue>(
-  values: ReadonlyArray<TValue>,
-  run: (value: TValue) => Promise<void>,
-  index = 0
-): Promise<void> {
-  const value = values[index]
-  if (value === undefined) return
-  await run(value)
-  return runSequentially(values, run, index + 1)
 }
