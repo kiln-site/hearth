@@ -1,6 +1,7 @@
 import * as React from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useVirtualizer } from "@tanstack/react-virtual"
+import { Effect, Result } from "effect"
 import type {
   RelayConsole,
   RelayConsoleLevel,
@@ -813,21 +814,28 @@ function ConsoleShareButton({
 
   async function handleShare() {
     setState("uploading")
-    try {
-      const result = await uploadConsoleLogToMclogs({
-        data: {
-          instanceId: instance.id,
-          relayId: instance.relayId,
-          implementation: instance.implementation,
-          version: instance.version,
-          redactSensitive: uiStore.getRedactSensitiveSnapshot(),
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => {
+          const result = await uploadConsoleLogToMclogs({
+            data: {
+              instanceId: instance.id,
+              relayId: instance.relayId,
+              implementation: instance.implementation,
+              version: instance.version,
+              redactSensitive: uiStore.getRedactSensitiveSnapshot(),
+            },
+          })
+          await copyToClipboard(result.url)
         },
-      })
-      await copyToClipboard(result.url)
-      setState("copied")
-    } catch {
-      setState("error")
-    }
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.match({
+          onFailure: () => setState("error"),
+          onSuccess: () => setState("copied"),
+        })
+      )
+    )
     if (resetTimer.current) window.clearTimeout(resetTimer.current)
     resetTimer.current = window.setTimeout(() => setState("idle"), 2800)
   }
@@ -1585,69 +1593,79 @@ function useConsoleCommand(
       status: "loading",
       suggestions: [],
     })
-    try {
-      const result = await completeDirectRelayCommand(
-        relayId,
-        instanceId,
-        input,
-        cursor
-      )
-      if (completionRequest.current !== requestId) return
-      if (!result.supported) {
-        completionSessionActive.current = false
-        setCompletions(null)
-        return
-      }
-      if (activateSession) completionSessionActive.current = true
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: () =>
+          completeDirectRelayCommand(relayId, instanceId, input, cursor),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            if (completionRequest.current !== requestId) return
+            if (!result.supported) {
+              completionSessionActive.current = false
+              setCompletions(null)
+              return
+            }
+            if (activateSession) completionSessionActive.current = true
 
-      const currentInput = inputRef.current
-      if (!currentInput || currentInput.value !== input) {
-        if (activateSession && currentInput) {
-          void requestCompletion(
-            currentInput.value,
-            currentInput.selectionStart ?? currentInput.value.length
-          )
-        }
-        return
-      }
-      const suggestionValues = [...result.suggestions]
-      if (
-        result.completedPrefix &&
-        !suggestionValues.includes(result.completedPrefix)
-      ) {
-        suggestionValues.unshift(result.completedPrefix)
-      }
-      const prefix = input.slice(0, cursor)
-      const suggestions = suggestionValues.map((suggestion) => ({
-        label: commandCompletionLabel(prefix, suggestion),
-        value: suggestion,
-      }))
-      setCompletions({
-        cursor,
-        input,
-        selectedIndex: 0,
-        status: suggestions.length > 0 ? "ready" : "empty",
-        suggestions,
-      })
-    } catch {
-      if (completionRequest.current === requestId) {
-        if (activateSession) completionSessionActive.current = false
-        setCompletions({
-          cursor,
-          input,
-          selectedIndex: 0,
-          status: "unavailable",
-          suggestions: [],
-        })
-      }
-    } finally {
-      if (
-        completionPending.current.input === input &&
-        completionPending.current.cursor === cursor
-      ) {
-        completionPending.current = { cursor: -1, input: "" }
-      }
-    }
+            const currentInput = inputRef.current
+            if (!currentInput || currentInput.value !== input) {
+              if (activateSession && currentInput) {
+                void requestCompletion(
+                  currentInput.value,
+                  currentInput.selectionStart ?? currentInput.value.length
+                )
+              }
+              return
+            }
+            const suggestionValues = [...result.suggestions]
+            if (
+              result.completedPrefix &&
+              !suggestionValues.includes(result.completedPrefix)
+            ) {
+              suggestionValues.unshift(result.completedPrefix)
+            }
+            const prefix = input.slice(0, cursor)
+            const suggestions = suggestionValues.map((suggestion) => ({
+              label: commandCompletionLabel(prefix, suggestion),
+              value: suggestion,
+            }))
+            setCompletions({
+              cursor,
+              input,
+              selectedIndex: 0,
+              status: suggestions.length > 0 ? "ready" : "empty",
+              suggestions,
+            })
+          })
+        ),
+        Effect.catch(() =>
+          Effect.sync(() => {
+            if (completionRequest.current === requestId) {
+              if (activateSession) completionSessionActive.current = false
+              setCompletions({
+                cursor,
+                input,
+                selectedIndex: 0,
+                status: "unavailable",
+                suggestions: [],
+              })
+            }
+          })
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (
+              completionPending.current.input === input &&
+              completionPending.current.cursor === cursor
+            ) {
+              completionPending.current = { cursor: -1, input: "" }
+            }
+          })
+        )
+      )
+    )
   }
 
   function navigate(event: React.KeyboardEvent<HTMLInputElement>) {
@@ -1752,16 +1770,26 @@ function useConsoleCommand(
     setValue("")
     window.requestAnimationFrame(() => inputRef.current?.focus())
     setSending(true)
-    try {
-      await sendDirectRelayCommand(relayId, instanceId, command)
-      setError(null)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Command failed")
-      setValue(command)
-    } finally {
-      setSending(false)
-      window.requestAnimationFrame(() => inputRef.current?.focus())
-    }
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: () => sendDirectRelayCommand(relayId, instanceId, command),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.tap(() => Effect.sync(() => setError(null))),
+        Effect.catch((cause) =>
+          Effect.sync(() => {
+            setError(cause instanceof Error ? cause.message : "Command failed")
+            setValue(command)
+          })
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            setSending(false)
+            window.requestAnimationFrame(() => inputRef.current?.focus())
+          })
+        )
+      )
+    )
   }
 
   function selectCompletion(index: number) {
@@ -2042,18 +2070,25 @@ function highlightText(text: string, query: string): React.ReactNode {
 }
 
 async function copyToClipboard(value: string) {
-  try {
-    await navigator.clipboard.writeText(value)
-  } catch {
-    const textarea = document.createElement("textarea")
-    textarea.value = value
-    textarea.style.position = "fixed"
-    textarea.style.opacity = "0"
-    document.body.append(textarea)
-    textarea.select()
-    document.execCommand("copy")
-    textarea.remove()
-  }
+  await Effect.runPromise(
+    Effect.tryPromise({
+      try: () => navigator.clipboard.writeText(value),
+      catch: (cause) => cause,
+    }).pipe(
+      Effect.catch(() =>
+        Effect.sync(() => {
+          const textarea = document.createElement("textarea")
+          textarea.value = value
+          textarea.style.position = "fixed"
+          textarea.style.opacity = "0"
+          document.body.append(textarea)
+          textarea.select()
+          document.execCommand("copy")
+          textarea.remove()
+        })
+      )
+    )
+  )
 }
 
 function useRelayConsoleStream(
@@ -2279,131 +2314,144 @@ function useRelayConsoleStream(
       commitSnapshot({ consoleData: nextConsole })
     }
 
-    async function connect() {
-      let retryDelay = 400
-      while (!cancelled) {
-        try {
-          const stream = openRelayConsoleStream(
-            relayId,
-            instanceId,
-            lifecycle.signal
-          )
-          activeIterator = stream
-          // Cancellation changes from the effect cleanup while next() awaits.
-          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-          while (!cancelled) {
-            const result = await activeIterator.next()
-            // Cleanup can run while the iterator awaits its next event.
-            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-            if (cancelled) break
-            if (result.done) throw new Error("Console stream closed")
-            const event = result.value
-            if (event.type === "transport") {
-              commitSnapshot({
-                error: null,
-                transport: event.transport,
-                transportMessage: event.message,
-              })
-            } else if (event.type === "ready") {
-              hasEverBeenLiveRef.current = true
-              if (
-                awaitingNewSessionRef.current &&
-                event.startedAt !== undefined &&
-                event.startedAt !== sessionStartedAtRef.current
-              ) {
-                replaceSession(event.startedAt, [], false)
-              }
-              const nextConsole = consoleDataRef.current ?? {
+    const connectFiber = Effect.runFork(
+      Effect.gen(function* () {
+        let retryDelay = 400
+        while (!cancelled) {
+          const failure = yield* Effect.tryPromise({
+            try: async () => {
+              const stream = openRelayConsoleStream(
+                relayId,
                 instanceId,
-                lines: [],
-                startedAt: event.startedAt ?? null,
-                truncated: false,
-              }
-              if (event.startedAt !== undefined) {
-                sessionStartedAtRef.current = event.startedAt
-              }
-              sessionInitializedRef.current = true
-              consoleDataRef.current = nextConsole
-              queryClient.setQueryData(
-                queryKeys.relay.console(relayId, instanceId),
-                nextConsole
+                lifecycle.signal
               )
-              commitSnapshot({
-                connection: "live",
-                consoleData: nextConsole,
-                error: null,
-                loading: false,
-              })
-              retryDelay = 400
-            } else if (event.type === "reset") {
-              if (
-                awaitingNewSessionRef.current &&
-                event.startedAt === sessionStartedAtRef.current
-              ) {
-                continue
-              }
-              replaceSession(event.startedAt, event.lines, event.truncated)
-            } else if (event.type === "history") {
-              if (
-                awaitingNewSessionRef.current ||
-                event.startedAt !== sessionStartedAtRef.current
-              ) {
-                continue
-              }
-              const fresh = event.lines.filter((line) => {
-                if (seen.has(line.id)) return false
-                seen.add(line.id)
-                return true
-              })
-              if (fresh.length === 0) continue
-              const current = consoleDataRef.current
-              if (!current) continue
-              const nextConsole = {
-                ...current,
-                lines: prependConsoleHistory(current.lines, fresh),
-                truncated: event.truncated,
-              }
-              consoleDataRef.current = nextConsole
-              queryClient.setQueryData(
-                queryKeys.relay.console(relayId, instanceId),
-                nextConsole
-              )
-              commitSnapshot({ consoleData: nextConsole })
-            } else {
-              if (awaitingNewSessionRef.current) {
-                const startedAt = runtimeRef.current?.startedAt
-                if (!startedAt || startedAt === sessionStartedAtRef.current) {
-                  continue
+              activeIterator = stream
+              // Cancellation changes from the effect cleanup while next() awaits.
+              // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+              while (!cancelled) {
+                const result = await activeIterator.next()
+                // Cleanup can run while the iterator awaits its next event.
+                // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+                if (cancelled) break
+                if (result.done) throw new Error("Console stream closed")
+                const event = result.value
+                if (event.type === "transport") {
+                  commitSnapshot({
+                    error: null,
+                    transport: event.transport,
+                    transportMessage: event.message,
+                  })
+                } else if (event.type === "ready") {
+                  hasEverBeenLiveRef.current = true
+                  if (
+                    awaitingNewSessionRef.current &&
+                    event.startedAt !== undefined &&
+                    event.startedAt !== sessionStartedAtRef.current
+                  ) {
+                    replaceSession(event.startedAt, [], false)
+                  }
+                  const nextConsole = consoleDataRef.current ?? {
+                    instanceId,
+                    lines: [],
+                    startedAt: event.startedAt ?? null,
+                    truncated: false,
+                  }
+                  if (event.startedAt !== undefined) {
+                    sessionStartedAtRef.current = event.startedAt
+                  }
+                  sessionInitializedRef.current = true
+                  consoleDataRef.current = nextConsole
+                  queryClient.setQueryData(
+                    queryKeys.relay.console(relayId, instanceId),
+                    nextConsole
+                  )
+                  commitSnapshot({
+                    connection: "live",
+                    consoleData: nextConsole,
+                    error: null,
+                    loading: false,
+                  })
+                  retryDelay = 400
+                } else if (event.type === "reset") {
+                  if (
+                    awaitingNewSessionRef.current &&
+                    event.startedAt === sessionStartedAtRef.current
+                  ) {
+                    continue
+                  }
+                  replaceSession(event.startedAt, event.lines, event.truncated)
+                } else if (event.type === "history") {
+                  if (
+                    awaitingNewSessionRef.current ||
+                    event.startedAt !== sessionStartedAtRef.current
+                  ) {
+                    continue
+                  }
+                  const fresh = event.lines.filter((line) => {
+                    if (seen.has(line.id)) return false
+                    seen.add(line.id)
+                    return true
+                  })
+                  if (fresh.length === 0) continue
+                  const current = consoleDataRef.current
+                  if (!current) continue
+                  const nextConsole = {
+                    ...current,
+                    lines: prependConsoleHistory(current.lines, fresh),
+                    truncated: event.truncated,
+                  }
+                  consoleDataRef.current = nextConsole
+                  queryClient.setQueryData(
+                    queryKeys.relay.console(relayId, instanceId),
+                    nextConsole
+                  )
+                  commitSnapshot({ consoleData: nextConsole })
+                } else {
+                  if (awaitingNewSessionRef.current) {
+                    const startedAt = runtimeRef.current?.startedAt
+                    if (
+                      !startedAt ||
+                      startedAt === sessionStartedAtRef.current
+                    ) {
+                      continue
+                    }
+                    replaceSession(startedAt, [event.line], false)
+                  } else {
+                    append(event.line)
+                  }
                 }
-                replaceSession(startedAt, [event.line], false)
-              } else {
-                append(event.line)
               }
-            }
-          }
-        } catch (cause) {
+            },
+            catch: (cause) => cause,
+          }).pipe(
+            Effect.match({
+              onFailure: (cause) => cause,
+              onSuccess: () => null,
+            })
+          )
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           if (cancelled) break
+          if (failure === null) continue
           commitSnapshot({
             connection: hasEverBeenLiveRef.current
               ? "reconnecting"
               : "unavailable",
-            error: consoleConnectionMessage(cause),
+            error: consoleConnectionMessage(failure),
             loading: false,
           })
-          await waitForRetry(retryDelay, lifecycle.signal)
+          yield* Effect.sleep(retryDelay)
           retryDelay = Math.min(retryDelay * 2, 5_000)
         }
-      }
-    }
+      })
+    )
 
-    void connect()
     return () => {
       if (flushTimer !== null) window.clearTimeout(flushTimer)
       flush()
       cancelled = true
       lifecycle.abort()
       if (activeIterator) void activeIterator.return(undefined)
+      connectFiber.interruptUnsafe()
     }
   }, [instanceId, queryClient, relayConnected, relayId])
 
@@ -2457,21 +2505,6 @@ function consoleConnectionMessage(cause: unknown): string {
   return cause instanceof Error && cause.message
     ? cause.message
     : "The Relay is connected, but its console stream could not be read."
-}
-
-function waitForRetry(delay: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.resolve()
-  return new Promise((resolve) => {
-    const timer = window.setTimeout(() => {
-      signal.removeEventListener("abort", cancel)
-      resolve()
-    }, delay)
-    const cancel = () => {
-      window.clearTimeout(timer)
-      resolve()
-    }
-    signal.addEventListener("abort", cancel, { once: true })
-  })
 }
 
 function usePersistedCommand(
@@ -2623,18 +2656,19 @@ function commandCompletionContext(prefix: string, suggestion: string) {
 }
 
 function readCommandHistory(storageKey: string): Array<string> {
-  try {
-    const stored: unknown = JSON.parse(
-      window.sessionStorage.getItem(storageKey) ?? "[]"
-    )
-    if (!Array.isArray(stored)) return []
-    return stored
-      .filter(
-        (command): command is string =>
-          typeof command === "string" && command.length > 0
+  return Result.getOrElse(
+    Result.try(() => {
+      const stored: unknown = JSON.parse(
+        window.sessionStorage.getItem(storageKey) ?? "[]"
       )
-      .slice(-commandHistoryLimit)
-  } catch {
-    return []
-  }
+      if (!Array.isArray(stored)) return []
+      return stored
+        .filter(
+          (command): command is string =>
+            typeof command === "string" && command.length > 0
+        )
+        .slice(-commandHistoryLimit)
+    }),
+    () => []
+  )
 }
