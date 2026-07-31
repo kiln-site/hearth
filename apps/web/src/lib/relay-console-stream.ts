@@ -254,9 +254,9 @@ async function* openHearthConsoleStream(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffered = ""
-  yield { message: fallbackMessage, transport: "hearth", type: "transport" }
   yield* managedAsyncIterable(
     (async function* () {
+      yield { message: fallbackMessage, transport: "hearth", type: "transport" }
       for (;;) {
         // NDJSON chunks can split records at arbitrary byte boundaries.
         // oxlint-disable-next-line react-doctor/async-await-in-loop
