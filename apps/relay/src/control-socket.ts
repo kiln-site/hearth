@@ -5,8 +5,8 @@ import {
   sign,
   verify,
 } from "node:crypto"
-import { Schema } from "effect"
-import type { Effect } from "effect"
+import { Deferred, Effect, Fiber, Option, Schema } from "effect"
+import type { Effect as EffectType } from "effect"
 import { WebSocket, WebSocketServer } from "ws"
 import * as Sentry from "@sentry/node"
 
@@ -59,7 +59,7 @@ export interface ControlSocketOptions {
   readonly subscribeSnapshots: (
     listener: (snapshot: unknown) => void
   ) => () => void
-  readonly runEffect: <T, E>(effect: Effect.Effect<T, E>) => Promise<T>
+  readonly runEffect: <T, E>(effect: EffectType.Effect<T, E>) => Promise<T>
   readonly server: Server
   readonly state: RelayStateStore["Service"]
 }
@@ -138,37 +138,63 @@ export function attachControlSocket(
     })
   })
 
-  const heartbeat = setInterval(() => {
-    for (const socket of sockets) {
-      const tracked = socket as TrackedWebSocket
-      if (tracked.kilnAlive === false) {
-        socket.terminate()
-        continue
-      }
-      tracked.kilnAlive = false
-      socket.ping()
-    }
-  }, HEARTBEAT_INTERVAL_MS)
-  heartbeat.unref()
+  const heartbeatFiber = Effect.runFork(
+    Effect.sleep(HEARTBEAT_INTERVAL_MS).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          for (const socket of sockets) {
+            const tracked = socket as TrackedWebSocket
+            if (tracked.kilnAlive === false) {
+              socket.terminate()
+              continue
+            }
+            tracked.kilnAlive = false
+            socket.ping()
+          }
+        })
+      ),
+      Effect.forever
+    )
+  )
 
   return {
-    close: async () => {
-      clearInterval(heartbeat)
-      for (const socket of sockets) socket.close(1001, "Relay shutting down")
-      await new Promise<void>((resolve) => wss.close(() => resolve()))
-    },
-    requestClients: async (operation, payload, timeoutMs = 5_000) => {
-      const requests = [...reverseRequesters.entries()].map(
-        async ([socket, request]) => ({
-          clientId: authenticatedSockets.get(socket)?.id ?? "unknown",
-          payload: await request(operation, payload, timeoutMs),
+    close: () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          yield* Fiber.interrupt(heartbeatFiber)
+          yield* Effect.sync(() => {
+            for (const socket of sockets) {
+              socket.close(1001, "Relay shutting down")
+            }
+          })
+          yield* closeWebSocketServerEffect(wss)
         })
-      )
-      const settled = await Promise.allSettled(requests)
-      return settled.flatMap((result) =>
-        result.status === "fulfilled" ? [result.value] : []
-      )
-    },
+      ),
+    requestClients: (operation, payload, timeoutMs = 5_000) =>
+      Effect.runPromise(
+        Effect.forEach(
+          [...reverseRequesters.entries()],
+          ([socket, request]) =>
+            Effect.tryPromise({
+              try: () => request(operation, payload, timeoutMs),
+              catch: (cause) => cause,
+            }).pipe(
+              Effect.map((payload) => ({
+                clientId: authenticatedSockets.get(socket)?.id ?? "unknown",
+                payload,
+              })),
+              Effect.catch(() => Effect.succeed(null))
+            ),
+          { concurrency: 16 }
+        ).pipe(
+          Effect.map((results) =>
+            results.filter(
+              (result): result is { clientId: string; payload: unknown } =>
+                result !== null
+            )
+          )
+        )
+      ),
     refreshClient: (clientId) => {
       closeClientSockets(
         authenticatedSockets,
@@ -228,19 +254,26 @@ function authenticateSocket(
   let authenticatedClient: RelayClientGrant | null = null
   let unsubscribeSnapshots: (() => void) | null = null
   let eventSequence = 0
-  const inFlight = new Map<string, AbortController>()
-  const reversePending = new Map<
+  const inFlight = new Map<
     string,
     {
-      reject: (cause: Error) => void
-      resolve: (payload: unknown) => void
-      timer: ReturnType<typeof setTimeout>
+      controller: AbortController
+      fiber: Fiber.Fiber<void, unknown> | null
     }
   >()
-  const authenticationTimeout = setTimeout(() => {
-    if (!authenticatedClient) socket.close(4401, "Authentication timed out")
-  }, relayAuthenticationWindowMs)
-  authenticationTimeout.unref()
+  const reversePending = new Map<string, Deferred.Deferred<unknown, Error>>()
+  let authenticationAttempt: Fiber.Fiber<void, unknown> | null = null
+  const authenticationTimeoutFiber = Effect.runFork(
+    Effect.sleep(relayAuthenticationWindowMs).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          if (!authenticatedClient) {
+            socket.close(4401, "Authentication timed out")
+          }
+        })
+      )
+    )
+  )
 
   socket.on("pong", () => {
     ;(socket as TrackedWebSocket).kilnAlive = true
@@ -252,24 +285,36 @@ function authenticateSocket(
       socket.close(4400, "Binary control frames are not supported")
       return
     }
-    let message: typeof RelayControlClientMessageSchema.Type
-    try {
-      message = Schema.decodeUnknownSync(RelayControlClientMessageSchema)(
-        JSON.parse(data.toString()) as unknown
-      )
-    } catch {
+    const decoded = decodeControlClientMessage(data.toString())
+    if (Option.isNone(decoded)) {
       sendError(socket, null, "invalid_message", "Invalid control message")
       return
     }
+    const message = decoded.value
 
     if (!authenticatedClient) {
       if (message.type !== "auth.response") {
         socket.close(4401, "Authentication required")
         return
       }
-      void authenticateClient(message.clientId, message.signature).catch(() => {
-        socket.close(4401, "Authentication failed")
-      })
+      if (authenticationAttempt) {
+        socket.close(4401, "Authentication is already in progress")
+        return
+      }
+      authenticationAttempt = Effect.runFork(
+        authenticateClientEffect(message.clientId, message.signature).pipe(
+          Effect.catch(() =>
+            Effect.sync(() => {
+              socket.close(4401, "Authentication failed")
+            })
+          ),
+          Effect.ensuring(
+            Effect.sync(() => {
+              authenticationAttempt = null
+            })
+          )
+        )
+      )
       return
     }
 
@@ -278,7 +323,9 @@ function authenticateSocket(
       return
     }
     if (message.type === "cancel") {
-      inFlight.get(message.replyTo)?.abort()
+      const request = inFlight.get(message.replyTo)
+      request?.controller.abort()
+      request?.fiber?.interruptUnsafe()
       return
     }
     if (message.type === "response" || message.type === "error") {
@@ -286,10 +333,12 @@ function authenticateSocket(
         ? reversePending.get(message.replyTo)
         : undefined
       if (!pending) return
-      clearTimeout(pending.timer)
       reversePending.delete(message.replyTo as string)
-      if (message.type === "response") pending.resolve(message.payload)
-      else pending.reject(new Error(message.message))
+      Effect.runFork(
+        message.type === "response"
+          ? Deferred.succeed(pending, message.payload)
+          : Deferred.fail(pending, new Error(message.message))
+      )
       return
     }
     if (inFlight.size >= MAX_IN_FLIGHT_REQUESTS) {
@@ -312,177 +361,257 @@ function authenticateSocket(
       return
     }
     const controller = new AbortController()
-    inFlight.set(message.id, controller)
-    void executeRequest(message, authenticatedClient, controller)
+    const request = {
+      controller,
+      fiber: null as Fiber.Fiber<void, unknown> | null,
+    }
+    inFlight.set(message.id, request)
+    request.fiber = Effect.runFork(
+      Effect.yieldNow.pipe(
+        Effect.andThen(
+          executeRequestEffect(message, authenticatedClient, controller)
+        )
+      )
+    )
   })
 
   socket.once("close", () => {
-    clearTimeout(authenticationTimeout)
+    authenticationTimeoutFiber.interruptUnsafe()
+    authenticationAttempt?.interruptUnsafe()
+    authenticationAttempt = null
     unsubscribeSnapshots?.()
     unsubscribeSnapshots = null
-    for (const controller of inFlight.values()) controller.abort()
+    for (const request of inFlight.values()) {
+      request.controller.abort()
+      request.fiber?.interruptUnsafe()
+    }
     inFlight.clear()
     for (const pending of reversePending.values()) {
-      clearTimeout(pending.timer)
-      pending.reject(new Error("Hearth control connection closed"))
+      Effect.runFork(
+        Deferred.fail(pending, new Error("Hearth control connection closed"))
+      )
     }
     reversePending.clear()
   })
 
-  async function authenticateClient(
+  function authenticateClientEffect(
     clientId: string,
     signature: string
-  ): Promise<void> {
-    if (Date.now() > challenge.expiresAt || authenticatedClient) {
-      throw new Error("Expired or consumed authentication challenge")
-    }
-    const client = await options.runEffect(
-      options.state.findClientById(clientId)
-    )
-    if (
-      !client ||
-      !isSourceAllowed(peerAddress, client.sourceCidrs) ||
-      !authenticationVerifier({
-        challenge: unsignedChallenge,
-        client,
-        signature,
-      })
-    ) {
-      throw new Error("Invalid Hearth identity proof")
-    }
-    await completedAuthentication(client)
+  ): EffectType.Effect<void, Error> {
+    return Effect.gen(function* () {
+      if (Date.now() > challenge.expiresAt || authenticatedClient) {
+        return yield* controlFailure(
+          "Expired or consumed authentication challenge"
+        )
+      }
+      const client = yield* promiseOperation(() =>
+        options.runEffect(options.state.findClientById(clientId))
+      )
+      if (
+        !client ||
+        !isSourceAllowed(peerAddress, client.sourceCidrs) ||
+        !authenticationVerifier({
+          challenge: unsignedChallenge,
+          client,
+          signature,
+        })
+      ) {
+        return yield* controlFailure("Invalid Hearth identity proof")
+      }
+      yield* completedAuthenticationEffect(client)
+    })
   }
 
-  async function executeRequest(
+  function executeRequestEffect(
     request: RelayControlRequest,
     sessionClient: RelayClientGrant,
     controller: AbortController
-  ): Promise<void> {
-    let timer: ReturnType<typeof setTimeout> | null = null
-    try {
-      const duration = relayControlRequestTimeoutMs(request, Date.now())
-      if (duration === null) {
+  ): EffectType.Effect<void> {
+    const duration = relayControlRequestTimeoutMs(request, Date.now())
+    if (duration === null) {
+      return Effect.sync(() => {
         sendError(
           socket,
           request.id,
           "invalid_timeout",
           "Request timeout is invalid"
         )
-        return
-      }
-      timer = setTimeout(() => controller.abort(), duration)
-      timer.unref()
-      const currentClient = await options.runEffect(
-        options.state.findClientById(sessionClient.id)
-      )
-      if (controller.signal.aborted) throw new Error("Request timed out")
-      if (!currentClient) {
-        socket.close(4403, "Hearth client was revoked")
-        return
-      }
-      const action = actionForRequest(request)
-      const actions = actionsForRole(currentClient.role, currentClient.actions)
-      if (!action || !isActionAllowed(actions, action)) {
-        sendError(socket, request.id, "forbidden", "Relay permission denied")
-        return
-      }
-      const payload = await options.execute(
-        request,
-        currentClient,
-        controller.signal,
-        (operation, requestPayload, timeoutMs) =>
-          requestClient(operation, requestPayload, timeoutMs, request.subject)
-      )
-      if (isAuditedMutation(request.operation)) {
-        void options
-          .runEffect(
-            options.state.appendAudit({
-              clientId: currentClient.id,
-              details: auditDetailsForRequest(request, payload),
-              event: "control.mutation",
-              id: randomUUID(),
-              occurredAt: Date.now(),
-              requestId: request.id,
-            })
-          )
-          .catch((cause) =>
-            Sentry.captureException(cause, {
-              tags: { "kiln.operation": "relay.control.audit" },
-            })
-          )
-      }
-      const response: RelayControlResponse = {
-        id: randomUUID(),
-        payload,
-        replyTo: request.id,
-        type: "response",
-        v: 1,
-      }
-      send(socket, response)
-    } catch (cause) {
-      sendError(
-        socket,
-        request.id,
-        controller.signal.aborted ? "request_cancelled" : "operation_failed",
-        controller.signal.aborted
-          ? "Relay request was cancelled"
-          : safeErrorMessage(cause)
-      )
-    } finally {
-      if (timer) clearTimeout(timer)
-      inFlight.delete(request.id)
+        inFlight.delete(request.id)
+      })
     }
+    const operation = Effect.acquireUseRelease(
+      Effect.sync(() =>
+        Effect.runFork(
+          Effect.sleep(duration).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                controller.abort()
+              })
+            )
+          )
+        )
+      ),
+      () =>
+        Effect.gen(function* () {
+          const currentClient = yield* promiseOperation(() =>
+            options.runEffect(options.state.findClientById(sessionClient.id))
+          )
+          if (controller.signal.aborted) {
+            return yield* controlFailure("Request timed out")
+          }
+          if (!currentClient) {
+            yield* Effect.sync(() => {
+              socket.close(4403, "Hearth client was revoked")
+            })
+            return
+          }
+          const action = actionForRequest(request)
+          const actions = actionsForRole(
+            currentClient.role,
+            currentClient.actions
+          )
+          if (!action || !isActionAllowed(actions, action)) {
+            yield* Effect.sync(() => {
+              sendError(
+                socket,
+                request.id,
+                "forbidden",
+                "Relay permission denied"
+              )
+            })
+            return
+          }
+          const payload = yield* promiseOperation(() =>
+            options.execute(
+              request,
+              currentClient,
+              controller.signal,
+              (operation, requestPayload, timeoutMs) =>
+                requestClient(
+                  operation,
+                  requestPayload,
+                  timeoutMs,
+                  request.subject
+                )
+            )
+          )
+          if (isAuditedMutation(request.operation)) {
+            Effect.runFork(
+              promiseOperation(() =>
+                options.runEffect(
+                  options.state.appendAudit({
+                    clientId: currentClient.id,
+                    details: auditDetailsForRequest(request, payload),
+                    event: "control.mutation",
+                    id: randomUUID(),
+                    occurredAt: Date.now(),
+                    requestId: request.id,
+                  })
+                )
+              ).pipe(
+                Effect.catch((cause) =>
+                  Effect.sync(() => {
+                    Sentry.captureException(cause, {
+                      tags: {
+                        "kiln.operation": "relay.control.audit",
+                      },
+                    })
+                  })
+                )
+              )
+            )
+          }
+          const response: RelayControlResponse = {
+            id: randomUUID(),
+            payload,
+            replyTo: request.id,
+            type: "response",
+            v: 1,
+          }
+          yield* Effect.sync(() => {
+            send(socket, response)
+          })
+        }),
+      (timeoutFiber) => Fiber.interrupt(timeoutFiber)
+    )
+    return operation.pipe(
+      Effect.catch((cause) =>
+        Effect.sync(() => {
+          sendError(
+            socket,
+            request.id,
+            controller.signal.aborted
+              ? "request_cancelled"
+              : "operation_failed",
+            controller.signal.aborted
+              ? "Relay request was cancelled"
+              : safeErrorMessage(cause)
+          )
+        })
+      ),
+      Effect.ensuring(
+        Effect.sync(() => {
+          inFlight.delete(request.id)
+        })
+      )
+    )
   }
 
-  async function completedAuthentication(
+  function completedAuthenticationEffect(
     client: RelayClientGrant
-  ): Promise<void> {
-    const clientSessionCount = [...authenticatedSockets.values()].filter(
-      (authenticated) => authenticated.id === client.id
-    ).length
-    if (clientSessionCount >= MAX_CONTROL_SESSIONS_PER_CLIENT) {
-      socket.close(4429, "Hearth client session capacity reached")
-      return
-    }
-    authenticatedClient = client
-    clearTimeout(authenticationTimeout)
-    sessions.set(challenge.sessionId, client)
-    socketSessions.set(socket, challenge.sessionId)
-    authenticatedSockets.set(socket, client)
-    reverseRequesters.set(socket, requestClient)
-    await options.runEffect(
-      options.state.touchClient(client.id, Date.now(), peerAddress ?? null)
-    )
-    const ready: RelayAuthReady = {
-      actions: actionsForRole(client.role, client.actions),
-      clientId: client.id,
-      protocol: relayControlProtocol,
-      relayBuild: relayBuildLabel(),
-      role: client.role,
-      type: "auth.ready",
-      v: 1,
-    }
-    send(socket, ready)
-    const snapshot: RelayControlEvent = {
-      event: "relay.snapshot",
-      id: randomUUID(),
-      payload: await options.initialSnapshot(),
-      seq: ++eventSequence,
-      type: "event",
-      v: 1,
-    }
-    send(socket, snapshot)
-    if (socket.readyState !== WebSocket.OPEN) return
-    unsubscribeSnapshots = options.subscribeSnapshots((payload) => {
-      const update: RelayControlEvent = {
+  ): EffectType.Effect<void, Error> {
+    return Effect.gen(function* () {
+      const clientSessionCount = [...authenticatedSockets.values()].filter(
+        (authenticated) => authenticated.id === client.id
+      ).length
+      if (clientSessionCount >= MAX_CONTROL_SESSIONS_PER_CLIENT) {
+        yield* Effect.sync(() => {
+          socket.close(4429, "Hearth client session capacity reached")
+        })
+        return
+      }
+      authenticatedClient = client
+      yield* Fiber.interrupt(authenticationTimeoutFiber)
+      sessions.set(challenge.sessionId, client)
+      socketSessions.set(socket, challenge.sessionId)
+      authenticatedSockets.set(socket, client)
+      reverseRequesters.set(socket, requestClient)
+      yield* promiseOperation(() =>
+        options.runEffect(
+          options.state.touchClient(client.id, Date.now(), peerAddress ?? null)
+        )
+      )
+      const ready: RelayAuthReady = {
+        actions: actionsForRole(client.role, client.actions),
+        clientId: client.id,
+        protocol: relayControlProtocol,
+        relayBuild: relayBuildLabel(),
+        role: client.role,
+        type: "auth.ready",
+        v: 1,
+      }
+      send(socket, ready)
+      const snapshot: RelayControlEvent = {
         event: "relay.snapshot",
         id: randomUUID(),
-        payload,
+        payload: yield* promiseOperation(options.initialSnapshot),
         seq: ++eventSequence,
         type: "event",
         v: 1,
       }
-      send(socket, update)
+      send(socket, snapshot)
+      if (socket.readyState !== WebSocket.OPEN) return
+      unsubscribeSnapshots = options.subscribeSnapshots((payload) => {
+        const update: RelayControlEvent = {
+          event: "relay.snapshot",
+          id: randomUUID(),
+          payload,
+          seq: ++eventSequence,
+          type: "event",
+          v: 1,
+        }
+        send(socket, update)
+      })
     })
   }
 
@@ -493,8 +622,8 @@ function authenticateSocket(
     subject?: string
   ): Promise<unknown> {
     if (!authenticatedClient || socket.readyState !== WebSocket.OPEN) {
-      return Promise.reject(
-        new Error("Hearth control connection is unavailable")
+      return Effect.runPromise(
+        controlFailure("Hearth control connection is unavailable")
       )
     }
     const duration = Math.min(
@@ -512,33 +641,39 @@ function authenticateSocket(
       type: "request",
       v: 1,
     }
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        const pending = reversePending.get(id)
-        if (!pending) return
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        const response = yield* Deferred.make<unknown, Error>()
+        reversePending.set(id, response)
+        send(socket, request)
+        const initial = yield* Deferred.await(response).pipe(
+          Effect.timeoutOption(duration)
+        )
+        if (Option.isSome(initial)) return initial.value
         send(socket, {
           id: randomUUID(),
           replyTo: id,
           type: "cancel",
           v: 1,
         })
-        pending.timer = setTimeout(
-          () => {
-            reversePending.delete(id)
-            reject(
-              new Error(
-                `Hearth request timed out after ${duration}ms and did not confirm cancellation`
-              )
+        return yield* Deferred.await(response).pipe(
+          Effect.timeout(
+            reverseRequestCancellationGraceMs(operation, duration)
+          ),
+          Effect.catchTag("TimeoutError", () =>
+            controlFailure(
+              `Hearth request timed out after ${duration}ms and did not confirm cancellation`
             )
-          },
-          reverseRequestCancellationGraceMs(operation, duration)
+          )
         )
-        pending.timer.unref()
-      }, duration)
-      timer.unref()
-      reversePending.set(id, { reject, resolve, timer })
-      send(socket, request)
-    })
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            reversePending.delete(id)
+          })
+        )
+      )
+    )
   }
 }
 
@@ -639,18 +774,23 @@ export function authenticationVerifier(options: {
   readonly client: RelayClientGrant
   readonly signature: string
 }): boolean {
-  try {
-    return verify(
-      null,
-      Buffer.from(
-        relayAuthResponseTranscript(options.challenge, options.client.id)
-      ),
-      createPublicKey(options.client.publicKey),
-      Buffer.from(options.signature, "base64url")
+  return Effect.runSync(
+    Effect.try(() =>
+      verify(
+        null,
+        Buffer.from(
+          relayAuthResponseTranscript(options.challenge, options.client.id)
+        ),
+        createPublicKey(options.client.publicKey),
+        Buffer.from(options.signature, "base64url")
+      )
+    ).pipe(
+      Effect.match({
+        onFailure: () => false,
+        onSuccess: (verified) => verified,
+      })
     )
-  } catch {
-    return false
-  }
+  )
 }
 
 function actionForRequest(request: RelayControlRequest): RelayAction | null {
@@ -757,6 +897,40 @@ function objectString(value: unknown, key: string): string | null {
 
 function parseProtocols(value: string | undefined): ReadonlyArray<string> {
   return value?.split(",").map((protocol) => protocol.trim()) ?? []
+}
+
+const decodeControlClientMessage = (
+  text: string
+): Option.Option<typeof RelayControlClientMessageSchema.Type> =>
+  Option.flatMap(
+    Schema.decodeUnknownOption(Schema.UnknownFromJsonString)(text),
+    Schema.decodeUnknownOption(RelayControlClientMessageSchema)
+  )
+
+function promiseOperation<TResult>(
+  run: () => Promise<TResult>
+): EffectType.Effect<TResult, Error> {
+  return Effect.tryPromise({
+    try: run,
+    catch: (cause) =>
+      cause instanceof Error
+        ? cause
+        : new Error("Relay control operation failed"),
+  })
+}
+
+function controlFailure(message: string): EffectType.Effect<never, Error> {
+  return Effect.fail(new Error(message))
+}
+
+function closeWebSocketServerEffect(
+  server: WebSocketServer
+): EffectType.Effect<void> {
+  return Effect.callback<void>((resume) => {
+    server.close(() => {
+      resume(Effect.void)
+    })
+  })
 }
 
 function send(socket: WebSocket, message: unknown): void {
