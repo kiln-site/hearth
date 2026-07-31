@@ -6,9 +6,9 @@ import {
   webcrypto,
   X509Certificate as NodeX509Certificate,
 } from "node:crypto"
-import { chmod, mkdir, open, readFile, rename, unlink } from "node:fs/promises"
+import { chmod, mkdir, readFile } from "node:fs/promises"
 import { isIP } from "node:net"
-import { dirname, join } from "node:path"
+import { join } from "node:path"
 import {
   BasicConstraintsExtension,
   ExtendedKeyUsage,
@@ -24,6 +24,7 @@ import {
 import { Effect } from "effect"
 
 import { RelayTlsError } from "./errors.js"
+import { writeFileAtomic as atomicWriteFile } from "./atomic-file.js"
 import type { RelayConfig, RelayTlsMode } from "../config.js"
 
 const CA_LIFETIME_MS = 10 * 365 * 24 * 60 * 60 * 1_000
@@ -455,29 +456,12 @@ function protectKey(path: string) {
 }
 
 function writeFileAtomic(path: string, value: string, mode: number) {
-  return tryPromise("write_tls_file", async () => {
-    const temporaryPath = join(dirname(path), `.${randomUUID()}.tmp`)
-    let renamed = false
-    try {
-      const file = await open(temporaryPath, "wx", mode)
-      try {
-        await file.writeFile(value, "utf8")
-        await file.sync()
-      } finally {
-        await file.close()
-      }
-      await rename(temporaryPath, path)
-      renamed = true
-      const directory = await open(dirname(path), "r")
-      try {
-        await directory.sync()
-      } finally {
-        await directory.close()
-      }
-    } finally {
-      if (!renamed) await unlink(temporaryPath).catch(() => undefined)
-    }
-  })
+  return atomicWriteFile(path, value, mode).pipe(
+    Effect.mapError((cause) =>
+      RelayTlsError.make({ operation: "write_tls_file", cause })
+    ),
+    Effect.withSpan("relay.tls.write_tls_file")
+  )
 }
 
 function randomSerialNumber(): string {

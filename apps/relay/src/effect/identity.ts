@@ -3,10 +3,9 @@ import {
   createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
-  randomUUID,
 } from "node:crypto"
-import { chmod, mkdir, open, readFile, rename, unlink } from "node:fs/promises"
-import { dirname, join } from "node:path"
+import { chmod, mkdir, readFile } from "node:fs/promises"
+import { join } from "node:path"
 import {
   DEFAULT_RELAY_NAME,
   truncateInitialRelayName,
@@ -14,6 +13,7 @@ import {
 import { Effect, Schema } from "effect"
 
 import { RelayIdentityError } from "./errors.js"
+import { writeFileAtomic as atomicWriteFile } from "./atomic-file.js"
 import type { RelayConfig } from "../config.js"
 
 export interface RelayIdentity {
@@ -179,29 +179,12 @@ function normalizeName(configuredName: string): string {
 }
 
 function writeFileAtomic(path: string, value: string, mode: number) {
-  return tryPromise("write_identity", async () => {
-    const temporaryPath = join(dirname(path), `.${randomUUID()}.tmp`)
-    let renamed = false
-    try {
-      const file = await open(temporaryPath, "wx", mode)
-      try {
-        await file.writeFile(value, "utf8")
-        await file.sync()
-      } finally {
-        await file.close()
-      }
-      await rename(temporaryPath, path)
-      renamed = true
-      const directory = await open(dirname(path), "r")
-      try {
-        await directory.sync()
-      } finally {
-        await directory.close()
-      }
-    } finally {
-      if (!renamed) await unlink(temporaryPath).catch(() => undefined)
-    }
-  })
+  return atomicWriteFile(path, value, mode).pipe(
+    Effect.mapError((cause) =>
+      RelayIdentityError.make({ operation: "write_identity", cause })
+    ),
+    Effect.withSpan("relay.identity.write_identity")
+  )
 }
 
 function tryPromise<T>(operation: string, run: () => Promise<T>) {

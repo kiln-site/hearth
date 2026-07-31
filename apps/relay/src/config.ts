@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { Resolver } from "node:dns/promises"
 import { hostname } from "node:os"
-import { Result } from "effect"
+import { Effect, Result } from "effect"
 
 import type {
   BrickReadiness,
@@ -302,60 +302,84 @@ function traefikImage(environment: NodeJS.ProcessEnv): string {
   return value
 }
 
-export async function discoverRelayAdvertisedHost(
+export const discoverRelayAdvertisedHostEffect = Effect.fn(
+  "RelayConfig.discoverAdvertisedHost"
+)(function* (
   config: RelayConfig,
   environment: NodeJS.ProcessEnv = process.env,
   discover: () => Promise<string> = discoverPublicIp
-): Promise<"configured" | "hostname" | "public_ip"> {
+) {
   if (!config.advertisedHostInferred) return "configured"
   if (!booleanEnvironment(environment.KILN_RELAY_DISCOVER_PUBLIC_IP, true)) {
     return "hostname"
   }
-  try {
-    const address = await withTimeout(discover(), 2_000)
-    if (!address) return "hostname"
-    config.advertisedHost = address
-    config.discoveredPublicIp = address
-    if (config.gameHostSource === "relay") config.gameHost = address
-    config.directBrowserOrigin = relayBrowserOrigin(
-      config.tlsMode,
-      address,
-      config.directPublicPort
-    )
-    config.browserOrigin =
-      config.proxyMode === "traefik"
-        ? `https://${formatUrlHost(address)}`
-        : config.proxyMode === "coolify"
-          ? (config.coolifyPublicOrigin ?? `https://${formatUrlHost(address)}`)
-          : config.directBrowserOrigin
-    return "public_ip"
-  } catch {
-    return "hostname"
-  }
+  const address = yield* discoverAddress(discover).pipe(
+    Effect.catch(() => Effect.succeed(null))
+  )
+  if (!address) return "hostname"
+
+  config.advertisedHost = address
+  config.discoveredPublicIp = address
+  if (config.gameHostSource === "relay") config.gameHost = address
+  config.directBrowserOrigin = relayBrowserOrigin(
+    config.tlsMode,
+    address,
+    config.directPublicPort
+  )
+  config.browserOrigin =
+    config.proxyMode === "traefik"
+      ? `https://${formatUrlHost(address)}`
+      : config.proxyMode === "coolify"
+        ? (config.coolifyPublicOrigin ?? `https://${formatUrlHost(address)}`)
+        : config.directBrowserOrigin
+  return "public_ip"
+})
+
+export function discoverRelayAdvertisedHost(
+  config: RelayConfig,
+  environment: NodeJS.ProcessEnv = process.env,
+  discover: () => Promise<string> = discoverPublicIp
+): Promise<"configured" | "hostname" | "public_ip"> {
+  return Effect.runPromise(
+    discoverRelayAdvertisedHostEffect(config, environment, discover)
+  )
 }
 
-export async function discoverRelayGameHost(
+export const discoverRelayGameHostEffect = Effect.fn(
+  "RelayConfig.discoverGameHost"
+)(function* (
   config: RelayConfig,
   discover: () => Promise<string> = discoverPublicIp
-): Promise<RelayGameHostSource> {
+) {
   if (config.gameHostSource === "relay") {
     config.gameHost = config.advertisedHost
     return "relay"
   }
   if (config.gameHostSource === "configured") return "configured"
 
-  try {
-    const address = await withTimeout(discover(), 2_000)
-    if (!address) throw new Error("Public DNS returned no address")
-    config.discoveredPublicIp = address
-    config.gameHost = address
-    return "public_ip"
-  } catch (cause) {
-    throw new Error(
-      "KILN_RELAY_GAME_HOST=public-ip could not discover a public IPv4 address",
-      { cause }
+  const address = yield* discoverAddress(discover).pipe(
+    Effect.filterOrFail(
+      (value) => value.length > 0,
+      () => new Error("Public DNS returned no address")
+    ),
+    Effect.mapError(
+      (cause) =>
+        new Error(
+          "KILN_RELAY_GAME_HOST=public-ip could not discover a public IPv4 address",
+          { cause }
+        )
     )
-  }
+  )
+  config.discoveredPublicIp = address
+  config.gameHost = address
+  return "public_ip"
+})
+
+export function discoverRelayGameHost(
+  config: RelayConfig,
+  discover: () => Promise<string> = discoverPublicIp
+): Promise<RelayGameHostSource> {
+  return Effect.runPromise(discoverRelayGameHostEffect(config, discover))
 }
 
 function relayBrowserOrigin(
@@ -368,23 +392,11 @@ function relayBrowserOrigin(
   return `${scheme}://${formatUrlHost(advertisedHost)}${publicPort === defaultPort ? "" : `:${publicPort}`}`
 }
 
-function withTimeout<T>(promise: Promise<T>, delay: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error("Public IP discovery timed out")),
-      delay
-    )
-    void promise.then(
-      (value) => {
-        clearTimeout(timer)
-        resolve(value)
-      },
-      (cause: unknown) => {
-        clearTimeout(timer)
-        reject(cause)
-      }
-    )
-  })
+function discoverAddress(discover: () => Promise<string>) {
+  return Effect.tryPromise({
+    try: discover,
+    catch: (cause) => cause,
+  }).pipe(Effect.timeout("2 seconds"))
 }
 
 async function discoverPublicIp(): Promise<string> {

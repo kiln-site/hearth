@@ -1,56 +1,81 @@
 import { lstat, opendir, stat } from "node:fs/promises"
 import { join } from "node:path"
+import { Effect, Option } from "effect"
 
-export async function directoryApparentSize(root: string): Promise<number> {
-  const rootMetadata = await stat(root)
+export const directoryApparentSizeEffect = Effect.fn(
+  "RelayDiskUsage.directoryApparentSize"
+)(function* (root: string) {
+  const rootMetadata = yield* fsOperation(() => stat(root))
   const rootDevice = rootMetadata.dev
   const hardLinks = new Set<string>()
 
-  async function visit(directory: string): Promise<number> {
-    let total = 0
-    let entries
-    try {
-      entries = await opendir(directory)
-    } catch (cause) {
-      if (isMissingPath(cause)) return 0
-      throw cause
-    }
+  const visit = Effect.fn("RelayDiskUsage.visit")(function* (
+    directory: string
+  ): Effect.fn.Return<number, unknown> {
+    const opened = yield* fsOperation(() => opendir(directory)).pipe(
+      Effect.map(Option.some),
+      Effect.catchIf(isMissingPath, () => Effect.succeed(Option.none()))
+    )
+    if (Option.isNone(opened)) return 0
 
-    for await (const entry of entries) {
-      const path = join(directory, entry.name)
-      if (entry.isSymbolicLink()) continue
-      if (entry.isDirectory()) {
-        let metadata
-        try {
-          metadata = await lstat(path)
-        } catch (cause) {
-          if (isMissingPath(cause)) continue
-          throw cause
-        }
-        if (metadata.dev === rootDevice) total += await visit(path)
-        continue
-      }
-      if (!entry.isFile()) continue
+    return yield* Effect.acquireUseRelease(
+      Effect.succeed(opened.value),
+      (entries) =>
+        Effect.gen(function* () {
+          let total = 0
+          while (true) {
+            const entry = yield* fsOperation(() => entries.read())
+            if (!entry) return total
 
-      let metadata
-      try {
-        metadata = await lstat(path)
-      } catch (cause) {
-        if (isMissingPath(cause)) continue
-        throw cause
-      }
-      if (metadata.dev !== rootDevice) continue
-      if (metadata.nlink > 1) {
-        const key = `${metadata.dev}:${metadata.ino}`
-        if (hardLinks.has(key)) continue
-        hardLinks.add(key)
-      }
-      total += metadata.size
-    }
-    return total
-  }
+            const path = join(directory, entry.name)
+            if (entry.isSymbolicLink()) continue
+            if (entry.isDirectory()) {
+              const metadata = yield* metadataOrNone(path)
+              if (
+                Option.isSome(metadata) &&
+                metadata.value.dev === rootDevice
+              ) {
+                total += yield* visit(path)
+              }
+              continue
+            }
+            if (!entry.isFile()) continue
 
-  return visit(root)
+            const metadata = yield* metadataOrNone(path)
+            if (Option.isNone(metadata) || metadata.value.dev !== rootDevice) {
+              continue
+            }
+            if (metadata.value.nlink > 1) {
+              const key = `${metadata.value.dev}:${metadata.value.ino}`
+              if (hardLinks.has(key)) continue
+              hardLinks.add(key)
+            }
+            total += metadata.value.size
+          }
+        }),
+      (entries) => fsOperation(() => entries.close())
+    )
+  })
+
+  return yield* visit(root)
+})
+
+export function directoryApparentSize(root: string): Promise<number> {
+  return Effect.runPromise(directoryApparentSizeEffect(root))
+}
+
+function metadataOrNone(path: string) {
+  return fsOperation(() => lstat(path)).pipe(
+    Effect.map(Option.some),
+    Effect.catchIf(isMissingPath, () => Effect.succeed(Option.none()))
+  )
+}
+
+function fsOperation<A>(run: () => Promise<A>): Effect.Effect<A, unknown> {
+  return Effect.tryPromise({
+    try: run,
+    catch: (cause) => cause,
+  })
 }
 
 function isMissingPath(cause: unknown): boolean {
