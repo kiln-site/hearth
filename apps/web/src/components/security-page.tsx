@@ -1,4 +1,5 @@
 import * as React from "react"
+import { Result } from "effect"
 import QRCode from "react-qr-code"
 import {
   Check,
@@ -410,11 +411,10 @@ function Feedback({
 }
 
 function readTotpSecret(uri: string): string {
-  try {
-    return new URL(uri).searchParams.get("secret") ?? ""
-  } catch {
-    return ""
-  }
+  return Result.getOrElse(
+    Result.try(() => new URL(uri).searchParams.get("secret") ?? ""),
+    () => ""
+  )
 }
 
 function formatDate(value?: Date | string | null): string {

@@ -1,4 +1,5 @@
 import * as React from "react"
+import { Effect } from "effect"
 import { Check, KeyRound, LoaderCircle, ShieldAlert } from "lucide-react"
 
 import { Button } from "@workspace/ui/components/button"
@@ -38,26 +39,36 @@ export function ResetPasswordPage({
     }
 
     setPending(true)
-    try {
-      const result = await authClient.resetPassword({
-        newPassword: password,
-        token,
-      })
-      if (result.error) {
-        throw new Error(
-          result.error.message ||
-            result.error.statusText ||
-            "This reset link is no longer valid"
-        )
-      }
-      setComplete(true)
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Could not reset password"
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => {
+          const result = await authClient.resetPassword({
+            newPassword: password,
+            token,
+          })
+          if (result.error) {
+            throw new Error(
+              result.error.message ||
+                result.error.statusText ||
+                "This reset link is no longer valid"
+            )
+          }
+        },
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.tap(() => Effect.sync(() => setComplete(true))),
+        Effect.catch((cause) =>
+          Effect.sync(() =>
+            setError(
+              cause instanceof Error
+                ? cause.message
+                : "Could not reset password"
+            )
+          )
+        ),
+        Effect.ensuring(Effect.sync(() => setPending(false)))
       )
-    } finally {
-      setPending(false)
-    }
+    )
   }
 
   return (

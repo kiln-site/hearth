@@ -1,5 +1,6 @@
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { Effect } from "effect"
 import {
   ArrowLeftRight,
   CircleAlert,
@@ -238,24 +239,35 @@ const StartupForm = React.memo(function StartupForm({
       return
     }
     submittingRef.current = true
-    try {
-      await saveMutation.mutateAsync({
-        data: {
-          diskLimitBytes,
-          instanceId,
-          recipe: view.source,
-          relayId,
-          start: startAfterSave,
-          variables,
-        },
-      })
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Could not apply Startup"
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: () =>
+          saveMutation.mutateAsync({
+            data: {
+              diskLimitBytes,
+              instanceId,
+              recipe: view.source,
+              relayId,
+              start: startAfterSave,
+              variables,
+            },
+          }),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() =>
+            setError(
+              cause instanceof Error ? cause.message : "Could not apply Startup"
+            )
+          )
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            submittingRef.current = false
+          })
+        )
       )
-    } finally {
-      submittingRef.current = false
-    }
+    )
   }
 
   const configuredMemoryBytes =

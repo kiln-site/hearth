@@ -1,6 +1,7 @@
 import * as React from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
+import { Effect } from "effect"
 import {
   ArrowRight,
   Check,
@@ -51,16 +52,29 @@ export function InvitationPage({
   async function accept() {
     setPending(true)
     setError(null)
-    try {
-      await acceptInvitationMutation.mutateAsync({ data: { token } })
-      setAccepted(true)
-      window.setTimeout(() => window.location.assign("/"), 700)
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Could not accept invitation"
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: () => acceptInvitationMutation.mutateAsync({ data: { token } }),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            setAccepted(true)
+            window.setTimeout(() => window.location.assign("/"), 700)
+          })
+        ),
+        Effect.catch((cause) =>
+          Effect.sync(() => {
+            setError(
+              cause instanceof Error
+                ? cause.message
+                : "Could not accept invitation"
+            )
+            setPending(false)
+          })
+        )
       )
-      setPending(false)
-    }
+    )
   }
 
   async function signOut() {

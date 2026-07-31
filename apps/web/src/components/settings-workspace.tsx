@@ -1,5 +1,6 @@
 import * as React from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
+import { Effect } from "effect"
 import {
   Box,
   Check,
@@ -264,24 +265,37 @@ function InstanceNameForm({
     setPending(true)
     setSaved(false)
     setError(null)
-    try {
-      await updateNameMutation.mutateAsync({
-        data: {
-          instanceId: instance.id,
-          relayId: instance.relayId,
-          name: nextName,
-        },
-      })
-      setDraftName(null)
-      setSaved(true)
-      window.setTimeout(() => setSaved(false), 1800)
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Could not save instance name"
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: () =>
+          updateNameMutation.mutateAsync({
+            data: {
+              instanceId: instance.id,
+              relayId: instance.relayId,
+              name: nextName,
+            },
+          }),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            setDraftName(null)
+            setSaved(true)
+            window.setTimeout(() => setSaved(false), 1800)
+          })
+        ),
+        Effect.catch((cause) =>
+          Effect.sync(() =>
+            setError(
+              cause instanceof Error
+                ? cause.message
+                : "Could not save instance name"
+            )
+          )
+        ),
+        Effect.ensuring(Effect.sync(() => setPending(false)))
       )
-    } finally {
-      setPending(false)
-    }
+    )
   }
 
   return (

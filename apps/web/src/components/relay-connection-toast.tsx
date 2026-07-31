@@ -1,6 +1,7 @@
 import * as React from "react"
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query"
 import { useRouter } from "@tanstack/react-router"
+import { Effect } from "effect"
 import { LoaderCircle, ServerOff, Wifi, WifiOff } from "lucide-react"
 
 import { dismissToast, showToast } from "@workspace/ui/components/sonner"
@@ -295,15 +296,19 @@ function useApplicationConnectionToasts({
 }
 
 async function checkHearthConnection(): Promise<boolean> {
-  try {
-    const response = await fetch("/api/health", {
-      cache: "no-store",
-      signal: AbortSignal.timeout(4_000),
-    })
-    return response.ok
-  } catch {
-    return false
-  }
+  return Effect.runPromise(
+    Effect.tryPromise({
+      try: () =>
+        fetch("/api/health", {
+          cache: "no-store",
+          signal: AbortSignal.timeout(4_000),
+        }),
+      catch: (cause) => cause,
+    }).pipe(
+      Effect.map((response) => response.ok),
+      Effect.orElseSucceed(() => false)
+    )
+  )
 }
 
 function selectRelayStates(

@@ -4,6 +4,7 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query"
+import { Result } from "effect"
 import {
   Check,
   CircleAlert,
@@ -116,18 +117,22 @@ const DomainConfiguration = React.memo(function DomainConfiguration({
         })
         return
       }
-      let patterns: Array<string>
-      try {
-        patterns = validateBlacklistPatterns(
+      const patternsResult = Result.try(() =>
+        validateBlacklistPatterns(
           nextBlacklistPatterns
             .split(/\r?\n/u)
             .map((pattern) => pattern.trim())
             .filter(Boolean)
         )
-      } catch (cause) {
-        showToast({ message: errorMessage(cause), type: "error" })
+      )
+      if (Result.isFailure(patternsResult)) {
+        showToast({
+          message: errorMessage(patternsResult.failure),
+          type: "error",
+        })
         return
       }
+      const patterns = patternsResult.success
       if (!integration && !apiToken) {
         setBlacklistPatterns(nextBlacklistPatterns)
         setBlacklistOpen(false)

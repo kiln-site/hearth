@@ -1,5 +1,6 @@
 import * as React from "react"
 import type { Brick } from "@workspace/contracts"
+import { Result } from "effect"
 import {
   BadgeCheck,
   BookOpen,
@@ -56,15 +57,15 @@ const EMPTY_BRICKS: Array<Brick> = []
 
 function isOfficialBrick(brick: Brick): boolean {
   if (brick.metadata.author.trim().toLowerCase() === "kiln") return true
-  try {
-    const host = new URL(brick.source).hostname.toLowerCase()
-    return (
-      host === "raw.githubusercontent.com" &&
-      brick.source.includes("/kiln-site/bricks/")
-    )
-  } catch {
-    return false
-  }
+  return Result.getOrElse(
+    Result.try(
+      () =>
+        new URL(brick.source).hostname.toLowerCase() ===
+          "raw.githubusercontent.com" &&
+        brick.source.includes("/kiln-site/bricks/")
+    ),
+    () => false
+  )
 }
 
 function brickCategory(brick: Brick): Exclude<BrickCategoryId, "all"> {
