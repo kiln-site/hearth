@@ -4,7 +4,7 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto"
 import { mkdir } from "node:fs/promises"
 import { hostname } from "node:os"
 import * as Sentry from "@sentry/node"
-import { Effect } from "effect"
+import { Effect, Semaphore } from "effect"
 
 import {
   relayConsoleCommandSchema,
@@ -84,7 +84,11 @@ import { RelaySnapshotHub } from "./snapshot-hub.js"
 import { SystemUpdateManager } from "./system-updates.js"
 import { assignRelayWebRouteIds } from "./web-route-ids.js"
 import { planWebRouteRecovery } from "./web-route-labels.js"
-import type { IncomingMessage, ServerResponse } from "node:http"
+import type {
+  IncomingMessage,
+  Server as HttpServer,
+  ServerResponse,
+} from "node:http"
 
 const WEB_ROUTE_RECOVERY_METADATA_KEY = "web_routes_recovery_v1"
 
@@ -192,8 +196,11 @@ const tailscaleFirewallFiber = forkRelayEffect(
     Effect.forever
   )
 )
-const instanceMutations = new Map<string, Promise<unknown>>()
-let webRouteMutation: Promise<unknown> = Promise.resolve()
+const instanceMutations = new Map<
+  string,
+  { references: number; semaphore: Semaphore.Semaphore }
+>()
+const webRouteMutation = Semaphore.makeUnsafe(1)
 const snapshotHub = new RelaySnapshotHub(relaySnapshot)
 
 async function loadStartupWebRoutes() {
@@ -347,33 +354,40 @@ function requiredCliArgument(
   return value.trim()
 }
 
-const requestHandler = async (
+const requestHandler = (
   request: IncomingMessage,
   response: ServerResponse
-) => {
-  try {
-    if (healthCheck(request, response)) return
-    if (trustProbe(request, response)) return
-    if (bootstrapDiscovery(request, response)) return
-    if (await pairingRequest(request, response)) return
-    if (await browserSocket.handleRequest(request, response)) return
-    json(response, 426, {
-      error: "Relay control operations require a WebSocket transport",
-      code: "websocket_required",
-    })
-  } catch (error) {
-    const cause = error
-    if (cause instanceof RelayPairingError) {
-      json(response, 401, { error: cause.message, code: cause.code })
-      return
-    }
-    Sentry.captureException(cause, {
-      tags: { "kiln.operation": normalizedRequestOperation(request.url) },
-    })
-    const message = cause instanceof Error ? cause.message : "Unknown error"
-    console.error(cause)
-    json(response, 500, { error: message, code: "internal_error" })
-  }
+): void => {
+  Effect.runFork(
+    relayOperation(async () => {
+      if (healthCheck(request, response)) return
+      if (trustProbe(request, response)) return
+      if (bootstrapDiscovery(request, response)) return
+      if (await pairingRequest(request, response)) return
+      if (await browserSocket.handleRequest(request, response)) return
+      json(response, 426, {
+        error: "Relay control operations require a WebSocket transport",
+        code: "websocket_required",
+      })
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.sync(() => {
+          if (cause instanceof RelayPairingError) {
+            json(response, 401, { error: cause.message, code: cause.code })
+            return
+          }
+          Sentry.captureException(cause, {
+            tags: { "kiln.operation": normalizedRequestOperation(request.url) },
+          })
+          console.error(cause)
+          json(response, 500, {
+            error: cause.message,
+            code: "internal_error",
+          })
+        })
+      )
+    )
+  )
 }
 
 const server = activeTls
@@ -402,28 +416,64 @@ const browserSocket = attachBrowserSocket({
   state: startup.state,
   subscribeSnapshots: (listener) => snapshotHub.subscribe(listener),
 })
-const sftpServer = await attachSftpServer({
-  clientActions: async (clientId) =>
-    (
-      await runRelayEffect(
-        "relay.sftp.clientGrant",
-        startup.state.findClientById(clientId)
+let startingSftpServer: Awaited<ReturnType<typeof attachSftpServer>> | null =
+  null
+const sftpServer = await Effect.runPromise(
+  relayOperation(() =>
+    attachSftpServer({
+      clientActions: async (clientId) =>
+        (
+          await runRelayEffect(
+            "relay.sftp.clientGrant",
+            startup.state.findClientById(clientId)
+          )
+        )?.actions ?? [],
+      config,
+      control: controlSocket,
+      docker,
+    })
+  ).pipe(
+    Effect.tap((sftp) =>
+      Effect.sync(() => {
+        startingSftpServer = sftp
+      })
+    ),
+    Effect.tap(() =>
+      relayOperation(() => lifecycle.assertPrivateProxyListener())
+    ),
+    Effect.tap(() => listenRelayServerEffect(server, config.port, config.host)),
+    Effect.onError(() =>
+      Effect.sync(() => {
+        tailscaleFirewallFiber.interruptUnsafe()
+        lifecycle.close()
+        snapshotHub.close()
+      }).pipe(
+        Effect.andThen(
+          Effect.all(
+            [
+              cleanupOperation("control socket", () => controlSocket.close()),
+              cleanupOperation("browser socket", () => browserSocket.close()),
+              cleanupOperation("SFTP server", () =>
+                startingSftpServer
+                  ? startingSftpServer.close()
+                  : Promise.resolve()
+              ),
+              cleanupOperation("Effect runtime", disposeRelayRuntime),
+            ],
+            { concurrency: 4, discard: true }
+          )
+        )
       )
-    )?.actions ?? [],
-  config,
-  control: controlSocket,
-  docker,
-})
-
-await lifecycle.assertPrivateProxyListener()
-server.listen(config.port, config.host, () => {
-  console.log(
-    `Relay ${relayIdentity.fingerprint} (${relayIdentity.name}) listening on ${activeTls ? "https" : "http"}://${config.host}:${config.port}`
+    )
   )
-  console.log(
-    `Discovering ${config.managedLabel} containers in ${config.rootDirectory}`
-  )
-})
+)
+startingSftpServer = null
+console.log(
+  `Relay ${relayIdentity.fingerprint} (${relayIdentity.name}) listening on ${activeTls ? "https" : "http"}://${config.host}:${config.port}`
+)
+console.log(
+  `Discovering ${config.managedLabel} containers in ${config.rootDirectory}`
+)
 const tlsRefreshFiber = forkRelayEffect(
   "relay.tls.refreshLoop",
   tlsRefreshLoop()
@@ -609,48 +659,74 @@ function tlsRefreshLoop() {
   }).pipe(Effect.forever)
 }
 
-async function shutdownRelay(signal: NodeJS.Signals): Promise<void> {
-  console.log(`Received ${signal}; shutting down relay`)
-  tailscaleFirewallFiber.interruptUnsafe()
-  tlsRefreshFiber.interruptUnsafe()
-  lifecycle.close()
-  snapshotHub.close()
-  await Promise.all([
-    controlSocket.close(),
-    browserSocket.close(),
-    sftpServer.close(),
-  ])
-  const result = await closeRelayServer(server, new Set())
-  if (result === "forced") {
-    console.warn("Relay shutdown deadline reached; closed active connections")
-  }
-  const cleanup = await Promise.allSettled([
-    disposeRelayRuntime(),
-    Sentry.close(2_000),
-  ])
-  for (const outcome of cleanup) {
-    if (outcome.status === "rejected") {
-      console.error("Relay shutdown cleanup failed", outcome.reason)
-    }
-  }
-  process.exit(0)
+function shutdownRelay(signal: NodeJS.Signals): Promise<void> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      yield* Effect.sync(() => {
+        console.log(`Received ${signal}; shutting down relay`)
+        tailscaleFirewallFiber.interruptUnsafe()
+        tlsRefreshFiber.interruptUnsafe()
+        lifecycle.close()
+        snapshotHub.close()
+      })
+      yield* Effect.all(
+        [
+          cleanupOperation("control socket", () => controlSocket.close()),
+          cleanupOperation("browser socket", () => browserSocket.close()),
+          cleanupOperation("SFTP server", () => sftpServer.close()),
+        ],
+        { concurrency: 3, discard: true }
+      )
+      const result = yield* relayOperation(() =>
+        closeRelayServer(server, new Set())
+      ).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() => {
+            console.error("Relay server shutdown failed", cause)
+            return "forced" as const
+          })
+        )
+      )
+      if (result === "forced") {
+        console.warn(
+          "Relay shutdown deadline reached; closed active connections"
+        )
+      }
+      yield* Effect.all(
+        [
+          cleanupOperation("Effect runtime", disposeRelayRuntime),
+          cleanupOperation("Sentry", () => Sentry.close(2_000)),
+        ],
+        { concurrency: 2, discard: true }
+      )
+      yield* Effect.sync(() => process.exit(0))
+    })
+  )
 }
 
 async function relaySnapshot() {
-  const [node, instances, storedNames, pendingPrimaryPorts] = await Promise.all(
-    [
-      nodeSnapshot(config, docker),
-      docker.inspectInstances(),
-      runRelayEffect(
-        "relay.snapshot.instanceNames",
-        startup.state.listInstanceNames()
-      ),
-      runRelayEffect(
-        "relay.snapshot.pendingPrimaryPorts",
-        startup.state.listPendingPrimaryPorts()
-      ),
-    ]
-  )
+  const [node, instances, storedNames, pendingPrimaryPorts] =
+    await Effect.runPromise(
+      Effect.all(
+        [
+          relayOperation(() => nodeSnapshot(config, docker)),
+          relayOperation(() => docker.inspectInstances()),
+          relayOperation(() =>
+            runRelayEffect(
+              "relay.snapshot.instanceNames",
+              startup.state.listInstanceNames()
+            )
+          ),
+          relayOperation(() =>
+            runRelayEffect(
+              "relay.snapshot.pendingPrimaryPorts",
+              startup.state.listPendingPrimaryPorts()
+            )
+          ),
+        ] as const,
+        { concurrency: 4 }
+      )
+    )
   return {
     node,
     instances: applyStoredPendingPrimaryPorts(
@@ -908,28 +984,31 @@ async function executeControlRequest(
       const input = relayCreateInstanceSchema.parse(request.payload)
       const instance = await lifecycle.createInstance(input)
       const name = input.name ?? instance.name
-      try {
-        await runRelayEffect(
-          "relay.instance.createName",
-          startup.state.setInstanceName(instance.id, name)
-        )
-      } catch (cause) {
-        const rollback = await Promise.allSettled([
-          lifecycle.deleteInstance(instance.id, true),
+      await Effect.runPromise(
+        relayOperation(() =>
           runRelayEffect(
-            "relay.instance.createName.rollback",
-            startup.state.deleteInstanceName(instance.id)
-          ),
-        ])
-        for (const result of rollback) {
-          if (result.status === "rejected") {
-            Sentry.captureException(result.reason, {
-              tags: { "kiln.operation": "relay.instance.create.rollback" },
-            })
-          }
-        }
-        throw cause
-      }
+            "relay.instance.createName",
+            startup.state.setInstanceName(instance.id, name)
+          )
+        ).pipe(
+          Effect.onError(() =>
+            Effect.all(
+              [
+                cleanupOperation("instance create", () =>
+                  lifecycle.deleteInstance(instance.id, true)
+                ),
+                cleanupOperation("instance name", () =>
+                  runRelayEffect(
+                    "relay.instance.createName.rollback",
+                    startup.state.deleteInstanceName(instance.id)
+                  )
+                ),
+              ],
+              { concurrency: 2, discard: true }
+            )
+          )
+        )
+      )
       return relayInstanceWithStoredName(instance)
     }
     case "instance.startup.write": {
@@ -962,12 +1041,13 @@ async function executeControlRequest(
         lifecycle.deleteInstance(
           instanceId,
           payload.deleteData === true,
-          ({ mode, stackIds }) =>
-            requestHearth(
+          async ({ mode, stackIds }) => {
+            await requestHearth(
               "hearth.tailscale.instance.detach",
               { instanceId, mode, stackIds },
               60_000
-            ).then(() => undefined)
+            )
+          }
         )
       )
       await runRelayEffect(
@@ -997,16 +1077,25 @@ async function executeControlRequest(
       const input = relayInstanceActionSchema.parse(payload)
       const runAction = () =>
         serializeInstanceMutation(instance.id, async () => {
-          const [routes, pendingPrimaryPort] = await Promise.all([
-            runRelayEffect(
-              "relay.network.routes.forAction",
-              startup.state.listInstanceRoutes(instance.id)
-            ),
-            runRelayEffect(
-              "relay.instance.pendingPrimaryPort.forAction",
-              startup.state.getPendingPrimaryPort(instance.id)
-            ),
-          ])
+          const [routes, pendingPrimaryPort] = await Effect.runPromise(
+            Effect.all(
+              [
+                relayOperation(() =>
+                  runRelayEffect(
+                    "relay.network.routes.forAction",
+                    startup.state.listInstanceRoutes(instance.id)
+                  )
+                ),
+                relayOperation(() =>
+                  runRelayEffect(
+                    "relay.instance.pendingPrimaryPort.forAction",
+                    startup.state.getPendingPrimaryPort(instance.id)
+                  )
+                ),
+              ] as const,
+              { concurrency: 2 }
+            )
+          )
           const updated = await lifecycle.runInstanceAction(
             instance,
             input.action,
@@ -1194,25 +1283,30 @@ async function executeControlRequest(
           "relay.network.routes.replace",
           startup.state.replaceInstanceRoutes(instance.id, routes)
         )
-        try {
-          const allRoutes = await runRelayEffect(
-            "relay.network.routes.all",
-            startup.state.listWebRoutes()
-          )
-          await lifecycle.configureWebRoutes(allRoutes)
-        } catch (cause) {
-          await runRelayEffect(
-            "relay.network.routes.rollback",
-            startup.state.replaceInstanceRoutes(instance.id, previous)
-          )
-          await lifecycle.configureWebRoutes(
-            await runRelayEffect(
-              "relay.network.routes.rollbackAll",
+        await Effect.runPromise(
+          relayOperation(async () => {
+            const allRoutes = await runRelayEffect(
+              "relay.network.routes.all",
               startup.state.listWebRoutes()
             )
+            await lifecycle.configureWebRoutes(allRoutes)
+          }).pipe(
+            Effect.onError(() =>
+              cleanupOperation("web route rollback", async () => {
+                await runRelayEffect(
+                  "relay.network.routes.rollback",
+                  startup.state.replaceInstanceRoutes(instance.id, previous)
+                )
+                await lifecycle.configureWebRoutes(
+                  await runRelayEffect(
+                    "relay.network.routes.rollbackAll",
+                    startup.state.listWebRoutes()
+                  )
+                )
+              })
+            )
           )
-          throw cause
-        }
+        )
         return lifecycle.webRouteState(instance.id, routes)
       })
     }
@@ -1277,13 +1371,19 @@ async function appendRelayAudit(
 }
 
 function scheduleClientReconnect(clientId: string): void {
-  const timer = setTimeout(() => controlSocket.refreshClient(clientId), 25)
-  timer.unref()
+  Effect.runFork(
+    Effect.sleep("25 millis").pipe(
+      Effect.andThen(Effect.sync(() => controlSocket.refreshClient(clientId)))
+    )
+  )
 }
 
 function scheduleClientRevocation(clientId: string): void {
-  const timer = setTimeout(() => controlSocket.revokeClient(clientId), 25)
-  timer.unref()
+  Effect.runFork(
+    Effect.sleep("25 millis").pipe(
+      Effect.andThen(Effect.sync(() => controlSocket.revokeClient(clientId)))
+    )
+  )
 }
 
 function payloadRecord(value: unknown): Record<string, unknown> {
@@ -1312,13 +1412,25 @@ async function requiredInstance(payload: Readonly<Record<string, unknown>>) {
 }
 
 async function relayInstanceWithStoredName(instance: RelayInstance) {
-  const [names, pendingPrimaryPorts] = await Promise.all([
-    runRelayEffect("relay.instance.name", startup.state.listInstanceNames()),
-    runRelayEffect(
-      "relay.instance.pendingPrimaryPort",
-      startup.state.listPendingPrimaryPorts()
-    ),
-  ])
+  const [names, pendingPrimaryPorts] = await Effect.runPromise(
+    Effect.all(
+      [
+        relayOperation(() =>
+          runRelayEffect(
+            "relay.instance.name",
+            startup.state.listInstanceNames()
+          )
+        ),
+        relayOperation(() =>
+          runRelayEffect(
+            "relay.instance.pendingPrimaryPort",
+            startup.state.listPendingPrimaryPorts()
+          )
+        ),
+      ] as const,
+      { concurrency: 2 }
+    )
+  )
   return (
     applyStoredPendingPrimaryPorts(
       applyStoredInstanceNames([instance], names),
@@ -1343,28 +1455,36 @@ function applyStoredPendingPrimaryPorts(
   })
 }
 
-async function serializeInstanceMutation<T>(
+function serializeInstanceMutation<T>(
   instanceId: string,
   mutate: () => Promise<T>
 ): Promise<T> {
-  const previous = instanceMutations.get(instanceId) ?? Promise.resolve()
-  const current = previous.catch(() => undefined).then(mutate)
-  instanceMutations.set(instanceId, current)
-  try {
-    return await current
-  } finally {
-    if (instanceMutations.get(instanceId) === current) {
-      instanceMutations.delete(instanceId)
-    }
+  let entry = instanceMutations.get(instanceId)
+  if (!entry) {
+    entry = { references: 0, semaphore: Semaphore.makeUnsafe(1) }
+    instanceMutations.set(instanceId, entry)
   }
+  entry.references += 1
+  const activeEntry = entry
+  return Effect.runPromise(
+    activeEntry.semaphore.withPermit(relayOperation(mutate)).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          activeEntry.references -= 1
+          if (
+            activeEntry.references === 0 &&
+            instanceMutations.get(instanceId) === activeEntry
+          ) {
+            instanceMutations.delete(instanceId)
+          }
+        })
+      )
+    )
+  )
 }
 
-async function serializeWebRouteMutation<T>(
-  mutate: () => Promise<T>
-): Promise<T> {
-  const current = webRouteMutation.catch(() => undefined).then(mutate)
-  webRouteMutation = current
-  return current
+function serializeWebRouteMutation<T>(mutate: () => Promise<T>): Promise<T> {
+  return Effect.runPromise(webRouteMutation.withPermit(relayOperation(mutate)))
 }
 
 function normalizedRequestOperation(url: string | undefined): string {
@@ -1381,6 +1501,54 @@ function healthCheck(
   if (url.pathname !== "/health") return false
   response.writeHead(204, { "Cache-Control": "no-store" }).end()
   return true
+}
+
+function listenRelayServerEffect(
+  relayServer: HttpServer,
+  port: number,
+  host: string
+): Effect.Effect<void, Error> {
+  return Effect.callback<void, Error>((resume) => {
+    const failed = (cause: Error) => {
+      resume(Effect.fail(cause))
+    }
+    relayServer.once("error", failed)
+    relayServer.listen(port, host, () => {
+      relayServer.off("error", failed)
+      resume(Effect.void)
+    })
+    return Effect.sync(() => {
+      relayServer.off("error", failed)
+      if (relayServer.listening) relayServer.close()
+    })
+  })
+}
+
+function cleanupOperation(
+  name: string,
+  run: () => Promise<unknown>
+): Effect.Effect<void> {
+  return relayOperation(run).pipe(
+    Effect.asVoid,
+    Effect.catch((cause) =>
+      Effect.sync(() => {
+        Sentry.captureException(cause, {
+          tags: { "kiln.operation": "relay.cleanup", "kiln.resource": name },
+        })
+        console.error(`Relay ${name} cleanup failed`, cause)
+      })
+    )
+  )
+}
+
+function relayOperation<TResult>(
+  run: () => Promise<TResult>
+): Effect.Effect<TResult, Error> {
+  return Effect.tryPromise({
+    try: run,
+    catch: (cause) =>
+      cause instanceof Error ? cause : new Error("Relay operation failed"),
+  })
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
