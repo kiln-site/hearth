@@ -6,6 +6,7 @@ import {
   useSuspenseQuery,
 } from "@tanstack/react-query"
 import { Link, useParams, useRouterState } from "@tanstack/react-router"
+import { Effect } from "effect"
 import type {
   RelayInstanceResources,
   RelayObservedState,
@@ -191,68 +192,69 @@ function RelayResourceStreamController({
     const lifecycle = new AbortController()
     let cancelled = false
 
-    async function connect() {
-      let retryDelay = 500
-      while (!cancelled) {
-        try {
-          const stream = openRelayResourceStream(
-            instance.relayId,
-            instance.id,
-            lifecycle.signal
+    const connectionFiber = Effect.runFork(
+      Effect.gen(function* () {
+        let retryDelay = 500
+        while (!cancelled) {
+          const failed = yield* Effect.tryPromise({
+            try: async () => {
+              const stream = openRelayResourceStream(
+                instance.relayId,
+                instance.id,
+                lifecycle.signal
+              )
+              let lastSequence = -1
+              for await (const event of stream) {
+                if (cancelled) break
+                if (event.sequence <= lastSequence) continue
+                lastSequence = event.sequence
+                resourceHistoryStore(instance.relayId, instance.id).record(
+                  event.history,
+                  event.instance.resources
+                )
+                const streamedInstance = reconcilePendingPowerInstance(
+                  instance.relayId,
+                  event.instance
+                )
+                queryClient.setQueryData<RelayFleetSnapshot>(
+                  queryKeys.relay.snapshot,
+                  (snapshot) =>
+                    snapshot
+                      ? {
+                          ...snapshot,
+                          instances: snapshot.instances.map((current) =>
+                            current.id === event.instance.id &&
+                            current.relayId === instance.relayId
+                              ? { ...current, ...streamedInstance }
+                              : current
+                          ),
+                        }
+                      : snapshot
+                )
+              }
+              if (!cancelled) throw new Error("Relay resource stream closed")
+            },
+            catch: (cause) => cause,
+          }).pipe(
+            Effect.match({
+              onFailure: () => true,
+              onSuccess: () => false,
+            })
           )
-          let lastSequence = -1
-          for await (const event of stream) {
-            if (cancelled) break
-            if (event.sequence <= lastSequence) continue
-            lastSequence = event.sequence
-            resourceHistoryStore(instance.relayId, instance.id).record(
-              event.history,
-              event.instance.resources
-            )
-            const streamedInstance = reconcilePendingPowerInstance(
-              instance.relayId,
-              event.instance
-            )
-            queryClient.setQueryData<RelayFleetSnapshot>(
-              queryKeys.relay.snapshot,
-              (snapshot) =>
-                snapshot
-                  ? {
-                      ...snapshot,
-                      instances: snapshot.instances.map((current) =>
-                        current.id === event.instance.id &&
-                        current.relayId === instance.relayId
-                          ? { ...current, ...streamedInstance }
-                          : current
-                      ),
-                    }
-                  : snapshot
-            )
-          }
-          if (!cancelled) throw new Error("Relay resource stream closed")
-        } catch {
           if (cancelled) break
-          await new Promise<void>((resolve) => {
-            const finish = () => {
-              lifecycle.signal.removeEventListener("abort", abort)
-              resolve()
-            }
-            const timer = window.setTimeout(finish, retryDelay)
-            const abort = () => {
-              window.clearTimeout(timer)
-              finish()
-            }
-            lifecycle.signal.addEventListener("abort", abort, { once: true })
-          })
-          retryDelay = Math.min(retryDelay * 2, 5_000)
+          if (failed) {
+            yield* Effect.sleep(retryDelay)
+            retryDelay = Math.min(retryDelay * 2, 5_000)
+          } else {
+            retryDelay = 500
+          }
         }
-      }
-    }
-
-    void connect()
+      })
+    )
     return () => {
       cancelled = true
       lifecycle.abort()
+      connectionFiber.interruptUnsafe()
     }
   }, [instance.id, instance.relayId, queryClient, relayConnected])
 
@@ -766,33 +768,42 @@ function InstancePowerControls({
       )
       setAction(nextAction)
       onError(null)
-      try {
-        await mutateRelayAction({
-          data: {
-            instanceId: instance.id,
-            relayId: instance.relayId,
-            action: nextAction,
-          },
-        })
-      } catch (cause) {
-        finishPendingPowerAction(instance.relayId, instance.id)
-        if (previousInstance) {
-          queryClient.setQueryData<RelayFleetSnapshot>(
-            queryKeys.relay.snapshot,
-            (snapshot) =>
-              updateInstancePowerState(
-                snapshot,
-                instance.id,
-                instance.relayId,
-                previousInstance.observedState,
-                previousInstance.startedAt
+      await Effect.runPromise(
+        Effect.tryPromise({
+          try: () =>
+            mutateRelayAction({
+              data: {
+                instanceId: instance.id,
+                relayId: instance.relayId,
+                action: nextAction,
+              },
+            }),
+          catch: (cause) => cause,
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.sync(() => {
+              finishPendingPowerAction(instance.relayId, instance.id)
+              if (previousInstance) {
+                queryClient.setQueryData<RelayFleetSnapshot>(
+                  queryKeys.relay.snapshot,
+                  (snapshot) =>
+                    updateInstancePowerState(
+                      snapshot,
+                      instance.id,
+                      instance.relayId,
+                      previousInstance.observedState,
+                      previousInstance.startedAt
+                    )
+                )
+              }
+              onError(
+                cause instanceof Error ? cause.message : "Relay action failed"
               )
-          )
-        }
-        onError(cause instanceof Error ? cause.message : "Relay action failed")
-      } finally {
-        setAction(null)
-      }
+            })
+          ),
+          Effect.ensuring(Effect.sync(() => setAction(null)))
+        )
+      )
     },
     [
       instance.id,
@@ -1687,16 +1698,23 @@ function networkActivityPercent(bytesPerSecond: number): number {
 }
 
 async function copyToClipboard(value: string) {
-  try {
-    await navigator.clipboard.writeText(value)
-  } catch {
-    const textarea = document.createElement("textarea")
-    textarea.value = value
-    textarea.style.position = "fixed"
-    textarea.style.opacity = "0"
-    document.body.append(textarea)
-    textarea.select()
-    document.execCommand("copy")
-    textarea.remove()
-  }
+  await Effect.runPromise(
+    Effect.tryPromise({
+      try: () => navigator.clipboard.writeText(value),
+      catch: (cause) => cause,
+    }).pipe(
+      Effect.catch(() =>
+        Effect.sync(() => {
+          const textarea = document.createElement("textarea")
+          textarea.value = value
+          textarea.style.position = "fixed"
+          textarea.style.opacity = "0"
+          document.body.append(textarea)
+          textarea.select()
+          document.execCommand("copy")
+          textarea.remove()
+        })
+      )
+    )
+  )
 }
