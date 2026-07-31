@@ -6,7 +6,7 @@ import {
   verify,
 } from "node:crypto"
 import type { ReadStream } from "node:fs"
-import { Effect, Schema } from "effect"
+import { Effect, Fiber, Schema } from "effect"
 import { WebSocket, WebSocketServer } from "ws"
 import * as Sentry from "@sentry/node"
 
@@ -209,7 +209,7 @@ export function attachBrowserSocket(
       hubs.close()
       resourceHubs.close()
       await closeSockets(sockets, "Relay shutting down")
-      await new Promise<void>((resolve) => wss.close(() => resolve()))
+      await Effect.runPromise(closeWebSocketServerEffect(wss))
     },
     handleRequest: (request, response) =>
       handleBrowserFileRequest(
@@ -971,7 +971,7 @@ function safeBrowserError(cause: unknown): string {
 class ConsoleHubRegistry {
   readonly #docker: DockerDriver
   readonly #hubs = new Map<string, ConsoleHub>()
-  readonly #pendingHubs = new Map<string, Promise<ConsoleHub>>()
+  readonly #pendingHubs = new Map<string, Fiber.Fiber<ConsoleHub, Error>>()
   readonly #subscribeSnapshots: BrowserSocketOptions["subscribeSnapshots"]
   readonly #subscriptions = new Map<WebSocket, string>()
 
@@ -983,35 +983,53 @@ class ConsoleHubRegistry {
     this.#subscribeSnapshots = subscribeSnapshots
   }
 
-  async subscribe(socket: WebSocket, instanceId: string): Promise<void> {
+  subscribe(socket: WebSocket, instanceId: string): Promise<void> {
     this.remove(socket)
     this.#subscriptions.set(socket, instanceId)
-    let hub = this.#hubs.get(instanceId)
-    if (!hub) {
+    let hubEffect: Effect.Effect<ConsoleHub, Error>
+    const existingHub = this.#hubs.get(instanceId)
+    if (existingHub) {
+      hubEffect = Effect.succeed(existingHub)
+    } else {
       let pending = this.#pendingHubs.get(instanceId)
       if (!pending) {
-        pending = this.#createHub(instanceId)
+        pending = Effect.runFork(this.#createHubEffect(instanceId))
         this.#pendingHubs.set(instanceId, pending)
       }
-      try {
-        hub = await pending
-      } finally {
-        if (this.#pendingHubs.get(instanceId) === pending) {
-          this.#pendingHubs.delete(instanceId)
-        }
-      }
-    }
-    if (
-      this.#subscriptions.get(socket) !== instanceId ||
-      socket.readyState !== WebSocket.OPEN
-    ) {
-      const hasWaitingSubscriber = [...this.#subscriptions.values()].some(
-        (subscribedInstanceId) => subscribedInstanceId === instanceId
+      hubEffect = Fiber.join(pending).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (this.#pendingHubs.get(instanceId) === pending) {
+              this.#pendingHubs.delete(instanceId)
+            }
+          })
+        )
       )
-      if (hub.subscriberCount === 0 && !hasWaitingSubscriber) hub.close()
-      return
     }
-    hub.add(socket)
+    return Effect.runPromise(
+      hubEffect.pipe(
+        Effect.tap((hub) =>
+          Effect.sync(() => {
+            if (
+              this.#subscriptions.get(socket) !== instanceId ||
+              socket.readyState !== WebSocket.OPEN
+            ) {
+              const hasWaitingSubscriber = [
+                ...this.#subscriptions.values(),
+              ].some(
+                (subscribedInstanceId) => subscribedInstanceId === instanceId
+              )
+              if (hub.subscriberCount === 0 && !hasWaitingSubscriber) {
+                hub.close()
+              }
+              return
+            }
+            hub.add(socket)
+          })
+        ),
+        Effect.asVoid
+      )
+    )
   }
 
   remove(socket: WebSocket): void {
@@ -1022,24 +1040,33 @@ class ConsoleHubRegistry {
   }
 
   close(): void {
+    for (const pending of this.#pendingHubs.values()) {
+      pending.interruptUnsafe()
+    }
+    this.#pendingHubs.clear()
     for (const hub of this.#hubs.values()) hub.close()
     this.#hubs.clear()
     this.#subscriptions.clear()
   }
 
-  async #createHub(instanceId: string): Promise<ConsoleHub> {
-    const instance = await this.#docker.findInstance(instanceId)
-    if (!instance) throw new Error("Instance not found")
-    const hub = new ConsoleHub(
-      this.#docker,
-      instance,
-      this.#subscribeSnapshots,
-      () => {
-        if (hub.subscriberCount === 0) this.#hubs.delete(instanceId)
-      }
+  #createHubEffect(instanceId: string): Effect.Effect<ConsoleHub, Error> {
+    return browserOperation(() => this.#docker.findInstance(instanceId)).pipe(
+      Effect.flatMap((instance) => {
+        if (!instance) return Effect.fail(new Error("Instance not found"))
+        return Effect.sync(() => {
+          const hub = new ConsoleHub(
+            this.#docker,
+            instance,
+            this.#subscribeSnapshots,
+            () => {
+              if (hub.subscriberCount === 0) this.#hubs.delete(instanceId)
+            }
+          )
+          this.#hubs.set(instanceId, hub)
+          return hub
+        })
+      })
     )
-    this.#hubs.set(instanceId, hub)
-    return hub
   }
 }
 
@@ -1101,6 +1128,7 @@ class ResourceHubRegistry {
 
 class ConsoleHub {
   readonly #abort = new AbortController()
+  readonly #backgroundFibers = new Set<Fiber.Fiber<void, never>>()
   readonly #docker: DockerDriver
   readonly #instance: RelayInstanceConfig
   readonly #lineIds = new Set<string>()
@@ -1108,11 +1136,11 @@ class ConsoleHub {
   readonly #recent: Array<RelayConsoleLine> = []
   readonly #subscribers = new Set<WebSocket>()
   #backfillStartedAt: string | null | undefined
-  #graceTimer: ReturnType<typeof setTimeout> | null = null
-  #retryTimer: ReturnType<typeof setTimeout> | null = null
+  #closed = false
+  #graceFiber: Fiber.Fiber<void, never> | null = null
   #sessionFloor: string | null = null
   #sessionStartedAt: string | null | undefined
-  #started = false
+  #streamFiber: Fiber.Fiber<void, never> | null = null
   #transitionStartedAt: string | null = null
   #truncated = false
   #unsubscribeSnapshots: (() => void) | null
@@ -1136,79 +1164,148 @@ class ConsoleHub {
   }
 
   add(socket: WebSocket): void {
-    if (this.#graceTimer) clearTimeout(this.#graceTimer)
-    if (this.#retryTimer) clearTimeout(this.#retryTimer)
-    this.#graceTimer = null
-    this.#retryTimer = null
+    if (this.#closed) return
+    this.#graceFiber?.interruptUnsafe()
+    this.#graceFiber = null
     this.#subscribers.add(socket)
     if (this.#sessionStartedAt !== undefined) this.#sendSession(socket)
-    if (!this.#started) {
-      this.#started = true
-      void this.#run()
-    }
+    this.#startStream()
   }
 
   remove(socket: WebSocket): void {
     this.#subscribers.delete(socket)
-    if (this.#subscribers.size > 0 || this.#graceTimer) return
-    this.#graceTimer = setTimeout(() => {
-      if (this.#subscribers.size === 0) this.close()
-    }, 2_000)
-    this.#graceTimer.unref()
+    if (this.#subscribers.size > 0 || this.#graceFiber || this.#closed) return
+    let graceFiber: Fiber.Fiber<void, never>
+    graceFiber = Effect.runFork(
+      Effect.sleep("2 seconds").pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            if (this.#subscribers.size === 0) this.close()
+          })
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (this.#graceFiber === graceFiber) this.#graceFiber = null
+          })
+        )
+      )
+    )
+    this.#graceFiber = graceFiber
   }
 
   close(): void {
-    if (this.#graceTimer) clearTimeout(this.#graceTimer)
-    if (this.#retryTimer) clearTimeout(this.#retryTimer)
-    this.#graceTimer = null
-    this.#retryTimer = null
+    if (this.#closed) return
+    this.#closed = true
+    this.#graceFiber?.interruptUnsafe()
+    this.#graceFiber = null
+    this.#streamFiber?.interruptUnsafe()
+    this.#streamFiber = null
+    for (const fiber of this.#backgroundFibers) fiber.interruptUnsafe()
+    this.#backgroundFibers.clear()
     this.#unsubscribeSnapshots?.()
     this.#unsubscribeSnapshots = null
     this.#abort.abort()
     this.#onEmpty()
   }
 
-  async #run(): Promise<void> {
-    try {
-      const snapshot = await this.#docker.console(this.#instance, 200)
-      const startedAt = snapshot.startedAt ?? null
-      const sessionChanged = this.#sessionStartedAt !== startedAt
-      if (this.#sessionStartedAt === undefined || sessionChanged) {
-        this.#replaceSession(snapshot)
-      } else {
-        for (const line of snapshot.lines) this.#append(line)
-      }
-      if (this.#backfillStartedAt !== startedAt) {
-        this.#backfillStartedAt = startedAt
-        void this.#backfill(startedAt)
-      }
-      for await (const line of this.#docker.streamConsole(
-        this.#instance,
-        this.#abort.signal
-      )) {
-        this.#append(line)
-      }
-    } catch (cause) {
-      if (!this.#abort.signal.aborted) {
-        Sentry.captureException(cause, {
-          tags: { "kiln.operation": "browser.console.stream" },
-        })
-      }
-    } finally {
-      this.#started = false
-      if (this.#subscribers.size === 0 || this.#abort.signal.aborted) {
-        this.#onEmpty()
-      } else {
-        this.#retryTimer = setTimeout(() => {
-          this.#retryTimer = null
-          if (this.#subscribers.size > 0 && !this.#started) {
-            this.#started = true
-            void this.#run()
-          }
-        }, 1_000)
-        this.#retryTimer.unref()
-      }
+  #startStream(): void {
+    if (this.#closed || this.#streamFiber || this.#subscribers.size === 0) {
+      return
     }
+    let streamFiber: Fiber.Fiber<void, never>
+    streamFiber = Effect.runFork(
+      this.#streamLoopEffect().pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (this.#streamFiber === streamFiber) this.#streamFiber = null
+          })
+        )
+      )
+    )
+    this.#streamFiber = streamFiber
+  }
+
+  #streamLoopEffect(): Effect.Effect<void> {
+    return this.#streamOnceEffect().pipe(
+      Effect.catch((cause) =>
+        Effect.sync(() => {
+          if (!this.#abort.signal.aborted) {
+            Sentry.captureException(cause, {
+              tags: { "kiln.operation": "browser.console.stream" },
+            })
+          }
+        })
+      ),
+      Effect.andThen(
+        Effect.suspend(() =>
+          this.#closed ||
+          this.#abort.signal.aborted ||
+          this.#subscribers.size === 0
+            ? Effect.void
+            : Effect.sleep("1 second").pipe(
+                Effect.andThen(Effect.suspend(() => this.#streamLoopEffect()))
+              )
+        )
+      )
+    )
+  }
+
+  #streamOnceEffect(): Effect.Effect<void, Error> {
+    return browserOperation(() =>
+      this.#docker.console(this.#instance, 200)
+    ).pipe(
+      Effect.tap((snapshot) =>
+        Effect.sync(() => {
+          const startedAt = snapshot.startedAt ?? null
+          const sessionChanged = this.#sessionStartedAt !== startedAt
+          if (this.#sessionStartedAt === undefined || sessionChanged) {
+            this.#replaceSession(snapshot)
+          } else {
+            for (const line of snapshot.lines) this.#append(line)
+          }
+          if (this.#backfillStartedAt !== startedAt) {
+            this.#backfillStartedAt = startedAt
+            this.#forkBackground(
+              this.#backfillEffect(startedAt),
+              "browser.console.backfill"
+            )
+          }
+        })
+      ),
+      Effect.andThen(
+        browserOperation(async () => {
+          for await (const line of this.#docker.streamConsole(
+            this.#instance,
+            this.#abort.signal
+          )) {
+            this.#append(line)
+          }
+        })
+      )
+    )
+  }
+
+  #forkBackground(effect: Effect.Effect<void, Error>, operation: string): void {
+    let fiber: Fiber.Fiber<void, never>
+    fiber = Effect.runFork(
+      effect.pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() => {
+            if (!this.#abort.signal.aborted) {
+              Sentry.captureException(cause, {
+                tags: { "kiln.operation": operation },
+              })
+            }
+          })
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            this.#backgroundFibers.delete(fiber)
+          })
+        )
+      )
+    )
+    this.#backgroundFibers.add(fiber)
   }
 
   #append(line: RelayConsoleLine): void {
@@ -1246,7 +1343,10 @@ class ConsoleHub {
       return
     }
     this.#transitionStartedAt = startedAt
-    void this.#transitionSession(startedAt)
+    this.#forkBackground(
+      this.#transitionSessionEffect(startedAt),
+      "browser.console.session-transition"
+    )
   }
 
   #replaceSession(snapshot: RelayConsole): void {
@@ -1261,79 +1361,85 @@ class ConsoleHub {
     for (const socket of this.#subscribers) this.#sendSession(socket)
   }
 
-  async #transitionSession(startedAt: string): Promise<void> {
-    try {
-      const snapshot = await this.#docker.console(this.#instance, 200)
-      if (
-        this.#abort.signal.aborted ||
-        this.#transitionStartedAt !== startedAt ||
-        this.#sessionStartedAt === startedAt ||
-        snapshot.startedAt !== startedAt
-      ) {
-        return
-      }
-      this.#replaceSession(snapshot)
-      this.#backfillStartedAt = startedAt
-      void this.#backfill(startedAt)
-    } catch (cause) {
-      if (!this.#abort.signal.aborted) {
-        Sentry.captureException(cause, {
-          tags: { "kiln.operation": "browser.console.session-transition" },
+  #transitionSessionEffect(startedAt: string): Effect.Effect<void, Error> {
+    return browserOperation(() =>
+      this.#docker.console(this.#instance, 200)
+    ).pipe(
+      Effect.tap((snapshot) =>
+        Effect.sync(() => {
+          if (
+            this.#abort.signal.aborted ||
+            this.#transitionStartedAt !== startedAt ||
+            this.#sessionStartedAt === startedAt ||
+            snapshot.startedAt !== startedAt
+          ) {
+            return
+          }
+          this.#replaceSession(snapshot)
+          this.#backfillStartedAt = startedAt
+          this.#forkBackground(
+            this.#backfillEffect(startedAt),
+            "browser.console.backfill"
+          )
         })
-      }
-    } finally {
-      if (this.#transitionStartedAt === startedAt) {
-        this.#transitionStartedAt = null
-      }
-    }
+      ),
+      Effect.asVoid,
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (this.#transitionStartedAt === startedAt) {
+            this.#transitionStartedAt = null
+          }
+        })
+      )
+    )
   }
 
-  async #backfill(startedAt: string | null): Promise<void> {
-    try {
-      const history = await this.#docker.console(this.#instance, 5_000)
-      if (
-        this.#abort.signal.aborted ||
-        this.#sessionStartedAt !== startedAt ||
-        (history.startedAt ?? null) !== startedAt
-      ) {
-        return
-      }
-      const firstRecent = this.#recent[0]
-      const firstRecentIndex = firstRecent
-        ? history.lines.findIndex((line) => line.id === firstRecent.id)
-        : history.lines.length
-      const older =
-        firstRecentIndex >= 0
-          ? history.lines.slice(0, firstRecentIndex)
-          : history.lines.filter(
-              (line) =>
-                line.timestamp !== null &&
-                firstRecent?.timestamp !== null &&
-                line.timestamp < firstRecent.timestamp
-            )
-      if (older.length === 0) {
-        this.#truncated ||= history.truncated
-        return
-      }
-      const fresh = older.filter((line) => !this.#lineIds.has(line.id))
-      if (fresh.length === 0) return
-      for (const line of fresh) this.#lineIds.add(line.id)
-      this.#recent.unshift(...fresh)
-      if (this.#recent.length > 5_000) {
-        const removed = this.#recent.splice(0, this.#recent.length - 5_000)
-        for (const line of removed) this.#lineIds.delete(line.id)
-        this.#truncated = true
-      } else {
-        this.#truncated ||= history.truncated
-      }
-      this.#sendHistory(this.#subscribers, fresh)
-    } catch (cause) {
-      if (!this.#abort.signal.aborted) {
-        Sentry.captureException(cause, {
-          tags: { "kiln.operation": "browser.console.backfill" },
+  #backfillEffect(startedAt: string | null): Effect.Effect<void, Error> {
+    return browserOperation(() =>
+      this.#docker.console(this.#instance, 5_000)
+    ).pipe(
+      Effect.tap((history) =>
+        Effect.sync(() => {
+          if (
+            this.#abort.signal.aborted ||
+            this.#sessionStartedAt !== startedAt ||
+            (history.startedAt ?? null) !== startedAt
+          ) {
+            return
+          }
+          const firstRecent = this.#recent[0]
+          const firstRecentIndex = firstRecent
+            ? history.lines.findIndex((line) => line.id === firstRecent.id)
+            : history.lines.length
+          const older =
+            firstRecentIndex >= 0
+              ? history.lines.slice(0, firstRecentIndex)
+              : history.lines.filter(
+                  (line) =>
+                    line.timestamp !== null &&
+                    firstRecent?.timestamp !== null &&
+                    line.timestamp < firstRecent.timestamp
+                )
+          if (older.length === 0) {
+            this.#truncated ||= history.truncated
+            return
+          }
+          const fresh = older.filter((line) => !this.#lineIds.has(line.id))
+          if (fresh.length === 0) return
+          for (const line of fresh) this.#lineIds.add(line.id)
+          this.#recent.unshift(...fresh)
+          if (this.#recent.length > 5_000) {
+            const removed = this.#recent.splice(0, this.#recent.length - 5_000)
+            for (const line of removed) this.#lineIds.delete(line.id)
+            this.#truncated = true
+          } else {
+            this.#truncated ||= history.truncated
+          }
+          this.#sendHistory(this.#subscribers, fresh)
         })
-      }
-    }
+      ),
+      Effect.asVoid
+    )
   }
 
   #sendSession(socket: WebSocket): void {
@@ -1401,30 +1507,60 @@ function browserKeyThumbprint(jwk: {
     .digest("base64url")
 }
 
-async function closeSockets(
+function closeSockets(
   sockets: ReadonlySet<WebSocket>,
   reason: string
 ): Promise<void> {
-  await Promise.all(
-    [...sockets].map(
-      (socket) =>
-        new Promise<void>((resolveClose) => {
-          if (socket.readyState === WebSocket.CLOSED) {
-            resolveClose()
-            return
-          }
-          const timer = setTimeout(() => {
-            socket.terminate()
-          }, 1_000)
-          timer.unref()
-          socket.once("close", () => {
-            clearTimeout(timer)
-            resolveClose()
-          })
-          socket.close(1001, reason)
-        })
+  return Effect.runPromise(
+    Effect.forEach(sockets, (socket) => closeSocketEffect(socket, reason), {
+      concurrency: 16,
+      discard: true,
+    })
+  )
+}
+
+function closeSocketEffect(
+  socket: WebSocket,
+  reason: string
+): Effect.Effect<void> {
+  if (socket.readyState === WebSocket.CLOSED) return Effect.void
+  return Effect.callback<void>((resume) => {
+    const closed = () => {
+      resume(Effect.void)
+    }
+    socket.once("close", closed)
+    socket.close(1001, reason)
+    return Effect.sync(() => {
+      socket.off("close", closed)
+    })
+  }).pipe(
+    Effect.timeout("1 second"),
+    Effect.catchTag("TimeoutError", () =>
+      Effect.sync(() => {
+        socket.terminate()
+      })
     )
   )
+}
+
+function closeWebSocketServerEffect(
+  server: WebSocketServer
+): Effect.Effect<void> {
+  return Effect.callback<void>((resume) => {
+    server.close(() => {
+      resume(Effect.void)
+    })
+  })
+}
+
+function browserOperation<TResult>(
+  run: () => Promise<TResult>
+): Effect.Effect<TResult, Error> {
+  return Effect.tryPromise({ try: run, catch: asError })
+}
+
+function asError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause))
 }
 
 function send(socket: WebSocket, value: unknown): void {

@@ -1,4 +1,5 @@
 import type { RelaySnapshot } from "@workspace/contracts"
+import { Effect, Fiber } from "effect"
 
 export interface RelaySnapshotSample {
   readonly sequence: number
@@ -13,9 +14,9 @@ export class RelaySnapshotHub {
   readonly #load: () => Promise<RelaySnapshot>
   #closed = false
   #last: (RelaySnapshotSample & { sampledAt: number }) | null = null
-  #sampling: Promise<RelaySnapshotSample> | null = null
+  #sampling: Fiber.Fiber<RelaySnapshotSample, Error> | null = null
+  #scheduleFiber: Fiber.Fiber<void, never> | null = null
   #sequence = 0
-  #timer: ReturnType<typeof setTimeout> | null = null
 
   constructor(load: () => Promise<RelaySnapshot>, intervalMs = 2_000) {
     this.#intervalMs = intervalMs
@@ -26,75 +27,125 @@ export class RelaySnapshotHub {
     if (this.#last && Date.now() - this.#last.sampledAt < this.#intervalMs) {
       return Promise.resolve(this.#last.snapshot)
     }
-    return this.#sample().then(({ snapshot }) => snapshot)
+    return Effect.runPromise(
+      this.#sampleEffect().pipe(Effect.map(({ snapshot }) => snapshot))
+    )
   }
 
-  async refresh(): Promise<RelaySnapshot> {
-    if (this.#sampling) await this.#sampling
-    if (this.#timer) clearTimeout(this.#timer)
-    this.#timer = null
-    this.#last = null
-    return this.#sample().then(({ snapshot }) => snapshot)
+  refresh(): Promise<RelaySnapshot> {
+    const waitForSampling = this.#sampling
+      ? Fiber.join(this.#sampling)
+      : Effect.void
+    return Effect.runPromise(
+      waitForSampling.pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            this.#cancelSchedule()
+            this.#last = null
+          })
+        ),
+        Effect.andThen(this.#sampleEffect()),
+        Effect.map(({ snapshot }) => snapshot)
+      )
+    )
   }
 
   subscribe(listener: SnapshotListener, replay = true): () => void {
     if (this.#closed) throw new Error("Relay snapshot hub is closed")
     this.#listeners.add(listener)
     if (replay && this.#last) listener(this.#last)
-    if (!this.#timer && !this.#sampling) {
+    if (!this.#scheduleFiber && !this.#sampling) {
       if (this.#last) this.#schedule()
-      else void this.#sample().catch(() => undefined)
+      else Effect.runFork(this.#sampleEffect().pipe(Effect.ignore))
     }
     return () => {
       this.#listeners.delete(listener)
-      if (this.#listeners.size === 0 && this.#timer) {
-        clearTimeout(this.#timer)
-        this.#timer = null
-      }
+      if (this.#listeners.size === 0) this.#cancelSchedule()
     }
   }
 
   close(): void {
     this.#closed = true
-    if (this.#timer) clearTimeout(this.#timer)
-    this.#timer = null
+    this.#cancelSchedule()
+    this.#sampling?.interruptUnsafe()
+    this.#sampling = null
     this.#listeners.clear()
   }
 
-  #sample(): Promise<RelaySnapshotSample> {
+  #sampleEffect(): Effect.Effect<RelaySnapshotSample, Error> {
     if (this.#closed) {
-      return Promise.reject(new Error("Relay snapshot hub is closed"))
+      return Effect.fail(new Error("Relay snapshot hub is closed"))
     }
-    this.#sampling ??= this.#load()
-      .then((snapshot) => {
-        const sample = {
-          sampledAt: Date.now(),
-          sequence: ++this.#sequence,
-          snapshot,
-        }
-        this.#last = sample
-        for (const listener of this.#listeners) {
-          try {
-            listener(sample)
-          } catch {
-            // One subscriber must not prevent delivery to the others.
-          }
-        }
-        return sample
-      })
-      .finally(() => {
-        this.#sampling = null
-        if (this.#listeners.size > 0) this.#schedule()
-      })
-    return this.#sampling
+    if (!this.#sampling) {
+      let samplingFiber: Fiber.Fiber<RelaySnapshotSample, Error>
+      samplingFiber = Effect.runFork(
+        Effect.tryPromise({
+          try: this.#load,
+          catch: asError,
+        }).pipe(
+          Effect.map((snapshot) => {
+            const sample = {
+              sampledAt: Date.now(),
+              sequence: ++this.#sequence,
+              snapshot,
+            }
+            this.#last = sample
+            for (const listener of this.#listeners) {
+              Effect.runSync(
+                Effect.sync(() => listener(sample)).pipe(
+                  Effect.catchCause(() => Effect.void)
+                )
+              )
+            }
+            return sample
+          }),
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (this.#sampling === samplingFiber) this.#sampling = null
+              if (this.#listeners.size > 0) this.#schedule()
+            })
+          )
+        )
+      )
+      this.#sampling = samplingFiber
+    }
+    return Fiber.join(this.#sampling)
   }
 
   #schedule(): void {
-    if (this.#closed || this.#listeners.size === 0 || this.#timer) return
-    this.#timer = setTimeout(() => {
-      this.#timer = null
-      void this.#sample().catch(() => undefined)
-    }, this.#intervalMs)
-    this.#timer.unref()
+    if (this.#closed || this.#listeners.size === 0 || this.#scheduleFiber) {
+      return
+    }
+    let scheduleFiber: Fiber.Fiber<void, never>
+    scheduleFiber = Effect.runFork(
+      Effect.sleep(this.#intervalMs).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            if (this.#scheduleFiber === scheduleFiber) {
+              this.#scheduleFiber = null
+            }
+          })
+        ),
+        Effect.andThen(Effect.suspend(() => this.#sampleEffect())),
+        Effect.ignore,
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (this.#scheduleFiber === scheduleFiber) {
+              this.#scheduleFiber = null
+            }
+          })
+        )
+      )
+    )
+    this.#scheduleFiber = scheduleFiber
   }
+
+  #cancelSchedule(): void {
+    this.#scheduleFiber?.interruptUnsafe()
+    this.#scheduleFiber = null
+  }
+}
+
+function asError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause))
 }

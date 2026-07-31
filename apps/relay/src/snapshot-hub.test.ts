@@ -48,4 +48,42 @@ describe("Relay snapshot hub", () => {
     expect(await hub.read()).toBe(current)
     hub.close()
   })
+
+  it("isolates subscribers and interrupts in-flight delivery when closed", async () => {
+    let finishLoad: ((snapshot: RelaySnapshot) => void) | undefined
+    const snapshot = { instances: [] } as unknown as RelaySnapshot
+    const delivered: Array<RelaySnapshot> = []
+    const hub = new RelaySnapshotHub(
+      () =>
+        new Promise<RelaySnapshot>((resolve) => {
+          finishLoad = resolve
+        }),
+      60_000
+    )
+
+    hub.subscribe(() => {
+      throw new Error("subscriber failed")
+    })
+    hub.subscribe((sample) => delivered.push(sample.snapshot))
+    finishLoad?.(snapshot)
+    expect(await hub.read()).toBe(snapshot)
+    expect(delivered).toEqual([snapshot])
+
+    const closingHub = new RelaySnapshotHub(
+      () =>
+        new Promise<RelaySnapshot>((resolve) => {
+          finishLoad = resolve
+        }),
+      60_000
+    )
+    closingHub.subscribe((sample) => delivered.push(sample.snapshot))
+    closingHub.close()
+    finishLoad?.(snapshot)
+    await Promise.resolve()
+    expect(delivered).toEqual([snapshot])
+    expect(() => closingHub.subscribe(() => undefined)).toThrow(
+      "Relay snapshot hub is closed"
+    )
+    hub.close()
+  })
 })
