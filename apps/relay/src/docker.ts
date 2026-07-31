@@ -1088,7 +1088,13 @@ export class DockerDriver {
           if (signal.aborted) stop()
           else signal.addEventListener("abort", stop, { once: true })
           yield* Effect.addFinalizer(() => Effect.sync(stop))
-        })
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.sync(() => {
+              Queue.failCauseUnsafe(queue, cause)
+            })
+          )
+        )
       )
     )
   }
