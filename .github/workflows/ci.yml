@@ -2,12 +2,6 @@ name: Code checks
 
 on:
   workflow_call:
-    inputs:
-      single_job:
-        description: Run all checks on one runner when image builds own the critical path
-        required: false
-        type: boolean
-        default: false
   workflow_dispatch:
 
 permissions:
@@ -16,8 +10,7 @@ permissions:
 jobs:
   code:
     name: ${{ matrix.name }}
-    if: ${{ !inputs.single_job }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -47,33 +40,3 @@ jobs:
 
       - name: Run ${{ matrix.name }}
         run: ${{ matrix.command }}
-
-  single:
-    name: All checks
-    if: ${{ inputs.single_job }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Set up Vite+
-        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1.15.0
-        with:
-          cache: true
-          node-version-file: .node-version
-          run-install: |
-            - cwd: .
-              args: ["--frozen-lockfile"]
-
-      - name: Run static checks
-        run: |
-          vp run -r typecheck
-          vp check
-
-      - name: Run tests
-        run: vp run -r test
-
-      - name: Verify production build
-        run: |
-          vp run -r build
-          git diff --exit-code -- apps/web/src/routeTree.gen.ts

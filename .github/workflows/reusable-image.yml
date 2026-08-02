@@ -54,11 +54,6 @@ on:
         required: false
         type: boolean
         default: false
-      arm_runner:
-        description: Runner label used for arm64 builds
-        required: false
-        type: string
-        default: blacksmith-4vcpu-ubuntu-2404-arm
 permissions:
   contents: read
   packages: write
@@ -66,7 +61,9 @@ permissions:
 jobs:
   build:
     name: ${{ inputs.name }}${{ matrix.architecture == 'arm64' && ' · arm64' || '' }}
-    runs-on: ${{ matrix.architecture == 'arm64' && inputs.arm_runner || 'blacksmith-4vcpu-ubuntu-2404' }}
+    # Public-repository runners keep PRs and manual builds free. Blacksmith is
+    # reserved for the latency-sensitive image builds triggered by main.
+    runs-on: ${{ github.event_name == 'push' && (matrix.architecture == 'arm64' && 'blacksmith-4vcpu-ubuntu-2404-arm' || 'blacksmith-4vcpu-ubuntu-2404') || (matrix.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04') }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -85,13 +82,10 @@ jobs:
           timestamp="$(date -u -d "$commit_timestamp" +%Y%m%d.%H%M%S)"
           echo "version=${release_line}-nightly.${timestamp}" >> "$GITHUB_OUTPUT"
 
-      - name: Set up cached Docker builder
-        uses: useblacksmith/setup-docker-builder@33803e640bd9d674f2843a8c323aa2a7da478d23 # v2.0.0
-        with:
-          cache-key: ${{ inputs.cache_scope }}-${{ matrix.architecture }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ghcr.io
@@ -110,7 +104,7 @@ jobs:
 
       - name: Prepare Sentry source maps
         if: github.event_name != 'pull_request' && inputs.prepare_sentry_source_maps && matrix.architecture == 'amd64'
-        uses: useblacksmith/build-push-action@fb9e3e6a9299c78462bfadd0d93352c316adc9b8 # v2.2.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         env:
           DOCKER_BUILD_RECORD_UPLOAD: false
         with:
@@ -122,12 +116,13 @@ jobs:
             ${{ inputs.nightly_version && format('KILN_VERSION={0}', steps.nightly.outputs.version) || '' }}
           platforms: linux/${{ matrix.architecture }}
           outputs: type=local,dest=/tmp/sentry-source-maps
+          cache-from: type=registry,ref=ghcr.io/kiln-site/${{ inputs.cache_scope }}-build-cache:${{ matrix.architecture }}
           provenance: false
           sbom: false
 
       - name: Build${{ github.event_name != 'pull_request' && ' and publish' || '' }} image
         id: build
-        uses: useblacksmith/build-push-action@fb9e3e6a9299c78462bfadd0d93352c316adc9b8 # v2.2.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         env:
           DOCKER_BUILD_RECORD_UPLOAD: false
         with:
@@ -139,8 +134,12 @@ jobs:
           platforms: linux/${{ matrix.architecture }}
           outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', inputs.image) || '' }}
           labels: ${{ steps.metadata.outputs.labels }}
-          provenance: ${{ github.event_name != 'pull_request' && 'mode=max' || 'false' }}
-          sbom: ${{ github.event_name != 'pull_request' }}
+          # PRs refresh the shared dependency cache. Main only imports it so
+          # publishing is not delayed by a remote cache export.
+          cache-from: type=registry,ref=ghcr.io/kiln-site/${{ inputs.cache_scope }}-build-cache:${{ matrix.architecture }}
+          cache-to: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && format('type=registry,ref=ghcr.io/kiln-site/{0}-build-cache:{1},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd', inputs.cache_scope, matrix.architecture) || '' }}
+          provenance: ${{ github.event_name != 'pull_request' && 'mode=min' || 'false' }}
+          sbom: false
 
       - name: Export image digest
         if: github.event_name != 'pull_request'
@@ -177,7 +176,7 @@ jobs:
     name: Publish ${{ inputs.name }} manifest
     if: github.event_name != 'pull_request' && inputs.publish_manifest
     needs: build
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       digest: ${{ steps.manifest.outputs.digest }}
