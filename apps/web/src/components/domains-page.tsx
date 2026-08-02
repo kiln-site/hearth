@@ -8,6 +8,7 @@ import { Result } from "effect"
 import {
   ArrowLeft,
   Check,
+  ChevronDown,
   CircleAlert,
   ExternalLink,
   Globe2,
@@ -98,6 +99,7 @@ export function DomainsPage() {
       {configurationOpen ? (
         <DomainConfigurationDialog
           key={domainIntegrationKey(data.integration)}
+          hearthDomain={data.hearthDomain}
           integration={data.integration}
           open
           onOpenChange={setConfigurationOpen}
@@ -415,10 +417,12 @@ function EmptyDomainsTable({ searchActive }: { searchActive: boolean }) {
 }
 
 function DomainConfigurationDialog({
+  hearthDomain,
   integration,
   open,
   onOpenChange,
 }: {
+  hearthDomain: string
   integration: DomainIntegrationView | null
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -494,7 +498,9 @@ function DomainConfigurationDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent
+        className={mode === "token" ? "sm:max-w-3xl" : "sm:max-w-xl"}
+      >
         <DialogHeader>
           <div className="flex items-start justify-between gap-3 pr-7">
             <div className="min-w-0">
@@ -627,7 +633,7 @@ function DomainConfigurationDialog({
               />
             </label>
 
-            <div className="space-y-2 border border-border/75 bg-background/35 p-3">
+            <div className="space-y-2">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs font-semibold">Required permissions</p>
                 <a
@@ -639,8 +645,9 @@ function DomainConfigurationDialog({
                   Create token <ExternalLink className="size-3" />
                 </a>
               </div>
-              <PermissionRow access="Read" resource="Zone → Zone" />
-              <PermissionRow access="Edit" resource="Zone → DNS" />
+              <CloudflarePermissionPolicy
+                domain={integration?.zoneName ?? hearthDomain}
+              />
               <p className="pt-1 text-[9px] leading-4 text-muted-foreground">
                 Scope Zone Resources to the specific zone that owns this vanity
                 domain. No account ID or zone ID is required—Kiln resolves and
@@ -688,23 +695,150 @@ function DomainConfigurationDialog({
   )
 }
 
-function PermissionRow({
-  access,
-  resource,
+function CloudflarePermissionPolicy({ domain }: { domain: string }) {
+  return (
+    <figure className="space-y-1.5">
+      <figcaption className="flex items-center gap-2 px-0.5 text-[9px] text-muted-foreground">
+        <span>Cloudflare dashboard reference</span>
+        <span aria-hidden="true" className="h-px flex-1 bg-border/60" />
+        <span className="font-mono tracking-wide uppercase">Visual only</span>
+      </figcaption>
+
+      <div className="overflow-hidden rounded-lg border border-white/12 bg-[#101010] text-[#ededed] shadow-lg shadow-black/15">
+        <div className="flex items-center justify-between border-b border-white/10 bg-[#141414] px-3 py-2.5">
+          <p className="text-[10px] font-semibold">Edit policy</p>
+          <span className="text-[9px] text-white/55">Custom</span>
+        </div>
+
+        <div className="grid gap-2 border-b border-white/10 p-3 sm:grid-cols-[minmax(9rem,0.8fr)_minmax(0,1.35fr)]">
+          <div className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-white/15 bg-white/[0.025] px-3 py-2.5">
+            <span className="text-[10px] font-medium">Specified Domains</span>
+            <ChevronDown className="size-3.5 shrink-0 text-white/45" />
+          </div>
+          <div className="flex min-w-0 items-center gap-2 rounded-md border border-white/20 bg-white/[0.045] px-3 py-2.5">
+            <Globe2 className="size-3.5 shrink-0 text-white/70" />
+            <span className="truncate font-mono text-[10px] text-white/90">
+              {domain}
+            </span>
+            <ChevronDown className="ml-auto size-3.5 shrink-0 text-white/45" />
+          </div>
+        </div>
+
+        <VisualPermissionGroup label="DNS & Zones" selected={2} total={12}>
+          <CloudflarePermissionRow
+            description="Grants write access to DNS"
+            edit
+            name="DNS"
+          />
+          <CloudflarePermissionRow
+            description="Grants read access to zone management"
+            name="Zone"
+            read
+          />
+          <CloudflarePermissionRow
+            description="Grants read access to zone custom assets"
+            name="Zone Custom Asset"
+          />
+          <CloudflarePermissionRow
+            description="Grants access to Zone DNS Settings"
+            name="Zone DNS Settings"
+          />
+          <CloudflarePermissionRow
+            description="Grants access to zone settings"
+            name="Zone Settings"
+          />
+        </VisualPermissionGroup>
+
+        <div className="border-t border-white/10 bg-white/[0.025] px-3 py-2">
+          <p className="text-[9px] leading-4 text-white/50">
+            DNS Edit already includes read and list access. Leave DNS Read
+            unchecked.
+          </p>
+        </div>
+      </div>
+    </figure>
+  )
+}
+
+function VisualPermissionGroup({
+  children,
+  label,
+  selected,
+  total,
 }: {
-  access: "Edit" | "Read"
-  resource: string
+  children: React.ReactNode
+  label: string
+  selected: number
+  total: number
 }) {
   return (
-    <div className="flex items-center gap-2 border border-border/60 bg-card/50 px-2.5 py-2">
-      <span className="grid size-5 shrink-0 place-items-center rounded-full bg-emerald-400/10 text-emerald-300">
-        <Check className="size-3" />
-      </span>
-      <span className="min-w-0 flex-1 font-mono text-[10px]">{resource}</span>
-      <span className="font-mono text-[9px] text-muted-foreground uppercase">
-        {access}
-      </span>
+    <div className="border-b border-white/10 last:border-b-0">
+      <div className="flex items-center gap-2 bg-white/[0.015] px-3 py-2.5">
+        <ChevronDown className="size-3.5 shrink-0 text-white/75" />
+        <span className="text-[10px] font-semibold text-white/90">{label}</span>
+        <span className="ml-auto font-mono text-[8px] text-white/30">
+          {selected}/{total}
+        </span>
+      </div>
+      {children}
     </div>
+  )
+}
+
+function CloudflarePermissionRow({
+  description,
+  edit = false,
+  name,
+  read = false,
+}: {
+  description: string
+  edit?: boolean
+  name: string
+  read?: boolean
+}) {
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 border-t border-dashed border-white/10 px-3 py-2.5 sm:grid-cols-[minmax(8rem,0.8fr)_minmax(10rem,1.25fr)_auto] sm:items-center">
+      <p className="col-start-1 row-start-1 truncate text-[10px] font-medium text-white/85">
+        {name}
+      </p>
+      <p className="col-start-1 row-start-2 mt-0.5 truncate text-[8px] text-white/35 sm:col-start-2 sm:row-start-1 sm:mt-0">
+        {description}
+      </p>
+      <div className="col-start-2 row-span-2 row-start-1 flex items-center rounded-md border border-white/12 bg-black/25 p-1 sm:col-start-3 sm:row-span-1">
+        <PermissionAccess active={read} label="Read" />
+        <PermissionAccess active={edit} label="Edit" />
+      </div>
+    </div>
+  )
+}
+
+function PermissionAccess({
+  active,
+  label,
+}: {
+  active: boolean
+  label: string
+}) {
+  return (
+    <span
+      className={
+        active
+          ? "flex items-center gap-1.5 rounded px-1.5 py-1 text-[9px] font-medium text-white/90"
+          : "flex items-center gap-1.5 rounded px-1.5 py-1 text-[9px] text-white/30"
+      }
+    >
+      <span
+        className={
+          active
+            ? "grid size-3.5 place-items-center rounded-[3px] border border-white bg-white text-black"
+            : "size-3.5 rounded-[3px] border border-white/15 bg-black/20"
+        }
+      >
+        {active ? <Check className="size-2.5" strokeWidth={3} /> : null}
+      </span>
+      {label}
+      <span className="sr-only">{active ? "selected" : "not selected"}</span>
+    </span>
   )
 }
 
