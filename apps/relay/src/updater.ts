@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { request } from "node:http"
 import { join } from "node:path"
 import { promisify } from "node:util"
-import { Effect, Schedule } from "effect"
+import { Effect } from "effect"
 
 import { RelaySystemUpdateError } from "./effect/errors.js"
 import {
@@ -12,6 +12,10 @@ import {
   type ContainerUpdateDocker,
   type ImageInspect,
 } from "./update-container.js"
+import {
+  drainUpdateBatchEffect,
+  retryContainerReplacementEffect,
+} from "./updater-effects.js"
 
 const executeFile = promisify(execFile)
 const dockerSocket = "/var/run/docker.sock"
@@ -66,20 +70,17 @@ const runOperationEffect = Effect.fn("relay.updater.replace")(function* (
     )
   }
   const backupName = `${operation.targetContainer}-kiln-backup-${Date.now()}`
-  yield* replaceContainerEffect(
-    {
-      backupName,
-      targetContainer: operation.targetContainer,
-      targetImage: operation.requestedImage,
-      targetReference,
-      targetVersion: operation.version,
-    },
-    dockerRuntime
-  ).pipe(
-    Effect.retry({
-      schedule: Schedule.exponential("1 second"),
-      times: 2,
-    })
+  yield* retryContainerReplacementEffect(
+    replaceContainerEffect(
+      {
+        backupName,
+        targetContainer: operation.targetContainer,
+        targetImage: operation.requestedImage,
+        targetReference,
+        targetVersion: operation.version,
+      },
+      dockerRuntime
+    )
   )
   yield* updateOperationEffect({
     ...operation,
@@ -116,33 +117,30 @@ const runBatchEffect = Effect.fn("relay.updater.runBatch")(function* (
   // Return the operation ids before replacing Relay and keep a short idle
   // window so another Hearth request can join this sidecar's queue.
   yield* Effect.sleep("1500 millis")
-  let idleChecks = 0
-  while (idleChecks < 2) {
-    const batch = yield* readBatchEffect(activeBatchId)
-    const operations = yield* Effect.forEach(batch.operationIds, (id) =>
-      readOperationEffect(id)
-    )
-    const pending = operations
-      .filter((operation) => operation.status === "running")
-      .sort((left, right) =>
-        left.component === right.component
-          ? 0
-          : left.component === "hearth"
-            ? -1
-            : 1
+  yield* drainUpdateBatchEffect(() =>
+    Effect.gen(function* () {
+      const batch = yield* readBatchEffect(activeBatchId)
+      const operations = yield* Effect.forEach(batch.operationIds, (id) =>
+        readOperationEffect(id)
       )
-    if (pending.length === 0) {
-      idleChecks += 1
-      yield* Effect.sleep("2500 millis")
-      continue
-    }
-    idleChecks = 0
-    yield* Effect.forEach(
-      pending,
-      (operation) => runRecordedOperationEffect(operation),
-      { discard: true }
-    )
-  }
+      const pending = operations
+        .filter((operation) => operation.status === "running")
+        .sort((left, right) =>
+          left.component === right.component
+            ? 0
+            : left.component === "hearth"
+              ? -1
+              : 1
+        )
+      if (pending.length === 0) return false
+      yield* Effect.forEach(
+        pending,
+        (operation) => runRecordedOperationEffect(operation),
+        { discard: true }
+      )
+      return true
+    })
+  )
 })
 
 const runLegacyEffect = Effect.fn("relay.updater.runLegacy")(function* () {
