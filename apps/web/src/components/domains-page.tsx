@@ -165,13 +165,7 @@ const DomainsToolbar = React.memo(function DomainsToolbar({
   const searchInputRef = React.useRef<HTMLInputElement>(null)
   const resync = useMutation({
     mutationFn: resyncDomainAssignments,
-    onSuccess: async ({ syncedServerCount }) => {
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.domains.settings,
-        }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.relay.snapshot }),
-      ])
+    onSuccess: ({ syncedServerCount }) => {
       showToast({
         message: `Synced ${syncedServerCount} ${
           syncedServerCount === 1 ? "server address" : "server addresses"
@@ -181,6 +175,14 @@ const DomainsToolbar = React.memo(function DomainsToolbar({
     },
     onError: (cause) =>
       showToast({ message: errorMessage(cause), type: "error" }),
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.domains.settings,
+        }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.relay.snapshot }),
+      ])
+    },
   })
 
   React.useEffect(() => {
@@ -432,6 +434,8 @@ function DomainConfigurationDialog({
   const queryClient = useQueryClient()
   const [mode, setMode] = React.useState<"settings" | "permissions">("settings")
   const [domain, setDomain] = React.useState(integration?.domain ?? "")
+  const [permissionsDomain, setPermissionsDomain] = React.useState(hearthDomain)
+  const [permissionsPending, setPermissionsPending] = React.useState(false)
   const [enabled, setEnabled] = React.useState(integration?.enabled ?? true)
   const [blacklistPatterns, setBlacklistPatterns] = React.useState(() =>
     (
@@ -498,6 +502,21 @@ function DomainConfigurationDialog({
       },
     })
   }, [apiToken, blacklistPatterns, configure, domain, enabled, integration])
+  const openPermissions = React.useCallback(async () => {
+    setPermissionsPending(true)
+    try {
+      const { rootDomainForHostname } = await import("@/lib/domain-name")
+      setPermissionsDomain(rootDomainForHostname(domain) || hearthDomain)
+      setMode("permissions")
+    } catch {
+      showToast({
+        message: "Could not load the Cloudflare permissions preview",
+        type: "error",
+      })
+    } finally {
+      setPermissionsPending(false)
+    }
+  }, [domain, hearthDomain])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -540,17 +559,18 @@ function DomainConfigurationDialog({
             error={configure.error}
             hasIntegration={Boolean(integration)}
             isPending={configure.isPending}
+            permissionsPending={permissionsPending}
             onApiTokenChange={setApiToken}
             onBlacklistPatternsChange={setBlacklistPatterns}
             onCancel={() => onOpenChange(false)}
             onDomainChange={setDomain}
             onEnabledChange={setEnabled}
-            onOpenPermissions={() => setMode("permissions")}
+            onOpenPermissions={openPermissions}
             onSave={save}
           />
         ) : (
           <CloudflarePermissionsPreview
-            domain={integration?.zoneName ?? hearthDomain}
+            domain={permissionsDomain}
             error={configure.error}
           />
         )}
@@ -567,6 +587,7 @@ function VanitySettingsForm({
   error,
   hasIntegration,
   isPending,
+  permissionsPending,
   onApiTokenChange,
   onBlacklistPatternsChange,
   onCancel,
@@ -582,6 +603,7 @@ function VanitySettingsForm({
   error: Error | null
   hasIntegration: boolean
   isPending: boolean
+  permissionsPending: boolean
   onApiTokenChange: (value: string) => void
   onBlacklistPatternsChange: (value: string) => void
   onCancel: () => void
@@ -646,12 +668,18 @@ function VanitySettingsForm({
             <TooltipTrigger asChild>
               <Button
                 aria-label="Preview required Cloudflare permissions"
+                aria-busy={permissionsPending}
+                disabled={permissionsPending}
                 size="icon"
                 type="button"
                 variant="outline"
                 onClick={onOpenPermissions}
               >
-                <CircleHelp />
+                {permissionsPending ? (
+                  <LoaderCircle className="animate-spin" />
+                ) : (
+                  <CircleHelp />
+                )}
               </Button>
             </TooltipTrigger>
             <TooltipContent side="left">
@@ -729,8 +757,8 @@ function CloudflarePermissionsPreview({
     <div className="space-y-4">
       <CloudflarePermissionPolicy domain={domain} />
 
-      <div className="flex gap-2 border border-amber-400/20 bg-amber-400/5 p-3 text-amber-100/85">
-        <KeyRound className="mt-0.5 size-3.5 shrink-0 text-amber-300" />
+      <div className="flex gap-2 border border-amber-500/25 bg-amber-400/8 p-3 text-amber-950/85 dark:border-amber-400/20 dark:bg-amber-400/5 dark:text-amber-100/85">
+        <KeyRound className="mt-0.5 size-3.5 shrink-0 text-amber-700 dark:text-amber-300" />
         <p className="text-[10px] leading-relaxed">
           Kiln encrypts the token at rest, never returns it to the browser, and
           keeps every managed record DNS-only.
@@ -744,23 +772,25 @@ function CloudflarePermissionsPreview({
 
 function CloudflarePermissionPolicy({ domain }: { domain: string }) {
   return (
-    <div className="overflow-hidden rounded-lg border border-white/12 bg-[#101010] text-[#ededed] shadow-lg shadow-black/15">
-      <div className="flex items-center justify-between border-b border-white/10 bg-[#141414] px-3 py-2.5">
+    <div className="overflow-hidden rounded-lg border border-black/15 bg-[#fafafa] text-[#191919] shadow-lg shadow-black/10 dark:border-white/12 dark:bg-[#101010] dark:text-[#ededed] dark:shadow-black/15">
+      <div className="flex items-center justify-between border-b border-black/10 bg-[#f1f1f1] px-3 py-2.5 dark:border-white/10 dark:bg-[#141414]">
         <p className="text-[10px] font-semibold">Edit policy</p>
-        <span className="text-[9px] text-white/55">Custom</span>
+        <span className="text-[9px] text-black/55 dark:text-white/55">
+          Custom
+        </span>
       </div>
 
-      <div className="grid gap-2 border-b border-white/10 p-3 sm:grid-cols-[minmax(9rem,0.8fr)_minmax(0,1.35fr)]">
-        <div className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-white/15 bg-white/[0.025] px-3 py-2.5">
+      <div className="grid gap-2 border-b border-black/10 p-3 sm:grid-cols-[minmax(9rem,0.8fr)_minmax(0,1.35fr)] dark:border-white/10">
+        <div className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-black/15 bg-white px-3 py-2.5 dark:border-white/15 dark:bg-white/[0.025]">
           <span className="text-[10px] font-medium">Specified Domains</span>
-          <ChevronDown className="size-3.5 shrink-0 text-white/45" />
+          <ChevronDown className="size-3.5 shrink-0 text-black/45 dark:text-white/45" />
         </div>
-        <div className="flex min-w-0 items-center gap-2 rounded-md border border-white/20 bg-white/[0.045] px-3 py-2.5">
-          <Globe2 className="size-3.5 shrink-0 text-white/70" />
-          <span className="truncate font-mono text-[10px] text-white/90">
+        <div className="flex min-w-0 items-center gap-2 rounded-md border border-black/20 bg-white px-3 py-2.5 dark:border-white/20 dark:bg-white/[0.045]">
+          <Globe2 className="size-3.5 shrink-0 text-black/70 dark:text-white/70" />
+          <span className="truncate font-mono text-[10px] text-black/90 dark:text-white/90">
             {domain}
           </span>
-          <ChevronDown className="ml-auto size-3.5 shrink-0 text-white/45" />
+          <ChevronDown className="ml-auto size-3.5 shrink-0 text-black/45 dark:text-white/45" />
         </div>
       </div>
 
@@ -809,23 +839,23 @@ function VisualPermissionGroup({
   const expanded = children !== undefined
 
   return (
-    <div className="border-b border-white/10 last:border-b-0">
-      <div className="flex items-center gap-2 bg-white/[0.015] px-3 py-2.5">
+    <div className="border-b border-black/10 last:border-b-0 dark:border-white/10">
+      <div className="flex items-center gap-2 bg-black/[0.015] px-3 py-2.5 dark:bg-white/[0.015]">
         {expanded ? (
-          <ChevronDown className="size-3.5 shrink-0 text-white/75" />
+          <ChevronDown className="size-3.5 shrink-0 text-black/75 dark:text-white/75" />
         ) : (
-          <ChevronRight className="size-3.5 shrink-0 text-white/30" />
+          <ChevronRight className="size-3.5 shrink-0 text-black/30 dark:text-white/30" />
         )}
         <span
           className={
             expanded
-              ? "text-[10px] font-semibold text-white/90"
-              : "text-[10px] font-medium text-white/40"
+              ? "text-[10px] font-semibold text-black/90 dark:text-white/90"
+              : "text-[10px] font-medium text-black/40 dark:text-white/40"
           }
         >
           {label}
         </span>
-        <span className="ml-auto font-mono text-[8px] text-white/30">
+        <span className="ml-auto font-mono text-[8px] text-black/35 dark:text-white/30">
           {selected}/{total}
         </span>
       </div>
@@ -846,14 +876,14 @@ function CloudflarePermissionRow({
   read?: boolean
 }) {
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 border-t border-dashed border-white/10 px-3 py-2.5 sm:grid-cols-[minmax(8rem,0.8fr)_minmax(10rem,1.25fr)_auto] sm:items-center">
-      <p className="col-start-1 row-start-1 truncate text-[10px] font-medium text-white/85">
+    <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 border-t border-dashed border-black/10 px-3 py-2.5 sm:grid-cols-[minmax(8rem,0.8fr)_minmax(10rem,1.25fr)_auto] sm:items-center dark:border-white/10">
+      <p className="col-start-1 row-start-1 truncate text-[10px] font-medium text-black/85 dark:text-white/85">
         {name}
       </p>
-      <p className="col-start-1 row-start-2 mt-0.5 truncate text-[8px] text-white/35 sm:col-start-2 sm:row-start-1 sm:mt-0">
+      <p className="col-start-1 row-start-2 mt-0.5 truncate text-[8px] text-black/45 sm:col-start-2 sm:row-start-1 sm:mt-0 dark:text-white/35">
         {description}
       </p>
-      <div className="col-start-2 row-span-2 row-start-1 flex items-center rounded-md border border-white/12 bg-black/25 p-1 sm:col-start-3 sm:row-span-1">
+      <div className="col-start-2 row-span-2 row-start-1 flex items-center rounded-md border border-black/12 bg-black/[0.035] p-1 sm:col-start-3 sm:row-span-1 dark:border-white/12 dark:bg-black/25">
         <PermissionAccess active={read} label="Read" />
         <PermissionAccess active={edit} label="Edit" />
       </div>
@@ -872,15 +902,15 @@ function PermissionAccess({
     <span
       className={
         active
-          ? "flex items-center gap-1.5 rounded px-1.5 py-1 text-[9px] font-medium text-white/90"
-          : "flex items-center gap-1.5 rounded px-1.5 py-1 text-[9px] text-white/30"
+          ? "flex items-center gap-1.5 rounded px-1.5 py-1 text-[9px] font-medium text-black/90 dark:text-white/90"
+          : "flex items-center gap-1.5 rounded px-1.5 py-1 text-[9px] text-black/35 dark:text-white/30"
       }
     >
       <span
         className={
           active
-            ? "grid size-3.5 place-items-center rounded-[3px] border border-white bg-white text-black"
-            : "size-3.5 rounded-[3px] border border-white/15 bg-black/20"
+            ? "grid size-3.5 place-items-center rounded-[3px] border border-black bg-black text-white dark:border-white dark:bg-white dark:text-black"
+            : "size-3.5 rounded-[3px] border border-black/20 bg-black/[0.025] dark:border-white/15 dark:bg-black/20"
         }
       >
         {active ? <Check className="size-2.5" strokeWidth={3} /> : null}

@@ -208,19 +208,12 @@ export async function resyncDomainAssignmentsHandler() {
   const instances = snapshots.flatMap(({ relay, snapshot }) =>
     snapshot.instances.map((instance) => ({ ...instance, relayId: relay.id }))
   )
-  const results = await Promise.allSettled(
-    instances.map((instance) =>
-      runAppEffect(
-        "domains.instance.resync",
-        provisionInstanceDomainEffect(instance)
-      )
-    )
-  )
-  const failures = results.filter(
-    (result): result is PromiseRejectedResult => result.status === "rejected"
+  const [failures] = await runAppEffect(
+    "domains.instances.resync",
+    resyncDomainInstancesEffect(instances, provisionInstanceDomainEffect)
   )
   if (failures.length > 0) {
-    const reason = failures[0]?.reason
+    const reason = failures[0]
     throw new Error(
       `Could not sync ${failures.length} of ${instances.length} server addresses: ${
         reason instanceof Error ? reason.message : "Cloudflare sync failed"
@@ -228,6 +221,13 @@ export async function resyncDomainAssignmentsHandler() {
     )
   }
   return { syncedServerCount: instances.length }
+}
+
+export function resyncDomainInstancesEffect<A, E, R>(
+  instances: Iterable<A>,
+  provision: (instance: A) => Effect.Effect<unknown, E, R>
+) {
+  return Effect.partition(instances, provision, { concurrency: 1 })
 }
 
 export async function getInstanceDomainHandler(data: InstanceDomainInput) {

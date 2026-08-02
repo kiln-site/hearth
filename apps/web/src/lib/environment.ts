@@ -1,8 +1,8 @@
 import { Option, Schema } from "effect"
-import { getDomain } from "tldts"
 
 import { parseSecretKeyring } from "../../keyring.mjs"
 import type { VersionedSecret } from "../../keyring.mjs"
+import { rootDomainForHostname } from "@/lib/domain-name"
 
 export interface EmailDeliveryConfig {
   apiKey: string
@@ -46,8 +46,7 @@ export function kilnPublicUrl(): URL {
 }
 
 export function kilnRootDomain(): string {
-  const hostname = kilnPublicUrl().hostname
-  return getDomain(hostname, { allowPrivateDomains: true }) ?? hostname
+  return rootDomainForHostname(kilnPublicUrl().hostname)
 }
 
 export function betterAuthUrl(): URL {
