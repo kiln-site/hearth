@@ -38,7 +38,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
-import { cn } from "@workspace/ui/lib/utils"
 
 import {
   WorkspaceDataTable,
@@ -49,6 +48,7 @@ import {
   useWorkspaceTableSearchInput,
 } from "@/components/workspace-data-table"
 import type { WorkspaceTableSearchStore } from "@/components/workspace-data-table"
+import { WorkspaceSummaryCard } from "@/components/workspace-summary-card"
 import {
   defaultDomainBlacklistPatterns,
   domainNameSchema,
@@ -118,41 +118,34 @@ const DomainSummaryCard = React.memo(function DomainSummaryCard({
   const configured = integration !== null
 
   return (
-    <section className="flex flex-col gap-3 rounded-xl border border-border/75 bg-card/45 p-4 sm:flex-row sm:items-center">
-      <div className="flex min-w-0 flex-1 items-center gap-3">
-        <span
-          className={cn(
-            "grid size-10 shrink-0 place-items-center rounded-lg border",
-            active
-              ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
-              : configured
-                ? "border-amber-300/25 bg-amber-300/8 text-amber-200"
-                : "border-border/80 bg-background/70 text-muted-foreground"
-          )}
+    <WorkspaceSummaryCard
+      action={
+        <Button
+          className="shrink-0"
+          size="sm"
+          type="button"
+          variant="outline"
+          onClick={onConfigure}
         >
-          <Globe2 className="size-5" />
-        </span>
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-sm font-semibold">Vanity URL</h1>
-            <DomainStatus enabled={active} verified={configured} />
-          </div>
-          <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
-            {`<vanity>.${integration?.domain ?? "example.com"}`}
-          </p>
-        </div>
-      </div>
-      <Button
-        className="shrink-0"
-        size="sm"
-        type="button"
-        variant="outline"
-        onClick={onConfigure}
-      >
-        <Settings2 />
-        Configure Vanity
-      </Button>
-    </section>
+          <Settings2 />
+          Configure Vanity
+        </Button>
+      }
+      icon={<Globe2 className="size-5" />}
+      iconClassName={
+        active
+          ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
+          : configured
+            ? "border-amber-300/25 bg-amber-300/8 text-amber-200"
+            : "border-border/80 bg-background/70 text-muted-foreground"
+      }
+      title="Vanity URL"
+      titleAccessory={<DomainStatus enabled={active} verified={configured} />}
+    >
+      <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
+        {`<vanity>.${integration?.domain ?? "example.com"}`}
+      </p>
+    </WorkspaceSummaryCard>
   )
 })
 

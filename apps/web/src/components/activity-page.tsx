@@ -40,6 +40,7 @@ import {
 import { useIsMobile } from "@workspace/ui/hooks/use-mobile"
 import { cn } from "@workspace/ui/lib/utils"
 
+import { WorkspaceSummaryCard } from "@/components/workspace-summary-card"
 import {
   activityLocalRangeToUtc,
   activityTypes,
@@ -326,39 +327,32 @@ const ActivityServerFilter = React.memo(function ActivityServerFilter({
           if (!open) setServerQuery("")
         }}
       >
-        <div className="flex flex-col gap-3 rounded-xl border border-border/75 bg-card/45 p-4 sm:flex-row sm:items-center">
-          <div className="flex min-w-0 flex-1 items-center gap-3">
-            <span className="grid size-10 shrink-0 place-items-center rounded-lg border border-border/80 bg-background/70 text-muted-foreground">
-              <Server className="size-5" />
-            </span>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="truncate text-sm font-semibold">
-                  {selectedServer?.name ?? "All servers"}
-                </p>
-                <Badge variant="outline" className="font-mono text-[9px]">
-                  {selectedServer?.relayName ??
-                    selectedRelayName ??
-                    "All Relays"}
-                </Badge>
-              </div>
-              <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground/70">
-                {selectionMetadata}
-              </p>
-            </div>
-          </div>
-          <PopoverTrigger asChild>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="shrink-0"
-            >
-              <ArrowLeftRight />
-              {selectedServer ? "Change server" : "Choose server"}
-            </Button>
-          </PopoverTrigger>
-        </div>
+        <WorkspaceSummaryCard
+          action={
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+              >
+                <ArrowLeftRight />
+                {selectedServer ? "Change server" : "Choose server"}
+              </Button>
+            </PopoverTrigger>
+          }
+          icon={<Server className="size-5" />}
+          title={selectedServer?.name ?? "All servers"}
+          titleAccessory={
+            <Badge variant="outline" className="font-mono text-[9px]">
+              {selectedServer?.relayName ?? selectedRelayName ?? "All Relays"}
+            </Badge>
+          }
+        >
+          <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground/70">
+            {selectionMetadata}
+          </p>
+        </WorkspaceSummaryCard>
         <PopoverContent
           align="end"
           className="w-[min(32rem,calc(100vw-2rem))] p-1.5"

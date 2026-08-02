@@ -34,6 +34,7 @@ import {
   useInstancePermissions,
   useInstanceRelayConnected,
 } from "@/components/instance-workspace-context"
+import { WorkspaceSummaryCard } from "@/components/workspace-summary-card"
 import {
   defaultBrickVariables,
   updateBrickVariable,
@@ -472,40 +473,38 @@ function BrickSummary({
   onSwap: () => void
 }) {
   return (
-    <div className="mt-6 flex flex-col gap-3 rounded-xl border border-border/75 bg-background/45 p-4 sm:flex-row sm:items-center">
-      <div className="flex min-w-0 flex-1 items-center gap-3">
-        <span className="grid size-10 shrink-0 place-items-center rounded-lg border border-border/80 bg-background/70 text-muted-foreground">
-          <ServerTypeIcon implementation={view.id} className="size-5" />
-        </span>
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="truncate text-sm font-semibold">{view.name}</p>
-            <Badge variant="outline" className="font-mono text-[9px]">
-              {view.game}
-            </Badge>
-          </div>
-          <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
-            {view.description}
-          </p>
-          <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground/70">
-            {view.source}
-          </p>
-        </div>
-      </div>
-      {canEdit ? (
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="shrink-0"
-          disabled={pending}
-          onClick={onSwap}
-        >
-          <ArrowLeftRight />
-          Swap Brick
-        </Button>
-      ) : null}
-    </div>
+    <WorkspaceSummaryCard
+      action={
+        canEdit ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            disabled={pending}
+            onClick={onSwap}
+          >
+            <ArrowLeftRight />
+            Swap Brick
+          </Button>
+        ) : null
+      }
+      className="mt-6 bg-background/45"
+      icon={<ServerTypeIcon implementation={view.id} className="size-5" />}
+      title={view.name}
+      titleAccessory={
+        <Badge variant="outline" className="font-mono text-[9px]">
+          {view.game}
+        </Badge>
+      }
+    >
+      <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
+        {view.description}
+      </p>
+      <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground/70">
+        {view.source}
+      </p>
+    </WorkspaceSummaryCard>
   )
 }
 
