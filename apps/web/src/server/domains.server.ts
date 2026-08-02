@@ -62,8 +62,8 @@ import {
 } from "@/lib/relay-client"
 import { requireAuthenticatedUser } from "@/server/auth"
 import {
-  defaultSrvService,
   generateVanityCandidates,
+  managedDomainSrvConfiguration,
 } from "@/server/vanity-names"
 import type {
   ConfigureDomainInput,
@@ -179,6 +179,53 @@ export async function configureDomainIntegrationHandler(
       loadDomainIntegrationEffect()
     ),
   }
+}
+
+export async function resyncDomainAssignmentsHandler() {
+  await requireDomainAdministrator()
+  const integration = await runAppEffect(
+    "domains.integration.load",
+    loadDomainIntegrationEffect()
+  )
+  if (!integration?.enabled) {
+    throw new Error("Enable automatic vanity provisioning before syncing")
+  }
+
+  const relays = (await listPersistedRelays()).filter((relay) => relay.enabled)
+  const snapshots = await Promise.all(
+    relays.map(async (relay) => ({
+      relay,
+      snapshot: relaySnapshotSchema.parse(
+        await runAppEffect(
+          "relay.snapshot.domains.resync",
+          relayJsonEffect(relay, "/v1/snapshot", (input) => input)
+        )
+      ),
+    }))
+  )
+  const instances = snapshots.flatMap(({ relay, snapshot }) =>
+    snapshot.instances.map((instance) => ({ ...instance, relayId: relay.id }))
+  )
+  const results = await Promise.allSettled(
+    instances.map((instance) =>
+      runAppEffect(
+        "domains.instance.resync",
+        provisionInstanceDomainEffect(instance)
+      )
+    )
+  )
+  const failures = results.filter(
+    (result): result is PromiseRejectedResult => result.status === "rejected"
+  )
+  if (failures.length > 0) {
+    const reason = failures[0]?.reason
+    throw new Error(
+      `Could not sync ${failures.length} of ${instances.length} server addresses: ${
+        reason instanceof Error ? reason.message : "Cloudflare sync failed"
+      }`
+    )
+  }
+  return { syncedServerCount: instances.length }
 }
 
 export async function getInstanceDomainHandler(data: InstanceDomainInput) {
@@ -331,7 +378,11 @@ const provisionInstanceDomainEffect = Effect.fn("domains.instance.provision")(
       instance.id
     )
     if (existing?.status === "active") {
-      if (managedDomainEndpointMatches(existing, instance)) {
+      const srvConfiguration = managedDomainSrvConfiguration(instance)
+      if (
+        managedDomainEndpointMatches(existing, instance) &&
+        domainSrvConfigurationMatches(existing, srvConfiguration)
+      ) {
         return assignmentOverview(existing)
       }
       const synced = yield* syncVanityEndpointEffect(
@@ -426,13 +477,10 @@ const provisionVanityRecordsEffect = Effect.fn(
   if (!publicHost || !publicPort) {
     return yield* domainFailure("The Relay did not report a public endpoint")
   }
-  const primaryProtocol = instance.brickPrimaryPortProtocol
-  const srvProtocol =
-    primaryProtocol === "tcp" || primaryProtocol === "udp"
-      ? primaryProtocol
-      : null
-  const supportsSrv = instance.brickSupportsSrv && srvProtocol !== null
-  const srvService = supportsSrv ? defaultSrvService(instance.game) : null
+  const srvConfiguration = managedDomainSrvConfiguration(instance)
+  const supportsSrv = srvConfiguration !== null
+  const srvProtocol = srvConfiguration?.protocol ?? null
+  const srvService = srvConfiguration?.service ?? null
   yield* reserveInstanceDomainAssignmentEffect({
     domain: credential.domain,
     instanceId: instance.id,
@@ -555,6 +603,7 @@ const syncVanityEndpointEffect = Effect.fn("domains.instance.syncEndpoint")(
     }
     const hostname = `${assignment.vanityLabel}.${assignment.domain}`
     const address = cloudflareAddressRecord(hostname, publicHost)
+    const srvConfiguration = managedDomainSrvConfiguration(instance)
     const sync = Effect.gen(function* () {
       if (assignment.addressRecordType === address.type) {
         yield* updateCloudflareAddressRecordEffect(
@@ -579,24 +628,39 @@ const syncVanityEndpointEffect = Effect.fn("domains.instance.syncEndpoint")(
           relayId: assignment.relayId,
         })
       }
-      if (
-        assignment.supportsSrv &&
-        assignment.srvRecordId &&
-        assignment.srvService &&
-        assignment.srvProtocol
-      ) {
-        yield* updateCloudflareSrvRecordEffect(
+      const nextSrvRecordId = srvConfiguration
+        ? assignment.srvRecordId
+          ? (yield* updateCloudflareSrvRecordEffect(
+              credential.apiToken,
+              credential.zoneId,
+              assignment.srvRecordId,
+              srvRecordInput(
+                hostname,
+                publicPort,
+                srvConfiguration.service,
+                srvConfiguration.protocol,
+                address.type === "CNAME" ? publicHost : hostname
+              ),
+              assignment.instanceId
+            )).id
+          : (yield* createCloudflareSrvRecordEffect(
+              credential.apiToken,
+              credential.zoneId,
+              srvRecordInput(
+                hostname,
+                publicPort,
+                srvConfiguration.service,
+                srvConfiguration.protocol,
+                address.type === "CNAME" ? publicHost : hostname
+              ),
+              assignment.instanceId
+            )).id
+        : null
+      if (!srvConfiguration && assignment.srvRecordId) {
+        yield* deleteCloudflareRecordEffect(
           credential.apiToken,
           credential.zoneId,
-          assignment.srvRecordId,
-          srvRecordInput(
-            hostname,
-            publicPort,
-            assignment.srvService,
-            assignment.srvProtocol,
-            address.type === "CNAME" ? publicHost : hostname
-          ),
-          assignment.instanceId
+          assignment.srvRecordId
         )
       }
       yield* updateInstanceDomainEndpointEffect({
@@ -605,6 +669,10 @@ const syncVanityEndpointEffect = Effect.fn("domains.instance.syncEndpoint")(
         publicHost,
         publicPort,
         relayId: assignment.relayId,
+        srvProtocol: srvConfiguration?.protocol ?? null,
+        srvRecordId: nextSrvRecordId,
+        srvService: srvConfiguration?.service ?? null,
+        supportsSrv: srvConfiguration !== null,
       })
       const updated = yield* loadInstanceDomainAssignmentEffect(
         assignment.relayId,
@@ -795,6 +863,21 @@ function srvRecordInput(
     target,
     weight: 0,
   }
+}
+
+function domainSrvConfigurationMatches(
+  assignment: InstanceDomainAssignment,
+  configuration: ReturnType<typeof managedDomainSrvConfiguration>
+): boolean {
+  if (!configuration) {
+    return !assignment.supportsSrv && assignment.srvRecordId === null
+  }
+  return (
+    assignment.supportsSrv &&
+    assignment.srvRecordId !== null &&
+    assignment.srvService === configuration.service &&
+    assignment.srvProtocol === configuration.protocol
+  )
 }
 
 function assignmentOverview(

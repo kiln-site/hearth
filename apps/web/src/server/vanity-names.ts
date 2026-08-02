@@ -1,3 +1,5 @@
+import type { RelayInstance } from "@workspace/contracts"
+
 import { vanityLabelAllowed } from "@/lib/domain-schemas"
 
 const adjectives = [
@@ -110,4 +112,30 @@ export function defaultSrvService(game: string): string {
     .replace(/^-+|-+$/gu, "")
     .slice(0, 32)
   return normalized || "game"
+}
+
+export function managedDomainSrvConfiguration(
+  instance: Pick<
+    RelayInstance,
+    | "brickNetworkMode"
+    | "brickPrimaryPortProtocol"
+    | "brickSupportsSrv"
+    | "game"
+  >
+): { protocol: "tcp" | "udp"; service: string } | null {
+  const minecraftNetwork =
+    instance.brickNetworkMode === "minecraft-backend" ||
+    instance.brickNetworkMode === "minecraft-proxy"
+  if (!instance.brickSupportsSrv && !minecraftNetwork) return null
+
+  const protocol =
+    instance.brickPrimaryPortProtocol === "tcp" ||
+    instance.brickPrimaryPortProtocol === "udp"
+      ? instance.brickPrimaryPortProtocol
+      : instance.brickPrimaryPortProtocol === "both" && minecraftNetwork
+        ? "tcp"
+        : null
+  return protocol
+    ? { protocol, service: defaultSrvService(instance.game) }
+    : null
 }

@@ -359,6 +359,10 @@ export const updateInstanceDomainEndpointEffect = Effect.fn(
   publicHost: string
   publicPort: number
   relayId: string
+  srvProtocol: "tcp" | "udp" | null
+  srvRecordId: string | null
+  srvService: string | null
+  supportsSrv: boolean
 }) {
   const database = yield* Database
   yield* database.execute(
@@ -367,6 +371,10 @@ export const updateInstanceDomainEndpointEffect = Effect.fn(
         SET public_host = ?,
             public_port = ?,
             address_record_type = ?,
+            supports_srv = ?,
+            srv_service = ?,
+            srv_protocol = ?,
+            srv_record_id = ?,
             status = 'active',
             last_error = NULL
       WHERE relay_id = ? AND instance_id = ?`,
@@ -374,6 +382,10 @@ export const updateInstanceDomainEndpointEffect = Effect.fn(
       input.publicHost,
       input.publicPort,
       input.addressRecordType,
+      input.supportsSrv,
+      input.srvService,
+      input.srvProtocol,
+      input.srvRecordId,
       input.relayId,
       input.instanceId,
     ]

@@ -10,6 +10,7 @@ import { cloudflareAddressRecord } from "@/effect/cloudflare-api"
 import {
   defaultSrvService,
   generateVanityCandidates,
+  managedDomainSrvConfiguration,
 } from "@/server/vanity-names"
 
 describe("managed game domains", () => {
@@ -57,5 +58,24 @@ describe("managed game domains", () => {
   it("derives a stable SRV service name from the Brick game", () => {
     expect(defaultSrvService("Minecraft")).toBe("minecraft")
     expect(defaultSrvService("Space Engineers")).toBe("space-engineers")
+  })
+
+  it("enables SRV records for Minecraft network modes", () => {
+    expect(
+      managedDomainSrvConfiguration({
+        brickNetworkMode: "minecraft-backend",
+        brickPrimaryPortProtocol: "tcp",
+        brickSupportsSrv: false,
+        game: "Minecraft",
+      })
+    ).toEqual({ protocol: "tcp", service: "minecraft" })
+    expect(
+      managedDomainSrvConfiguration({
+        brickNetworkMode: "direct",
+        brickPrimaryPortProtocol: "udp",
+        brickSupportsSrv: false,
+        game: "Palworld",
+      })
+    ).toBeNull()
   })
 })

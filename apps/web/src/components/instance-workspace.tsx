@@ -219,17 +219,10 @@ function RelayResourceStreamController({
                 queryClient.setQueryData<RelayFleetSnapshot>(
                   queryKeys.relay.snapshot,
                   (snapshot) =>
-                    snapshot
-                      ? {
-                          ...snapshot,
-                          instances: snapshot.instances.map((current) =>
-                            current.id === event.instance.id &&
-                            current.relayId === instance.relayId
-                              ? { ...current, ...streamedInstance }
-                              : current
-                          ),
-                        }
-                      : snapshot
+                    replaceRelaySnapshotInstance(snapshot, {
+                      ...streamedInstance,
+                      relayId: instance.relayId,
+                    })
                 )
               }
               if (!cancelled) throw new Error("Relay resource stream closed")

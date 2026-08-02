@@ -88,11 +88,27 @@ export function replaceRelaySnapshotInstance(
         ...snapshot,
         instances: snapshot.instances.map((instance) =>
           instance.id === updated.id && instance.relayId === updated.relayId
-            ? { ...instance, ...updated }
+            ? mergeRelaySnapshotInstance(instance, updated)
             : instance
         ),
       }
     : snapshot
+}
+
+function mergeRelaySnapshotInstance(
+  current: RelayFleetSnapshot["instances"][number],
+  updated: RelayInstance & { relayId: string }
+): RelayFleetSnapshot["instances"][number] {
+  const endpointUnchanged =
+    current.publicHost === updated.publicHost &&
+    current.publicPort === updated.publicPort
+  return {
+    ...current,
+    ...updated,
+    connectAddress: endpointUnchanged
+      ? current.connectAddress
+      : updated.connectAddress,
+  }
 }
 
 export function authStateQueryOptions() {

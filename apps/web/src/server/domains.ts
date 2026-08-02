@@ -11,6 +11,7 @@ import {
   configureDomainIntegrationHandler,
   getDomainSettingsHandler,
   getInstanceDomainHandler,
+  resyncDomainAssignmentsHandler,
   setInstanceVanityHandler,
 } from "@/server/domains.server"
 
@@ -64,6 +65,10 @@ export const getDomainSettings = createServerFn({ method: "GET" }).handler(() =>
 export const configureDomainIntegration = createServerFn({ method: "POST" })
   .validator(configureDomainInputSchema)
   .handler(({ data }) => configureDomainIntegrationHandler(data))
+
+export const resyncDomainAssignments = createServerFn({
+  method: "POST",
+}).handler(() => resyncDomainAssignmentsHandler())
 
 export const getInstanceDomain = createServerFn({ method: "GET" })
   .validator(instanceDomainInputSchema)

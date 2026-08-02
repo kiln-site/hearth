@@ -156,6 +156,27 @@ describe("Relay render selectors", () => {
     ])
   })
 
+  it("preserves a managed address across Relay stream updates", () => {
+    const current = snapshotWithCpu(1)
+    const first = current.instances[0]
+    if (!first) throw new Error("Expected Relay fixture")
+    current.instances[0] = {
+      ...first,
+      connectAddress: "ember-falls.kiln.site",
+      publicHost: "relay.example.com",
+      publicPort: 32_001,
+    }
+
+    const updated = replaceRelaySnapshotInstance(current, {
+      ...first,
+      connectAddress: "relay.example.com:32001",
+      publicHost: "relay.example.com",
+      publicPort: 32_001,
+    })
+
+    expect(updated?.instances[0]?.connectAddress).toBe("ember-falls.kiln.site")
+  })
+
   it("selects connectivity from the instance's Relay when IDs collide", () => {
     const first = snapshotWithCpu(1).instances[0]
     if (!first) throw new Error("Expected Relay fixture")
