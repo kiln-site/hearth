@@ -10,6 +10,7 @@ import {
   Check,
   ChevronDown,
   CircleAlert,
+  CircleHelp,
   ExternalLink,
   Globe2,
   KeyRound,
@@ -428,7 +429,7 @@ function DomainConfigurationDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const queryClient = useQueryClient()
-  const [mode, setMode] = React.useState<"settings" | "token">("settings")
+  const [mode, setMode] = React.useState<"settings" | "permissions">("settings")
   const [domain, setDomain] = React.useState(integration?.domain ?? "")
   const [enabled, setEnabled] = React.useState(integration?.enabled ?? true)
   const [blacklistPatterns, setBlacklistPatterns] = React.useState(() =>
@@ -454,52 +455,53 @@ function DomainConfigurationDialog({
     },
   })
 
-  const save = React.useCallback(
-    (token?: string) => {
-      const parsedDomain = domainNameSchema.safeParse(domain)
-      if (!parsedDomain.success) {
-        showToast({
-          message:
-            parsedDomain.error.issues[0]?.message ?? "Enter a valid domain",
-          type: "error",
-        })
-        return
-      }
-      const patternsResult = Result.try(() =>
-        validateBlacklistPatterns(
-          blacklistPatterns
-            .split(/\r?\n/u)
-            .map((pattern) => pattern.trim())
-            .filter(Boolean)
-        )
-      )
-      if (Result.isFailure(patternsResult)) {
-        showToast({
-          message: errorMessage(patternsResult.failure),
-          type: "error",
-        })
-        return
-      }
-      if (!integration && !token) {
-        setMode("token")
-        return
-      }
-      configure.mutate({
-        data: {
-          apiToken: token,
-          blacklistPatterns: patternsResult.success,
-          domain: parsedDomain.data,
-          enabled,
-        },
+  const save = React.useCallback(() => {
+    const parsedDomain = domainNameSchema.safeParse(domain)
+    if (!parsedDomain.success) {
+      showToast({
+        message:
+          parsedDomain.error.issues[0]?.message ?? "Enter a valid domain",
+        type: "error",
       })
-    },
-    [blacklistPatterns, configure, domain, enabled, integration]
-  )
+      return
+    }
+    const patternsResult = Result.try(() =>
+      validateBlacklistPatterns(
+        blacklistPatterns
+          .split(/\r?\n/u)
+          .map((pattern) => pattern.trim())
+          .filter(Boolean)
+      )
+    )
+    if (Result.isFailure(patternsResult)) {
+      showToast({
+        message: errorMessage(patternsResult.failure),
+        type: "error",
+      })
+      return
+    }
+    const token = apiToken.trim()
+    if ((!integration && !token) || (token && token.length < 20)) {
+      showToast({
+        message: "Enter a valid Cloudflare API token",
+        type: "error",
+      })
+      return
+    }
+    configure.mutate({
+      data: {
+        apiToken: token || undefined,
+        blacklistPatterns: patternsResult.success,
+        domain: parsedDomain.data,
+        enabled,
+      },
+    })
+  }, [apiToken, blacklistPatterns, configure, domain, enabled, integration])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className={mode === "token" ? "sm:max-w-3xl" : "sm:max-w-xl"}
+        className={mode === "permissions" ? "sm:max-w-3xl" : "sm:max-w-xl"}
       >
         <DialogHeader>
           <div className="flex items-start justify-between gap-3 pr-7">
@@ -507,191 +509,272 @@ function DomainConfigurationDialog({
               <DialogTitle>
                 {mode === "settings"
                   ? "Configure vanity URLs"
-                  : "Cloudflare API token"}
+                  : "Required Cloudflare permissions"}
               </DialogTitle>
               <DialogDescription className="mt-1">
                 {mode === "settings"
                   ? "Choose the suffix Kiln uses for managed game-server addresses."
-                  : "Use a restricted token for the DNS zone Kiln will manage."}
+                  : "Match this policy when creating Kiln's restricted API token."}
               </DialogDescription>
             </div>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  aria-label={
-                    mode === "settings"
-                      ? "Configure Cloudflare API token"
-                      : "Return to vanity settings"
-                  }
-                  size="icon-sm"
-                  type="button"
-                  variant="outline"
-                  onClick={() =>
-                    setMode((current) =>
-                      current === "settings" ? "token" : "settings"
-                    )
-                  }
-                >
-                  {mode === "settings" ? <KeyRound /> : <ArrowLeft />}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="left">
-                {mode === "settings" ? "Cloudflare token" : "Vanity settings"}
-              </TooltipContent>
-            </Tooltip>
+            {mode === "permissions" ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    aria-label="Return to vanity settings"
+                    size="icon-sm"
+                    type="button"
+                    variant="outline"
+                    onClick={() => setMode("settings")}
+                  >
+                    <ArrowLeft />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="left">Vanity settings</TooltipContent>
+              </Tooltip>
+            ) : null}
           </div>
         </DialogHeader>
 
         {mode === "settings" ? (
-          <div className="space-y-4">
-            <label className="block space-y-1.5 text-[11px] font-medium">
-              Vanity domain
-              <Input
-                autoCapitalize="none"
-                autoCorrect="off"
-                className="font-mono"
-                name="domain"
-                placeholder="play.example.com"
-                required
-                value={domain}
-                onChange={(event) => setDomain(event.currentTarget.value)}
-              />
-              <span className="block font-mono text-[9px] font-normal text-muted-foreground">
-                {`Servers receive addresses like <vanity>.${domain.trim() || "example.com"}`}
-              </span>
-            </label>
-
-            <div className="flex items-center justify-between gap-4 border border-border/75 bg-background/35 p-3">
-              <div>
-                <p className="text-xs font-medium">Automatic provisioning</p>
-                <p className="mt-0.5 text-[10px] text-muted-foreground">
-                  Create and reconcile DNS records as servers are provisioned.
-                </p>
-              </div>
-              <Switch
-                aria-label="Enable automatic domain provisioning"
-                checked={enabled}
-                onCheckedChange={setEnabled}
-              />
-            </div>
-
-            <label className="block space-y-1.5 text-[11px] font-medium">
-              Blacklisted vanity names
-              <Textarea
-                aria-label="Blacklisted vanity name patterns"
-                className="min-h-36 font-mono text-xs"
-                placeholder={"^(admin|api|www)$\n^staff-"}
-                value={blacklistPatterns}
-                onChange={(event) =>
-                  setBlacklistPatterns(event.currentTarget.value)
-                }
-              />
-              <span className="block text-[9px] font-normal text-muted-foreground">
-                One case-insensitive regular expression per line.
-              </span>
-            </label>
-
-            {configure.error ? (
-              <ConfigurationError error={configure.error} />
-            ) : null}
-
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => onOpenChange(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                disabled={configure.isPending}
-                type="button"
-                onClick={() => save()}
-              >
-                {configure.isPending ? (
-                  <LoaderCircle className="animate-spin" />
-                ) : (
-                  <Check />
-                )}
-                Save configuration
-              </Button>
-            </DialogFooter>
-          </div>
+          <VanitySettingsForm
+            apiToken={apiToken}
+            blacklistPatterns={blacklistPatterns}
+            domain={domain}
+            enabled={enabled}
+            error={configure.error}
+            hasIntegration={Boolean(integration)}
+            isPending={configure.isPending}
+            onApiTokenChange={setApiToken}
+            onBlacklistPatternsChange={setBlacklistPatterns}
+            onCancel={() => onOpenChange(false)}
+            onDomainChange={setDomain}
+            onEnabledChange={setEnabled}
+            onOpenPermissions={() => setMode("permissions")}
+            onSave={save}
+          />
         ) : (
-          <div className="space-y-4">
-            <label className="block space-y-1.5 text-[11px] font-medium">
-              API token
-              <Input
-                autoComplete="new-password"
-                minLength={20}
-                name="apiToken"
-                placeholder="Paste a restricted Cloudflare token"
-                required
-                type="password"
-                value={apiToken}
-                onChange={(event) => setApiToken(event.currentTarget.value)}
-              />
-            </label>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-xs font-semibold">Required permissions</p>
-                <a
-                  className="inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
-                  href="https://dash.cloudflare.com/profile/api-tokens"
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  Create token <ExternalLink className="size-3" />
-                </a>
-              </div>
-              <CloudflarePermissionPolicy
-                domain={integration?.zoneName ?? hearthDomain}
-              />
-              <p className="pt-1 text-[9px] leading-4 text-muted-foreground">
-                Scope Zone Resources to the specific zone that owns this vanity
-                domain. No account ID or zone ID is required—Kiln resolves and
-                stores the zone ID after verification.
-              </p>
-            </div>
-
-            <div className="flex gap-2 border border-amber-400/20 bg-amber-400/5 p-3 text-amber-100/85">
-              <KeyRound className="mt-0.5 size-3.5 shrink-0 text-amber-300" />
-              <p className="text-[10px] leading-relaxed">
-                Kiln encrypts the token at rest, never returns it to the
-                browser, and keeps every managed record DNS-only.
-              </p>
-            </div>
-
-            {configure.error ? (
-              <ConfigurationError error={configure.error} />
-            ) : null}
-
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setMode("settings")}
-              >
-                <ArrowLeft /> Back
-              </Button>
-              <Button
-                disabled={configure.isPending || apiToken.trim().length < 20}
-                type="button"
-                onClick={() => save(apiToken.trim())}
-              >
-                {configure.isPending ? (
-                  <LoaderCircle className="animate-spin" />
-                ) : (
-                  <KeyRound />
-                )}
-                Verify & save
-              </Button>
-            </DialogFooter>
-          </div>
+          <CloudflarePermissionsPreview
+            domain={integration?.zoneName ?? hearthDomain}
+            error={configure.error}
+            onBack={() => setMode("settings")}
+          />
         )}
       </DialogContent>
     </Dialog>
+  )
+}
+
+function VanitySettingsForm({
+  apiToken,
+  blacklistPatterns,
+  domain,
+  enabled,
+  error,
+  hasIntegration,
+  isPending,
+  onApiTokenChange,
+  onBlacklistPatternsChange,
+  onCancel,
+  onDomainChange,
+  onEnabledChange,
+  onOpenPermissions,
+  onSave,
+}: {
+  apiToken: string
+  blacklistPatterns: string
+  domain: string
+  enabled: boolean
+  error: Error | null
+  hasIntegration: boolean
+  isPending: boolean
+  onApiTokenChange: (value: string) => void
+  onBlacklistPatternsChange: (value: string) => void
+  onCancel: () => void
+  onDomainChange: (value: string) => void
+  onEnabledChange: (enabled: boolean) => void
+  onOpenPermissions: () => void
+  onSave: () => void
+}) {
+  const tokenLength = apiToken.trim().length
+  const tokenInvalid = tokenLength < 20 && (!hasIntegration || tokenLength > 0)
+
+  return (
+    <div className="space-y-4">
+      <label className="block space-y-1.5 text-[11px] font-medium">
+        Vanity domain
+        <Input
+          autoCapitalize="none"
+          autoCorrect="off"
+          className="font-mono"
+          name="domain"
+          placeholder="play.example.com"
+          required
+          value={domain}
+          onChange={(event) => onDomainChange(event.currentTarget.value)}
+        />
+        <span className="block font-mono text-[9px] font-normal text-muted-foreground">
+          {`Servers receive addresses like <vanity>.${domain.trim() || "example.com"}`}
+        </span>
+      </label>
+
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between gap-3">
+          <label
+            className="text-[11px] font-medium"
+            htmlFor="cloudflare-api-token"
+          >
+            Cloudflare API token
+          </label>
+          <a
+            className="inline-flex items-center gap-1 text-[9px] font-medium text-primary hover:underline"
+            href="https://dash.cloudflare.com/profile/api-tokens"
+            rel="noreferrer"
+            target="_blank"
+          >
+            Create token <ExternalLink className="size-2.5" />
+          </a>
+        </div>
+        <div className="flex items-center gap-2">
+          <Input
+            autoComplete="new-password"
+            className="min-w-0 flex-1 font-mono"
+            id="cloudflare-api-token"
+            minLength={20}
+            name="apiToken"
+            placeholder={
+              hasIntegration
+                ? "Leave blank to keep the current token"
+                : "Paste a restricted Cloudflare token"
+            }
+            required={!hasIntegration}
+            type="password"
+            value={apiToken}
+            onChange={(event) => onApiTokenChange(event.currentTarget.value)}
+          />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                aria-label="Preview required Cloudflare permissions"
+                size="icon-sm"
+                type="button"
+                variant="outline"
+                onClick={onOpenPermissions}
+              >
+                <CircleHelp />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="left">
+              Preview required permissions
+            </TooltipContent>
+          </Tooltip>
+        </div>
+        <p className="flex items-start gap-1.5 text-[9px] leading-4 text-muted-foreground">
+          <KeyRound className="mt-0.5 size-3 shrink-0" />
+          <span>
+            {hasIntegration
+              ? "Optional. Leave blank to keep the encrypted token already on file."
+              : "Stored encrypted and restricted to the DNS zone Kiln manages."}
+          </span>
+        </p>
+      </div>
+
+      <div className="flex items-center justify-between gap-4 border border-border/75 bg-background/35 p-3">
+        <div>
+          <p className="text-xs font-medium">Automatic provisioning</p>
+          <p className="mt-0.5 text-[10px] text-muted-foreground">
+            Create and reconcile DNS records as servers are provisioned.
+          </p>
+        </div>
+        <Switch
+          aria-label="Enable automatic domain provisioning"
+          checked={enabled}
+          onCheckedChange={onEnabledChange}
+        />
+      </div>
+
+      <label className="block space-y-1.5 text-[11px] font-medium">
+        Blacklisted vanity names
+        <Textarea
+          aria-label="Blacklisted vanity name patterns"
+          className="min-h-36 font-mono text-xs"
+          placeholder={"^(admin|api|www)$\n^staff-"}
+          value={blacklistPatterns}
+          onChange={(event) =>
+            onBlacklistPatternsChange(event.currentTarget.value)
+          }
+        />
+        <span className="block text-[9px] font-normal text-muted-foreground">
+          One case-insensitive regular expression per line.
+        </span>
+      </label>
+
+      {error ? <ConfigurationError error={error} /> : null}
+
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button
+          disabled={isPending || tokenInvalid}
+          type="button"
+          onClick={onSave}
+        >
+          {isPending ? <LoaderCircle className="animate-spin" /> : <Check />}
+          {tokenLength ? "Verify & save" : "Save configuration"}
+        </Button>
+      </DialogFooter>
+    </div>
+  )
+}
+
+function CloudflarePermissionsPreview({
+  domain,
+  error,
+  onBack,
+}: {
+  domain: string
+  error: Error | null
+  onBack: () => void
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs font-semibold">Required permissions</p>
+          <a
+            className="inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
+            href="https://dash.cloudflare.com/profile/api-tokens"
+            rel="noreferrer"
+            target="_blank"
+          >
+            Create token <ExternalLink className="size-3" />
+          </a>
+        </div>
+        <CloudflarePermissionPolicy domain={domain} />
+        <p className="pt-1 text-[9px] leading-4 text-muted-foreground">
+          Scope Zone Resources to the specific zone that owns this vanity
+          domain. No account ID or zone ID is required—Kiln resolves and stores
+          the zone ID after verification.
+        </p>
+      </div>
+
+      <div className="flex gap-2 border border-amber-400/20 bg-amber-400/5 p-3 text-amber-100/85">
+        <KeyRound className="mt-0.5 size-3.5 shrink-0 text-amber-300" />
+        <p className="text-[10px] leading-relaxed">
+          Kiln encrypts the token at rest, never returns it to the browser, and
+          keeps every managed record DNS-only.
+        </p>
+      </div>
+
+      {error ? <ConfigurationError error={error} /> : null}
+
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={onBack}>
+          <ArrowLeft /> Back
+        </Button>
+      </DialogFooter>
+    </div>
   )
 }
 
