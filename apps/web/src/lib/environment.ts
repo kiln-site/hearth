@@ -1,4 +1,5 @@
 import { Option, Schema } from "effect"
+import { getDomain } from "tldts"
 
 import { parseSecretKeyring } from "../../keyring.mjs"
 import type { VersionedSecret } from "../../keyring.mjs"
@@ -42,6 +43,11 @@ export function kilnPublicUrl(): URL {
     decodeUrl(configured),
     () => new Error("KILN_URL must be an absolute http or https URL")
   )
+}
+
+export function kilnRootDomain(): string {
+  const hostname = kilnPublicUrl().hostname
+  return getDomain(hostname, { allowPrivateDomains: true }) ?? hostname
 }
 
 export function betterAuthUrl(): URL {

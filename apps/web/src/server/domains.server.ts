@@ -52,7 +52,7 @@ import {
   validateBlacklistPatterns,
   vanityLabelAllowed,
 } from "@/lib/domain-schemas"
-import { kilnPublicUrl } from "@/lib/environment"
+import { kilnRootDomain } from "@/lib/environment"
 import type { FleetRelayInstance } from "@/lib/relay-fleet"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import { listPersistedRelays } from "@/lib/relay-registry"
@@ -120,7 +120,7 @@ export async function getDomainSettingsHandler() {
     })
   )
   return {
-    hearthDomain: kilnPublicUrl().hostname,
+    hearthDomain: kilnRootDomain(),
     integration,
     managedDomains,
     managedServerCount: managedDomains.length,
