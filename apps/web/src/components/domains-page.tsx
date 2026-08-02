@@ -602,13 +602,13 @@ function VanitySettingsForm({
           autoCorrect="off"
           className="font-mono"
           name="domain"
-          placeholder="play.example.com"
+          placeholder="example.gg"
           required
           value={domain}
           onChange={(event) => onDomainChange(event.currentTarget.value)}
         />
         <span className="block font-mono text-[9px] font-normal text-muted-foreground">
-          {`Servers receive addresses like <vanity>.${domain.trim() || "example.com"}`}
+          {`<vanity>.${domain.trim() || "example.gg"}`}
         </span>
       </label>
 
