@@ -4,7 +4,7 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query"
-import { Result } from "effect"
+import { Effect, Result } from "effect"
 import {
   ArrowLeft,
   Check,
@@ -504,18 +504,30 @@ function DomainConfigurationDialog({
   }, [apiToken, blacklistPatterns, configure, domain, enabled, integration])
   const openPermissions = React.useCallback(async () => {
     setPermissionsPending(true)
-    try {
-      const { rootDomainForHostname } = await import("@/lib/domain-name")
-      setPermissionsDomain(rootDomainForHostname(domain) || hearthDomain)
-      setMode("permissions")
-    } catch {
-      showToast({
-        message: "Could not load the Cloudflare permissions preview",
-        type: "error",
-      })
-    } finally {
-      setPermissionsPending(false)
-    }
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: () => import("@/lib/domain-name"),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.match({
+          onFailure: () => {
+            showToast({
+              message: "Could not load the Cloudflare permissions preview",
+              type: "error",
+            })
+          },
+          onSuccess: ({ rootDomainForHostname }) => {
+            setPermissionsDomain(rootDomainForHostname(domain) || hearthDomain)
+            setMode("permissions")
+          },
+        }),
+        Effect.ensuring(
+          Effect.sync(() => {
+            setPermissionsPending(false)
+          })
+        )
+      )
+    )
   }, [domain, hearthDomain])
 
   return (
