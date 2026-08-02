@@ -9,6 +9,7 @@ import {
   ArrowLeft,
   Check,
   ChevronDown,
+  ChevronRight,
   CircleAlert,
   CircleHelp,
   ExternalLink,
@@ -504,36 +505,30 @@ function DomainConfigurationDialog({
         className={mode === "permissions" ? "sm:max-w-3xl" : "sm:max-w-xl"}
       >
         <DialogHeader>
-          <div className="flex items-start justify-between gap-3 pr-7">
-            <div className="min-w-0">
-              <DialogTitle>
-                {mode === "settings"
-                  ? "Configure vanity URLs"
-                  : "Required Cloudflare permissions"}
-              </DialogTitle>
-              <DialogDescription className="mt-1">
-                {mode === "settings"
-                  ? "Choose the suffix Kiln uses for managed game-server addresses."
-                  : "Match this policy when creating Kiln's restricted API token."}
+          {mode === "settings" ? (
+            <>
+              <DialogTitle>Configure vanity URLs</DialogTitle>
+              <DialogDescription>
+                Choose the suffix Kiln uses for managed game-server addresses.
+              </DialogDescription>
+            </>
+          ) : (
+            <div className="flex items-center gap-3">
+              <Button
+                className="-ml-2"
+                size="sm"
+                type="button"
+                variant="ghost"
+                onClick={() => setMode("settings")}
+              >
+                <ArrowLeft /> Back
+              </Button>
+              <DialogTitle>Required Cloudflare permissions</DialogTitle>
+              <DialogDescription className="sr-only">
+                Cloudflare permissions required by Kiln.
               </DialogDescription>
             </div>
-            {mode === "permissions" ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    aria-label="Return to vanity settings"
-                    size="icon-sm"
-                    type="button"
-                    variant="outline"
-                    onClick={() => setMode("settings")}
-                  >
-                    <ArrowLeft />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="left">Vanity settings</TooltipContent>
-              </Tooltip>
-            ) : null}
-          </div>
+          )}
         </DialogHeader>
 
         {mode === "settings" ? (
@@ -557,7 +552,6 @@ function DomainConfigurationDialog({
           <CloudflarePermissionsPreview
             domain={integration?.zoneName ?? hearthDomain}
             error={configure.error}
-            onBack={() => setMode("settings")}
           />
         )}
       </DialogContent>
@@ -642,11 +636,7 @@ function VanitySettingsForm({
             id="cloudflare-api-token"
             minLength={20}
             name="apiToken"
-            placeholder={
-              hasIntegration
-                ? "Leave blank to keep the current token"
-                : "Paste a restricted Cloudflare token"
-            }
+            placeholder="Cloudflare Token"
             required={!hasIntegration}
             type="password"
             value={apiToken}
@@ -656,7 +646,7 @@ function VanitySettingsForm({
             <TooltipTrigger asChild>
               <Button
                 aria-label="Preview required Cloudflare permissions"
-                size="icon-sm"
+                size="icon"
                 type="button"
                 variant="outline"
                 onClick={onOpenPermissions}
@@ -731,33 +721,13 @@ function VanitySettingsForm({
 function CloudflarePermissionsPreview({
   domain,
   error,
-  onBack,
 }: {
   domain: string
   error: Error | null
-  onBack: () => void
 }) {
   return (
     <div className="space-y-4">
-      <div className="space-y-2">
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-xs font-semibold">Required permissions</p>
-          <a
-            className="inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
-            href="https://dash.cloudflare.com/profile/api-tokens"
-            rel="noreferrer"
-            target="_blank"
-          >
-            Create token <ExternalLink className="size-3" />
-          </a>
-        </div>
-        <CloudflarePermissionPolicy domain={domain} />
-        <p className="pt-1 text-[9px] leading-4 text-muted-foreground">
-          Scope Zone Resources to the specific zone that owns this vanity
-          domain. No account ID or zone ID is required—Kiln resolves and stores
-          the zone ID after verification.
-        </p>
-      </div>
+      <CloudflarePermissionPolicy domain={domain} />
 
       <div className="flex gap-2 border border-amber-400/20 bg-amber-400/5 p-3 text-amber-100/85">
         <KeyRound className="mt-0.5 size-3.5 shrink-0 text-amber-300" />
@@ -768,97 +738,93 @@ function CloudflarePermissionsPreview({
       </div>
 
       {error ? <ConfigurationError error={error} /> : null}
-
-      <DialogFooter>
-        <Button type="button" variant="outline" onClick={onBack}>
-          <ArrowLeft /> Back
-        </Button>
-      </DialogFooter>
     </div>
   )
 }
 
 function CloudflarePermissionPolicy({ domain }: { domain: string }) {
   return (
-    <figure className="space-y-1.5">
-      <figcaption className="flex items-center gap-2 px-0.5 text-[9px] text-muted-foreground">
-        <span>Cloudflare dashboard reference</span>
-        <span aria-hidden="true" className="h-px flex-1 bg-border/60" />
-        <span className="font-mono tracking-wide uppercase">Visual only</span>
-      </figcaption>
+    <div className="overflow-hidden rounded-lg border border-white/12 bg-[#101010] text-[#ededed] shadow-lg shadow-black/15">
+      <div className="flex items-center justify-between border-b border-white/10 bg-[#141414] px-3 py-2.5">
+        <p className="text-[10px] font-semibold">Edit policy</p>
+        <span className="text-[9px] text-white/55">Custom</span>
+      </div>
 
-      <div className="overflow-hidden rounded-lg border border-white/12 bg-[#101010] text-[#ededed] shadow-lg shadow-black/15">
-        <div className="flex items-center justify-between border-b border-white/10 bg-[#141414] px-3 py-2.5">
-          <p className="text-[10px] font-semibold">Edit policy</p>
-          <span className="text-[9px] text-white/55">Custom</span>
+      <div className="grid gap-2 border-b border-white/10 p-3 sm:grid-cols-[minmax(9rem,0.8fr)_minmax(0,1.35fr)]">
+        <div className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-white/15 bg-white/[0.025] px-3 py-2.5">
+          <span className="text-[10px] font-medium">Specified Domains</span>
+          <ChevronDown className="size-3.5 shrink-0 text-white/45" />
         </div>
-
-        <div className="grid gap-2 border-b border-white/10 p-3 sm:grid-cols-[minmax(9rem,0.8fr)_minmax(0,1.35fr)]">
-          <div className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-white/15 bg-white/[0.025] px-3 py-2.5">
-            <span className="text-[10px] font-medium">Specified Domains</span>
-            <ChevronDown className="size-3.5 shrink-0 text-white/45" />
-          </div>
-          <div className="flex min-w-0 items-center gap-2 rounded-md border border-white/20 bg-white/[0.045] px-3 py-2.5">
-            <Globe2 className="size-3.5 shrink-0 text-white/70" />
-            <span className="truncate font-mono text-[10px] text-white/90">
-              {domain}
-            </span>
-            <ChevronDown className="ml-auto size-3.5 shrink-0 text-white/45" />
-          </div>
-        </div>
-
-        <VisualPermissionGroup label="DNS & Zones" selected={2} total={12}>
-          <CloudflarePermissionRow
-            description="Grants write access to DNS"
-            edit
-            name="DNS"
-          />
-          <CloudflarePermissionRow
-            description="Grants read access to zone management"
-            name="Zone"
-            read
-          />
-          <CloudflarePermissionRow
-            description="Grants read access to zone custom assets"
-            name="Zone Custom Asset"
-          />
-          <CloudflarePermissionRow
-            description="Grants access to Zone DNS Settings"
-            name="Zone DNS Settings"
-          />
-          <CloudflarePermissionRow
-            description="Grants access to zone settings"
-            name="Zone Settings"
-          />
-        </VisualPermissionGroup>
-
-        <div className="border-t border-white/10 bg-white/[0.025] px-3 py-2">
-          <p className="text-[9px] leading-4 text-white/50">
-            DNS Edit already includes read and list access. Leave DNS Read
-            unchecked.
-          </p>
+        <div className="flex min-w-0 items-center gap-2 rounded-md border border-white/20 bg-white/[0.045] px-3 py-2.5">
+          <Globe2 className="size-3.5 shrink-0 text-white/70" />
+          <span className="truncate font-mono text-[10px] text-white/90">
+            {domain}
+          </span>
+          <ChevronDown className="ml-auto size-3.5 shrink-0 text-white/45" />
         </div>
       </div>
-    </figure>
+
+      <VisualPermissionGroup label="Developer Platform" total={4} />
+      <VisualPermissionGroup label="AI & Machine Learning" total={4} />
+      <VisualPermissionGroup label="DNS & Zones" selected={2} total={12}>
+        <CloudflarePermissionRow
+          description="Grants write access to DNS"
+          edit
+          name="DNS"
+        />
+        <CloudflarePermissionRow
+          description="Grants read access to zone management"
+          name="Zone"
+          read
+        />
+        <CloudflarePermissionRow
+          description="Grants read access to zone custom assets"
+          name="Zone Custom Asset"
+        />
+        <CloudflarePermissionRow
+          description="Grants access to Zone DNS Settings"
+          name="Zone DNS Settings"
+        />
+        <CloudflarePermissionRow
+          description="Grants access to zone settings"
+          name="Zone Settings"
+        />
+      </VisualPermissionGroup>
+      <VisualPermissionGroup label="App Security" total={25} />
+    </div>
   )
 }
 
 function VisualPermissionGroup({
   children,
   label,
-  selected,
+  selected = 0,
   total,
 }: {
-  children: React.ReactNode
+  children?: React.ReactNode
   label: string
-  selected: number
+  selected?: number
   total: number
 }) {
+  const expanded = children !== undefined
+
   return (
     <div className="border-b border-white/10 last:border-b-0">
       <div className="flex items-center gap-2 bg-white/[0.015] px-3 py-2.5">
-        <ChevronDown className="size-3.5 shrink-0 text-white/75" />
-        <span className="text-[10px] font-semibold text-white/90">{label}</span>
+        {expanded ? (
+          <ChevronDown className="size-3.5 shrink-0 text-white/75" />
+        ) : (
+          <ChevronRight className="size-3.5 shrink-0 text-white/30" />
+        )}
+        <span
+          className={
+            expanded
+              ? "text-[10px] font-semibold text-white/90"
+              : "text-[10px] font-medium text-white/40"
+          }
+        >
+          {label}
+        </span>
         <span className="ml-auto font-mono text-[8px] text-white/30">
           {selected}/{total}
         </span>
