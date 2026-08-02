@@ -22,6 +22,7 @@ import { KILN_IMAGE_SOURCE } from "./update-container.js"
 import type { CommandOptions, CommandResult } from "./command.js"
 
 const targetImage = `ghcr.io/kiln-site/relay@sha256:${"a".repeat(64)}`
+const hearthImage = `ghcr.io/kiln-site/hearth@sha256:${"b".repeat(64)}`
 
 const relayContainer = {
   Config: {
@@ -35,6 +36,20 @@ const relayContainer = {
   },
   Id: "relay-container-id",
   Name: "/kiln-relay",
+}
+
+const hearthContainer = {
+  Config: {
+    Hostname: "hearth-hostname",
+    Image: "ghcr.io/kiln-site/hearth:latest",
+    Labels: {
+      "io.kiln.component": "hearth",
+      "org.opencontainers.image.source": KILN_IMAGE_SOURCE,
+      "org.opencontainers.image.version": "0.1.0-nightly.1",
+    },
+  },
+  Id: "hearth-container-id",
+  Name: "/kiln-hearth",
 }
 
 class FakeCommand {
@@ -64,11 +79,12 @@ class FakeCommand {
       return emptyResult()
     }
     if (arguments_[0] === "image" && arguments_[1] === "inspect") {
+      const component = arguments_[2] === hearthImage ? "hearth" : "relay"
       return jsonResult([
         {
           Config: {
             Labels: {
-              "io.kiln.component": "relay",
+              "io.kiln.component": component,
               "org.opencontainers.image.source": KILN_IMAGE_SOURCE,
               "org.opencontainers.image.version": this.imageVersion,
             },
@@ -99,10 +115,20 @@ class FakeCommand {
           },
         ])
       }
+      if (
+        identifier === "kiln-hearth" ||
+        identifier === hearthContainer.Id ||
+        arguments_.includes(hearthContainer.Id)
+      ) {
+        return jsonResult([hearthContainer])
+      }
       throw new Error("No such container")
     }
     if (arguments_[0] === "ps" && arguments_[1] === "--quiet") {
-      return { stderr: "", stdout: `${relayContainer.Id}\n` }
+      return {
+        stderr: "",
+        stdout: `${relayContainer.Id}\n${hearthContainer.Id}\n`,
+      }
     }
     if (arguments_[0] === "ps" && arguments_[1] === "--all") {
       return { stderr: "", stdout: "" }
@@ -137,9 +163,45 @@ describe("release image versions", () => {
         })
 
         expect(operation.status).toBe("running")
+        expect(operation.version).toBe("0.1.0")
         const run = docker.calls.find((arguments_) => arguments_[0] === "run")
-        expect(run).toContain("KILN_UPDATE_VERSION=0.1.0")
+        expect(run).toContain(`KILN_UPDATE_BATCH_ID=${operation.batchId}`)
         expect(run).toContain(relayContainer.Id)
+      })
+    )
+  )
+
+  effectIt.effect("launches one helper for a co-located update batch", () =>
+    withTemporaryDataDirectory((dataDirectory) =>
+      Effect.gen(function* () {
+        const docker = new FakeCommand()
+        const manager = new SystemUpdateManager({ dataDirectory }, docker.run)
+
+        const operations = yield* manager.startBatch({
+          helperImage: targetImage,
+          targets: [
+            {
+              targetContainer: "kiln-relay",
+              targetImage,
+              version: "0.1.0",
+            },
+            {
+              targetContainer: "kiln-hearth",
+              targetImage: hearthImage,
+              version: "0.1.0",
+            },
+          ],
+        })
+
+        expect(operations).toHaveLength(2)
+        expect(new Set(operations.map(({ batchId }) => batchId)).size).toBe(1)
+        expect(operations.map(({ component }) => component)).toEqual([
+          "hearth",
+          "relay",
+        ])
+        expect(
+          docker.calls.filter((arguments_) => arguments_[0] === "run")
+        ).toHaveLength(1)
       })
     )
   )
@@ -216,7 +278,7 @@ describe("release image versions", () => {
 
 describe("update operation lifecycle", () => {
   effectIt.effect(
-    "rejects a concurrent apply and records cancellation before launch",
+    "serializes a concurrent apply and records cancellation before launch",
     () =>
       withTemporaryDataDirectory((dataDirectory) =>
         Effect.gen(function* () {
@@ -237,37 +299,52 @@ describe("update operation lifecycle", () => {
             .pipe(Effect.forkChild)
           yield* Effect.promise(() => docker.pullStarted)
 
-          const concurrentFailure = yield* manager
+          const concurrent = yield* manager
             .start({
               helperImage: targetImage,
               targetContainer: "kiln-relay",
               targetImage,
               version: "0.1.0",
             })
-            .pipe(Effect.flip)
-          expect(concurrentFailure.message).toContain("already running")
+            .pipe(Effect.forkChild)
 
           yield* Effect.sync(() => {
+            docker.holdPull = false
             controller.abort(new Error("cancelled by Hearth"))
           })
           const cancelled = yield* Fiber.await(first)
+          const queued = yield* Fiber.join(concurrent)
           expect(Exit.isFailure(cancelled)).toBe(true)
+          expect(queued.status).toBe("running")
           expect(
             docker.calls.some((arguments_) => arguments_[0] === "run")
-          ).toBe(false)
+          ).toBe(true)
 
           const operationFiles = (yield* Effect.promise(() =>
             readdir(join(dataDirectory, "updates"))
-          )).filter((name) => name.endsWith(".json"))
-          expect(operationFiles).toHaveLength(1)
-          const cancelledOperation = JSON.parse(
-            yield* Effect.promise(() =>
-              readFile(
-                join(dataDirectory, "updates", operationFiles[0] ?? ""),
-                "utf8"
+          )).filter(
+            (name) => name.endsWith(".json") && !name.endsWith(".batch.json")
+          )
+          expect(operationFiles).toHaveLength(2)
+          const recordedOperations = yield* Effect.forEach(
+            operationFiles,
+            (name) =>
+              Effect.promise(() =>
+                readFile(join(dataDirectory, "updates", name), "utf8")
+              ).pipe(
+                Effect.map((text) => {
+                  const decoded: unknown = JSON.parse(text)
+                  return decoded
+                })
               )
-            )
-          ) as UpdateOperation
+          )
+          const cancelledOperation = recordedOperations.find(
+            (operation) =>
+              typeof operation === "object" &&
+              operation !== null &&
+              "status" in operation &&
+              operation.status === "failed"
+          )
           expect(cancelledOperation).toMatchObject({
             error:
               "The update request was cancelled before replacement started.",

@@ -17,9 +17,12 @@ import {
 import { requireAuthenticatedUser } from "@/server/auth"
 
 const componentSchema = z.enum(["hearth", "relay"])
-const startUpdateSchema = z.object({
+const startUpdateTargetSchema = z.object({
   component: componentSchema,
   relayId: z.string().min(1).nullable(),
+})
+const startUpdatesSchema = z.object({
+  targets: z.array(startUpdateTargetSchema).min(1),
 })
 const updateStatusSchema = z.object({
   operationId: z.uuid(),
@@ -152,8 +155,8 @@ export const getUpdateOverview = createServerFn({ method: "GET" }).handler(
   }
 )
 
-export const startSystemUpdate = createServerFn({ method: "POST" })
-  .validator(startUpdateSchema)
+export const startSystemUpdates = createServerFn({ method: "POST" })
+  .validator(startUpdatesSchema)
   .handler(async ({ data }) => {
     const user = await requirePlatformAdministrator()
     const releases = await runAppEffect(
@@ -168,49 +171,173 @@ export const startSystemUpdate = createServerFn({ method: "POST" })
       "updates.manifest",
       kilnReleaseManifestEffect(latestRelease.tag)
     )
-    validateUpdateManifest(manifest, latestRelease.version, data.component)
-
     const relays = (await listPersistedRelays()).filter(
       (relay) => relay.enabled
     )
     const { relayRpc } = await import("@/lib/relay-connection")
-    const hearthContainer =
-      data.component === "hearth" ? await getContainerHostname() : null
-    const target =
-      data.component === "relay"
-        ? await selectedRelay(relays, data.relayId)
-        : await coLocatedRelay(relays, hearthContainer ?? "", relayRpc)
-    const inspection = systemInspectionSchema.parse(
-      await relayRpc(
-        target,
-        "relay.system.inspect",
-        data.component === "relay" ? {} : { container: hearthContainer },
-        15_000
+    const hearthContainer = data.targets.some(
+      ({ component }) => component === "hearth"
+    )
+      ? await getContainerHostname()
+      : null
+    const prepared = await Effect.runPromise(
+      Effect.forEach(
+        data.targets,
+        (requested) =>
+          Effect.tryPromise({
+            try: async () => {
+              validateUpdateManifest(
+                manifest,
+                latestRelease.version,
+                requested.component
+              )
+              const relay =
+                requested.component === "relay"
+                  ? await selectedRelay(relays, requested.relayId)
+                  : await coLocatedRelay(
+                      relays,
+                      hearthContainer ?? "",
+                      relayRpc
+                    )
+              const inspection = systemInspectionSchema.parse(
+                await relayRpc(
+                  relay,
+                  "relay.system.inspect",
+                  requested.component === "relay"
+                    ? {}
+                    : { container: hearthContainer },
+                  15_000
+                )
+              )
+              if (
+                inspection.component !== requested.component ||
+                !inspection.eligible
+              ) {
+                throw new Error(
+                  inspection.reason ??
+                    `This ${requested.component} container cannot be updated`
+                )
+              }
+              return {
+                component: requested.component,
+                relay,
+                targetContainer: inspection.container,
+                targetImage: immutableImage(
+                  manifest.components[requested.component]
+                ),
+              }
+            },
+            catch: (cause) => cause,
+          }).pipe(
+            Effect.match({
+              onFailure: (cause) => ({
+                failure: {
+                  component: requested.component,
+                  message: errorMessage(cause),
+                  relayId: requested.relayId,
+                },
+              }),
+              onSuccess: (target) => ({ target }),
+            })
+          ),
+        { concurrency: "unbounded" }
       )
     )
-    if (inspection.component !== data.component || !inspection.eligible) {
-      throw new Error(
-        inspection.reason ??
-          `This ${data.component} container cannot be updated`
-      )
+    const failures = prepared.flatMap((result) =>
+      "failure" in result ? [result.failure] : []
+    )
+    const groups = new Map<
+      string,
+      {
+        relay: PersistedRelay
+        targets: Array<{
+          component: "hearth" | "relay"
+          targetContainer: string
+          targetImage: string
+        }>
+      }
+    >()
+    for (const result of prepared) {
+      if (!("target" in result)) continue
+      const group = groups.get(result.target.relay.id) ?? {
+        relay: result.target.relay,
+        targets: [],
+      }
+      group.targets.push({
+        component: result.target.component,
+        targetContainer: result.target.targetContainer,
+        targetImage: result.target.targetImage,
+      })
+      groups.set(result.target.relay.id, group)
     }
 
-    const component = manifest.components[data.component]
-    const operation = updateOperationSchema.parse(
-      await relayRpc(
-        target,
-        "relay.update.apply",
-        {
-          helperImage: immutableImage(manifest.components.relay),
-          targetContainer: inspection.container,
-          targetImage: immutableImage(component),
-          version: updateTargetVersion(manifest),
-        },
-        15 * 60_000,
-        user.id
+    const targetVersion = updateTargetVersion(manifest)
+    const batchResults = await Effect.runPromise(
+      Effect.forEach(
+        groups.values(),
+        (group) =>
+          Effect.tryPromise({
+            try: async () => {
+              const legacyTarget =
+                group.targets.length === 1 ? group.targets[0] : undefined
+              const response = await relayRpc(
+                group.relay,
+                "relay.update.apply",
+                {
+                  helperImage: immutableImage(manifest.components.relay),
+                  targets: group.targets.map((target) => ({
+                    targetContainer: target.targetContainer,
+                    targetImage: target.targetImage,
+                    version: targetVersion,
+                  })),
+                  // A singleton can also be understood by Relays from before
+                  // batched updates, preserving the rolling upgrade path.
+                  ...(legacyTarget
+                    ? {
+                        targetContainer: legacyTarget.targetContainer,
+                        targetImage: legacyTarget.targetImage,
+                        version: targetVersion,
+                      }
+                    : {}),
+                },
+                15 * 60_000,
+                user.id
+              )
+              return {
+                group,
+                operations: parseUpdateOperations(response),
+              }
+            },
+            catch: (cause) => cause,
+          }).pipe(
+            Effect.match({
+              onFailure: (cause) => ({
+                failures: group.targets.map((target) => ({
+                  component: target.component,
+                  message: errorMessage(cause),
+                  relayId: target.component === "relay" ? group.relay.id : null,
+                })),
+                started: [],
+              }),
+              onSuccess: ({ group: successfulGroup, operations }) => ({
+                failures: [],
+                started: operations.map((operation) => ({
+                  operation,
+                  relayId: successfulGroup.relay.id,
+                })),
+              }),
+            })
+          ),
+        { concurrency: "unbounded" }
       )
     )
-    return { operation, relayId: target.id }
+    return {
+      failures: [
+        ...failures,
+        ...batchResults.flatMap((result) => result.failures),
+      ],
+      started: batchResults.flatMap((result) => result.started),
+    }
   })
 
 export const getSystemUpdateStatus = createServerFn({ method: "POST" })
@@ -281,6 +408,16 @@ async function coLocatedRelay(
 
 function immutableImage(component: { digest: string; image: string }): string {
   return `${component.image}@${component.digest}`
+}
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : "Update could not start."
+}
+
+function parseUpdateOperations(value: unknown) {
+  const batch = z.array(updateOperationSchema).safeParse(value)
+  if (batch.success) return batch.data
+  return [updateOperationSchema.parse(value)]
 }
 
 export type UpdateOverview = Awaited<ReturnType<typeof getUpdateOverview>>

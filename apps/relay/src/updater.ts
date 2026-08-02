@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { request } from "node:http"
 import { join } from "node:path"
 import { promisify } from "node:util"
-import { Effect } from "effect"
+import { Effect, Schedule } from "effect"
 
 import { RelaySystemUpdateError } from "./effect/errors.js"
 import {
@@ -17,6 +17,7 @@ const executeFile = promisify(execFile)
 const dockerSocket = "/var/run/docker.sock"
 
 interface UpdateOperation {
+  batchId?: string
   component: "hearth" | "relay"
   error: string | null
   finishedAt: string | null
@@ -26,16 +27,17 @@ interface UpdateOperation {
   startedAt: string
   status: "failed" | "running" | "succeeded"
   targetContainer: string
+  targetReference?: string
   version: string
 }
 
-const operationId = requiredEnvironment("KILN_UPDATE_OPERATION_ID")
+interface UpdateBatch {
+  id: string
+  operationIds: Array<string>
+}
+
 const operationsDirectory = requiredEnvironment("KILN_UPDATE_DATA_DIR")
-const targetContainer = requiredEnvironment("KILN_UPDATE_TARGET_CONTAINER")
-const targetImage = requiredEnvironment("KILN_UPDATE_TARGET_IMAGE")
-const targetReference = requiredEnvironment("KILN_UPDATE_TARGET_REFERENCE")
-const targetVersion = requiredEnvironment("KILN_UPDATE_VERSION")
-const operationPath = join(operationsDirectory, `${operationId}.json`)
+const batchId = optionalEnvironment("KILN_UPDATE_BATCH_ID")
 
 const dockerRuntime: ContainerUpdateDocker = {
   command: docker,
@@ -49,48 +51,113 @@ const dockerRuntime: ContainerUpdateDocker = {
   waitUntilHealthy,
 }
 
-const updaterEffect = readOperationEffect().pipe(
-  Effect.flatMap((operation) => {
-    const backupName = `${targetContainer}-kiln-backup-${Date.now()}`
-    return Effect.gen(function* () {
-      // Give Relay enough time to return the operation id before a self-update
-      // closes its control socket.
-      yield* Effect.sleep("1500 millis")
-      yield* replaceContainerEffect(
-        {
-          backupName,
-          targetContainer,
-          targetImage,
-          targetReference,
-          targetVersion,
-        },
-        dockerRuntime
+const runOperationEffect = Effect.fn("relay.updater.replace")(function* (
+  operation: UpdateOperation,
+  legacyReference?: string
+) {
+  const targetReference = operation.targetReference ?? legacyReference
+  if (!targetReference) {
+    return yield* Effect.fail(
+      updaterError(
+        "validateOperation",
+        "The update target reference is missing",
+        operation
       )
-      yield* updateOperationEffect({
+    )
+  }
+  const backupName = `${operation.targetContainer}-kiln-backup-${Date.now()}`
+  yield* replaceContainerEffect(
+    {
+      backupName,
+      targetContainer: operation.targetContainer,
+      targetImage: operation.requestedImage,
+      targetReference,
+      targetVersion: operation.version,
+    },
+    dockerRuntime
+  ).pipe(
+    Effect.retry({
+      schedule: Schedule.exponential("1 second"),
+      times: 2,
+    })
+  )
+  yield* updateOperationEffect({
+    ...operation,
+    error: null,
+    finishedAt: new Date().toISOString(),
+    status: "succeeded",
+  })
+})
+
+const runRecordedOperationEffect = Effect.fn(
+  "relay.updater.runRecordedOperation"
+)(function* (operation: UpdateOperation, legacyReference?: string) {
+  yield* runOperationEffect(operation, legacyReference).pipe(
+    Effect.catch((cause) =>
+      updateOperationEffect({
         ...operation,
-        error: null,
+        error: cause.message,
         finishedAt: new Date().toISOString(),
-        status: "succeeded",
-      })
-    }).pipe(
-      Effect.catch((cause) =>
-        updateOperationEffect({
-          ...operation,
-          error: cause.message,
-          finishedAt: new Date().toISOString(),
-          status: "failed",
-        }).pipe(
-          Effect.andThen(
-            Effect.sync(() => {
-              process.exitCode = 1
-            })
-          )
+        status: "failed",
+      }).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            process.exitCode = 1
+          })
         )
       )
     )
-  }),
-  Effect.withSpan("relay.updater.run")
-)
+  )
+})
+
+const runBatchEffect = Effect.fn("relay.updater.runBatch")(function* (
+  activeBatchId: string
+) {
+  // Return the operation ids before replacing Relay and keep a short idle
+  // window so another Hearth request can join this sidecar's queue.
+  yield* Effect.sleep("1500 millis")
+  let idleChecks = 0
+  while (idleChecks < 2) {
+    const batch = yield* readBatchEffect(activeBatchId)
+    const operations = yield* Effect.forEach(batch.operationIds, (id) =>
+      readOperationEffect(id)
+    )
+    const pending = operations
+      .filter((operation) => operation.status === "running")
+      .sort((left, right) =>
+        left.component === right.component
+          ? 0
+          : left.component === "hearth"
+            ? -1
+            : 1
+      )
+    if (pending.length === 0) {
+      idleChecks += 1
+      yield* Effect.sleep("2500 millis")
+      continue
+    }
+    idleChecks = 0
+    yield* Effect.forEach(
+      pending,
+      (operation) => runRecordedOperationEffect(operation),
+      { discard: true }
+    )
+  }
+})
+
+const runLegacyEffect = Effect.fn("relay.updater.runLegacy")(function* () {
+  const operationId = requiredEnvironment("KILN_UPDATE_OPERATION_ID")
+  const operation = yield* readOperationEffect(operationId)
+  yield* Effect.sleep("1500 millis")
+  yield* runRecordedOperationEffect(
+    operation,
+    requiredEnvironment("KILN_UPDATE_TARGET_REFERENCE")
+  )
+})
+
+const updaterEffect = (
+  batchId ? runBatchEffect(batchId) : runLegacyEffect()
+).pipe(Effect.withSpan("relay.updater.run"))
 
 await Effect.runPromise(updaterEffect)
 
@@ -183,13 +250,19 @@ async function dockerJson(path: string, body: unknown): Promise<void> {
   })
 }
 
-function readOperationEffect() {
+function readOperationEffect(id: string) {
   return updaterOperation("readOperation", () =>
-    readFile(operationPath, "utf8")
+    readFile(operationPath(id), "utf8")
   ).pipe(
     Effect.flatMap((text) =>
       Effect.try({
-        try: () => JSON.parse(text) as UpdateOperation,
+        try: () => {
+          const decoded: unknown = JSON.parse(text)
+          if (!isUpdateOperation(decoded)) {
+            throw new Error("Invalid update operation")
+          }
+          return decoded
+        },
         catch: (cause) =>
           updaterError("decodeOperation", "Invalid update operation", cause),
       })
@@ -197,8 +270,29 @@ function readOperationEffect() {
   )
 }
 
+function readBatchEffect(id: string) {
+  return updaterOperation("readBatch", () =>
+    readFile(join(operationsDirectory, `${id}.batch.json`), "utf8")
+  ).pipe(
+    Effect.flatMap((text) =>
+      Effect.try({
+        try: () => {
+          const decoded: unknown = JSON.parse(text)
+          if (!isUpdateBatch(decoded) || decoded.id !== id) {
+            throw new Error("Invalid update batch")
+          }
+          return decoded
+        },
+        catch: (cause) =>
+          updaterError("decodeBatch", "Invalid update batch", cause),
+      })
+    )
+  )
+}
+
 function updateOperationEffect(operation: UpdateOperation) {
-  const temporary = `${operationPath}.${process.pid}.tmp`
+  const path = operationPath(operation.id)
+  const temporary = `${path}.${process.pid}.tmp`
   return Effect.gen(function* () {
     yield* updaterOperation("createOperationDirectory", () =>
       mkdir(operationsDirectory, { recursive: true, mode: 0o700 })
@@ -209,7 +303,7 @@ function updateOperationEffect(operation: UpdateOperation) {
       })
     )
     yield* updaterOperation("commitOperation", () =>
-      rename(temporary, operationPath)
+      rename(temporary, path)
     ).pipe(Effect.uninterruptible)
   }).pipe(
     Effect.uninterruptible,
@@ -254,4 +348,49 @@ function requiredEnvironment(name: string): string {
   const value = process.env[name]?.trim()
   if (!value) throw new Error(`${name} is required`)
   return value
+}
+
+function optionalEnvironment(name: string): string | null {
+  return process.env[name]?.trim() || null
+}
+
+function operationPath(id: string): string {
+  return join(operationsDirectory, `${id}.json`)
+}
+
+function isUpdateOperation(value: unknown): value is UpdateOperation {
+  return (
+    isRecord(value) &&
+    optionalString(value.batchId) &&
+    (value.component === "hearth" || value.component === "relay") &&
+    (value.error === null || typeof value.error === "string") &&
+    (value.finishedAt === null || typeof value.finishedAt === "string") &&
+    typeof value.id === "string" &&
+    typeof value.previousImage === "string" &&
+    typeof value.requestedImage === "string" &&
+    typeof value.startedAt === "string" &&
+    (value.status === "failed" ||
+      value.status === "running" ||
+      value.status === "succeeded") &&
+    typeof value.targetContainer === "string" &&
+    optionalString(value.targetReference) &&
+    typeof value.version === "string"
+  )
+}
+
+function isUpdateBatch(value: unknown): value is UpdateBatch {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    Array.isArray(value.operationIds) &&
+    value.operationIds.every((id) => typeof id === "string")
+  )
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function optionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string"
 }

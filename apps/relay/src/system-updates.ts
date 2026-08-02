@@ -17,7 +17,7 @@ import {
   isKilnReleaseVersion,
   kilnReleaseVersionCore,
 } from "@workspace/contracts"
-import { Effect } from "effect"
+import { Effect, Semaphore } from "effect"
 
 import { command } from "./command.js"
 import type { CommandOptions, CommandResult } from "./command.js"
@@ -64,6 +64,7 @@ interface HelperInspect {
 }
 
 export interface UpdateOperation {
+  batchId?: string
   component: KilnComponent
   error: string | null
   finishedAt: string | null
@@ -73,13 +74,27 @@ export interface UpdateOperation {
   startedAt: string
   status: "failed" | "running" | "succeeded"
   targetContainer: string
+  targetReference?: string
+  version: string
+}
+
+interface UpdateBatch {
+  id: string
+  operationIds: Array<string>
+}
+
+interface SystemUpdateTargetInput {
+  targetContainer: string
+  targetImage: string
   version: string
 }
 
 export class SystemUpdateManager {
+  readonly #batchSemaphore = Semaphore.makeUnsafe(1)
   readonly #command: RunCommand
   readonly #installationId: string | null
   readonly #operationsDirectory: string
+  #activeBatch: { id: string } | null = null
 
   constructor(
     config: {
@@ -111,249 +126,220 @@ export class SystemUpdateManager {
     },
     signal?: AbortSignal
   ) {
+    return this.startBatch(
+      {
+        helperImage: input.helperImage,
+        targets: [input],
+      },
+      signal
+    ).pipe(
+      Effect.flatMap((operations) =>
+        operations[0]
+          ? Effect.succeed(operations[0])
+          : systemUpdateFailure("start.batch", "No update target was queued")
+      )
+    )
+  }
+
+  startBatch(
+    input: {
+      helperImage: string
+      targets: ReadonlyArray<SystemUpdateTargetInput>
+    },
+    signal?: AbortSignal
+  ) {
     const runCommand = this.#command
     const installationId = this.#installationId
     const operationsDirectory = this.#operationsDirectory
-    return Effect.gen(function* () {
-      yield* ensureNotAbortedEffect(signal)
-      const helperComponent = releaseImageComponent(input.helperImage)
-      if (helperComponent !== "relay") {
-        return yield* systemUpdateFailure(
-          "start.validate",
-          "The update helper must be an official Relay digest"
-        )
-      }
-      const targetComponent = releaseImageComponent(input.targetImage)
-      const target = yield* inspectContainerEffect(
-        input.targetContainer,
-        runCommand
-      )
-      const eligibility = updateEligibility(target, installationId)
-      if (
-        targetComponent === null ||
-        eligibility.component !== targetComponent
-      ) {
-        return yield* systemUpdateFailure(
-          "start.validate",
-          "The selected container is not an official Kiln component"
-        )
-      }
-      if (!eligibility.eligible) {
-        return yield* systemUpdateFailure(
-          "start.validate",
-          eligibility.reason ?? "This container cannot be updated"
-        )
-      }
-      if (!isKilnReleaseVersion(input.version)) {
-        return yield* systemUpdateFailure(
-          "start.validate",
-          "The requested Kiln release version is invalid"
-        )
-      }
-      if (
-        isKilnReleaseVersion(eligibility.currentVersion) &&
-        isDefiniteReleaseDowngrade(input.version, eligibility.currentVersion)
-      ) {
-        return yield* systemUpdateFailure(
-          "start.validate",
-          `Refusing to downgrade ${eligibility.currentVersion} to ${input.version}`
-        )
-      }
-      const targetReference = managedImageChannel(
-        target.Config.Image,
-        targetComponent
-      )
-      if (!targetReference) {
-        return yield* systemUpdateFailure(
-          "start.validate",
-          "The target no longer uses a managed channel tag"
-        )
-      }
-
-      yield* ensureNotAbortedEffect(signal)
-      yield* systemUpdateOperation("start.createDirectory", () =>
-        mkdir(operationsDirectory, { recursive: true, mode: 0o700 })
-      )
-      const id = randomUUID()
-      const operation: UpdateOperation = {
-        component: targetComponent,
-        error: null,
-        finishedAt: null,
-        id,
-        previousImage: target.Config.Image,
-        requestedImage: input.targetImage,
-        startedAt: new Date().toISOString(),
-        status: "running",
-        targetContainer: target.Name.replace(/^\//u, ""),
-        version: input.version,
-      }
-      yield* acquireTargetLockEffect(operationsDirectory, operation)
-      yield* writeOperationEffect(operationsDirectory, operation).pipe(
-        Effect.onInterrupt(() =>
-          releaseTargetLockEffect(
-            operationsDirectory,
-            operation.targetContainer,
-            operation.id
-          ).pipe(
-            Effect.catch((cause) =>
-              Effect.logWarning(
-                "System update lock release after write failure failed",
-                cause
-              )
-            )
+    const setActiveBatch = (id: string) => {
+      this.#activeBatch = { id }
+    }
+    return this.#batchSemaphore.withPermit(
+      Effect.gen({ self: this }, function* () {
+        yield* ensureNotAbortedEffect(signal)
+        if (releaseImageComponent(input.helperImage) !== "relay") {
+          return yield* systemUpdateFailure(
+            "start.validate",
+            "The update helper must be an official Relay digest"
           )
-        )
-      )
+        }
+        if (input.targets.length === 0) {
+          return yield* systemUpdateFailure(
+            "start.validate",
+            "Choose at least one update target"
+          )
+        }
 
-      const helperName = `kiln-updater-${id}`
-      return yield* Effect.gen(function* () {
-        const targetImage =
-          input.helperImage === input.targetImage
-            ? yield* pullAndVerifyImageEffect(
-                input.helperImage,
-                "relay",
+        yield* systemUpdateOperation("start.createDirectory", () =>
+          mkdir(operationsDirectory, { recursive: true, mode: 0o700 })
+        )
+        const activeBatch = yield* this.#runningBatchEffect()
+        const batchId = activeBatch?.id ?? randomUUID()
+        const startedAt = new Date().toISOString()
+        const preparedTargets = yield* Effect.forEach(
+          input.targets,
+          (targetInput) =>
+            prepareUpdateEffect(
+              targetInput,
+              batchId,
+              startedAt,
+              installationId,
+              runCommand
+            ),
+          { concurrency: "unbounded" }
+        )
+        const prepared = preparedTargets.sort((left, right) =>
+          left.operation.component === right.operation.component
+            ? 0
+            : left.operation.component === "hearth"
+              ? -1
+              : 1
+        )
+        const operations = prepared.map(({ operation }) => operation)
+
+        yield* acquireOperationLocksEffect(operationsDirectory, operations)
+        const failOperations = (cause: RelaySystemUpdateError) =>
+          failQueuedOperationsEffect(
+            operationsDirectory,
+            operations,
+            signal?.aborted
+              ? "The update request was cancelled before replacement started."
+              : cause.message
+          )
+
+        return yield* Effect.gen(function* () {
+          const images = uniqueUpdateImages(input.helperImage, prepared)
+          const inspectedImages = yield* Effect.forEach(
+            images,
+            ({ component, image }) =>
+              pullAndVerifyImageEffect(
+                image,
+                component,
                 runCommand,
                 signal
-              )
-            : (yield* Effect.all(
-                [
-                  pullAndVerifyImageEffect(
-                    input.helperImage,
-                    "relay",
-                    runCommand,
-                    signal
-                  ),
-                  pullAndVerifyImageEffect(
-                    input.targetImage,
-                    targetComponent,
-                    runCommand,
-                    signal
-                  ),
-                ] as const,
-                { concurrency: 2 }
-              ))[1]
-        const imageVersion =
-          targetImage.Config?.Labels?.["org.opencontainers.image.version"]
-        if (!imageVersionMatchesRelease(imageVersion, input.version)) {
-          return yield* systemUpdateFailure(
-            "start.verifyImage",
-            "The target image version does not match the release"
+              ).pipe(Effect.map((inspected) => ({ image, inspected }))),
+            { concurrency: "unbounded" }
           )
-        }
-
-        const volumesFrom =
-          targetComponent === "relay"
-            ? target
-            : yield* inspectContainerEffect(hostname(), runCommand)
-        const volumesFromLabels = volumesFrom.Config.Labels ?? {}
-        if (
-          kilnComponent(volumesFromLabels["io.kiln.component"]) !== "relay" ||
-          volumesFromLabels["org.opencontainers.image.source"] !==
-            KILN_IMAGE_SOURCE
-        ) {
-          return yield* systemUpdateFailure(
-            "start.verifyRelay",
-            "Docker could not identify this Relay container"
-          )
-        }
-
-        yield* ensureNotAbortedEffect(signal)
-        yield* systemUpdateOperation("start.launchHelper", () =>
-          runCommand(
-            "docker",
-            [
-              "run",
-              "--detach",
-              "--name",
-              helperName,
-              "--label",
-              "io.kiln.update-helper=true",
-              "--volumes-from",
-              volumesFrom.Id,
-              "--env",
-              `KILN_UPDATE_DATA_DIR=${operationsDirectory}`,
-              "--env",
-              `KILN_UPDATE_OPERATION_ID=${id}`,
-              "--env",
-              `KILN_UPDATE_TARGET_CONTAINER=${operation.targetContainer}`,
-              "--env",
-              `KILN_UPDATE_TARGET_IMAGE=${input.targetImage}`,
-              "--env",
-              `KILN_UPDATE_TARGET_REFERENCE=${targetReference}`,
-              "--env",
-              `KILN_UPDATE_VERSION=${input.version}`,
-              input.helperImage,
-              "dist/src/updater.mjs",
-            ],
-            { signal, timeout: 90_000 }
-          )
-        )
-        yield* ensureNotAbortedEffect(signal)
-        return operation
-      }).pipe(
-        Effect.catch((cause) =>
-          Effect.gen(function* () {
-            yield* cleanupHelperEffect(runCommand, id)
-            const failed: UpdateOperation = {
-              ...operation,
-              error: signal?.aborted
-                ? "The update request was cancelled before replacement started."
-                : cause.message,
-              finishedAt: new Date().toISOString(),
-              status: "failed",
-            }
-            yield* writeOperationEffect(operationsDirectory, failed)
-            yield* releaseTargetLockEffect(
-              operationsDirectory,
-              operation.targetContainer,
-              operation.id
-            )
-            if (signal?.aborted) {
+          for (const { input: targetInput, operation } of prepared) {
+            const inspected = inspectedImages.find(
+              ({ image }) => image === targetInput.targetImage
+            )?.inspected
+            const imageVersion =
+              inspected?.Config?.Labels?.["org.opencontainers.image.version"]
+            if (
+              !imageVersionMatchesRelease(imageVersion, targetInput.version)
+            ) {
               return yield* systemUpdateFailure(
-                "start.cancelled",
-                abortReason(signal).message,
-                abortReason(signal)
+                "start.verifyImage",
+                `The ${operation.component} image version does not match the release`
               )
             }
-            return failed
-          })
-        ),
-        Effect.onInterrupt(() =>
-          Effect.all(
-            [
-              cleanupHelperEffect(runCommand, id),
-              writeOperationEffect(operationsDirectory, {
-                ...operation,
-                error:
-                  "The update request was interrupted before replacement started.",
-                finishedAt: new Date().toISOString(),
-                status: "failed",
-              }).pipe(
-                Effect.catch((cleanupCause) =>
-                  Effect.logWarning(
-                    "System update interruption record failed",
-                    cleanupCause
-                  )
-                )
-              ),
-              releaseTargetLockEffect(
-                operationsDirectory,
-                operation.targetContainer,
-                operation.id
-              ).pipe(
-                Effect.catch((cleanupCause) =>
-                  Effect.logWarning(
-                    "System update interruption lock release failed",
-                    cleanupCause
-                  )
-                )
-              ),
+          }
+
+          const volumesFrom =
+            prepared.find(({ operation }) => operation.component === "relay")
+              ?.container ??
+            (yield* inspectContainerEffect(hostname(), runCommand))
+          const volumesFromLabels = volumesFrom.Config.Labels ?? {}
+          if (
+            kilnComponent(volumesFromLabels["io.kiln.component"]) !== "relay" ||
+            volumesFromLabels["org.opencontainers.image.source"] !==
+              KILN_IMAGE_SOURCE
+          ) {
+            return yield* systemUpdateFailure(
+              "start.verifyRelay",
+              "Docker could not identify this Relay container"
+            )
+          }
+
+          yield* Effect.forEach(
+            operations,
+            (operation) => writeOperationEffect(operationsDirectory, operation),
+            { discard: true }
+          )
+          const batch: UpdateBatch = {
+            id: batchId,
+            operationIds: [
+              ...(activeBatch?.operationIds ?? []),
+              ...operations.map(({ id }) => id),
             ],
-            { concurrency: 3, discard: true }
+          }
+          yield* writeBatchEffect(operationsDirectory, batch)
+          yield* ensureNotAbortedEffect(signal)
+
+          const helperState = activeBatch
+            ? yield* helperStateEffect(runCommand, batchId)
+            : "stopped"
+          if (helperState !== "running") {
+            yield* cleanupHelperEffect(runCommand, batchId)
+            yield* launchBatchHelperEffect(
+              runCommand,
+              {
+                batchId,
+                helperImage: input.helperImage,
+                operationsDirectory,
+                volumesFrom: volumesFrom.Id,
+              },
+              signal
+            )
+          }
+          setActiveBatch(batchId)
+          return operations
+        }).pipe(
+          Effect.catch((cause) =>
+            failOperations(cause).pipe(
+              Effect.andThen(
+                signal?.aborted
+                  ? systemUpdateFailure(
+                      "start.cancelled",
+                      abortReason(signal).message,
+                      abortReason(signal)
+                    )
+                  : Effect.succeed(
+                      operations.map(
+                        (operation): UpdateOperation => ({
+                          ...operation,
+                          error: cause.message,
+                          finishedAt: new Date().toISOString(),
+                          status: "failed",
+                        })
+                      )
+                    )
+              )
+            )
+          ),
+          Effect.onInterrupt(() =>
+            failQueuedOperationsEffect(
+              operationsDirectory,
+              operations,
+              "The update request was interrupted before replacement started."
+            ).pipe(
+              Effect.catch((cleanupCause) =>
+                Effect.logWarning(
+                  "System update interruption cleanup failed",
+                  cleanupCause
+                )
+              )
+            )
           )
         )
+      }).pipe(Effect.withSpan("relay.systemUpdates.startBatch"))
+    )
+  }
+
+  #runningBatchEffect() {
+    const active = this.#activeBatch
+    if (!active) return Effect.succeed<UpdateBatch | null>(null)
+    return helperStateEffect(this.#command, active.id).pipe(
+      Effect.flatMap((state) =>
+        state === "running"
+          ? readBatchEffect(this.#operationsDirectory, active.id)
+          : Effect.sync(() => {
+              this.#activeBatch = null
+              return null
+            })
       )
-    }).pipe(Effect.withSpan("relay.systemUpdates.start"))
+    )
   }
 
   status(id: string) {
@@ -364,10 +350,11 @@ export class SystemUpdateManager {
       const operation = yield* readOperationEffect(operationsDirectory, id)
       if (!operation) return null
 
+      const helperId = operation.batchId ?? operation.id
       if (
         operation.status === "running" &&
         operationIsStale(operation) &&
-        (yield* helperStateEffect(runCommand, id)) === "stopped"
+        (yield* helperStateEffect(runCommand, helperId)) === "stopped"
       ) {
         const failed: UpdateOperation = {
           ...operation,
@@ -382,7 +369,7 @@ export class SystemUpdateManager {
           operation.targetContainer,
           operation.id
         )
-        yield* cleanupHelperEffect(runCommand, id)
+        yield* cleanupHelperEffect(runCommand, helperId)
         return failed
       }
 
@@ -392,11 +379,291 @@ export class SystemUpdateManager {
           operation.targetContainer,
           operation.id
         )
-        yield* cleanupHelperEffect(runCommand, id)
+        if (operation.batchId) {
+          yield* cleanupCompletedBatchEffect(
+            operationsDirectory,
+            operation.batchId,
+            runCommand
+          )
+        } else {
+          yield* cleanupHelperEffect(runCommand, id)
+        }
       }
       return operation
     }).pipe(Effect.withSpan("relay.systemUpdates.status"))
   }
+}
+
+interface PreparedUpdate {
+  container: ContainerInspect
+  input: SystemUpdateTargetInput
+  operation: UpdateOperation
+}
+
+const prepareUpdateEffect = Effect.fn("relay.systemUpdates.prepare")(function* (
+  input: SystemUpdateTargetInput,
+  batchId: string,
+  startedAt: string,
+  installationId: string | null,
+  runCommand: RunCommand
+) {
+  const targetComponent = releaseImageComponent(input.targetImage)
+  const container = yield* inspectContainerEffect(
+    input.targetContainer,
+    runCommand
+  )
+  const eligibility = updateEligibility(container, installationId)
+  if (targetComponent === null || eligibility.component !== targetComponent) {
+    return yield* systemUpdateFailure(
+      "start.validate",
+      "The selected container is not an official Kiln component"
+    )
+  }
+  if (!eligibility.eligible) {
+    return yield* systemUpdateFailure(
+      "start.validate",
+      eligibility.reason ?? "This container cannot be updated"
+    )
+  }
+  if (!isKilnReleaseVersion(input.version)) {
+    return yield* systemUpdateFailure(
+      "start.validate",
+      "The requested Kiln release version is invalid"
+    )
+  }
+  if (
+    isKilnReleaseVersion(eligibility.currentVersion) &&
+    isDefiniteReleaseDowngrade(input.version, eligibility.currentVersion)
+  ) {
+    return yield* systemUpdateFailure(
+      "start.validate",
+      `Refusing to downgrade ${eligibility.currentVersion} to ${input.version}`
+    )
+  }
+  const targetReference = managedImageChannel(
+    container.Config.Image,
+    targetComponent
+  )
+  if (!targetReference) {
+    return yield* systemUpdateFailure(
+      "start.validate",
+      "The target no longer uses a managed channel tag"
+    )
+  }
+
+  return {
+    container,
+    input,
+    operation: {
+      batchId,
+      component: targetComponent,
+      error: null,
+      finishedAt: null,
+      id: randomUUID(),
+      previousImage: container.Config.Image,
+      requestedImage: input.targetImage,
+      startedAt,
+      status: "running",
+      targetContainer: container.Name.replace(/^\//u, ""),
+      targetReference,
+      version: input.version,
+    },
+  } satisfies PreparedUpdate
+})
+
+function uniqueUpdateImages(
+  helperImage: string,
+  prepared: ReadonlyArray<PreparedUpdate>
+): Array<{ component: KilnComponent; image: string }> {
+  const images = new Map<string, KilnComponent>([[helperImage, "relay"]])
+  for (const { input, operation } of prepared) {
+    images.set(input.targetImage, operation.component)
+  }
+  return Array.from(images, ([image, component]) => ({ component, image }))
+}
+
+function acquireOperationLocksEffect(
+  directory: string,
+  operations: ReadonlyArray<UpdateOperation>
+): Effect.Effect<void, RelaySystemUpdateError> {
+  const acquired: Array<UpdateOperation> = []
+  const releaseAcquired = () =>
+    Effect.forEach(
+      acquired,
+      (operation) =>
+        releaseTargetLockEffect(
+          directory,
+          operation.targetContainer,
+          operation.id
+        ).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("System update lock cleanup failed", cause)
+          )
+        ),
+      { concurrency: "unbounded", discard: true }
+    )
+
+  return Effect.forEach(
+    operations,
+    (operation) =>
+      acquireTargetLockEffect(directory, operation).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            acquired.push(operation)
+          })
+        )
+      ),
+    { discard: true }
+  ).pipe(
+    Effect.catch((cause) =>
+      releaseAcquired().pipe(Effect.andThen(Effect.fail(cause)))
+    ),
+    Effect.onInterrupt(releaseAcquired),
+    Effect.asVoid
+  )
+}
+
+function failQueuedOperationsEffect(
+  directory: string,
+  operations: ReadonlyArray<UpdateOperation>,
+  message: string
+): Effect.Effect<void, RelaySystemUpdateError> {
+  const finishedAt = new Date().toISOString()
+  return Effect.forEach(
+    operations,
+    (operation) =>
+      writeOperationEffect(directory, {
+        ...operation,
+        error: message,
+        finishedAt,
+        status: "failed",
+      }).pipe(
+        Effect.andThen(
+          releaseTargetLockEffect(
+            directory,
+            operation.targetContainer,
+            operation.id
+          )
+        )
+      ),
+    { concurrency: "unbounded", discard: true }
+  )
+}
+
+function launchBatchHelperEffect(
+  runCommand: RunCommand,
+  input: {
+    batchId: string
+    helperImage: string
+    operationsDirectory: string
+    volumesFrom: string
+  },
+  signal?: AbortSignal
+): Effect.Effect<void, RelaySystemUpdateError> {
+  return systemUpdateOperation("start.launchHelper", () =>
+    runCommand(
+      "docker",
+      [
+        "run",
+        "--detach",
+        "--name",
+        `kiln-updater-${input.batchId}`,
+        "--label",
+        "io.kiln.update-helper=true",
+        "--volumes-from",
+        input.volumesFrom,
+        "--env",
+        `KILN_UPDATE_DATA_DIR=${input.operationsDirectory}`,
+        "--env",
+        `KILN_UPDATE_BATCH_ID=${input.batchId}`,
+        input.helperImage,
+        "dist/src/updater.mjs",
+      ],
+      { signal, timeout: 90_000 }
+    )
+  ).pipe(Effect.asVoid)
+}
+
+function readBatchEffect(
+  directory: string,
+  id: string
+): Effect.Effect<UpdateBatch | null, RelaySystemUpdateError> {
+  return systemUpdateOperation("batch.read", () =>
+    readFile(join(directory, `${id}.batch.json`), "utf8")
+  ).pipe(
+    Effect.flatMap((text) =>
+      Effect.try({
+        try: () => {
+          const decoded: unknown = JSON.parse(text)
+          return decoded
+        },
+        catch: (cause) =>
+          makeSystemUpdateError(
+            "batch.decode",
+            "The update batch record is invalid",
+            cause
+          ),
+      })
+    ),
+    Effect.flatMap((decoded) =>
+      isUpdateBatch(decoded)
+        ? Effect.succeed(decoded)
+        : systemUpdateFailure(
+            "batch.decode",
+            "The update batch record is invalid"
+          )
+    ),
+    Effect.catch((cause) =>
+      systemErrorCode(cause) === "ENOENT"
+        ? Effect.succeed(null)
+        : Effect.fail(cause)
+    )
+  )
+}
+
+function writeBatchEffect(
+  directory: string,
+  batch: UpdateBatch
+): Effect.Effect<void, RelaySystemUpdateError> {
+  const path = join(directory, `${batch.id}.batch.json`)
+  const temporary = `${path}.${process.pid}.tmp`
+  return systemUpdateOperation("batch.writeTemporary", () =>
+    writeFile(temporary, `${JSON.stringify(batch, null, 2)}\n`, {
+      mode: 0o600,
+    })
+  ).pipe(
+    Effect.andThen(
+      systemUpdateOperation("batch.commit", () => rename(temporary, path))
+    ),
+    Effect.uninterruptible,
+    Effect.ensuring(
+      removeBestEffortEffect(temporary, "System update batch cleanup failed")
+    )
+  )
+}
+
+function cleanupCompletedBatchEffect(
+  directory: string,
+  batchId: string,
+  runCommand: RunCommand
+): Effect.Effect<void, RelaySystemUpdateError> {
+  return Effect.gen(function* () {
+    const batch = yield* readBatchEffect(directory, batchId)
+    if (!batch) return
+    const operations = yield* Effect.forEach(batch.operationIds, (id) =>
+      readOperationEffect(directory, id)
+    )
+    if (
+      operations.some(
+        (operation) => !operation || operation.status === "running"
+      )
+    ) {
+      return
+    }
+    if ((yield* helperStateEffect(runCommand, batchId)) !== "running") {
+      yield* cleanupHelperEffect(runCommand, batchId)
+    }
+  })
 }
 
 function isDefiniteReleaseDowngrade(
@@ -955,6 +1222,7 @@ function isHelperInspect(value: unknown): value is HelperInspect {
 function isUpdateOperation(value: unknown): value is UpdateOperation {
   if (!isRecord(value)) return false
   return (
+    optionalString(value.batchId) &&
     (value.component === "hearth" || value.component === "relay") &&
     (value.error === null || typeof value.error === "string") &&
     (value.finishedAt === null || typeof value.finishedAt === "string") &&
@@ -966,7 +1234,17 @@ function isUpdateOperation(value: unknown): value is UpdateOperation {
       value.status === "running" ||
       value.status === "succeeded") &&
     typeof value.targetContainer === "string" &&
+    optionalString(value.targetReference) &&
     typeof value.version === "string"
+  )
+}
+
+function isUpdateBatch(value: unknown): value is UpdateBatch {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    Array.isArray(value.operationIds) &&
+    value.operationIds.every((id) => typeof id === "string")
   )
 }
 

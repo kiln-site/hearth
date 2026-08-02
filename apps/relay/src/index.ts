@@ -778,25 +778,34 @@ async function executeControlRequest(
         )
       )
     case "relay.update.apply": {
-      const operation = await runRelayEffect(
-        "relay.systemUpdates.start",
-        systemUpdates.start(
+      const targetValues = Array.isArray(payload.targets)
+        ? payload.targets
+        : null
+      const batched = targetValues !== null
+      const operations = await runRelayEffect(
+        "relay.systemUpdates.startBatch",
+        systemUpdates.startBatch(
           {
             helperImage: requiredString(payload, "helperImage"),
-            targetContainer: requiredString(payload, "targetContainer"),
-            targetImage: requiredString(payload, "targetImage"),
-            version: requiredString(payload, "version"),
+            targets: targetValues
+              ? targetValues.map(systemUpdateTarget)
+              : [systemUpdateTarget(payload)],
           },
           signal
         )
       )
-      await appendRelayAudit("system.update_started", client.id, request.id, {
-        component: operation.component,
-        operationId: operation.id,
-        targetContainer: operation.targetContainer,
-        version: operation.version,
-      })
-      return operation
+      await Promise.all(
+        operations.map((operation) =>
+          appendRelayAudit("system.update_started", client.id, request.id, {
+            batchId: operation.batchId,
+            component: operation.component,
+            operationId: operation.id,
+            targetContainer: operation.targetContainer,
+            version: operation.version,
+          })
+        )
+      )
+      return batched ? operations : operations[0]
     }
     case "relay.update.status":
       return runRelayEffect(
@@ -1402,6 +1411,19 @@ function requiredString(
     throw new Error(`${key} is required`)
   }
   return field
+}
+
+function systemUpdateTarget(value: unknown): {
+  targetContainer: string
+  targetImage: string
+  version: string
+} {
+  const target = payloadRecord(value)
+  return {
+    targetContainer: requiredString(target, "targetContainer"),
+    targetImage: requiredString(target, "targetImage"),
+    version: requiredString(target, "version"),
+  }
 }
 
 async function requiredInstance(payload: Readonly<Record<string, unknown>>) {

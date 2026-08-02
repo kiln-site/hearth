@@ -52,8 +52,12 @@ import {
   relayDisconnectToastId,
   relayReconnectToastId,
 } from "@/lib/system-update-presence"
+import {
+  storeUpdateDialogResume,
+  type UpdateDialogResume,
+} from "@/lib/system-update-dialog-resume"
 import type { UpdateOverview } from "@/server/updates"
-import { getSystemUpdateStatus, startSystemUpdate } from "@/server/updates"
+import { getSystemUpdateStatus, startSystemUpdates } from "@/server/updates"
 
 type UpdateTarget = {
   component: "hearth" | "relay"
@@ -122,7 +126,7 @@ function activeUpdateQueryOptions(active: ActiveUpdate) {
       query.state.data?.status === "succeeded"
         ? false
         : 2_000,
-    retry: true,
+    retry: 2,
     retryDelay: 2_000,
   })
 }
@@ -133,12 +137,14 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
   onOpenChange,
   onRetryTarget,
   requestId,
+  resume,
 }: {
   initialRelayId: string | null
   open: boolean
   onOpenChange: (open: boolean) => void
   onRetryTarget: (relayId: string | null) => void
   requestId: number
+  resume: UpdateDialogResume | null
 }) {
   const queryClient = useQueryClient()
   const awayFromInfrastructure = useRouterState({
@@ -172,11 +178,15 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
   React.useEffect(() => {
     if (requestId === 0) return
     dismissToast(updatesContinuingToastId)
-    viewStore.showOverview()
-    viewStore.setTarget(
-      initialRelayId ? relayTargetKey(initialRelayId) : "hearth"
-    )
-  }, [initialRelayId, requestId, viewStore])
+    if (resume) {
+      viewStore.restore(resume)
+    } else {
+      viewStore.showOverview()
+      viewStore.setTarget(
+        initialRelayId ? relayTargetKey(initialRelayId) : "hearth"
+      )
+    }
+  }, [initialRelayId, requestId, resume, viewStore])
 
   React.useEffect(() => {
     const completedUpdate = readCompletedUpdate()
@@ -360,6 +370,10 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
       ])
       if (operation.component === "hearth") {
         storeCompletedUpdate(completed, completedVersion)
+        storeUpdateDialogResume({
+          targetKey: viewStore.getTargetSnapshot(),
+          view: viewStore.getVisibilitySnapshot().view,
+        })
         window.setTimeout(() => window.location.reload(), 750)
       }
     }
@@ -370,6 +384,7 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
     operationQueries,
     queryClient,
     replaceActive,
+    viewStore,
   ])
 
   const handleUpdate = React.useCallback(
@@ -386,6 +401,7 @@ export const InfraUpdatesDialog = React.memo(function InfraUpdatesDialog({
         <DialogContent
           aria-describedby={undefined}
           className="h-[min(46rem,calc(100dvh-2rem))] max-h-none grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-[calc(100%-2rem)] xl:max-w-5xl"
+          disableOpenAnimation={resume !== null}
         >
           <div className="border-b bg-background/35 px-5 pt-5">
             <UpdaterTitleBar open={open} />
@@ -908,6 +924,7 @@ const UpdateTargetRow = React.memo(function UpdateTargetRow({
   )
   const updating = isTargetUpdating(active, target)
   const updateAvailable = targetHasUpdate(target, releases)
+  const reinstallAvailable = target.eligible && comparison === 0
   const currentRelease = findKilnRelease(releases, target.currentVersion)
   const status = targetStatus(target, comparison, updating)
   const Icon = target.component === "hearth" ? ServerCog : RadioTower
@@ -933,7 +950,7 @@ const UpdateTargetRow = React.memo(function UpdateTargetRow({
               : "bg-background/55 text-muted-foreground"
           }`}
         >
-          <Icon className="size-4" />
+          <Icon className={`size-4 ${updating ? "animate-spin" : ""}`} />
         </span>
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -982,24 +999,33 @@ const UpdateTargetRow = React.memo(function UpdateTargetRow({
           View changes
         </Button>
         <Button
+          className={
+            updating
+              ? "border-sky-400/30 bg-sky-400/10 text-sky-300 opacity-100"
+              : undefined
+          }
           size="sm"
           type="button"
-          disabled={starting || !updateAvailable || updating}
+          disabled={
+            starting || (!updateAvailable && !reinstallAvailable) || updating
+          }
           onClick={() => onUpdate([target], latestVersion)}
         >
           {updating ? (
             <LoaderCircle className="animate-spin" />
           ) : updateAvailable ? (
             <CloudDownload />
+          ) : reinstallAvailable ? (
+            <RefreshCw />
           ) : (
             <Check />
           )}
           {updating
-            ? "Updating"
+            ? "Updating..."
             : updateAvailable
               ? "Update"
-              : comparison === 0
-                ? "Current"
+              : reinstallAvailable
+                ? "Reinstall"
                 : "Unavailable"}
         </Button>
       </div>
@@ -1198,13 +1224,7 @@ const ChangelogSelectionHeader = React.memo(function ChangelogSelectionHeader({
   const selectedTarget = findSelectedTarget(targets, selectedKey)
   const selection = selectedTarget
     ? changelogSelection(selectedTarget, latestVersion, overview.releases)
-    : { alreadyLatest: false, fromVersion: null }
-  const releaseCount = selectedTarget
-    ? selection.alreadyLatest
-      ? 0
-      : changelogReleases(overview.releases, selection.fromVersion).length
-    : 0
-
+    : { alreadyLatest: false, fromVersion: null, updated: false }
   return (
     <div className="mb-5 flex flex-wrap items-center justify-between gap-2 border-b pb-4">
       <div>
@@ -1221,9 +1241,6 @@ const ChangelogSelectionHeader = React.memo(function ChangelogSelectionHeader({
         </p>
       </div>
       <div className="flex items-center gap-2">
-        <Badge variant="outline">
-          {releaseCount} {releaseCount === 1 ? "release" : "releases"}
-        </Badge>
         <a
           className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           href={githubReleasesUrl}
@@ -1254,34 +1271,33 @@ const ChangelogTimeline = React.memo(function ChangelogTimeline({
     store.getTargetSnapshot
   )
   const selectedTarget = findSelectedTarget(targets, selectedKey)
-  const selectedVersion = selectedTarget?.currentVersion ?? null
   const selection = selectedTarget
     ? changelogSelection(
         selectedTarget,
         availableReleases[0]?.version ?? null,
         availableReleases
       )
-    : { alreadyLatest: false, fromVersion: null }
+    : { alreadyLatest: false, fromVersion: null, updated: false }
   const releases = React.useMemo(
     () =>
       selection.alreadyLatest
         ? []
         : changelogReleases(availableReleases, selection.fromVersion),
-    [
-      availableReleases,
-      selectedVersion,
-      selection.alreadyLatest,
-      selection.fromVersion,
-    ]
+    [availableReleases, selection.alreadyLatest, selection.fromVersion]
   )
 
   return releases.length > 0 ? (
     <div className="relative ml-1 space-y-6 border-l border-border/80 pl-5">
       {releases.map((release, index) => (
         <ChangelogRelease
+          current={
+            !selection.updated && release.version === selection.fromVersion
+          }
           key={release.tag}
           latest={index === 0}
-          previous={release.version === selection.fromVersion}
+          previous={
+            selection.updated && release.version === selection.fromVersion
+          }
           release={release}
         />
       ))}
@@ -1302,10 +1318,12 @@ const ChangelogTimeline = React.memo(function ChangelogTimeline({
 }, areChangelogTimelinePropsEqual)
 
 const ChangelogRelease = React.memo(function ChangelogRelease({
+  current,
   latest,
   previous,
   release,
 }: {
+  current: boolean
   latest: boolean
   previous: boolean
   release: PublicKilnRelease
@@ -1314,14 +1332,25 @@ const ChangelogRelease = React.memo(function ChangelogRelease({
     <article>
       <span
         className={`absolute -left-[0.34rem] mt-1.5 size-2.5 rounded-full border-2 border-popover ${
-          latest ? "bg-primary" : previous ? "bg-amber-300" : "bg-border"
+          latest
+            ? "bg-emerald-400"
+            : current
+              ? "bg-sky-300"
+              : previous
+                ? "bg-amber-300"
+                : "bg-border"
         }`}
       />
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-sm font-semibold">{release.name}</h3>
-            {latest ? <Badge>Latest</Badge> : null}
+            {latest ? (
+              <Badge className="border border-emerald-300/35 bg-emerald-300/10 text-emerald-200">
+                Latest
+              </Badge>
+            ) : null}
+            {current ? <Badge variant="outline">Current</Badge> : null}
             {previous ? <Badge variant="outline">Previous</Badge> : null}
           </div>
           <p className="mt-1 font-mono text-[9px] text-muted-foreground">
@@ -1484,13 +1513,6 @@ function updateTargets(overview: UpdateOverview): Array<UpdateTarget> {
   ]
 }
 
-type UpdateStartAttempt =
-  | { active: ActiveUpdate; failure?: never }
-  | {
-      active?: never
-      failure: { message: string; target: UpdateTarget }
-    }
-
 async function startUpdates(
   targets: ReadonlyArray<UpdateTarget>,
   latestVersion: string,
@@ -1499,70 +1521,67 @@ async function startUpdates(
 ): Promise<{
   failures: Array<{ message: string; target: UpdateTarget }>
 }> {
-  const relayTargets = targets.filter((target) => target.component === "relay")
-  const hearthTarget = targets.find((target) => target.component === "hearth")
-  const relayAttempts = await Promise.all(
-    relayTargets.map((target) =>
-      startUpdate(target, latestVersion, onStarted, onFailure)
-    )
-  )
-  const hearthAttempt = hearthTarget
-    ? await startUpdate(hearthTarget, latestVersion, onStarted, onFailure)
-    : null
-  const attempts = hearthAttempt
-    ? [...relayAttempts, hearthAttempt]
-    : relayAttempts
-  const failures: Array<{ message: string; target: UpdateTarget }> = []
-
-  for (const attempt of attempts) {
-    if (attempt.failure) failures.push(attempt.failure)
-  }
-
-  return { failures }
-}
-
-async function startUpdate(
-  target: UpdateTarget,
-  latestVersion: string,
-  onStarted: (update: ActiveUpdate) => void,
-  onFailure: () => void
-): Promise<UpdateStartAttempt> {
   return Effect.runPromise(
     Effect.tryPromise({
       try: () =>
-        startSystemUpdate({
+        startSystemUpdates({
           data: {
-            component: target.component,
-            relayId: target.relayId,
+            targets: targets.map(({ component, relayId }) => ({
+              component,
+              relayId,
+            })),
           },
         }),
       catch: (cause) => cause,
     }).pipe(
       Effect.match({
-        onFailure: (cause): UpdateStartAttempt => {
+        onFailure: (cause) => {
           onFailure()
           return {
-            failure: {
+            failures: targets.map((target) => ({
               message:
                 cause instanceof Error
                   ? cause.message
                   : "Update could not start.",
               target,
-            },
+            })),
           }
         },
-        onSuccess: (started): UpdateStartAttempt => {
-          const active = {
-            component: started.operation.component,
-            name: target.name,
-            operationId: started.operation.id,
-            previousVersion: target.currentVersion,
-            relayId: started.relayId,
-            targetVersion: latestVersion,
-            targetKey: target.key,
-          } satisfies ActiveUpdate
-          onStarted(active)
-          return { active }
+        onSuccess: (result) => {
+          const failures: Array<{
+            message: string
+            target: UpdateTarget
+          }> = []
+          for (const failure of result.failures) {
+            const target = targets.find(
+              (candidate) =>
+                candidate.component === failure.component &&
+                (candidate.component === "hearth" ||
+                  candidate.relayId === failure.relayId)
+            )
+            if (!target) continue
+            onFailure()
+            failures.push({ message: failure.message, target })
+          }
+          for (const started of result.started) {
+            const target = targets.find(
+              (candidate) =>
+                candidate.component === started.operation.component &&
+                (candidate.component === "hearth" ||
+                  candidate.relayId === started.relayId)
+            )
+            if (!target) continue
+            onStarted({
+              component: started.operation.component,
+              name: target.name,
+              operationId: started.operation.id,
+              previousVersion: target.currentVersion,
+              relayId: started.relayId,
+              targetVersion: latestVersion,
+              targetKey: target.key,
+            })
+          }
+          return { failures }
         },
       })
     )
@@ -1774,6 +1793,13 @@ function createUpdateDialogViewStore(initialTargetKey: string) {
       setTarget(nextTargetKey)
       setVisibility({ changelogMounted: true, view: "changelog" })
     },
+    restore: (resume: UpdateDialogResume) => {
+      setTarget(resume.targetKey)
+      setVisibility({
+        changelogMounted: resume.view === "changelog",
+        view: resume.view,
+      })
+    },
     setTarget,
     showChangelog: () =>
       setVisibility({ changelogMounted: true, view: "changelog" }),
@@ -1978,8 +2004,8 @@ function targetStatus(
 ): UpdateTargetStatus {
   if (updating) {
     return {
-      label: "Updating",
-      tone: "border-primary/35 bg-primary/10 text-primary",
+      label: "Updating...",
+      tone: "border-sky-300/35 bg-sky-300/10 text-sky-200",
     }
   }
   if (comparison === 0) {
@@ -2100,7 +2126,11 @@ function changelogSelection(
   target: UpdateTarget,
   latestVersion: string | null,
   releases: ReadonlyArray<PublicKilnRelease>
-): { alreadyLatest: boolean; fromVersion: string | null } {
+): {
+  alreadyLatest: boolean
+  fromVersion: string | null
+  updated: boolean
+} {
   const canonicalCurrentVersion =
     findKilnRelease(releases, target.currentVersion)?.version ??
     target.currentVersion
@@ -2118,6 +2148,7 @@ function changelogSelection(
     alreadyLatest:
       canonicalCurrentVersion === latestVersion && recentRange === null,
     fromVersion: recentRange?.fromVersion ?? canonicalCurrentVersion,
+    updated: recentRange !== null,
   }
 }
 
