@@ -1,3 +1,5 @@
+import { Result } from "effect"
+
 export type FileArchiveFormat = "gzip" | "zip"
 
 export interface FileDownloadPreferences {
@@ -16,14 +18,15 @@ const storageKey = "kiln:file-download-preferences:v1"
 
 export function readFileDownloadPreferences(): FileDownloadPreferences {
   if (typeof window === "undefined") return defaultFileDownloadPreferences
-  try {
-    const stored = window.localStorage.getItem(storageKey)
-    return normalizeFileDownloadPreferences(
-      stored === null ? null : JSON.parse(stored)
-    )
-  } catch {
-    return defaultFileDownloadPreferences
-  }
+  return Result.getOrElse(
+    Result.try(() => {
+      const stored = window.localStorage.getItem(storageKey)
+      return normalizeFileDownloadPreferences(
+        stored === null ? null : JSON.parse(stored)
+      )
+    }),
+    () => defaultFileDownloadPreferences
+  )
 }
 
 export function writeFileDownloadPreferences(
@@ -34,11 +37,9 @@ export function writeFileDownloadPreferences(
     ...update,
   })
   if (typeof window === "undefined") return preferences
-  try {
+  Result.try(() =>
     window.localStorage.setItem(storageKey, JSON.stringify(preferences))
-  } catch {
-    // A blocked or full storage area should not prevent a file download.
-  }
+  )
   return preferences
 }
 
