@@ -1284,7 +1284,7 @@ function streamDownload(
     if (archive) {
       archive.entry(stream, { name: entryName }, (cause) => {
         if (cause) failed(cause)
-        else archive.finalize()
+        else if (!settled) archive.finalize()
       })
     }
   })

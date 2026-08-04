@@ -15,6 +15,10 @@ export const defaultFileDownloadPreferences: FileDownloadPreferences = {
 }
 
 const storageKey = "kiln:file-download-preferences:v1"
+const preferencesChangedEvent = "kiln:file-download-preferences:changed"
+const defaultPreferencesSnapshot = JSON.stringify(
+  defaultFileDownloadPreferences
+)
 
 export function readFileDownloadPreferences(): FileDownloadPreferences {
   if (typeof window === "undefined") return defaultFileDownloadPreferences
@@ -37,10 +41,43 @@ export function writeFileDownloadPreferences(
     ...update,
   })
   if (typeof window === "undefined") return preferences
-  Result.try(() =>
+  Result.try(() => {
     window.localStorage.setItem(storageKey, JSON.stringify(preferences))
-  )
+    window.dispatchEvent(new Event(preferencesChangedEvent))
+  })
   return preferences
+}
+
+export function readFileDownloadPreferencesSnapshot(): string {
+  return JSON.stringify(readFileDownloadPreferences())
+}
+
+export function defaultFileDownloadPreferencesSnapshot(): string {
+  return defaultPreferencesSnapshot
+}
+
+export function fileDownloadPreferencesFromSnapshot(
+  snapshot: string
+): FileDownloadPreferences {
+  return Result.getOrElse(
+    Result.try(() => normalizeFileDownloadPreferences(JSON.parse(snapshot))),
+    () => defaultFileDownloadPreferences
+  )
+}
+
+export function subscribeFileDownloadPreferences(
+  listener: () => void
+): () => void {
+  if (typeof window === "undefined") return () => undefined
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === storageKey) listener()
+  }
+  window.addEventListener(preferencesChangedEvent, listener)
+  window.addEventListener("storage", onStorage)
+  return () => {
+    window.removeEventListener(preferencesChangedEvent, listener)
+    window.removeEventListener("storage", onStorage)
+  }
 }
 
 export function normalizeFileDownloadPreferences(
@@ -73,13 +110,11 @@ export function fileDownloadName(
   archiveFormat: FileArchiveFormat
 ): string {
   if (!compressed) return name
-  const base = removeFileDownloadArchiveExtension(name)
-  return `${base}.${archiveFormat === "zip" ? "zip" : "gz"}`
+  return `${name}${fileDownloadArchiveSuffix(archiveFormat)}`
 }
 
-export function removeFileDownloadArchiveExtension(name: string): string {
-  const lowerName = name.toLowerCase()
-  if (lowerName.endsWith(".zip")) return name.slice(0, -4)
-  if (lowerName.endsWith(".gz")) return name.slice(0, -3)
-  return name
+export function fileDownloadArchiveSuffix(
+  archiveFormat: FileArchiveFormat
+): ".gz" | ".zip" {
+  return archiveFormat === "zip" ? ".zip" : ".gz"
 }

@@ -18,14 +18,18 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@workspace/ui/components/dialog"
-import { Input } from "@workspace/ui/components/input"
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@workspace/ui/components/input-group"
 import { showToast } from "@workspace/ui/components/sonner"
 import { Switch } from "@workspace/ui/components/switch"
 
 import {
+  fileDownloadArchiveSuffix,
   fileDownloadName,
   readFileDownloadPreferences,
-  removeFileDownloadArchiveExtension,
   writeFileDownloadPreferences,
 } from "@/lib/file-download-preferences"
 import type { FileArchiveFormat } from "@/lib/file-download-preferences"
@@ -65,7 +69,7 @@ export const FileDownloadDialog = React.memo(function FileDownloadDialog({
   const [archiveFormat, setArchiveFormat] =
     React.useState<FileArchiveFormat>("zip")
   const [compressed, setCompressed] = React.useState(true)
-  const [downloadName, setDownloadName] = React.useState("")
+  const [downloadBaseName, setDownloadBaseName] = React.useState("")
   const [downloading, setDownloading] = React.useState(false)
   const [downloadError, setDownloadError] = React.useState<string | null>(null)
   const [skipDialog, setSkipDialog] = React.useState(false)
@@ -98,6 +102,7 @@ export const FileDownloadDialog = React.memo(function FileDownloadDialog({
           instanceId: instance.id,
           name,
           path,
+          preflight: true,
           relayId: instance.relayId,
         }).pipe(
           Effect.match({
@@ -113,7 +118,7 @@ export const FileDownloadDialog = React.memo(function FileDownloadDialog({
             onSuccess: () => {
               setDownloading(false)
               onOpenChange(false)
-              showDownloadStartedToast(name)
+              showDownloadRequestedToast(name)
             },
           })
         )
@@ -148,13 +153,7 @@ export const FileDownloadDialog = React.memo(function FileDownloadDialog({
           },
           onSuccess: (preview) => {
             if (!active) return
-            setDownloadName(
-              fileDownloadName(
-                preview.name,
-                preferences.compressByDefault,
-                preferences.archiveFormat
-              )
-            )
+            setDownloadBaseName(preview.name)
             setPreviewState({ preview, status: "ready" })
           },
         })
@@ -166,7 +165,17 @@ export const FileDownloadDialog = React.memo(function FileDownloadDialog({
   }, [instance.id, instance.relayId, onOpenChange, open, path, preferences])
 
   const preview = previewState.status === "ready" ? previewState.preview : null
-  const invalidName = !isValidRelayDownloadName(downloadName)
+  const archiveSuffix = compressed
+    ? fileDownloadArchiveSuffix(archiveFormat)
+    : ""
+  const downloadName = fileDownloadName(
+    downloadBaseName,
+    compressed,
+    archiveFormat
+  )
+  const invalidName =
+    !isValidRelayDownloadName(downloadBaseName) ||
+    !isValidRelayDownloadName(downloadName)
   const compressedSize = preview
     ? archiveFormat === "zip"
       ? preview.zipSizeEstimate
@@ -181,18 +190,10 @@ export const FileDownloadDialog = React.memo(function FileDownloadDialog({
         )
       : 0
 
-  const changeCompression = React.useCallback(
-    (nextCompressed: boolean) => {
-      setCompressed(nextCompressed)
-      setDownloadError(null)
-      setDownloadName((currentName) =>
-        nextCompressed
-          ? fileDownloadName(currentName, true, archiveFormat)
-          : removeFileDownloadArchiveExtension(currentName)
-      )
-    },
-    [archiveFormat]
-  )
+  const changeCompression = React.useCallback((nextCompressed: boolean) => {
+    setCompressed(nextCompressed)
+    setDownloadError(null)
+  }, [])
 
   const changeArchiveFormat = React.useCallback(
     (event: React.ChangeEvent<HTMLSelectElement>) => {
@@ -200,14 +201,14 @@ export const FileDownloadDialog = React.memo(function FileDownloadDialog({
         event.target.value === "gzip" ? "gzip" : "zip"
       setArchiveFormat(nextFormat)
       setDownloadError(null)
-      setDownloadName((currentName) =>
-        compressed
-          ? fileDownloadName(currentName, true, nextFormat)
-          : currentName
-      )
     },
-    [compressed]
+    []
   )
+
+  const changeDownloadBaseName = React.useCallback((name: string) => {
+    setDownloadBaseName(name)
+    setDownloadError(null)
+  }, [])
 
   const startDownload = React.useCallback(async () => {
     if (!preview || invalidName || downloading) return
@@ -233,7 +234,7 @@ export const FileDownloadDialog = React.memo(function FileDownloadDialog({
               writeFileDownloadPreferences({ confirmBeforeDownload: false })
             }
             onOpenChange(false)
-            showDownloadStartedToast(downloadName)
+            showDownloadRequestedToast(downloadName)
           },
         })
       )
@@ -295,106 +296,25 @@ export const FileDownloadDialog = React.memo(function FileDownloadDialog({
             </div>
           </div>
         ) : (
-          <div className="space-y-3 px-4 py-4">
-            <div className="grid grid-cols-2 border border-border/75 bg-background/25">
-              <DownloadMetric
-                icon={<Gauge />}
-                label="Original"
-                value={formatBytes(previewState.preview.size)}
-              />
-              <DownloadMetric
-                accent={compressed}
-                icon={<Archive />}
-                label={compressed ? "Estimated" : "Download"}
-                value={formatBytes(outputSize)}
-                detail={
-                  compressed && savings > 0 ? `${savings}% smaller` : null
-                }
-              />
-            </div>
-
-            <label className="block space-y-1.5">
-              <span className="text-xs font-medium text-foreground">
-                Save as
-              </span>
-              <Input
-                autoComplete="off"
-                value={downloadName}
-                aria-invalid={invalidName}
-                maxLength={255}
-                spellCheck={false}
-                className="font-mono text-sm"
-                onChange={(event) => {
-                  setDownloadName(event.target.value)
-                  setDownloadError(null)
-                }}
-              />
-              {invalidName ? (
-                <span className="text-[10px] text-destructive">
-                  Use a file name without slashes or control characters.
-                </span>
-              ) : null}
-            </label>
-
-            <div className="flex items-center gap-3 border border-border/75 bg-muted/10 px-3 py-2.5">
-              <div className="min-w-0 flex-1">
-                <label
-                  htmlFor={compressionId}
-                  className="text-xs font-medium text-foreground"
-                >
-                  Compress download
-                </label>
-                <p className="mt-0.5 text-[10px] text-muted-foreground">
-                  {previewState.preview.recommendedCompression
-                    ? "This file should compress well."
-                    : "This file may not shrink much."}
-                </p>
-              </div>
-              {compressed ? (
-                <select
-                  aria-label="Archive format"
-                  value={archiveFormat}
-                  disabled={downloading}
-                  className="h-7 border border-input bg-input/18 px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/35"
-                  onChange={changeArchiveFormat}
-                >
-                  <option value="zip">ZIP</option>
-                  <option value="gzip">Gzip</option>
-                </select>
-              ) : null}
-              <Switch
-                id={compressionId}
-                checked={compressed}
-                disabled={downloading}
-                onCheckedChange={changeCompression}
-              />
-            </div>
-
-            <label
-              htmlFor={skipDialogId}
-              className="flex cursor-pointer items-center gap-2 text-[11px] text-muted-foreground"
-            >
-              <input
-                id={skipDialogId}
-                type="checkbox"
-                checked={skipDialog}
-                disabled={downloading}
-                className="size-3.5 accent-primary"
-                onChange={(event) => setSkipDialog(event.target.checked)}
-              />
-              Don&apos;t show this again
-            </label>
-
-            {downloadError ? (
-              <p
-                role="alert"
-                className="flex items-start gap-2 text-xs leading-5 text-destructive"
-              >
-                <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-                {downloadError}
-              </p>
-            ) : null}
-          </div>
+          <DownloadOptions
+            archiveFormat={archiveFormat}
+            archiveSuffix={archiveSuffix}
+            compressed={compressed}
+            compressionId={compressionId}
+            downloadBaseName={downloadBaseName}
+            downloadError={downloadError}
+            downloading={downloading}
+            invalidName={invalidName}
+            onArchiveFormatChange={changeArchiveFormat}
+            onCompressionChange={changeCompression}
+            onDownloadBaseNameChange={changeDownloadBaseName}
+            onSkipDialogChange={setSkipDialog}
+            outputSize={outputSize}
+            preview={previewState.preview}
+            savings={savings}
+            skipDialog={skipDialog}
+            skipDialogId={skipDialogId}
+          />
         )}
 
         <DialogFooter className="m-0 rounded-none px-4 py-3">
@@ -424,12 +344,154 @@ export const FileDownloadDialog = React.memo(function FileDownloadDialog({
   )
 })
 
+const DownloadOptions = React.memo(function DownloadOptions({
+  archiveFormat,
+  archiveSuffix,
+  compressed,
+  compressionId,
+  downloadBaseName,
+  downloadError,
+  downloading,
+  invalidName,
+  onArchiveFormatChange,
+  onCompressionChange,
+  onDownloadBaseNameChange,
+  onSkipDialogChange,
+  outputSize,
+  preview,
+  savings,
+  skipDialog,
+  skipDialogId,
+}: {
+  archiveFormat: FileArchiveFormat
+  archiveSuffix: string
+  compressed: boolean
+  compressionId: string
+  downloadBaseName: string
+  downloadError: string | null
+  downloading: boolean
+  invalidName: boolean
+  onArchiveFormatChange: (event: React.ChangeEvent<HTMLSelectElement>) => void
+  onCompressionChange: (compressed: boolean) => void
+  onDownloadBaseNameChange: (name: string) => void
+  onSkipDialogChange: (skip: boolean) => void
+  outputSize: number
+  preview: RelayFileDownloadPreview
+  savings: number
+  skipDialog: boolean
+  skipDialogId: string
+}) {
+  return (
+    <div className="space-y-3 px-4 py-4">
+      <div className="grid grid-cols-2 border border-border/75 bg-background/25">
+        <DownloadMetric
+          icon={<Gauge />}
+          label="Original"
+          value={formatBytes(preview.size)}
+        />
+        <DownloadMetric
+          accent={compressed}
+          icon={<Archive />}
+          label={compressed ? "Estimated" : "Download"}
+          value={formatBytes(outputSize)}
+          detail={compressed && savings > 0 ? `${savings}% smaller` : null}
+        />
+      </div>
+
+      <label className="block space-y-1.5">
+        <span className="text-xs font-medium text-foreground">Save as</span>
+        <InputGroup>
+          <InputGroupInput
+            autoComplete="off"
+            value={downloadBaseName}
+            aria-invalid={invalidName}
+            maxLength={255 - archiveSuffix.length}
+            spellCheck={false}
+            className="font-mono text-sm"
+            onChange={(event) => onDownloadBaseNameChange(event.target.value)}
+          />
+          {archiveSuffix ? (
+            <InputGroupAddon align="inline-end" className="font-mono text-xs">
+              {archiveSuffix}
+            </InputGroupAddon>
+          ) : null}
+        </InputGroup>
+        {invalidName ? (
+          <span className="text-[10px] text-destructive">
+            Use a file name without slashes or control characters.
+          </span>
+        ) : null}
+      </label>
+
+      <div className="flex items-center gap-3 border border-border/75 bg-muted/10 px-3 py-2.5">
+        <div className="min-w-0 flex-1">
+          <label
+            htmlFor={compressionId}
+            className="text-xs font-medium text-foreground"
+          >
+            Compress download
+          </label>
+          <p className="mt-0.5 text-[10px] text-muted-foreground">
+            {preview.recommendedCompression
+              ? "This file should compress well."
+              : "This file may not shrink much."}
+          </p>
+        </div>
+        {compressed ? (
+          <select
+            aria-label="Archive format"
+            value={archiveFormat}
+            disabled={downloading}
+            className="h-7 border border-input bg-input/18 px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/35"
+            onChange={onArchiveFormatChange}
+          >
+            <option value="zip">ZIP</option>
+            <option value="gzip">Gzip</option>
+          </select>
+        ) : null}
+        <Switch
+          id={compressionId}
+          checked={compressed}
+          disabled={downloading}
+          onCheckedChange={onCompressionChange}
+        />
+      </div>
+
+      <label
+        htmlFor={skipDialogId}
+        className="flex cursor-pointer items-center gap-2 text-[11px] text-muted-foreground"
+      >
+        <input
+          id={skipDialogId}
+          type="checkbox"
+          checked={skipDialog}
+          disabled={downloading}
+          className="size-3.5 accent-primary"
+          onChange={(event) => onSkipDialogChange(event.target.checked)}
+        />
+        Don&apos;t show this again
+      </label>
+
+      {downloadError ? (
+        <p
+          role="alert"
+          className="flex items-start gap-2 text-xs leading-5 text-destructive"
+        >
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+          {downloadError}
+        </p>
+      ) : null}
+    </div>
+  )
+})
+
 function startRelayDownload({
   archiveFormat,
   compressed,
   instanceId,
   name,
   path,
+  preflight = false,
   relayId,
 }: {
   archiveFormat: FileArchiveFormat
@@ -437,26 +499,31 @@ function startRelayDownload({
   instanceId: string
   name: string
   path: string
+  preflight?: boolean
   relayId: string
 }) {
   return Effect.tryPromise({
-    try: () =>
-      downloadRelayFile({
+    try: async () => {
+      if (preflight) {
+        await inspectRelayFileDownload({ instanceId, path, relayId })
+      }
+      await downloadRelayFile({
         compression: compressed ? archiveFormat : "none",
         instanceId,
         name,
         path,
         relayId,
-      }),
+      })
+    },
     catch: (cause) => cause,
   })
 }
 
-function showDownloadStartedToast(name: string) {
+function showDownloadRequestedToast(name: string) {
   showToast({
-    type: "success",
-    message: "Download started",
-    description: `${name} is streaming directly from the Relay.`,
+    type: "info",
+    message: "Download requested",
+    description: `${name} was handed to your browser. Check its downloads for status.`,
   })
 }
 

@@ -5,7 +5,10 @@ import { Switch } from "@workspace/ui/components/switch"
 import { cn } from "@workspace/ui/lib/utils"
 
 import {
-  readFileDownloadPreferences,
+  defaultFileDownloadPreferencesSnapshot,
+  fileDownloadPreferencesFromSnapshot,
+  readFileDownloadPreferencesSnapshot,
+  subscribeFileDownloadPreferences,
   writeFileDownloadPreferences,
 } from "@/lib/file-download-preferences"
 import type {
@@ -14,16 +17,18 @@ import type {
 } from "@/lib/file-download-preferences"
 
 export const FilesSettingsPage = React.memo(function FilesSettingsPage() {
-  const [preferences, setPreferences] = React.useState<FileDownloadPreferences>(
-    readFileDownloadPreferences
+  const preferencesSnapshot = React.useSyncExternalStore(
+    subscribeFileDownloadPreferences,
+    readFileDownloadPreferencesSnapshot,
+    defaultFileDownloadPreferencesSnapshot
+  )
+  const preferences = React.useMemo(
+    () => fileDownloadPreferencesFromSnapshot(preferencesSnapshot),
+    [preferencesSnapshot]
   )
 
-  React.useEffect(() => {
-    setPreferences(readFileDownloadPreferences())
-  }, [])
-
   const update = React.useCallback((next: Partial<FileDownloadPreferences>) => {
-    setPreferences(writeFileDownloadPreferences(next))
+    writeFileDownloadPreferences(next)
   }, [])
 
   return (
