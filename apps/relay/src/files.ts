@@ -31,7 +31,7 @@ const MAX_FILE_BYTES = 2 * 1024 * 1024
 const MAX_LOG_SHARE_BYTES = 10 * 1024 * 1024
 const MAX_TREE_ITEMS = 5_000
 const MAX_TREE_DEPTH = 10
-const MAX_TRANSFER_BYTES = 20 * 1024 * 1024 * 1024
+export const MAX_TRANSFER_BYTES = 20 * 1024 * 1024 * 1024
 const gunzipAsync = promisify(gunzip)
 
 export class FilesystemDriver {
@@ -278,6 +278,13 @@ export class FilesystemDriver {
                 "not_a_file",
                 "download",
                 "Path is not a file"
+              )
+            }
+            if (metadata.size > MAX_TRANSFER_BYTES) {
+              return yield* filesystemFailure(
+                "file_too_large",
+                "download",
+                "Download exceeds the 20 GiB transfer limit"
               )
             }
             return yield* use({

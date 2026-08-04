@@ -71,6 +71,7 @@ import {
   createFileSelectionStore,
   fileEditorFontSizes,
 } from "@/components/files/file-workspace-stores"
+import { FileDownloadDialog } from "@/components/files/file-download-dialog"
 import type {
   EditorSearchStore,
   EditorSessionStore,
@@ -79,7 +80,7 @@ import type {
 } from "@/components/files/file-workspace-stores"
 import { redactSensitiveText } from "@/lib/redaction"
 import { fileLanguageForPath } from "@/lib/file-language"
-import { downloadRelayFile, uploadRelayFile } from "@/lib/relay-file-transfer"
+import { uploadRelayFile } from "@/lib/relay-file-transfer"
 import {
   loadSyntaxCodeEditorModule,
   warmSyntaxCodeEditorModule,
@@ -690,16 +691,11 @@ function EditorResponsiveActions({
       <StableEditorFontSizeButton preferencesStore={preferencesStore} />
       <StableEditorWrapButton sessionStore={sessionStore} />
       <StableEditorCopyButton sessionStore={sessionStore} />
-      <EditorTooltip content="Download - Coming Soon">
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Download - Coming Soon"
-          disabled
-        >
-          <Download className="size-[17px]" />
-        </Button>
-      </EditorTooltip>
+      <EditorDownloadButton
+        instance={instance}
+        loading={loading}
+        path={file.path}
+      />
       <EditorSaveButton
         file={file}
         loading={loading}
@@ -1211,46 +1207,58 @@ function EditorDownloadActionMenuItem({
   loading: boolean
   path: string
 }) {
-  const [downloading, setDownloading] = React.useState(false)
-  const download = React.useCallback(async () => {
-    setDownloading(true)
-    await Effect.runPromise(
-      Effect.tryPromise({
-        try: () =>
-          downloadRelayFile({
-            instanceId: instance.id,
-            path,
-            relayId: instance.relayId,
-          }),
-        catch: (cause) => cause,
-      }).pipe(
-        Effect.catch((cause) =>
-          Effect.sync(() =>
-            showToast({
-              type: "error",
-              message: "Could not download file",
-              description:
-                cause instanceof Error
-                  ? cause.message
-                  : "The Relay could not complete the download.",
-            })
-          )
-        ),
-        Effect.ensuring(Effect.sync(() => setDownloading(false)))
-      )
-    )
-  }, [instance.id, instance.relayId, path])
+  const [open, setOpen] = React.useState(false)
 
   return (
-    <FileActionMenuItem
-      icon={
-        downloading ? <LoaderCircle className="animate-spin" /> : <Download />
-      }
-      label={downloading ? "Preparing download" : "Download"}
-      detail="Transfer directly from Relay"
-      disabled={loading || downloading}
-      onClick={() => void download()}
-    />
+    <>
+      <FileActionMenuItem
+        icon={<Download />}
+        label="Download"
+        detail="Preview size and compression"
+        disabled={loading}
+        onClick={() => setOpen(true)}
+      />
+      <FileDownloadDialog
+        instance={instance}
+        open={open}
+        path={path}
+        onOpenChange={setOpen}
+      />
+    </>
+  )
+}
+
+function EditorDownloadButton({
+  instance,
+  loading,
+  path,
+}: {
+  instance: InstanceWorkspaceInstance
+  loading: boolean
+  path: string
+}) {
+  const [open, setOpen] = React.useState(false)
+
+  return (
+    <>
+      <EditorTooltip content="Download">
+        <Button
+          variant={open ? "secondary" : "ghost"}
+          size="icon"
+          aria-label="Download file"
+          disabled={loading}
+          onClick={() => setOpen(true)}
+        >
+          <Download className="size-[17px]" />
+        </Button>
+      </EditorTooltip>
+      <FileDownloadDialog
+        instance={instance}
+        open={open}
+        path={path}
+        onOpenChange={setOpen}
+      />
+    </>
   )
 }
 
@@ -1979,6 +1987,10 @@ function FileTreePanel({
   })
   const uploadInputRef = React.useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = React.useState(false)
+  const [downloadPath, setDownloadPath] = React.useState<string | null>(null)
+  const changeDownloadOpen = React.useCallback((open: boolean) => {
+    if (!open) setDownloadPath(null)
+  }, [])
 
   const handleFilesSelected = React.useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -2472,6 +2484,15 @@ function FileTreePanel({
               </button>
               <button
                 type="button"
+                disabled={item.path.endsWith("/")}
+                className="flex w-full items-center gap-2 px-2 py-1.5 hover:bg-popover-accent disabled:pointer-events-none disabled:opacity-40"
+                onClick={() => setDownloadPath(item.path)}
+              >
+                <Download className="size-3.5" />
+                Download
+              </button>
+              <button
+                type="button"
                 className="flex w-full px-2 py-1.5 text-destructive hover:bg-destructive/10"
               >
                 Delete
@@ -2480,6 +2501,15 @@ function FileTreePanel({
           )}
         />
       </div>
+
+      {downloadPath ? (
+        <FileDownloadDialog
+          instance={instance}
+          open
+          path={downloadPath}
+          onOpenChange={changeDownloadOpen}
+        />
+      ) : null}
 
       <span
         aria-hidden="true"

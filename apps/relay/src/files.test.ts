@@ -4,6 +4,7 @@ import {
   readdir,
   rm,
   symlink,
+  truncate,
   writeFile,
 } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -13,7 +14,7 @@ import { assert, describe, it } from "@effect/vitest"
 import { Deferred, Effect, Fiber } from "effect"
 
 import { loadConfig } from "./config.js"
-import { FilesystemDriver } from "./files.js"
+import { FilesystemDriver, MAX_TRANSFER_BYTES } from "./files.js"
 import { RelayFilesystemError } from "./effect/errors.js"
 import type { RelayInstanceConfig } from "./config.js"
 
@@ -122,6 +123,25 @@ describeLinux("Relay direct file transfers", () => {
         yield* Fiber.interrupt(fiber)
 
         assert.strictEqual(handle.fd, -1)
+      })
+    )
+  )
+
+  it.effect("rejects downloads above the browser transfer limit", () =>
+    withSetup(({ driver, instance, root }) =>
+      Effect.gen(function* () {
+        const oversized = resolve(root, "world", "oversized.bin")
+        yield* fromPromise(async () => {
+          await writeFile(oversized, "")
+          await truncate(oversized, MAX_TRANSFER_BYTES + 1)
+        })
+
+        const failure = yield* driver
+          .withDownload(instance, "world/oversized.bin", () => Effect.void)
+          .pipe(Effect.flip)
+
+        assert.instanceOf(failure, RelayFilesystemError)
+        assert.strictEqual(failure.code, "file_too_large")
       })
     )
   )

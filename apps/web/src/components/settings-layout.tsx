@@ -1,9 +1,10 @@
 import * as React from "react"
 import { Link, Outlet } from "@tanstack/react-router"
-import { CircleUserRound, CreditCard, Palette } from "lucide-react"
+import { CircleUserRound, CreditCard, FolderDown, Palette } from "lucide-react"
 
 const settingsTabs = [
   { label: "Appearance", to: "/settings/appearance", icon: Palette },
+  { label: "Files", to: "/settings/files", icon: FolderDown },
   { label: "Account", to: "/settings/account", icon: CircleUserRound },
   { label: "Billing", to: "/settings/billing", icon: CreditCard },
 ] as const

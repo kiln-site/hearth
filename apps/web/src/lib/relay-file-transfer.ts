@@ -3,7 +3,8 @@ import { Effect } from "effect"
 
 import { recoverPromise } from "@/effect/promise"
 import { issueFileCapability } from "@/server/relay-capability"
-import { getRelayFile, saveRelayFile } from "@/server/relay"
+import { saveRelayFile } from "@/server/relay"
+import type { FileArchiveFormat } from "@/lib/file-download-preferences"
 
 const HEARTH_FILE_FALLBACK_LIMIT = 2 * 1024 * 1024
 
@@ -15,51 +16,134 @@ interface FileTransferInput {
   relayId: string
 }
 
-export async function downloadRelayFile(
-  input: FileTransferInput
-): Promise<void> {
-  const blob = await runTransfer(
-    transferOperation(async () => {
-      const response = await relayFileRequest(input, "GET")
-      if (!response.ok) throw await transferError(response, "download")
-      return response.blob()
-    }).pipe(
-      Effect.catchIf(isDirectConnectionFailure, () =>
-        transferOperation(async () => {
-          const file = await getRelayFile({ data: input })
-          if (file.encoding !== "utf8") {
-            throw new Error("Archived files require the direct transfer edge")
-          }
-          return new Blob([file.content], { type: "text/plain;charset=utf-8" })
-        }).pipe(
-          Effect.mapError((cause) =>
-            directTransferUnavailable("download", cause)
-          )
-        )
-      )
-    )
-  )
-  triggerDownload(blob, input.path)
+export interface RelayFileDownloadPreview {
+  gzipSizeEstimate: number
+  maxSize: number
+  modifiedAt: string
+  name: string
+  recommendedCompression: boolean
+  size: number
+  zipSizeEstimate: number
 }
 
-function triggerDownload(blob: Blob, path: string): void {
-  Effect.runSync(
-    Effect.acquireUseRelease(
-      Effect.sync(() => URL.createObjectURL(blob)),
-      (objectUrl) =>
-        Effect.sync(() => {
-          const anchor = document.createElement("a")
-          anchor.href = objectUrl
-          anchor.download = path.split("/").filter(Boolean).at(-1) || "download"
-          anchor.rel = "noopener"
-          anchor.click()
-        }),
-      (objectUrl) =>
-        Effect.sync(() => {
-          setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000)
-        })
+type DownloadCompression = FileArchiveFormat | "none"
+type FileRequestMethod = "HEAD" | "POST" | "PUT"
+
+interface RelayFileAuthorization {
+  headers: {
+    Authorization: string
+    "X-Kiln-Nonce": string
+    "X-Kiln-Proof": string
+    "X-Kiln-Public-Key": string
+    "X-Kiln-Requested-At": string
+  }
+  url: URL
+}
+
+export async function inspectRelayFileDownload(
+  input: FileTransferInput
+): Promise<RelayFileDownloadPreview> {
+  const response = await runTransfer(
+    transferOperation(async () => {
+      const result = await relayFileRequest(input, "HEAD")
+      if (!result.ok) throw await transferError(result, "download")
+      return result
+    }).pipe(
+      Effect.mapError((cause) => directTransferUnavailable("download", cause))
     )
   )
+  const size = requiredSizeHeader(response, "Content-Length")
+  const gzipSizeEstimate = requiredSizeHeader(
+    response,
+    "X-Kiln-Gzip-Size-Estimate"
+  )
+  const zipSizeEstimate = requiredSizeHeader(
+    response,
+    "X-Kiln-Zip-Size-Estimate"
+  )
+  const maxSize = requiredSizeHeader(response, "X-Kiln-Download-Max-Size")
+  return {
+    gzipSizeEstimate,
+    maxSize,
+    modifiedAt: response.headers.get("Last-Modified") ?? "",
+    name: input.path.split("/").filter(Boolean).at(-1) || "download",
+    recommendedCompression: size >= 256 * 1024 && zipSizeEstimate < size * 0.9,
+    size,
+    zipSizeEstimate,
+  }
+}
+
+export async function downloadRelayFile(
+  input: FileTransferInput & {
+    compression: DownloadCompression
+    name: string
+  }
+): Promise<void> {
+  const name = input.name.trim()
+  if (!isValidRelayDownloadName(name)) {
+    throw new Error("Enter a valid file name without slashes")
+  }
+  const authorization = await runTransfer(
+    transferOperation(() => relayFileAuthorization(input, "POST")).pipe(
+      Effect.mapError((cause) => directTransferUnavailable("download", cause))
+    )
+  )
+  submitNativeDownload(authorization, {
+    compression: input.compression,
+    name,
+    path: input.path,
+  })
+}
+
+export function isValidRelayDownloadName(name: string): boolean {
+  const trimmed = name.trim()
+  if (!trimmed || trimmed.length > 255 || trimmed === "." || trimmed === "..") {
+    return false
+  }
+  return !Array.from(trimmed).some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0
+    return (
+      codePoint < 32 ||
+      codePoint === 127 ||
+      character === "/" ||
+      character === "\\"
+    )
+  })
+}
+
+function submitNativeDownload(
+  authorization: RelayFileAuthorization,
+  input: { compression: DownloadCompression; name: string; path: string }
+): void {
+  const target = `kiln-download-${crypto.randomUUID()}`
+  const frame = document.createElement("iframe")
+  frame.hidden = true
+  frame.name = target
+  const form = document.createElement("form")
+  form.hidden = true
+  form.action = authorization.url.toString()
+  form.method = "post"
+  form.target = target
+  const values = {
+    authorization: authorization.headers.Authorization,
+    compression: input.compression,
+    name: input.name,
+    nonce: authorization.headers["X-Kiln-Nonce"],
+    path: input.path,
+    proof: authorization.headers["X-Kiln-Proof"],
+    publicKey: authorization.headers["X-Kiln-Public-Key"],
+    requestedAt: authorization.headers["X-Kiln-Requested-At"],
+  }
+  for (const [key, value] of Object.entries(values)) {
+    const field = document.createElement("input")
+    field.name = key
+    field.value = value
+    form.append(field)
+  }
+  document.body.append(frame, form)
+  form.submit()
+  form.remove()
+  window.setTimeout(() => frame.remove(), 60_000)
 }
 
 export async function uploadRelayFile(
@@ -136,9 +220,34 @@ export async function uploadRelayFile(
 
 async function relayFileRequest(
   input: FileTransferInput,
-  method: "GET" | "PUT",
+  method: "HEAD" | "PUT",
   body?: BodyInit
 ): Promise<Response> {
+  const authorization = await relayFileAuthorization(input, method)
+  return runTransfer(
+    transferOperation(() =>
+      fetch(authorization.url, {
+        ...(body === undefined ? {} : { body }),
+        headers: authorization.headers,
+        method,
+        mode: "cors",
+      })
+    ).pipe(
+      Effect.mapError(
+        (cause) =>
+          new DirectRelayTransferError(
+            "The browser could not establish the direct Relay transfer",
+            { cause }
+          )
+      )
+    )
+  )
+}
+
+async function relayFileAuthorization(
+  input: FileTransferInput,
+  method: FileRequestMethod
+): Promise<RelayFileAuthorization> {
   const keys = await crypto.subtle.generateKey(
     { name: "ECDSA", namedCurve: "P-256" },
     false,
@@ -191,32 +300,26 @@ async function relayFileRequest(
     issued.browserOrigin
   )
   url.searchParams.set("path", input.path)
-  return runTransfer(
-    transferOperation(() =>
-      fetch(url, {
-        ...(body === undefined ? {} : { body }),
-        headers: {
-          Authorization: `Kiln ${issued.capability}`,
-          "X-Kiln-Nonce": nonce,
-          "X-Kiln-Proof": bytesToBase64Url(new Uint8Array(proof)),
-          "X-Kiln-Public-Key": bytesToBase64Url(
-            new TextEncoder().encode(JSON.stringify(publicKeyJwk))
-          ),
-          "X-Kiln-Requested-At": String(requestedAt),
-        },
-        method,
-        mode: "cors",
-      })
-    ).pipe(
-      Effect.mapError(
-        (cause) =>
-          new DirectRelayTransferError(
-            "The browser could not establish the direct Relay transfer",
-            { cause }
-          )
-      )
-    )
-  )
+  return {
+    headers: {
+      Authorization: `Kiln ${issued.capability}`,
+      "X-Kiln-Nonce": nonce,
+      "X-Kiln-Proof": bytesToBase64Url(new Uint8Array(proof)),
+      "X-Kiln-Public-Key": bytesToBase64Url(
+        new TextEncoder().encode(JSON.stringify(publicKeyJwk))
+      ),
+      "X-Kiln-Requested-At": String(requestedAt),
+    },
+    url,
+  }
+}
+
+function requiredSizeHeader(response: Response, name: string): number {
+  const value = Number(response.headers.get(name))
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error("Relay returned invalid download metadata")
+  }
+  return value
 }
 
 function isDirectConnectionFailure(cause: unknown): boolean {

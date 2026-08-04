@@ -45,6 +45,7 @@ import { Route as AppSettingsIndexRouteImport } from './routes/_app.settings.ind
 import { Route as AppSettingsAccountRouteImport } from './routes/_app.settings.account'
 import { Route as AppSettingsAppearanceRouteImport } from './routes/_app.settings.appearance'
 import { Route as AppSettingsBillingRouteImport } from './routes/_app.settings.billing'
+import { Route as AppSettingsFilesRouteImport } from './routes/_app.settings.files'
 import { Route as AppSettingsRelaysRouteImport } from './routes/_app.settings.relays'
 import { Route as ApiAuthSplatRouteImport } from './routes/api.auth.$'
 import { Route as ApiConsoleInstanceIdRouteImport } from './routes/api.console.$instanceId'
@@ -236,6 +237,11 @@ const AppSettingsBillingRoute = AppSettingsBillingRouteImport.update({
   path: '/billing',
   getParentRoute: () => AppSettingsRoute,
 } as any)
+const AppSettingsFilesRoute = AppSettingsFilesRouteImport.update({
+  id: '/files',
+  path: '/files',
+  getParentRoute: () => AppSettingsRoute,
+} as any)
 const AppSettingsRelaysRoute = AppSettingsRelaysRouteImport.update({
   id: '/relays',
   path: '/relays',
@@ -330,6 +336,7 @@ export interface FileRoutesByFullPath {
   '/settings/account': typeof AppSettingsAccountRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
   '/settings/billing': typeof AppSettingsBillingRoute
+  '/settings/files': typeof AppSettingsFilesRoute
   '/settings/relays': typeof AppSettingsRelaysRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/console/$instanceId': typeof ApiConsoleInstanceIdRoute
@@ -375,6 +382,7 @@ export interface FileRoutesByTo {
   '/settings/account': typeof AppSettingsAccountRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
   '/settings/billing': typeof AppSettingsBillingRoute
+  '/settings/files': typeof AppSettingsFilesRoute
   '/settings/relays': typeof AppSettingsRelaysRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/console/$instanceId': typeof ApiConsoleInstanceIdRoute
@@ -425,6 +433,7 @@ export interface FileRoutesById {
   '/_app/settings/account': typeof AppSettingsAccountRoute
   '/_app/settings/appearance': typeof AppSettingsAppearanceRoute
   '/_app/settings/billing': typeof AppSettingsBillingRoute
+  '/_app/settings/files': typeof AppSettingsFilesRoute
   '/_app/settings/relays': typeof AppSettingsRelaysRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/console/$instanceId': typeof ApiConsoleInstanceIdRoute
@@ -475,6 +484,7 @@ export interface FileRouteTypes {
     | '/settings/account'
     | '/settings/appearance'
     | '/settings/billing'
+    | '/settings/files'
     | '/settings/relays'
     | '/api/auth/$'
     | '/api/console/$instanceId'
@@ -520,6 +530,7 @@ export interface FileRouteTypes {
     | '/settings/account'
     | '/settings/appearance'
     | '/settings/billing'
+    | '/settings/files'
     | '/settings/relays'
     | '/api/auth/$'
     | '/api/console/$instanceId'
@@ -569,6 +580,7 @@ export interface FileRouteTypes {
     | '/_app/settings/account'
     | '/_app/settings/appearance'
     | '/_app/settings/billing'
+    | '/_app/settings/files'
     | '/_app/settings/relays'
     | '/api/auth/$'
     | '/api/console/$instanceId'
@@ -859,6 +871,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsBillingRouteImport
       parentRoute: typeof AppSettingsRoute
     }
+    '/_app/settings/files': {
+      id: '/_app/settings/files'
+      path: '/files'
+      fullPath: '/settings/files'
+      preLoaderRoute: typeof AppSettingsFilesRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
     '/_app/settings/relays': {
       id: '/_app/settings/relays'
       path: '/relays'
@@ -967,6 +986,7 @@ interface AppSettingsRouteChildren {
   AppSettingsAccountRoute: typeof AppSettingsAccountRoute
   AppSettingsAppearanceRoute: typeof AppSettingsAppearanceRoute
   AppSettingsBillingRoute: typeof AppSettingsBillingRoute
+  AppSettingsFilesRoute: typeof AppSettingsFilesRoute
   AppSettingsRelaysRoute: typeof AppSettingsRelaysRoute
   AppSettingsIndexRoute: typeof AppSettingsIndexRoute
 }
@@ -975,6 +995,7 @@ const AppSettingsRouteChildren: AppSettingsRouteChildren = {
   AppSettingsAccountRoute: AppSettingsAccountRoute,
   AppSettingsAppearanceRoute: AppSettingsAppearanceRoute,
   AppSettingsBillingRoute: AppSettingsBillingRoute,
+  AppSettingsFilesRoute: AppSettingsFilesRoute,
   AppSettingsRelaysRoute: AppSettingsRelaysRoute,
   AppSettingsIndexRoute: AppSettingsIndexRoute,
 }

@@ -6,9 +6,18 @@ import {
   verify,
 } from "node:crypto"
 import type { ReadStream } from "node:fs"
+import type { FileHandle } from "node:fs/promises"
+import type { Readable } from "node:stream"
+import {
+  constants as zlibConstants,
+  createGzip,
+  deflateRawSync,
+  gzipSync,
+} from "node:zlib"
 import { Effect, Fiber, Option, Result, Schema } from "effect"
 import { WebSocket, WebSocketServer } from "ws"
 import * as Sentry from "@sentry/node"
+import ZipStream from "zip-stream"
 
 import {
   relayBrowserProofTranscript,
@@ -29,6 +38,7 @@ import {
   encodeConsoleLineFrame,
   encodeNewestConsoleBatch,
 } from "./console-frames.js"
+import { MAX_TRANSFER_BYTES } from "./files.js"
 import type { FilesystemDriver } from "./files.js"
 import type { RelayInstanceConfig } from "./config.js"
 import type { RelayIdentity } from "./effect/identity.js"
@@ -44,6 +54,27 @@ const HTTP_PROOF_WINDOW_MS = 30_000
 const MAX_BROWSER_SESSIONS = 512
 const MAX_DIRECT_TRANSFERS = 32
 const MAX_DIRECT_TRANSFERS_PER_CLIENT = 8
+const MAX_DOWNLOAD_FORM_BYTES = 32 * 1024
+const COMPRESSION_SAMPLE_BYTES = 1024 * 1024
+
+type BrowserFileMethod = "GET" | "HEAD" | "POST" | "PUT"
+
+interface BrowserRequestCredentials {
+  authorization: string
+  nonce: string
+  proof: string
+  publicKey: string
+  requestedAt: string
+}
+
+interface BrowserDownloadForm {
+  compression: DownloadCompression
+  credentials: BrowserRequestCredentials
+  name: string
+  path: string
+}
+
+type DownloadCompression = "gzip" | "none" | "zip"
 
 const BrowserAuthSchema = Schema.Struct({
   capability: Schema.String,
@@ -594,7 +625,7 @@ async function handleBrowserFileRequest(
             "X-Kiln-Public-Key",
             "X-Kiln-Requested-At",
           ].join(", "),
-          "Access-Control-Allow-Methods": "GET, HEAD, PUT, OPTIONS",
+          "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, OPTIONS",
           "Access-Control-Max-Age": "600",
         })
       )
@@ -602,7 +633,12 @@ async function handleBrowserFileRequest(
     return true
   }
   const method = request.method
-  if (method !== "GET" && method !== "HEAD" && method !== "PUT") {
+  if (
+    method !== "GET" &&
+    method !== "HEAD" &&
+    method !== "POST" &&
+    method !== "PUT"
+  ) {
     browserJson(response, 405, { error: "Method not allowed" }, origin)
     return true
   }
@@ -612,7 +648,25 @@ async function handleBrowserFileRequest(
     return true
   }
   const instanceId = decodedInstanceId.success
-  const path = url.searchParams.get("path") ?? ""
+  let downloadForm: BrowserDownloadForm | null = null
+  if (method === "POST") {
+    const parsedForm = await runBrowser(
+      browserOperation(() => readBrowserDownloadForm(request)).pipe(
+        Effect.option
+      )
+    )
+    if (Option.isNone(parsedForm)) {
+      browserJson(
+        response,
+        400,
+        { error: "Download request is invalid" },
+        origin
+      )
+      return true
+    }
+    downloadForm = parsedForm.value
+  }
+  const path = downloadForm?.path ?? url.searchParams.get("path") ?? ""
   const authenticated = await runBrowser(
     browserOperation(() =>
       authenticateBrowserRequest({
@@ -622,6 +676,7 @@ async function handleBrowserFileRequest(
         origin,
         path,
         request,
+        ...(downloadForm ? { credentials: downloadForm.credentials } : {}),
         pendingRequestProofs,
         requestProofs,
       })
@@ -679,17 +734,60 @@ async function handleBrowserFileRequest(
         options.filesystem.withDownload(instance, path, (download) =>
           Effect.tryPromise({
             try: async () => {
+              const compression = downloadForm?.compression ?? "none"
               const range = parseRange(request.headers.range, download.size)
+              if (compression !== "none" && range) {
+                throw new Error("Compressed downloads do not support ranges")
+              }
+              const estimatedCompressedSizes =
+                method === "HEAD"
+                  ? await estimateCompressedSizes(
+                      download.file,
+                      download.name,
+                      download.size
+                    )
+                  : null
+              const downloadName = normalizedDownloadName(
+                downloadForm?.name,
+                compression === "zip"
+                  ? `${download.name}.zip`
+                  : compression === "gzip"
+                    ? `${download.name}.gz`
+                    : download.name
+              )
               const headers = browserCorsHeaders(origin, {
-                "Accept-Ranges": "bytes",
+                ...(compression === "none" ? { "Accept-Ranges": "bytes" } : {}),
                 "Cache-Control": "no-store",
-                "Content-Disposition": contentDisposition(download.name),
-                "Content-Length": String(
-                  range ? range.end - range.start + 1 : download.size
-                ),
-                "Content-Type": "application/octet-stream",
+                "Content-Disposition": contentDisposition(downloadName),
+                ...(compression === "none"
+                  ? {
+                      "Content-Length": String(
+                        range ? range.end - range.start + 1 : download.size
+                      ),
+                    }
+                  : {}),
+                "Content-Type":
+                  compression === "zip"
+                    ? "application/zip"
+                    : compression === "gzip"
+                      ? "application/gzip"
+                      : "application/octet-stream",
                 "Last-Modified": new Date(download.modifiedAt).toUTCString(),
                 "X-Content-Type-Options": "nosniff",
+                "X-Kiln-Download-Max-Size": String(MAX_TRANSFER_BYTES),
+                ...(estimatedCompressedSizes === null
+                  ? {}
+                  : {
+                      "X-Kiln-Compressed-Size-Estimate": String(
+                        estimatedCompressedSizes.zip
+                      ),
+                      "X-Kiln-Gzip-Size-Estimate": String(
+                        estimatedCompressedSizes.gzip
+                      ),
+                      "X-Kiln-Zip-Size-Estimate": String(
+                        estimatedCompressedSizes.zip
+                      ),
+                    }),
               })
               if (range) {
                 headers["Content-Range"] =
@@ -712,7 +810,10 @@ async function handleBrowserFileRequest(
                 : { autoClose: false }
               const result = await streamDownload(
                 download.file.createReadStream(streamOptions),
-                response
+                response,
+                compression,
+                download.name,
+                download.size
               )
               void auditBrowserTransfer(
                 options,
@@ -764,8 +865,9 @@ async function handleBrowserFileRequest(
 }
 
 async function authenticateBrowserRequest(input: {
+  credentials?: BrowserRequestCredentials
   instanceId: string
-  method: "GET" | "HEAD" | "PUT"
+  method: BrowserFileMethod
   options: BrowserSocketOptions
   origin: string
   path: string
@@ -778,7 +880,8 @@ async function authenticateBrowserRequest(input: {
   instanceId: string
   subject: string
 }> {
-  const authorization = header(input.request, "authorization")
+  const authorization =
+    input.credentials?.authorization ?? header(input.request, "authorization")
   if (!authorization.startsWith("Kiln ")) throw new Error("Missing capability")
   const parsed = decodeCapability(authorization.slice(5))
   const requiredAction =
@@ -786,7 +889,8 @@ async function authenticateBrowserRequest(input: {
   const publicKeyJwk = Schema.decodeUnknownSync(BrowserPublicKeySchema)(
     JSON.parse(
       Buffer.from(
-        header(input.request, "x-kiln-public-key"),
+        input.credentials?.publicKey ??
+          header(input.request, "x-kiln-public-key"),
         "base64url"
       ).toString("utf8")
     ) as unknown
@@ -794,8 +898,12 @@ async function authenticateBrowserRequest(input: {
   if (browserKeyThumbprint(publicKeyJwk) !== parsed.payload.keyThumbprint) {
     throw new Error("Browser key does not match capability")
   }
-  const requestedAt = Number(header(input.request, "x-kiln-requested-at"))
-  const nonce = header(input.request, "x-kiln-nonce")
+  const requestedAt = Number(
+    input.credentials?.requestedAt ??
+      header(input.request, "x-kiln-requested-at")
+  )
+  const nonce =
+    input.credentials?.nonce ?? header(input.request, "x-kiln-nonce")
   if (
     !Number.isSafeInteger(requestedAt) ||
     Math.abs(Date.now() - requestedAt) > HTTP_PROOF_WINDOW_MS ||
@@ -834,7 +942,7 @@ async function authenticateBrowserRequest(input: {
 
       const browserKey = createPublicKey({ format: "jwk", key: publicKeyJwk })
       const proof = Buffer.from(
-        header(input.request, "x-kiln-proof"),
+        input.credentials?.proof ?? header(input.request, "x-kiln-proof"),
         "base64url"
       )
       const valid = verify(
@@ -878,7 +986,7 @@ async function auditBrowserTransfer(
     instanceId: string
     subject: string
   },
-  method: "GET" | "HEAD" | "PUT",
+  method: BrowserFileMethod,
   bytes: number,
   outcome: "aborted" | "completed" = "completed"
 ): Promise<void> {
@@ -935,8 +1043,16 @@ function browserCorsHeaders(
 ): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": origin,
-    "Access-Control-Expose-Headers":
-      "Content-Disposition, Content-Length, Content-Range",
+    "Access-Control-Expose-Headers": [
+      "Content-Disposition",
+      "Content-Length",
+      "Content-Range",
+      "Last-Modified",
+      "X-Kiln-Compressed-Size-Estimate",
+      "X-Kiln-Download-Max-Size",
+      "X-Kiln-Gzip-Size-Estimate",
+      "X-Kiln-Zip-Size-Estimate",
+    ].join(", "),
     Vary: "Origin",
     ...extra,
   }
@@ -996,15 +1112,139 @@ function contentDisposition(name: string): string {
   return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`
 }
 
+function normalizedDownloadName(
+  requestedName: string | undefined,
+  fallback: string
+): string {
+  const name = requestedName?.trim() || fallback
+  if (
+    name.length > 255 ||
+    name === "." ||
+    name === ".." ||
+    Array.from(name).some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0
+      return (
+        codePoint < 32 ||
+        codePoint === 127 ||
+        character === "/" ||
+        character === "\\"
+      )
+    })
+  ) {
+    throw new Error("Download name is invalid")
+  }
+  return name
+}
+
+async function readBrowserDownloadForm(
+  request: IncomingMessage
+): Promise<BrowserDownloadForm> {
+  if (
+    !request.headers["content-type"]?.startsWith(
+      "application/x-www-form-urlencoded"
+    )
+  ) {
+    throw new Error("Download request encoding is invalid")
+  }
+  const chunks: Array<Buffer> = []
+  let size = 0
+  for await (const chunk of request) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += bytes.byteLength
+    if (size > MAX_DOWNLOAD_FORM_BYTES) {
+      throw new Error("Download request is too large")
+    }
+    chunks.push(bytes)
+  }
+  const form = new URLSearchParams(Buffer.concat(chunks).toString("utf8"))
+  const required = (name: string) => {
+    const value = form.get(name)
+    if (!value) throw new Error(`Download ${name} is missing`)
+    return value
+  }
+  const compression = form.get("compression")
+  if (
+    compression !== "gzip" &&
+    compression !== "none" &&
+    compression !== "zip"
+  ) {
+    throw new Error("Download compression is invalid")
+  }
+  return {
+    compression,
+    credentials: {
+      authorization: required("authorization"),
+      nonce: required("nonce"),
+      proof: required("proof"),
+      publicKey: required("publicKey"),
+      requestedAt: required("requestedAt"),
+    },
+    name: required("name"),
+    path: required("path"),
+  }
+}
+
+async function estimateCompressedSizes(
+  file: FileHandle,
+  name: string,
+  size: number
+): Promise<{ gzip: number; zip: number }> {
+  const sampleSize = Math.min(size, COMPRESSION_SAMPLE_BYTES)
+  const zipOverhead =
+    114 + Buffer.byteLength(name) * 2 + (size > 0xffffffff ? 98 : 0)
+  if (sampleSize === 0) {
+    const gzip = gzipSync(Buffer.alloc(0), {
+      level: zlibConstants.Z_BEST_SPEED,
+    }).byteLength
+    return { gzip, zip: zipOverhead }
+  }
+  const sample = Buffer.allocUnsafe(sampleSize)
+  const { bytesRead } = await file.read(sample, 0, sampleSize, 0)
+  if (bytesRead === 0) {
+    const gzip = gzipSync(Buffer.alloc(0), {
+      level: zlibConstants.Z_BEST_SPEED,
+    }).byteLength
+    return { gzip, zip: zipOverhead }
+  }
+  const contents = sample.subarray(0, bytesRead)
+  const gzipSize = gzipSync(contents, {
+    level: zlibConstants.Z_BEST_SPEED,
+  }).byteLength
+  const zipSize = deflateRawSync(contents, {
+    level: zlibConstants.Z_BEST_SPEED,
+  }).byteLength
+  return {
+    gzip: Math.ceil((gzipSize / bytesRead) * size),
+    zip: Math.ceil((zipSize / bytesRead) * size) + zipOverhead,
+  }
+}
+
 function streamDownload(
   stream: ReadStream,
-  response: ServerResponse
+  response: ServerResponse,
+  compression: DownloadCompression,
+  entryName: string,
+  size: number
 ): Promise<{ bytes: number; completed: boolean }> {
   return new Promise((resolveStream, reject) => {
+    const archive =
+      compression === "zip"
+        ? new ZipStream({
+            forceZip64: size > 0xffffffff,
+            zlib: { level: zlibConstants.Z_BEST_SPEED },
+          })
+        : null
+    const output: Readable = archive
+      ? archive
+      : compression === "gzip"
+        ? stream.pipe(createGzip({ level: zlibConstants.Z_BEST_SPEED }))
+        : stream
     let bytes = 0
+    let settled = false
     const cleanup = () => {
       stream.off("error", failed)
-      stream.off("data", received)
+      if (output !== stream) output.off("error", failed)
+      output.off("data", received)
       response.off("finish", finished)
       response.off("close", closed)
     }
@@ -1012,23 +1252,41 @@ function streamDownload(
       bytes += Buffer.byteLength(chunk)
     }
     const failed = (cause: Error) => {
+      if (settled) return
+      settled = true
       cleanup()
+      stream.destroy()
+      if (output !== stream) output.destroy()
+      if (!response.destroyed) response.destroy(cause)
       reject(cause)
     }
     const finished = () => {
+      if (settled) return
+      settled = true
       cleanup()
       resolveStream({ bytes, completed: true })
     }
     const closed = () => {
+      if (settled) return
+      settled = true
       stream.destroy()
+      archive?.destroy()
+      if (output !== stream) output.destroy()
       cleanup()
       resolveStream({ bytes, completed: false })
     }
     stream.once("error", failed)
-    stream.on("data", received)
+    if (output !== stream) output.once("error", failed)
+    output.on("data", received)
     response.once("finish", finished)
     response.once("close", closed)
-    stream.pipe(response)
+    output.pipe(response)
+    if (archive) {
+      archive.entry(stream, { name: entryName }, (cause) => {
+        if (cause) failed(cause)
+        else archive.finalize()
+      })
+    }
   })
 }
 

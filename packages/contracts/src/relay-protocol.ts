@@ -364,7 +364,7 @@ export function relayBrowserRequestProofTranscript(input: {
   readonly capabilityId: string
   readonly expiresAt: number
   readonly instanceId: string
-  readonly method: "GET" | "HEAD" | "PUT"
+  readonly method: "GET" | "HEAD" | "POST" | "PUT"
   readonly nonce: string
   readonly path: string
   readonly relayId: string
