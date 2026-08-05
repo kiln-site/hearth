@@ -2377,26 +2377,6 @@ function isTerminalOnlyConsoleFrame(value: string): boolean {
   ) {
     return true
   }
-  if (value.includes("\r")) {
-    const curlFrames = value
-      .split("\r")
-      .map((frame) =>
-        stripConsoleFormatting(frame)
-          .replace(/^\d{4}-\d{2}-\d{2}T\S+Z\s*/u, "")
-          .trim()
-      )
-      .filter(Boolean)
-    if (
-      curlFrames.length > 0 &&
-      curlFrames.every(
-        (frame) =>
-          CURL_PROGRESS_HEADER_PATTERN.test(frame) ||
-          CURL_PROGRESS_ROW_PATTERN.test(frame)
-      )
-    ) {
-      return true
-    }
-  }
   if (MINECRAFT_LOG_PREFIX_PATTERN.test(normalized)) return false
   const terminalText = normalized
     .replace(/^\d{4}-\d{2}-\d{2}T\S+Z\s*/u, "")

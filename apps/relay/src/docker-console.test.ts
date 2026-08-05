@@ -90,17 +90,4 @@ describe("Docker console parsing", () => {
       parseConsoleLine(`2026-07-25T17:59:03.000000000Z ${line}`)
     ).toBeNull()
   })
-
-  it("removes curl progress updates batched into one Docker TTY line", () => {
-    const pending =
-      "0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0"
-    const complete =
-      "100  177k    0  177k    0     0   170k      0 --:--:--  0:00:01 --:--:--  170k"
-
-    expect(
-      parseConsoleLine(
-        `2026-07-25T17:59:03.000000000Z \r${pending}\r${pending}\r${complete}`
-      )
-    ).toBeNull()
-  })
 })
