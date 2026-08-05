@@ -44,6 +44,10 @@ import {
   isManagedPortLabel,
 } from "./port-allocations.js"
 import {
+  INSTALLATION_MARKER_LABEL,
+  installationMarkerName,
+} from "./installation-marker.js"
+import {
   INSTANCE_STARTUP_READINESS_TIMEOUT_MS,
   INSTANCE_STOP_TIMEOUT_SECONDS,
   observedInstancePowerState,
@@ -66,6 +70,9 @@ interface DockerInspect {
   HostConfig?: {
     Memory?: number
     PortBindings?: DockerPortBindings
+    RestartPolicy?: {
+      Name?: string
+    }
   }
   Mounts: Array<{
     Destination: string
@@ -430,6 +437,35 @@ export class DockerDriver {
                 Effect.ignore
               )
             : Effect.void,
+        { concurrency: "unbounded", discard: true }
+      )
+    )
+    await runEffect(
+      Effect.forEach(
+        discovered,
+        ({ config, container }) => {
+          const marker = installationMarkerName(
+            container.Config.Labels?.[INSTALLATION_MARKER_LABEL]
+          )
+          if (
+            !config.managedByRelay ||
+            !container.State.Running ||
+            container.HostConfig?.RestartPolicy?.Name !== "no" ||
+            !marker ||
+            !existsSync(
+              resolve(this.#config.rootDirectory, config.directory, marker)
+            )
+          ) {
+            return Effect.void
+          }
+          return promiseEffect(() =>
+            command("docker", [
+              "update",
+              "--restart=unless-stopped",
+              config.service,
+            ])
+          ).pipe(Effect.ignore)
+        },
         { concurrency: "unbounded", discard: true }
       )
     )

@@ -55,6 +55,11 @@ import type { BrickCatalog } from "./bricks.js"
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
 import type { DockerDriver } from "./docker.js"
 import {
+  INSTALLATION_MARKER_ENV,
+  INSTALLATION_MARKER_LABEL,
+  installationMarkerName,
+} from "./installation-marker.js"
+import {
   dockerPortBindingsForAllocations,
   portAllocationContainerLabels,
   portLabelsRequireRestart,
@@ -1972,6 +1977,14 @@ export class LifecycleDriver {
   }): Promise<RelayInstance> {
     const definition = await this.#bricks.recipe(input.recipe)
     const resolved = resolveBrick(definition, input.variables, input.recipe)
+    const installationMarkerValue =
+      resolved.environment[INSTALLATION_MARKER_ENV]
+    const installationMarker = installationMarkerName(installationMarkerValue)
+    if (installationMarkerValue && !installationMarker) {
+      throw new Error(
+        `${INSTALLATION_MARKER_ENV} must be a filename containing only letters, numbers, dots, underscores, or hyphens`
+      )
+    }
     const existing = await this.#docker.inspectInstances()
     const memoryLimitBytes = dockerMemoryBytes(resolved.memory)
     if (
@@ -2035,6 +2048,9 @@ export class LifecycleDriver {
     const memoryLimit = resolved.memory
     const directory = join(this.#config.rootDirectory, id)
     const hostDirectory = join(await this.#hostDataDirectory(), "instances", id)
+    if (installationMarker) {
+      await rm(join(directory, installationMarker), { force: true })
+    }
     const networking = await this.networking()
     const tailscaleSettings = input.tailscale.enabled
       ? await this.tailscaleSettings()
@@ -2158,7 +2174,7 @@ export class LifecycleDriver {
       "--interactive",
       "--tty",
       "--restart",
-      "unless-stopped",
+      installationMarker ? "no" : "unless-stopped",
       "--read-only",
       "--tmpfs",
       "/tmp:rw,exec,nosuid,nodev,size=128m",
@@ -2217,6 +2233,12 @@ export class LifecycleDriver {
       "--volume",
       `${hostDirectory}:${definition.runtime.storage.mount}`,
     ]
+    if (installationMarker) {
+      arguments_.push(
+        "--label",
+        `${INSTALLATION_MARKER_LABEL}=${installationMarker}`
+      )
+    }
     for (const [label, value] of Object.entries(portLabels)) {
       arguments_.push("--label", `${label}=${value}`)
     }
