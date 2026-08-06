@@ -103,6 +103,7 @@ export interface RelayRuntimeRecoveryRecord {
   readonly lastStartedAt: string | null
   readonly nextAttemptAt: number | null
   readonly phase: RelayRuntimeRecoveryPhase
+  readonly stopPending: boolean
   readonly updatedAt: number
 }
 
@@ -192,6 +193,7 @@ const RelayRuntimeRecoveryRowSchema = Schema.Struct({
   lastStartedAt: Schema.NullOr(Schema.String),
   nextAttemptAt: Schema.NullOr(Schema.Number),
   phase: RelayRuntimeRecoveryPhaseSchema,
+  stopPending: Schema.Number,
   updatedAt: Schema.Number,
 })
 
@@ -442,6 +444,14 @@ const migrations = SqliteMigrator.fromRecord({
       ) STRICT
     `
   }),
+  "5_runtime_recovery_stop_pending": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`
+      ALTER TABLE relay_runtime_recovery
+      ADD COLUMN stop_pending INTEGER NOT NULL DEFAULT 0
+        CHECK (stop_pending IN (0, 1))
+    `
+  }),
 })
 
 const makeRelayStateStore = Effect.gen(function* () {
@@ -520,6 +530,7 @@ const makeRelayStateStore = Effect.gen(function* () {
               last_oom_killed AS lastOomKilled,
               last_reason AS lastReason,
               last_runtime_ms AS lastRuntimeMs,
+              stop_pending AS stopPending,
               updated_at AS updatedAt
             FROM relay_runtime_recovery
             WHERE instance_id = ${instanceId}
@@ -538,6 +549,7 @@ const makeRelayStateStore = Effect.gen(function* () {
               last_oom_killed AS lastOomKilled,
               last_reason AS lastReason,
               last_runtime_ms AS lastRuntimeMs,
+              stop_pending AS stopPending,
               updated_at AS updatedAt
             FROM relay_runtime_recovery
             ORDER BY instance_id ASC
@@ -548,6 +560,7 @@ const makeRelayStateStore = Effect.gen(function* () {
           ({
             ...row,
             lastOomKilled: row.lastOomKilled === 1,
+            stopPending: row.stopPending === 1,
           }) satisfies RelayRuntimeRecoveryRecord
       )
     }
@@ -1080,6 +1093,7 @@ const makeRelayStateStore = Effect.gen(function* () {
             last_oom_killed,
             last_reason,
             last_runtime_ms,
+            stop_pending,
             updated_at
           ) VALUES (
             ${recovery.instanceId},
@@ -1093,6 +1107,7 @@ const makeRelayStateStore = Effect.gen(function* () {
             ${recovery.lastOomKilled ? 1 : 0},
             ${recovery.lastReason},
             ${recovery.lastRuntimeMs},
+            ${recovery.stopPending ? 1 : 0},
             ${recovery.updatedAt}
           )
           ON CONFLICT (instance_id) DO UPDATE SET
@@ -1106,6 +1121,7 @@ const makeRelayStateStore = Effect.gen(function* () {
             last_oom_killed = excluded.last_oom_killed,
             last_reason = excluded.last_reason,
             last_runtime_ms = excluded.last_runtime_ms,
+            stop_pending = excluded.stop_pending,
             updated_at = excluded.updated_at
         `.pipe(Effect.asVoid)
       ),

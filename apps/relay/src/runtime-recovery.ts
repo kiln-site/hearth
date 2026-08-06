@@ -49,11 +49,13 @@ export type RuntimeRecoveryStop = (
 ) => Effect.Effect<void, unknown>
 
 export class RuntimeRecoveryManager {
+  readonly #activeStops = new Map<string, symbol>()
   readonly #config: RelayConfig["runtimeRecovery"]
   readonly #activeStarts = new Map<string, symbol>()
   readonly #locks = new Map<string, Semaphore.Semaphore>()
   readonly #now: () => number
   readonly #records = new Map<string, RelayRuntimeRecoveryRecord>()
+  readonly #reportedStopFailures = new Set<string>()
   readonly #startContainer: RuntimeRecoveryStart
   readonly #state: RelayStateStore["Service"]
   readonly #stopContainer: RuntimeRecoveryStop
@@ -77,6 +79,7 @@ export class RuntimeRecoveryManager {
       Effect.tap((records) =>
         Effect.sync(() => {
           this.#records.clear()
+          this.#reportedStopFailures.clear()
           for (const record of records) {
             this.#records.set(record.instanceId, record)
           }
@@ -220,20 +223,30 @@ export class RuntimeRecoveryManager {
       }
 
       if (existing.desiredState === "stopped") {
+        const enforceStoppedIntent =
+          observation.running && existing.stopPending
+          ? this.#scheduleCompensatingStop(observation)
+          : Effect.void
+        const stopPending = observation.running ? existing.stopPending : false
         if (
           existing.phase === "idle" &&
           existing.attempts === 0 &&
-          existing.nextAttemptAt === null
+          existing.nextAttemptAt === null &&
+          stopPending === existing.stopPending
         ) {
-          return Effect.succeed(this.#entry(existing))
+          return enforceStoppedIntent.pipe(Effect.as(this.#entry(existing)))
         }
         return this.#persist({
           ...existing,
           attempts: 0,
           nextAttemptAt: null,
           phase: "idle",
+          stopPending,
           updatedAt: now,
-        }).pipe(Effect.map((record) => this.#entry(record)))
+        }).pipe(
+          Effect.tap(() => enforceStoppedIntent),
+          Effect.map((record) => this.#entry(record))
+        )
       }
 
       if (observation.running) {
@@ -544,30 +557,113 @@ export class RuntimeRecoveryManager {
   ): Effect.Effect<void, unknown> {
     return this.#lock(observation.instanceId).withPermit(
       Effect.suspend(() => {
-        const shouldStop =
-          this.#records.get(observation.instanceId)?.desiredState === "stopped"
-        return (
+        const current = this.#records.get(observation.instanceId)
+        if (!current || current.desiredState !== "stopped") return Effect.void
+        return this.#persist({
+          ...current,
+          stopPending: true,
+          updatedAt: this.#now(),
+        }).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              this.#reportedStopFailures.delete(observation.instanceId)
+            })
+          ),
+          Effect.andThen(this.#scheduleCompensatingStop(observation))
+        )
+      })
+    )
+  }
+
+  #scheduleCompensatingStop(
+    observation: RuntimeRecoveryObservation
+  ): Effect.Effect<void, never> {
+    return Effect.suspend(() => {
+      if (this.#activeStops.has(observation.instanceId)) return Effect.void
+      const token = Symbol(observation.instanceId)
+      this.#activeStops.set(observation.instanceId, token)
+      return this.#performCompensatingStop(observation, token).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (this.#activeStops.get(observation.instanceId) === token) {
+              this.#activeStops.delete(observation.instanceId)
+            }
+          })
+        ),
+        Effect.forkDetach({ startImmediately: true }),
+        Effect.asVoid
+      )
+    })
+  }
+
+  #performCompensatingStop(
+    observation: RuntimeRecoveryObservation,
+    token: symbol
+  ): Effect.Effect<void, never> {
+    return this.#lock(observation.instanceId)
+      .withPermit(
+        Effect.sync(
+          () =>
+            this.#activeStops.get(observation.instanceId) === token &&
+            this.#records.get(observation.instanceId)?.stopPending === true &&
+            this.#records.get(observation.instanceId)?.desiredState === "stopped"
+        )
+      )
+      .pipe(
+        Effect.flatMap((shouldStop) =>
           shouldStop
             ? this.#stopContainer(observation.service).pipe(
                 Effect.tap(() =>
-                  Effect.logInfo(
-                    "Stopped server after an in-flight recovery start",
-                    {
-                      instanceId: observation.instanceId,
-                    }
+                  Effect.sync(() => {
+                    this.#reportedStopFailures.delete(observation.instanceId)
+                  }).pipe(
+                    Effect.andThen(
+                      Effect.logInfo(
+                        "Stopped server to enforce stopped intent",
+                        {
+                          instanceId: observation.instanceId,
+                        }
+                      )
+                    )
                   )
                 )
               )
             : Effect.void
-        ).pipe(
-          Effect.withSpan("relay.runtimeRecovery.enforceDesiredState", {
-            attributes: {
-              "kiln.recovery.instance_id": observation.instanceId,
-            },
-          })
+        ),
+        Effect.withSpan("relay.runtimeRecovery.compensatingStop", {
+          attributes: {
+            "kiln.recovery.instance_id": observation.instanceId,
+          },
+        }),
+        Effect.catch((cause) =>
+          Effect.sync(() => {
+            const shouldReport = !this.#reportedStopFailures.has(
+              observation.instanceId
+            )
+            this.#reportedStopFailures.add(observation.instanceId)
+            if (shouldReport) {
+              Sentry.captureException(cause, {
+                tags: {
+                  "kiln.instance_id": observation.instanceId,
+                  "kiln.recovery": "intent_enforcement_failed",
+                },
+              })
+            }
+            return shouldReport
+          }).pipe(
+            Effect.flatMap((shouldReport) =>
+              shouldReport
+                ? Effect.logError(
+                    "Could not enforce stopped server intent; Relay will retry",
+                    { instanceId: observation.instanceId }
+                  )
+                : Effect.logDebug("Stopped intent retry failed", {
+                    instanceId: observation.instanceId,
+                  })
+            )
+          )
         )
-      })
-    )
+      )
   }
 
   #recordStartFailure(
@@ -669,6 +765,9 @@ export class RuntimeRecoveryManager {
       Effect.tap(() =>
         Effect.sync(() => {
           this.#records.set(record.instanceId, record)
+          if (record.desiredState === "running" || !record.stopPending) {
+            this.#reportedStopFailures.delete(record.instanceId)
+          }
         })
       ),
       Effect.as(record)
@@ -680,6 +779,7 @@ export class RuntimeRecoveryManager {
       Effect.tap(() =>
         Effect.sync(() => {
           this.#records.delete(instanceId)
+          this.#reportedStopFailures.delete(instanceId)
         })
       )
     )
@@ -746,6 +846,7 @@ function initialRecoveryRecord(
     lastStartedAt,
     nextAttemptAt: null,
     phase: "idle",
+    stopPending: false,
     updatedAt: now,
   }
 }

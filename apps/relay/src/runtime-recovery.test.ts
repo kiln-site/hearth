@@ -231,6 +231,37 @@ describe("runtime recovery", () => {
       })
     )
 
+    it.effect("lets a normal intentional shutdown finish gracefully", () =>
+      Effect.gen(function* () {
+        const state = yield* RelayStateStore
+        const config = loadConfig({ NODE_ENV: "test" })
+        const stops = yield* Ref.make(0)
+        const manager = new RuntimeRecoveryManager(
+          config,
+          state,
+          undefined,
+          Date.now,
+          () => Ref.update(stops, (count) => count + 1)
+        )
+        yield* manager.initialize()
+
+        const instanceId = "e".repeat(40)
+        yield* manager.recordProvisioned(instanceId, "running", 100)
+        yield* manager.recordPowerAction(instanceId, "stop", 200)
+        const stopping = yield* manager.reconcile(
+          [observation(instanceId)],
+          201
+        )
+        yield* Effect.yieldNow
+
+        assert.deepStrictEqual(stopping.get(instanceId), {
+          desiredState: "stopped",
+          recovery: null,
+        })
+        assert.strictEqual(yield* Ref.get(stops), 0)
+      })
+    )
+
     it.effect("observes a manual start after the retry circuit opens", () =>
       Effect.gen(function* () {
         const state = yield* RelayStateStore
@@ -410,7 +441,74 @@ describe("runtime recovery", () => {
         })
     )
 
-    it.effect("stops a recovery start that loses to intentional stop", () =>
+    it.effect(
+      "stops a recovery start without blocking reconciliation",
+      () =>
+        Effect.gen(function* () {
+          const state = yield* RelayStateStore
+          const config = loadConfig({
+            KILN_RELAY_CRASH_RETRY_DELAY_SECONDS: "0",
+            NODE_ENV: "test",
+          })
+          const startBegan = yield* Deferred.make<void>()
+          const releaseStart = yield* Deferred.make<void>()
+          const stopBegan = yield* Deferred.make<void>()
+          const releaseStop = yield* Deferred.make<void>()
+          let stoppedService: string | null = null
+          const manager = new RuntimeRecoveryManager(
+            config,
+            state,
+            () =>
+              Deferred.succeed(startBegan, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseStart))
+              ),
+            Date.now,
+            (service) =>
+              Effect.sync(() => {
+                stoppedService = service
+              }).pipe(
+                Effect.andThen(Deferred.succeed(stopBegan, undefined)),
+                Effect.andThen(Deferred.await(releaseStop))
+              )
+          )
+          yield* manager.initialize()
+
+          const instanceId = "c".repeat(40)
+          const stopped = observation(instanceId, {
+            exitCode: 1,
+            ready: false,
+            running: false,
+          })
+          yield* manager.recordProvisioned(instanceId, "running", 100)
+          yield* manager.reconcile([stopped], 200)
+          yield* manager.reconcile([stopped], 201)
+          yield* Deferred.await(startBegan)
+
+          yield* manager.recordPowerAction(instanceId, "stop", 202)
+          yield* Deferred.succeed(releaseStart, undefined)
+          yield* Deferred.await(stopBegan)
+
+          const reconcileFiber = yield* manager
+            .reconcile([observation(instanceId)], 203)
+            .pipe(Effect.forkChild)
+          yield* Effect.yieldNow
+          assert.isDefined(reconcileFiber.pollUnsafe())
+          yield* Fiber.join(reconcileFiber)
+          yield* Deferred.succeed(releaseStop, undefined)
+
+          assert.strictEqual(stoppedService, "kiln-cccccccc")
+          assert.deepStrictEqual(manager.snapshot(instanceId), {
+            desiredState: "stopped",
+            recovery: null,
+          })
+          assert.strictEqual(
+            (yield* state.getRuntimeRecovery(instanceId))?.desiredState,
+            "stopped"
+          )
+        })
+    )
+
+    it.effect("requeues a failed stop while stopped intent is still running", () =>
       Effect.gen(function* () {
         const state = yield* RelayStateStore
         const config = loadConfig({
@@ -419,8 +517,19 @@ describe("runtime recovery", () => {
         })
         const startBegan = yield* Deferred.make<void>()
         const releaseStart = yield* Deferred.make<void>()
-        const compensatingStop = yield* Deferred.make<void>()
-        let stoppedService: string | null = null
+        const attempts = yield* Ref.make(0)
+        const firstFailed = yield* Deferred.make<void>()
+        const retried = yield* Deferred.make<void>()
+        const stopContainer = () =>
+          Ref.updateAndGet(attempts, (count) => count + 1).pipe(
+            Effect.flatMap((attempt) =>
+              attempt === 1
+                ? Deferred.succeed(firstFailed, undefined).pipe(
+                    Effect.andThen(Effect.fail(new Error("Docker stop failed")))
+                  )
+                : Deferred.succeed(retried, undefined)
+            )
+          )
         const manager = new RuntimeRecoveryManager(
           config,
           state,
@@ -429,14 +538,12 @@ describe("runtime recovery", () => {
               Effect.andThen(Deferred.await(releaseStart))
             ),
           Date.now,
-          (service) =>
-            Effect.sync(() => {
-              stoppedService = service
-            }).pipe(Effect.andThen(Deferred.succeed(compensatingStop, undefined)))
+          stopContainer
         )
         yield* manager.initialize()
 
-        const instanceId = "c".repeat(40)
+        const instanceId = "d".repeat(40)
+        const unexpectedlyRunning = observation(instanceId)
         const stopped = observation(instanceId, {
           exitCode: 1,
           ready: false,
@@ -446,19 +553,34 @@ describe("runtime recovery", () => {
         yield* manager.reconcile([stopped], 200)
         yield* manager.reconcile([stopped], 201)
         yield* Deferred.await(startBegan)
-
         yield* manager.recordPowerAction(instanceId, "stop", 202)
         yield* Deferred.succeed(releaseStart, undefined)
-        yield* Deferred.await(compensatingStop)
+        yield* Deferred.await(firstFailed)
+        yield* Effect.yieldNow
+        assert.strictEqual(yield* Ref.get(attempts), 1)
+        assert.isTrue(
+          (yield* state.getRuntimeRecovery(instanceId))?.stopPending === true
+        )
 
-        assert.strictEqual(stoppedService, "kiln-cccccccc")
-        assert.deepStrictEqual(manager.snapshot(instanceId), {
+        const restartedManager = new RuntimeRecoveryManager(
+          config,
+          state,
+          undefined,
+          Date.now,
+          stopContainer
+        )
+        yield* restartedManager.initialize()
+        yield* restartedManager.reconcile([unexpectedlyRunning], 203)
+        yield* Deferred.await(retried)
+        assert.strictEqual(yield* Ref.get(attempts), 2)
+        assert.deepStrictEqual(restartedManager.snapshot(instanceId), {
           desiredState: "stopped",
           recovery: null,
         })
-        assert.strictEqual(
-          (yield* state.getRuntimeRecovery(instanceId))?.desiredState,
-          "stopped"
+        yield* Effect.yieldNow
+        yield* restartedManager.reconcile([stopped], 204)
+        assert.isTrue(
+          (yield* state.getRuntimeRecovery(instanceId))?.stopPending === false
         )
       })
     )
