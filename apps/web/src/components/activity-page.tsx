@@ -6,7 +6,6 @@ import { ensuringPromise, forkPromise } from "@/effect/promise"
 import {
   ArrowLeftRight,
   CalendarDays,
-  Check,
   ChevronDown,
   CircleGauge,
   FileClock,
@@ -38,9 +37,12 @@ import {
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
 import { useIsMobile } from "@workspace/ui/hooks/use-mobile"
-import { cn } from "@workspace/ui/lib/utils"
 
 import { WorkspaceSummaryCard } from "@/components/workspace-summary-card"
+import {
+  ServerPickerList,
+  serverPickerOptionKey,
+} from "@/components/server-picker-list"
 import {
   activityLocalRangeToUtc,
   activityTypes,
@@ -288,8 +290,6 @@ const ActivityServerFilter = React.memo(function ActivityServerFilter({
           {
             ...server,
             relayName,
-            searchText:
-              `${server.name} ${server.id} ${relayName}`.toLocaleLowerCase(),
           },
         ]
       }),
@@ -301,16 +301,17 @@ const ActivityServerFilter = React.memo(function ActivityServerFilter({
     ? relayNameById.get(filters.relay)
     : undefined
   const [pickerOpen, setPickerOpen] = React.useState(false)
-  const [serverQuery, setServerQuery] = React.useState("")
-  const normalizedServerQuery = serverQuery.trim().toLocaleLowerCase()
-  const visibleServers = React.useMemo(
+  const selectedKeys = React.useMemo(
     () =>
-      normalizedServerQuery
-        ? servers.filter((server) =>
-            server.searchText.includes(normalizedServerQuery)
-          )
-        : servers,
-    [normalizedServerQuery, servers]
+      new Set(selectedServer ? [serverPickerOptionKey(selectedServer)] : []),
+    [selectedServer]
+  )
+  const selectServer = React.useCallback(
+    (server: (typeof servers)[number]) => {
+      onFiltersChange({ server: server.id })
+      setPickerOpen(false)
+    },
+    [onFiltersChange]
   )
   const selectionMetadata = selectedServer
     ? selectedServer.id
@@ -320,13 +321,7 @@ const ActivityServerFilter = React.memo(function ActivityServerFilter({
 
   return (
     <div className="mb-3">
-      <Popover
-        open={pickerOpen}
-        onOpenChange={(open) => {
-          setPickerOpen(open)
-          if (!open) setServerQuery("")
-        }}
-      >
+      <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
         <WorkspaceSummaryCard
           action={
             <PopoverTrigger asChild>
@@ -357,101 +352,20 @@ const ActivityServerFilter = React.memo(function ActivityServerFilter({
           align="end"
           className="w-[min(32rem,calc(100vw-2rem))] p-1.5"
         >
-          <div className="relative mb-1.5">
-            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              autoFocus
-              aria-label="Search accessible servers"
-              className="h-8 pl-8"
-              placeholder="Search by name, Relay, or ID"
-              value={serverQuery}
-              onChange={(event) => setServerQuery(event.currentTarget.value)}
-            />
-          </div>
-          <div
-            role="listbox"
-            aria-label="Accessible servers"
-            className="no-scrollbar max-h-72 space-y-0.5 overflow-y-auto overscroll-contain"
-          >
-            {normalizedServerQuery.length === 0 ? (
-              <button
-                type="button"
-                role="option"
-                aria-selected={selectedServer === null}
-                className={cn(
-                  "flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left transition-colors duration-150",
-                  selectedServer === null
-                    ? "bg-primary/14 ring-1 ring-primary/35"
-                    : "hover:bg-accent/55"
-                )}
-                onClick={() => {
-                  onFiltersChange({ server: undefined })
-                  setPickerOpen(false)
-                }}
-              >
-                <span className="grid size-8 shrink-0 place-items-center rounded-md border border-border/70 bg-background/70 text-muted-foreground">
-                  <Server className="size-4" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-semibold tracking-tight">
-                    All servers
-                  </span>
-                  <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                    Every accessible instance
-                  </span>
-                </span>
-                {selectedServer === null ? (
-                  <Check className="size-4 shrink-0 text-primary" />
-                ) : null}
-              </button>
-            ) : null}
-
-            {visibleServers.map((server) => {
-              const selected =
-                selectedServer !== null &&
-                server.id === selectedServer.id &&
-                server.relayId === selectedServer.relayId
-              return (
-                <button
-                  key={`${server.relayId}:${server.id}`}
-                  type="button"
-                  role="option"
-                  aria-selected={selected}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left transition-colors duration-150",
-                    selected
-                      ? "bg-primary/14 ring-1 ring-primary/35"
-                      : "hover:bg-accent/55"
-                  )}
-                  onClick={() => {
-                    onFiltersChange({ server: server.id })
-                    setPickerOpen(false)
-                  }}
-                >
-                  <span className="grid size-8 shrink-0 place-items-center rounded-md border border-border/70 bg-background/70 text-muted-foreground">
-                    <Server className="size-4" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-semibold tracking-tight">
-                      {server.name}
-                    </span>
-                    <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                      {server.relayName} · {server.id}
-                    </span>
-                  </span>
-                  {selected ? (
-                    <Check className="size-4 shrink-0 text-primary" />
-                  ) : null}
-                </button>
-              )
-            })}
-
-            {visibleServers.length === 0 ? (
-              <p className="px-3 py-6 text-center text-xs text-muted-foreground">
-                No accessible servers found.
-              </p>
-            ) : null}
-          </div>
+          <ServerPickerList
+            allOption={{
+              description: "Every accessible instance",
+              label: "All servers",
+              selected: selectedServer === null,
+              onSelect: () => {
+                onFiltersChange({ server: undefined })
+                setPickerOpen(false)
+              },
+            }}
+            selectedKeys={selectedKeys}
+            servers={servers}
+            onSelect={selectServer}
+          />
         </PopoverContent>
       </Popover>
     </div>

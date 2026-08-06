@@ -33,16 +33,15 @@ import type { PersistedRelay } from "@/lib/relay-registry"
 import { listPersistedRelays } from "@/lib/relay-registry"
 import { requireAuthenticatedUser } from "@/server/auth"
 
-const createDatabaseInputSchema = z
-  .object({
-    engine: databaseEngineSchema,
-    name: relayDatabaseNameSchema,
-    relayId: relayIdSchema,
-  })
-  .strict()
-const databaseInputSchema = z
-  .object({ databaseId: databaseIdSchema, relayId: relayIdSchema })
-  .strict()
+const createDatabaseInputSchema = z.strictObject({
+  engine: databaseEngineSchema,
+  name: relayDatabaseNameSchema,
+  relayId: relayIdSchema,
+})
+const databaseInputSchema = z.strictObject({
+  databaseId: databaseIdSchema,
+  relayId: relayIdSchema,
+})
 const databaseActionInputSchema = databaseInputSchema.extend({
   action: z.enum(["start", "stop", "restart"]),
 })
