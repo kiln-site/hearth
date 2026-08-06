@@ -262,6 +262,81 @@ describe("runtime recovery", () => {
       })
     )
 
+    it.effect("clears pending stop compensation on every power action", () =>
+      Effect.gen(function* () {
+        const state = yield* RelayStateStore
+        const config = loadConfig({ NODE_ENV: "test" })
+        const initialManager = new RuntimeRecoveryManager(config, state)
+        yield* initialManager.initialize()
+
+        const instanceId = "a".repeat(40)
+        yield* initialManager.recordProvisioned(instanceId, "running", 100)
+        const initial = yield* state.getRuntimeRecovery(instanceId)
+        if (!initial) {
+          return yield* Effect.die("expected a runtime recovery record")
+        }
+        yield* state.setRuntimeRecovery({
+          ...initial,
+          desiredState: "stopped",
+          stopPending: true,
+        })
+
+        const stops = yield* Ref.make(0)
+        const manager = new RuntimeRecoveryManager(
+          config,
+          state,
+          undefined,
+          Date.now,
+          () => Ref.update(stops, (count) => count + 1)
+        )
+        yield* manager.initialize()
+
+        yield* manager.recordPowerAction(instanceId, "start", 200)
+        assert.isFalse(
+          (yield* state.getRuntimeRecovery(instanceId))?.stopPending ?? true
+        )
+
+        yield* manager.recordPowerAction(instanceId, "stop", 201)
+        yield* manager.reconcile([observation(instanceId)], 202)
+        yield* Effect.yieldNow
+
+        assert.isFalse(
+          (yield* state.getRuntimeRecovery(instanceId))?.stopPending ?? true
+        )
+        assert.strictEqual(yield* Ref.get(stops), 0)
+      })
+    )
+
+    it.effect(
+      "clears stale stop compensation when running intent is observed",
+      () =>
+        Effect.gen(function* () {
+          const state = yield* RelayStateStore
+          const config = loadConfig({ NODE_ENV: "test" })
+          const initialManager = new RuntimeRecoveryManager(config, state)
+          yield* initialManager.initialize()
+
+          const instanceId = "b".repeat(40)
+          yield* initialManager.recordProvisioned(instanceId, "running", 100)
+          const initial = yield* state.getRuntimeRecovery(instanceId)
+          if (!initial) {
+            return yield* Effect.die("expected a runtime recovery record")
+          }
+          yield* state.setRuntimeRecovery({
+            ...initial,
+            stopPending: true,
+          })
+
+          const manager = new RuntimeRecoveryManager(config, state)
+          yield* manager.initialize()
+          yield* manager.reconcile([observation(instanceId)], 200)
+
+          assert.isFalse(
+            (yield* state.getRuntimeRecovery(instanceId))?.stopPending ?? true
+          )
+        })
+    )
+
     it.effect("observes a manual start after the retry circuit opens", () =>
       Effect.gen(function* () {
         const state = yield* RelayStateStore

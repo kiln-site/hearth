@@ -144,6 +144,7 @@ export class RuntimeRecoveryManager {
             desiredState,
             nextAttemptAt: null,
             phase: "idle" as const,
+            stopPending: false,
             updatedAt: now,
           }
           return this.#persist(next).pipe(Effect.as(previous))
@@ -323,6 +324,7 @@ export class RuntimeRecoveryManager {
         attempts: 0,
         nextAttemptAt: null,
         phase: "idle",
+        stopPending: false,
         updatedAt: now,
       }).pipe(
         Effect.tap(() =>
@@ -339,6 +341,7 @@ export class RuntimeRecoveryManager {
         ...existing,
         nextAttemptAt: null,
         phase: "monitoring",
+        stopPending: false,
         updatedAt: now,
       }).pipe(
         Effect.tap(() =>
@@ -356,6 +359,7 @@ export class RuntimeRecoveryManager {
         ...existing,
         nextAttemptAt: null,
         phase: observation.ready ? "monitoring" : "restarting",
+        stopPending: false,
         updatedAt: now,
       }).pipe(
         Effect.tap(() =>
@@ -373,6 +377,15 @@ export class RuntimeRecoveryManager {
         ...existing,
         nextAttemptAt: null,
         phase,
+        stopPending: false,
+        updatedAt: now,
+      }).pipe(Effect.map((record) => this.#entry(record)))
+    }
+
+    if (existing.stopPending) {
+      return this.#persist({
+        ...existing,
+        stopPending: false,
         updatedAt: now,
       }).pipe(Effect.map((record) => this.#entry(record)))
     }
