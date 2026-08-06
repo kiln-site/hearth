@@ -24,7 +24,10 @@ afterEach(async () => {
 })
 
 describe("installer restart policy", () => {
-  it("enables automatic restarts after a running Ember reports installation complete", async () => {
+  async function inspectInstaller(input: {
+    installationComplete: boolean
+    startedAt: string
+  }) {
     const dataDirectory = await mkdtemp(join(tmpdir(), "kiln-installation-"))
     temporaryDirectories.push(dataDirectory)
     const config = loadConfig({
@@ -35,7 +38,9 @@ describe("installer restart policy", () => {
     const id = "a".repeat(40)
     const serverDirectory = join(config.rootDirectory, id)
     await mkdir(serverDirectory, { recursive: true })
-    await writeFile(join(serverDirectory, ".kiln-ember-installed"), "")
+    if (input.installationComplete) {
+      await writeFile(join(serverDirectory, ".kiln-ember-installed"), "")
+    }
 
     const container = {
       Config: {
@@ -67,7 +72,7 @@ describe("installer restart policy", () => {
         OOMKilled: false,
         Restarting: false,
         Running: true,
-        StartedAt: "2026-08-05T20:00:00.000Z",
+        StartedAt: input.startedAt,
         Status: "running",
       },
     }
@@ -84,12 +89,31 @@ describe("installer restart policy", () => {
       }
     )
 
-    await new DockerDriver(config).inspectInstances()
+    return new DockerDriver(config).inspectInstances()
+  }
+
+  it("enables automatic restarts as soon as an Ember reports installation complete", async () => {
+    await inspectInstaller({
+      installationComplete: true,
+      startedAt: new Date().toISOString(),
+    })
 
     expect(commandMock).toHaveBeenCalledWith("docker", [
       "update",
       "--restart=unless-stopped",
       "installation-test-kiln-aaaaaaaa",
     ])
+  })
+
+  it("keeps automatic restarts disabled until installation completes", async () => {
+    await inspectInstaller({
+      installationComplete: false,
+      startedAt: "2026-08-05T20:00:00.000Z",
+    })
+
+    expect(commandMock).not.toHaveBeenCalledWith(
+      "docker",
+      expect.arrayContaining(["update"])
+    )
   })
 })

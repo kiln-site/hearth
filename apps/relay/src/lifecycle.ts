@@ -57,7 +57,9 @@ import type { DockerDriver } from "./docker.js"
 import {
   INSTALLATION_MARKER_ENV,
   INSTALLATION_MARKER_LABEL,
+  INSTALLATION_MARKER_PROTOCOL_LABEL,
   installationMarkerName,
+  supportsInstallationMarkerProtocol,
 } from "./installation-marker.js"
 import {
   dockerPortBindingsForAllocations,
@@ -1982,7 +1984,7 @@ export class LifecycleDriver {
     const installationMarker = installationMarkerName(installationMarkerValue)
     if (installationMarkerValue && !installationMarker) {
       throw new Error(
-        `${INSTALLATION_MARKER_ENV} must be a filename containing only letters, numbers, dots, underscores, or hyphens`
+        `${INSTALLATION_MARKER_ENV} must be a .kiln-* filename containing only letters, numbers, dots, underscores, or hyphens`
       )
     }
     const existing = await this.#docker.inspectInstances()
@@ -2101,18 +2103,48 @@ export class LifecycleDriver {
       await this.#ensureEdgeNetwork()
     }
     if (networking?.enabled) await this.#ensureInfrastructure(networking, false)
-    await runLifecycle(
-      lifecycleOperation(() =>
-        command("docker", ["image", "inspect", image])
-      ).pipe(
-        Effect.catch(() =>
-          lifecycleOperation(() =>
-            command("docker", ["pull", image], { timeout: 300_000 })
-          )
-        ),
-        Effect.asVoid
+    let managedInstallationMarker: string | null = null
+    if (installationMarker) {
+      await runLifecycle(
+        lifecycleOperation(() =>
+          command("docker", ["pull", image], { timeout: 300_000 })
+        ).pipe(
+          Effect.catch(() =>
+            lifecycleOperation(() =>
+              command("docker", ["image", "inspect", image])
+            )
+          ),
+          Effect.asVoid
+        )
       )
-    )
+      const protocol = await runLifecycle(
+        lifecycleOperation(() =>
+          command("docker", [
+            "image",
+            "inspect",
+            "--format",
+            `{{ index .Config.Labels "${INSTALLATION_MARKER_PROTOCOL_LABEL}" }}`,
+            image,
+          ])
+        ).pipe(Effect.map((result) => result.stdout.trim()))
+      )
+      if (supportsInstallationMarkerProtocol(protocol)) {
+        managedInstallationMarker = installationMarker
+      }
+    } else {
+      await runLifecycle(
+        lifecycleOperation(() =>
+          command("docker", ["image", "inspect", image])
+        ).pipe(
+          Effect.catch(() =>
+            lifecycleOperation(() =>
+              command("docker", ["pull", image], { timeout: 300_000 })
+            )
+          ),
+          Effect.asVoid
+        )
+      )
+    }
 
     if (definition.network.mode === "minecraft-proxy") {
       await this.#writeVelocityConfig(
@@ -2174,7 +2206,7 @@ export class LifecycleDriver {
       "--interactive",
       "--tty",
       "--restart",
-      installationMarker ? "no" : "unless-stopped",
+      managedInstallationMarker ? "no" : "unless-stopped",
       "--read-only",
       "--tmpfs",
       "/tmp:rw,exec,nosuid,nodev,size=128m",
@@ -2233,10 +2265,10 @@ export class LifecycleDriver {
       "--volume",
       `${hostDirectory}:${definition.runtime.storage.mount}`,
     ]
-    if (installationMarker) {
+    if (managedInstallationMarker) {
       arguments_.push(
         "--label",
-        `${INSTALLATION_MARKER_LABEL}=${installationMarker}`
+        `${INSTALLATION_MARKER_LABEL}=${managedInstallationMarker}`
       )
     }
     for (const [label, value] of Object.entries(portLabels)) {
