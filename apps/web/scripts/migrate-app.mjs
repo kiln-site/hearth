@@ -22,9 +22,31 @@ try {
   await connection.query(sql)
   await ensureFileActivitySchema(connection)
   await ensureTailscaleNetworkSchema(connection)
+  await ensureDatabaseAccessSchema(connection)
   console.log("Kiln application tables are up to date")
 } finally {
   await connection.end()
+}
+
+async function ensureDatabaseAccessSchema(database) {
+  const [resourceTypeColumns] = await database.query(
+    `SHOW COLUMNS FROM ${databaseTable("access_grant")} LIKE 'resource_type'`
+  )
+  if (!resourceTypeColumns[0]?.Type?.includes("'database'")) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("access_grant")}
+       MODIFY resource_type ENUM('relay', 'instance', 'database') NOT NULL`
+    )
+  }
+  const [databaseIdColumns] = await database.query(
+    `SHOW COLUMNS FROM ${databaseTable("invitation")} LIKE 'database_id'`
+  )
+  if (databaseIdColumns.length === 0) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("invitation")}
+       ADD COLUMN database_id CHAR(40) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER instance_id`
+    )
+  }
 }
 
 async function ensureTailscaleNetworkSchema(database) {

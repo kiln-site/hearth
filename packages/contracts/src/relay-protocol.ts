@@ -38,6 +38,14 @@ export const relayControlOperations = [
   "relay.clients.revoke",
   "brick.catalog",
   "brick.recipe",
+  "database.list",
+  "database.create",
+  "database.delete",
+  "database.action",
+  "database.credentials.rotate",
+  "database.network.write",
+  "database.dump.export",
+  "database.dump.import",
   "instance.create",
   "instance.startup.write",
   "instance.rename",
@@ -72,6 +80,11 @@ export function relayControlDeadlineMs(
   if (operation === "relay.tailscale.stack.remove") return 120_000
   if (operation === "hearth.tailscale.instance.detach") return 60_000
   if (operation === "instance.delete") return 360_000
+  if (operation === "database.create") return 360_000
+  if (operation === "database.delete") return 180_000
+  if (operation === "database.credentials.rotate") return 180_000
+  if (operation === "database.dump.export") return 120_000
+  if (operation === "database.dump.import") return 120_000
   if (operation === "instance.action") return 180_000
   if (operation === "instance.logs.share") return 60_000
   if (

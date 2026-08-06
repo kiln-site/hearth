@@ -46,6 +46,23 @@ CREATE TABLE IF NOT EXISTS kiln_instance (
     FOREIGN KEY (relay_id) REFERENCES kiln_relay (id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS kiln_database (
+  database_id CHAR(40) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+  relay_id CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  engine ENUM('mysql', 'mariadb', 'postgres', 'redis', 'valkey') NOT NULL,
+  database_name VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  username VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  password_ciphertext TEXT NOT NULL,
+  created_by VARCHAR(36) NOT NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  UNIQUE KEY kiln_database_relay_name_unique (relay_id, name),
+  KEY kiln_database_relay_idx (relay_id, created_at),
+  CONSTRAINT kiln_database_relay_fk
+    FOREIGN KEY (relay_id) REFERENCES kiln_relay (id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS kiln_tailscale_network (
   id CHAR(40) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
   name VARCHAR(120) NOT NULL,
@@ -131,7 +148,7 @@ CREATE TABLE IF NOT EXISTS kiln_access_grant (
   id CHAR(36) NOT NULL PRIMARY KEY,
   user_id VARCHAR(36) NOT NULL,
   relay_id CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-  resource_type ENUM('relay', 'instance') NOT NULL,
+  resource_type ENUM('relay', 'instance', 'database') NOT NULL,
   resource_id VARCHAR(64) NOT NULL,
   role ENUM('owner', 'admin', 'operator', 'viewer') NOT NULL,
   granted_by VARCHAR(36) NULL,
@@ -148,6 +165,7 @@ CREATE TABLE IF NOT EXISTS kiln_invitation (
   email VARCHAR(320) NOT NULL,
   relay_id CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   instance_id VARCHAR(64) NULL,
+  database_id CHAR(40) CHARACTER SET ascii COLLATE ascii_bin NULL,
   role ENUM('owner', 'admin', 'operator', 'viewer') NOT NULL,
   invited_by VARCHAR(36) NOT NULL,
   expires_at TIMESTAMP(3) NOT NULL,
