@@ -21,6 +21,7 @@ import type {
 import {
   attachControlSocket,
   auditDetailsForRequest,
+  isAuditedOperation,
 } from "./control-socket.js"
 import { fingerprint } from "./effect/identity.js"
 import { RelayStateStore } from "./effect/state.js"
@@ -65,6 +66,10 @@ describe("Relay control timeouts", () => {
 })
 
 describe("Relay control audit details", () => {
+  it("audits database dump exports", () => {
+    expect(isAuditedOperation("database.dump.export")).toBe(true)
+  })
+
   it("attributes mutations and scopes created instances from the result", () => {
     const request: RelayControlRequest = {
       deadline: Date.now() + 5_000,

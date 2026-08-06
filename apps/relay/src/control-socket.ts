@@ -495,7 +495,7 @@ function authenticateSocket(
                 )
             )
           )
-          if (isAuditedMutation(request.operation)) {
+          if (isAuditedOperation(request.operation)) {
             Effect.runFork(
               promiseOperation(() =>
                 options.runEffect(
@@ -689,7 +689,7 @@ function reverseRequestCancellationGraceMs(
   return 1_000
 }
 
-function isAuditedMutation(operation: RelayControlOperation): boolean {
+export function isAuditedOperation(operation: RelayControlOperation): boolean {
   return (
     operation === "relay.rename" ||
     operation === "relay.update.apply" ||
@@ -718,6 +718,7 @@ function isAuditedMutation(operation: RelayControlOperation): boolean {
     operation === "database.action" ||
     operation === "database.credentials.rotate" ||
     operation === "database.network.write" ||
+    operation === "database.dump.export" ||
     operation === "database.dump.import"
   )
 }
