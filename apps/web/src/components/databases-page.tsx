@@ -11,7 +11,7 @@ import {
   Copy,
   Database,
   Download,
-  Ellipsis,
+  EllipsisVertical,
   KeyRound,
   LoaderCircle,
   Network,
@@ -109,6 +109,17 @@ const engineOptions: ReadonlyArray<{
   { value: "redis", label: "Redis", description: "8" },
   { value: "valkey", label: "Valkey", description: "8" },
 ]
+
+const engineBadgeClasses: Record<DatabaseEngine, string> = {
+  mariadb:
+    "border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+  mysql: "border-sky-500/35 bg-sky-500/10 text-sky-700 dark:text-sky-300",
+  postgres:
+    "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+  redis: "border-red-500/35 bg-red-500/10 text-red-700 dark:text-red-300",
+  valkey:
+    "border-violet-500/35 bg-violet-500/10 text-violet-700 dark:text-violet-300",
+}
 
 const emptyDatabases: Array<ManagedDatabase> = []
 const dumpLimitBytes = 700_000
@@ -408,7 +419,10 @@ const DatabaseTableRow = React.memo(function DatabaseTableRow({
         </div>
       </WorkspaceTableCell>
       <WorkspaceTableCell className="hidden md:table-cell">
-        <Badge variant="outline" className="font-mono text-[9px] uppercase">
+        <Badge
+          variant="outline"
+          className={`font-mono text-[9px] uppercase ${engineBadgeClasses[database.engine]}`}
+        >
           {engineLabel(database.engine)}
         </Badge>
       </WorkspaceTableCell>
@@ -482,20 +496,12 @@ const DatabaseActions = React.memo(function DatabaseActions({
     database.hasCredentials &&
     database.supportsImportExport &&
     can("database.dump.import")
+  const hasDumpActions = canExport || canImport
   const hasMenuActions =
-    can("database.power") || canExport || canImport || can("database.delete")
+    can("database.power") || hasDumpActions || can("database.delete")
 
   return (
     <div className="flex items-center justify-end gap-1">
-      {can("database.power") ? (
-        <ActionIconButton
-          disabled={busy}
-          icon={running ? Square : Play}
-          label={running ? `Stop ${database.name}` : `Start ${database.name}`}
-          tooltip={running ? "Stop" : "Start"}
-          onClick={() => action.mutate(running ? "stop" : "start")}
-        />
-      ) : null}
       {can("database.credentials.read") && database.hasCredentials ? (
         <ActionIconButton
           icon={KeyRound}
@@ -522,7 +528,7 @@ const DatabaseActions = React.memo(function DatabaseActions({
                   {busy ? (
                     <LoaderCircle className="animate-spin" />
                   ) : (
-                    <Ellipsis />
+                    <EllipsisVertical />
                   )}
                 </Button>
               </DropdownMenuTrigger>
@@ -531,9 +537,21 @@ const DatabaseActions = React.memo(function DatabaseActions({
           </Tooltip>
           <DropdownMenuContent align="end" className="min-w-44">
             {can("database.power") ? (
-              <DropdownMenuItem onSelect={() => action.mutate("restart")}>
-                <RotateCw /> Restart
-              </DropdownMenuItem>
+              <>
+                <DropdownMenuItem
+                  onSelect={() => action.mutate(running ? "stop" : "start")}
+                >
+                  {running ? <Square /> : <Play />}
+                  {running ? "Stop" : "Start"}
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => action.mutate("restart")}>
+                  <RotateCw /> Restart
+                </DropdownMenuItem>
+              </>
+            ) : null}
+            {can("database.power") &&
+            (hasDumpActions || can("database.delete")) ? (
+              <DropdownMenuSeparator />
             ) : null}
             {canExport ? (
               <DropdownMenuItem onSelect={() => exportDump.mutate()}>
@@ -547,7 +565,9 @@ const DatabaseActions = React.memo(function DatabaseActions({
                 <Upload /> Import SQL
               </DropdownMenuItem>
             ) : null}
-            {can("database.delete") ? <DropdownMenuSeparator /> : null}
+            {hasDumpActions && can("database.delete") ? (
+              <DropdownMenuSeparator />
+            ) : null}
             {can("database.delete") ? (
               <DropdownMenuItem
                 variant="destructive"
