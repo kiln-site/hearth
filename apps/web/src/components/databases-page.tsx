@@ -114,7 +114,7 @@ const engineBadgeClasses: Record<DatabaseEngine, string> = {
   mariadb:
     "border-[#003545]/55 bg-[#003545]/12 text-[#003545] dark:border-[#39717A]/70 dark:bg-[#003545]/35 dark:text-[#79AEB6]",
   mysql:
-    "border-[#00758F]/55 bg-[#00758F]/12 text-[#00758F] before:mr-0.5 before:size-1 before:rounded-full before:bg-[#F29111] before:content-[''] dark:border-[#258FA5]/70 dark:bg-[#00758F]/25 dark:text-[#62BDCE]",
+    "border-[#00758F]/55 bg-[#00758F]/12 text-[#00758F] dark:border-[#258FA5]/70 dark:bg-[#00758F]/25 dark:text-[#62BDCE]",
   postgres:
     "border-[#336791]/55 bg-[#336791]/12 text-[#336791] dark:border-[#527FA8]/70 dark:bg-[#336791]/25 dark:text-[#7AA7D0]",
   redis:
