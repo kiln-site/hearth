@@ -749,6 +749,13 @@ function CredentialsDialog({
   const credential = useQuery(
     managedDatabaseCredentialQueryOptions(database.relayId, database.id)
   )
+  const close = React.useCallback(() => {
+    queryClient.removeQueries({
+      exact: true,
+      queryKey: queryKeys.databases.credential(database.relayId, database.id),
+    })
+    onOpenChange(false)
+  }, [database.id, database.relayId, onOpenChange, queryClient])
   const rotate = useMutation({
     mutationFn: () =>
       rotateManagedDatabasePassword({
@@ -763,7 +770,12 @@ function CredentialsDialog({
   })
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) close()
+      }}
+    >
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Credentials</DialogTitle>
@@ -823,7 +835,7 @@ function CredentialsDialog({
           ) : (
             <span />
           )}
-          <Button type="button" onClick={() => onOpenChange(false)}>
+          <Button type="button" onClick={close}>
             Done
           </Button>
         </DialogFooter>

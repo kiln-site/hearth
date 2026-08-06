@@ -143,6 +143,14 @@ export const deleteManagedDatabaseRecordEffect = Effect.fn(
         [relayId, databaseId]
       )
       yield* transaction.execute(
+        `DELETE FROM ${databaseTable("invitation")}
+          WHERE relay_id = ? AND database_id = ?
+            AND accepted_at IS NULL
+            AND revoked_at IS NULL
+            AND expires_at > CURRENT_TIMESTAMP(3)`,
+        [relayId, databaseId]
+      )
+      yield* transaction.execute(
         `DELETE FROM ${databaseTable("database")}
           WHERE relay_id = ? AND database_id = ?`,
         [relayId, databaseId]
