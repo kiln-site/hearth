@@ -112,11 +112,13 @@ const engineOptions: ReadonlyArray<{
 
 const engineBadgeClasses: Record<DatabaseEngine, string> = {
   mariadb:
-    "border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-  mysql: "border-sky-500/35 bg-sky-500/10 text-sky-700 dark:text-sky-300",
+    "border-[#003545]/55 bg-[#003545]/12 text-[#003545] dark:border-[#39717A]/70 dark:bg-[#003545]/35 dark:text-[#79AEB6]",
+  mysql:
+    "border-[#00758F]/55 bg-[#00758F]/12 text-[#00758F] before:mr-0.5 before:size-1 before:rounded-full before:bg-[#F29111] before:content-[''] dark:border-[#258FA5]/70 dark:bg-[#00758F]/25 dark:text-[#62BDCE]",
   postgres:
-    "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-  redis: "border-red-500/35 bg-red-500/10 text-red-700 dark:text-red-300",
+    "border-[#336791]/55 bg-[#336791]/12 text-[#336791] dark:border-[#527FA8]/70 dark:bg-[#336791]/25 dark:text-[#7AA7D0]",
+  redis:
+    "border-[#DC382D]/55 bg-[#DC382D]/12 text-[#B72C24] dark:border-[#DC382D]/70 dark:bg-[#DC382D]/20 dark:text-[#F07169]",
   valkey:
     "border-violet-500/35 bg-violet-500/10 text-violet-700 dark:text-violet-300",
 }
