@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test"
 
 import {
   dockerLogSinceArguments,
+  isIntentionalServerStopCommand,
   matchingReadyLogLine,
   observedSessionReadyAt,
   parseConsoleLine,
@@ -76,9 +77,9 @@ describe("Docker console parsing", () => {
         relayRestartedAt
       )
     ).toBe("2026-07-25T17:59:12.000000000Z")
-    expect(
-      observedSessionReadyAt(undefined, true, relayRestartedAt)
-    ).toBe("2026-07-25T20:00:00.000Z")
+    expect(observedSessionReadyAt(undefined, true, relayRestartedAt)).toBe(
+      "2026-07-25T20:00:00.000Z"
+    )
   })
 
   it.each([
@@ -89,5 +90,12 @@ describe("Docker console parsing", () => {
     expect(
       parseConsoleLine(`2026-07-25T17:59:03.000000000Z ${line}`)
     ).toBeNull()
+  })
+
+  it("recognizes only exact Minecraft console stop commands", () => {
+    expect(isIntentionalServerStopCommand("Minecraft", "stop")).toBe(true)
+    expect(isIntentionalServerStopCommand("minecraft", " /STOP ")).toBe(true)
+    expect(isIntentionalServerStopCommand("Minecraft", "stop now")).toBe(false)
+    expect(isIntentionalServerStopCommand("Palworld", "stop")).toBe(false)
   })
 })

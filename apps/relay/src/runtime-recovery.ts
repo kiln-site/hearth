@@ -1,0 +1,628 @@
+import * as Sentry from "@sentry/node"
+import { Effect, Semaphore } from "effect"
+import type {
+  RelayDesiredState,
+  RelayInstanceRecovery,
+} from "@workspace/contracts"
+
+import { commandEffect } from "./command.js"
+import type { RelayConfig } from "./config.js"
+import type { InstancePowerAction } from "./power-state.js"
+import type {
+  RelayRuntimeRecoveryRecord,
+  RelayStateStore,
+} from "./effect/state.js"
+
+const MAXIMUM_RETRY_DELAY_MS = 60_000
+
+export interface RuntimeRecoveryObservation {
+  readonly exitCode: number
+  readonly finishedAt: string
+  readonly installationReady: boolean
+  readonly instanceId: string
+  readonly managedByRelay: boolean
+  readonly oomKilled: boolean
+  readonly ready: boolean
+  readonly running: boolean
+  readonly service: string
+  readonly startedAt: string
+  readonly transitionActive: boolean
+}
+
+export interface RuntimeRecoverySnapshot {
+  readonly desiredState: RelayDesiredState
+  readonly recovery: RelayInstanceRecovery | null
+}
+
+export type RuntimeRecoveryStart = (
+  service: string
+) => Effect.Effect<void, unknown>
+
+export class RuntimeRecoveryManager {
+  readonly #config: RelayConfig["runtimeRecovery"]
+  readonly #locks = new Map<string, Semaphore.Semaphore>()
+  readonly #records = new Map<string, RelayRuntimeRecoveryRecord>()
+  readonly #startContainer: RuntimeRecoveryStart
+  readonly #state: RelayStateStore["Service"]
+
+  constructor(
+    config: RelayConfig,
+    state: RelayStateStore["Service"],
+    startContainer: RuntimeRecoveryStart = defaultStartContainer
+  ) {
+    this.#config = config.runtimeRecovery
+    this.#startContainer = startContainer
+    this.#state = state
+  }
+
+  initialize(): Effect.Effect<void, unknown> {
+    return this.#state.listRuntimeRecoveries().pipe(
+      Effect.tap((records) =>
+        Effect.sync(() => {
+          this.#records.clear()
+          for (const record of records) {
+            this.#records.set(record.instanceId, record)
+          }
+        })
+      ),
+      Effect.asVoid,
+      Effect.withSpan("relay.runtimeRecovery.initialize")
+    )
+  }
+
+  reconcile(
+    observations: ReadonlyArray<RuntimeRecoveryObservation>,
+    now = Date.now()
+  ): Effect.Effect<ReadonlyMap<string, RuntimeRecoverySnapshot>, unknown> {
+    return Effect.forEach(
+      observations,
+      (observation) =>
+        this.#lock(observation.instanceId).withPermit(
+          this.#reconcileObservation(observation, now)
+        ),
+      { concurrency: "unbounded" }
+    ).pipe(
+      Effect.map(
+        (entries) =>
+          new Map(
+            entries.map(([instanceId, snapshot]) => [instanceId, snapshot])
+          )
+      ),
+      Effect.withSpan("relay.runtimeRecovery.reconcile")
+    )
+  }
+
+  recordProvisioned(
+    instanceId: string,
+    desiredState: RelayDesiredState,
+    now = Date.now()
+  ): Effect.Effect<void, unknown> {
+    return this.#lock(instanceId)
+      .withPermit(
+        this.#persist(
+          initialRecoveryRecord(instanceId, desiredState, now)
+        ).pipe(Effect.asVoid)
+      )
+      .pipe(Effect.withSpan("relay.runtimeRecovery.recordProvisioned"))
+  }
+
+  recordPowerAction(
+    instanceId: string,
+    action: InstancePowerAction,
+    now = Date.now()
+  ): Effect.Effect<RelayRuntimeRecoveryRecord | null, unknown> {
+    return this.#lock(instanceId)
+      .withPermit(
+        Effect.suspend(() => {
+          const previous = this.#records.get(instanceId) ?? null
+          const desiredState: RelayDesiredState =
+            action === "stop" || action === "kill" ? "stopped" : "running"
+          const next = {
+            ...(previous ??
+              initialRecoveryRecord(instanceId, desiredState, now)),
+            attempts: 0,
+            desiredState,
+            nextAttemptAt: null,
+            phase: "idle" as const,
+            updatedAt: now,
+          }
+          return this.#persist(next).pipe(Effect.as(previous))
+        })
+      )
+      .pipe(Effect.withSpan("relay.runtimeRecovery.recordPowerAction"))
+  }
+
+  restore(
+    instanceId: string,
+    previous: RelayRuntimeRecoveryRecord | null
+  ): Effect.Effect<void, unknown> {
+    return this.#lock(instanceId)
+      .withPermit(
+        previous
+          ? this.#persist(previous).pipe(Effect.asVoid)
+          : this.#delete(instanceId)
+      )
+      .pipe(Effect.withSpan("relay.runtimeRecovery.restore"))
+  }
+
+  forget(instanceId: string): Effect.Effect<void, unknown> {
+    return this.#lock(instanceId)
+      .withPermit(this.#delete(instanceId))
+      .pipe(Effect.withSpan("relay.runtimeRecovery.forget"))
+  }
+
+  snapshot(instanceId: string): RuntimeRecoverySnapshot | null {
+    const record = this.#records.get(instanceId)
+    return record ? recoverySnapshot(record, this.#config.maxRetries) : null
+  }
+
+  #reconcileObservation(
+    observation: RuntimeRecoveryObservation,
+    now: number
+  ): Effect.Effect<readonly [string, RuntimeRecoverySnapshot], unknown> {
+    return Effect.suspend(() => {
+      const existing = this.#records.get(observation.instanceId)
+      if (!observation.managedByRelay) {
+        const snapshot = unmanagedSnapshot(observation.running)
+        return existing
+          ? this.#delete(observation.instanceId).pipe(
+              Effect.as([observation.instanceId, snapshot] as const)
+            )
+          : Effect.succeed([observation.instanceId, snapshot] as const)
+      }
+      if (!existing) {
+        const desiredState = observation.running ? "running" : "stopped"
+        const initial = initialRecoveryRecord(
+          observation.instanceId,
+          desiredState,
+          now,
+          observation.running ? null : observation.startedAt
+        )
+        return this.#persist(initial).pipe(
+          Effect.map((record) => this.#entry(record))
+        )
+      }
+
+      if (observation.transitionActive) {
+        return Effect.succeed(this.#entry(existing))
+      }
+
+      if (existing.desiredState === "stopped") {
+        if (
+          existing.phase === "idle" &&
+          existing.attempts === 0 &&
+          existing.nextAttemptAt === null
+        ) {
+          return Effect.succeed(this.#entry(existing))
+        }
+        return this.#persist({
+          ...existing,
+          attempts: 0,
+          nextAttemptAt: null,
+          phase: "idle",
+          updatedAt: now,
+        }).pipe(Effect.map((record) => this.#entry(record)))
+      }
+
+      if (observation.running) {
+        return this.#reconcileRunning(existing, observation, now)
+      }
+
+      if (!observation.installationReady) {
+        return this.#persist({
+          ...existing,
+          desiredState: "stopped",
+          lastStartedAt: observation.startedAt,
+          nextAttemptAt: null,
+          phase: "idle",
+          updatedAt: now,
+        }).pipe(Effect.map((record) => this.#entry(record)))
+      }
+
+      if (
+        existing.phase === "pending" &&
+        existing.nextAttemptAt !== null &&
+        existing.nextAttemptAt <= now
+      ) {
+        return this.#restart(existing, observation, now)
+      }
+
+      if (
+        existing.phase === "restarting" &&
+        existing.lastStartedAt === observation.startedAt
+      ) {
+        return this.#persist({
+          ...existing,
+          nextAttemptAt: now,
+          phase: "pending",
+          updatedAt: now,
+        }).pipe(Effect.map((record) => this.#entry(record)))
+      }
+
+      if (existing.lastStartedAt === observation.startedAt) {
+        return Effect.succeed(this.#entry(existing))
+      }
+
+      return this.#recordExit(existing, observation, now)
+    })
+  }
+
+  #reconcileRunning(
+    existing: RelayRuntimeRecoveryRecord,
+    observation: RuntimeRecoveryObservation,
+    now: number
+  ): Effect.Effect<readonly [string, RuntimeRecoverySnapshot], unknown> {
+    const startedAt = Date.parse(observation.startedAt)
+    const stable =
+      Number.isFinite(startedAt) && now - startedAt >= this.#config.stabilityMs
+    if (stable && (existing.attempts > 0 || existing.phase !== "idle")) {
+      return this.#persist({
+        ...existing,
+        attempts: 0,
+        nextAttemptAt: null,
+        phase: "idle",
+        updatedAt: now,
+      }).pipe(
+        Effect.tap(() =>
+          Effect.logInfo("Server recovery window reset", {
+            instanceId: observation.instanceId,
+          })
+        ),
+        Effect.map((record) => this.#entry(record))
+      )
+    }
+
+    if (observation.ready && existing.phase === "restarting") {
+      return this.#persist({
+        ...existing,
+        nextAttemptAt: null,
+        phase: "monitoring",
+        updatedAt: now,
+      }).pipe(
+        Effect.tap(() =>
+          Effect.logInfo("Server recovered after an unexpected exit", {
+            attempt: existing.attempts,
+            instanceId: observation.instanceId,
+          })
+        ),
+        Effect.map((record) => this.#entry(record))
+      )
+    }
+
+    if (existing.phase === "failed") {
+      return this.#persist({
+        ...existing,
+        nextAttemptAt: null,
+        phase: observation.ready ? "monitoring" : "restarting",
+        updatedAt: now,
+      }).pipe(
+        Effect.tap(() =>
+          Effect.logInfo("Relay observed a manually restarted server", {
+            instanceId: observation.instanceId,
+          })
+        ),
+        Effect.map((record) => this.#entry(record))
+      )
+    }
+
+    if (existing.phase === "pending") {
+      const phase = observation.ready ? "monitoring" : "restarting"
+      return this.#persist({
+        ...existing,
+        nextAttemptAt: null,
+        phase,
+        updatedAt: now,
+      }).pipe(Effect.map((record) => this.#entry(record)))
+    }
+
+    return Effect.succeed(this.#entry(existing))
+  }
+
+  #recordExit(
+    existing: RelayRuntimeRecoveryRecord,
+    observation: RuntimeRecoveryObservation,
+    now: number
+  ): Effect.Effect<readonly [string, RuntimeRecoverySnapshot], unknown> {
+    const reason = recoveryReason(observation)
+    const runtimeMs = runtimeDurationMs(observation)
+    const exited = {
+      ...existing,
+      lastExitAt: finishedAtMs(observation.finishedAt, now),
+      lastExitCode: observation.exitCode,
+      lastOomKilled: observation.oomKilled,
+      lastReason: reason,
+      lastRuntimeMs: runtimeMs,
+      lastStartedAt: observation.startedAt,
+      updatedAt: now,
+    }
+    if (existing.attempts >= this.#config.maxRetries) {
+      return this.#exhaust(exited, observation)
+    }
+
+    const attempt = existing.attempts + 1
+    const scheduled = {
+      ...exited,
+      attempts: attempt,
+      nextAttemptAt: now + retryDelayMs(attempt, this.#config.initialDelayMs),
+      phase: "pending" as const,
+    }
+    return this.#persist(scheduled).pipe(
+      Effect.tap(() =>
+        Effect.logWarning("Server exited unexpectedly; recovery scheduled", {
+          attempt,
+          exitCode: observation.exitCode,
+          instanceId: observation.instanceId,
+          maxAttempts: this.#config.maxRetries,
+          oomKilled: observation.oomKilled,
+          reason,
+          runtimeMs,
+        })
+      ),
+      Effect.map((record) => this.#entry(record)),
+      Effect.withSpan("relay.runtimeRecovery.schedule", {
+        attributes: {
+          "kiln.recovery.attempt": attempt,
+          "kiln.recovery.exit_code": observation.exitCode,
+          "kiln.recovery.instance_id": observation.instanceId,
+          "kiln.recovery.reason": reason,
+        },
+      })
+    )
+  }
+
+  #restart(
+    existing: RelayRuntimeRecoveryRecord,
+    observation: RuntimeRecoveryObservation,
+    now: number
+  ): Effect.Effect<readonly [string, RuntimeRecoverySnapshot], unknown> {
+    return this.#startContainer(observation.service).pipe(
+      Effect.matchEffect({
+        onFailure: (cause) => {
+          if (existing.attempts >= this.#config.maxRetries) {
+            return this.#exhaust(
+              {
+                ...existing,
+                lastReason: "start_failed",
+                nextAttemptAt: null,
+                updatedAt: now,
+              },
+              observation,
+              cause
+            )
+          }
+          const attempt = existing.attempts + 1
+          return this.#persist({
+            ...existing,
+            attempts: attempt,
+            lastReason: "start_failed",
+            nextAttemptAt:
+              now + retryDelayMs(attempt, this.#config.initialDelayMs),
+            phase: "pending",
+            updatedAt: now,
+          }).pipe(
+            Effect.tap(() =>
+              Effect.logWarning(
+                "Server recovery start failed; retry scheduled",
+                {
+                  attempt,
+                  instanceId: observation.instanceId,
+                  maxAttempts: this.#config.maxRetries,
+                }
+              )
+            ),
+            Effect.map((record) => this.#entry(record))
+          )
+        },
+        onSuccess: () =>
+          this.#persist({
+            ...existing,
+            nextAttemptAt: null,
+            phase: "restarting",
+            updatedAt: now,
+          }).pipe(
+            Effect.tap(() =>
+              Effect.logInfo("Server recovery start requested", {
+                attempt: existing.attempts,
+                instanceId: observation.instanceId,
+                maxAttempts: this.#config.maxRetries,
+              })
+            ),
+            Effect.map((record) => this.#entry(record))
+          ),
+      }),
+      Effect.withSpan("relay.runtimeRecovery.restart", {
+        attributes: {
+          "kiln.recovery.attempt": existing.attempts,
+          "kiln.recovery.instance_id": observation.instanceId,
+        },
+      })
+    )
+  }
+
+  #exhaust(
+    existing: RelayRuntimeRecoveryRecord,
+    observation: RuntimeRecoveryObservation,
+    cause?: unknown
+  ): Effect.Effect<readonly [string, RuntimeRecoverySnapshot], unknown> {
+    const failed = {
+      ...existing,
+      nextAttemptAt: null,
+      phase: "failed" as const,
+    }
+    return this.#persist(failed).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          const context = {
+            extra: {
+              attempts: failed.attempts,
+              exitCode: failed.lastExitCode,
+              oomKilled: failed.lastOomKilled,
+              reason: failed.lastReason,
+              runtimeMs: failed.lastRuntimeMs,
+            },
+            tags: {
+              "kiln.instance_id": observation.instanceId,
+              "kiln.recovery": "exhausted",
+            },
+          }
+          if (cause) Sentry.captureException(cause, context)
+          else
+            Sentry.captureMessage(
+              "Server automatic recovery exhausted",
+              context
+            )
+        })
+      ),
+      Effect.tap(() =>
+        Effect.logError("Server automatic recovery exhausted", {
+          attempts: failed.attempts,
+          exitCode: failed.lastExitCode,
+          instanceId: observation.instanceId,
+          oomKilled: failed.lastOomKilled,
+          reason: failed.lastReason,
+        })
+      ),
+      Effect.map((record) => this.#entry(record)),
+      Effect.withSpan("relay.runtimeRecovery.exhaust", {
+        attributes: {
+          "kiln.recovery.attempts": failed.attempts,
+          "kiln.recovery.instance_id": observation.instanceId,
+          "kiln.recovery.reason": failed.lastReason ?? "unknown",
+        },
+      })
+    )
+  }
+
+  #persist(
+    record: RelayRuntimeRecoveryRecord
+  ): Effect.Effect<RelayRuntimeRecoveryRecord, unknown> {
+    return this.#state.setRuntimeRecovery(record).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          this.#records.set(record.instanceId, record)
+        })
+      ),
+      Effect.as(record)
+    )
+  }
+
+  #delete(instanceId: string): Effect.Effect<void, unknown> {
+    return this.#state.deleteRuntimeRecovery(instanceId).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          this.#records.delete(instanceId)
+        })
+      )
+    )
+  }
+
+  #entry(
+    record: RelayRuntimeRecoveryRecord
+  ): readonly [string, RuntimeRecoverySnapshot] {
+    return [
+      record.instanceId,
+      recoverySnapshot(record, this.#config.maxRetries),
+    ]
+  }
+
+  #lock(instanceId: string): Semaphore.Semaphore {
+    const existing = this.#locks.get(instanceId)
+    if (existing) return existing
+    const created = Semaphore.makeUnsafe(1)
+    this.#locks.set(instanceId, created)
+    return created
+  }
+}
+
+const defaultStartContainer: RuntimeRecoveryStart = (service) =>
+  commandEffect("docker", ["start", service], { timeout: 120_000 }).pipe(
+    Effect.asVoid
+  )
+
+export function retryDelayMs(attempt: number, initialDelayMs: number): number {
+  if (initialDelayMs === 0) return 0
+  return Math.min(
+    initialDelayMs * 3 ** Math.max(attempt - 1, 0),
+    MAXIMUM_RETRY_DELAY_MS
+  )
+}
+
+function initialRecoveryRecord(
+  instanceId: string,
+  desiredState: RelayDesiredState,
+  now: number,
+  lastStartedAt: string | null = null
+): RelayRuntimeRecoveryRecord {
+  return {
+    attempts: 0,
+    desiredState,
+    instanceId,
+    lastExitAt: null,
+    lastExitCode: null,
+    lastOomKilled: false,
+    lastReason: null,
+    lastRuntimeMs: null,
+    lastStartedAt,
+    nextAttemptAt: null,
+    phase: "idle",
+    updatedAt: now,
+  }
+}
+
+function unmanagedSnapshot(running: boolean): RuntimeRecoverySnapshot {
+  return {
+    desiredState: running ? "running" : "stopped",
+    recovery: null,
+  }
+}
+
+function recoverySnapshot(
+  record: RelayRuntimeRecoveryRecord,
+  maxAttempts: number
+): RuntimeRecoverySnapshot {
+  const visible =
+    record.phase === "pending" ||
+    record.phase === "restarting" ||
+    record.phase === "failed"
+  return {
+    desiredState: record.desiredState,
+    recovery:
+      visible && record.lastReason
+        ? {
+            attempt: record.attempts,
+            exitCode: record.lastExitCode,
+            maxAttempts,
+            nextAttemptAt:
+              record.nextAttemptAt === null
+                ? null
+                : new Date(record.nextAttemptAt).toISOString(),
+            oomKilled: record.lastOomKilled,
+            phase: record.phase,
+            reason: record.lastReason,
+            runtimeMs: record.lastRuntimeMs,
+          }
+        : null,
+  }
+}
+
+function recoveryReason(
+  observation: RuntimeRecoveryObservation
+): RelayInstanceRecovery["reason"] {
+  if (observation.oomKilled) return "out_of_memory"
+  return observation.exitCode === 0 ? "clean_exit" : "process_exit"
+}
+
+function runtimeDurationMs(
+  observation: RuntimeRecoveryObservation
+): number | null {
+  const startedAt = Date.parse(observation.startedAt)
+  const finishedAt = Date.parse(observation.finishedAt)
+  return Number.isFinite(startedAt) && Number.isFinite(finishedAt)
+    ? Math.max(finishedAt - startedAt, 0)
+    : null
+}
+
+function finishedAtMs(finishedAt: string, fallback: number): number {
+  const parsed = Date.parse(finishedAt)
+  return Number.isFinite(parsed) ? parsed : fallback
+}

@@ -57,9 +57,11 @@ import type {
   ConsoleUiStore,
 } from "@/components/console/console-stores"
 import {
+  consoleRecoveryLine,
   consoleStateLine,
   initialConsoleStateLines,
   isConsoleStateLine,
+  isConsoleRecoveryLine,
   mergeConsoleHistory,
   mergeConsoleStateLines,
   shouldRecordConsoleStateTransition,
@@ -2149,6 +2151,9 @@ function useRelayConsoleStream(
 
     if (state === "starting") {
       awaitingNewSessionRef.current = true
+      // Preserve the crashed session until Docker has actually started the
+      // replacement process, so the failure context remains visible.
+      if (runtime?.recovery?.phase === "pending") return
       const line = consoleStateLine("starting", new Date().toISOString())
       const next = {
         instanceId,
@@ -2182,7 +2187,13 @@ function useRelayConsoleStream(
       ...current,
       lines: mergeConsoleHistory(current.lines, [line]),
     })
-  }, [commitConsole, instanceId, runtime?.observedState, runtime?.readyAt])
+  }, [
+    commitConsole,
+    instanceId,
+    runtime?.observedState,
+    runtime?.readyAt,
+    runtime?.recovery?.phase,
+  ])
 
   React.useEffect(() => {
     const startedAt = runtime?.startedAt
@@ -2201,7 +2212,8 @@ function useRelayConsoleStream(
       lines: initialConsoleStateLines(
         startedAt,
         runtime.observedState,
-        runtime.readyAt
+        runtime.readyAt,
+        runtime.recovery
       ),
       startedAt,
       truncated: false,
@@ -2211,8 +2223,23 @@ function useRelayConsoleStream(
     instanceId,
     runtime?.observedState,
     runtime?.readyAt,
+    runtime?.recovery,
     runtime?.startedAt,
   ])
+
+  React.useEffect(() => {
+    const recovery = runtime?.recovery
+    if (!recovery) return
+    if (recovery.phase === "pending") awaitingNewSessionRef.current = true
+    const current = consoleDataRef.current
+    if (!current) return
+    const line = consoleRecoveryLine(recovery, new Date().toISOString())
+    if (current.lines.some((existing) => existing.id === line.id)) return
+    commitConsole({
+      ...current,
+      lines: mergeConsoleHistory(current.lines, [line]),
+    })
+  }, [commitConsole, runtime?.recovery])
 
   React.useEffect(() => {
     if (!relayConnected) {
@@ -2289,14 +2316,17 @@ function useRelayConsoleStream(
         flushTimer = null
       }
       pending.length = 0
-      awaitingNewSessionRef.current = false
+      awaitingNewSessionRef.current =
+        runtimeRef.current?.recovery?.phase === "pending" ||
+        runtimeRef.current?.recovery?.phase === "restarting"
       sessionStartedAtRef.current = startedAt
       sessionInitializedRef.current = true
       const nextLines = mergeConsoleStateLines(
         lines,
         startedAt,
         runtimeRef.current?.observedState,
-        runtimeRef.current?.readyAt ?? null
+        runtimeRef.current?.readyAt ?? null,
+        runtimeRef.current?.recovery ?? null
       )
       seen.clear()
       for (const line of nextLines) seen.add(line.id)
@@ -2479,7 +2509,13 @@ function capConsoleLines(
   if (lines.length <= 5_008) return [...lines]
   let remaining = lines.length - 5_008
   return lines.filter((line) => {
-    if (remaining === 0 || line.id.startsWith("kiln-state:")) return true
+    if (
+      remaining === 0 ||
+      isConsoleStateLine(line) ||
+      isConsoleRecoveryLine(line)
+    ) {
+      return true
+    }
     remaining -= 1
     return false
   })

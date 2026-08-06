@@ -81,6 +81,11 @@ export interface RelayConfig {
   proxyMode: RelayProxyMode
   resourceNamespace: string | null
   rootDirectory: string
+  runtimeRecovery: {
+    initialDelayMs: number
+    maxRetries: number
+    stabilityMs: number
+  }
   sftpDevAuthentication: boolean
   sftpPort: number
   tlsCertificatePath: string | null
@@ -192,6 +197,31 @@ export function loadConfig(
     proxyMode,
     resourceNamespace,
     rootDirectory: `${dataDirectory}/instances`,
+    runtimeRecovery: {
+      initialDelayMs:
+        integerEnvironment(
+          environment,
+          "KILN_RELAY_CRASH_RETRY_DELAY_SECONDS",
+          5,
+          0,
+          300
+        ) * 1_000,
+      maxRetries: integerEnvironment(
+        environment,
+        "KILN_RELAY_CRASH_RETRY_LIMIT",
+        2,
+        0,
+        10
+      ),
+      stabilityMs:
+        integerEnvironment(
+          environment,
+          "KILN_RELAY_CRASH_STABILITY_SECONDS",
+          300,
+          15,
+          3_600
+        ) * 1_000,
+    },
     serverIdLabel: "kiln.server.id",
     sftpDevAuthentication: sftpDevAuthentication(environment),
     sftpPort: parsePort(environment, "KILN_RELAY_SFTP_PORT", 2022),
@@ -434,6 +464,21 @@ function parsePort(
     throw new Error(`${name} must be a valid TCP port`)
   }
   return port
+}
+
+function integerEnvironment(
+  environment: NodeJS.ProcessEnv,
+  name: string,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  const configured = environment[name]?.trim()
+  const value = Number(configured || fallback)
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be an integer from ${minimum} to ${maximum}`)
+  }
+  return value
 }
 
 function relayGamePortRange(environment: NodeJS.ProcessEnv): {

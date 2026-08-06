@@ -19,6 +19,7 @@ import type {
   RelayConsoleLine,
   RelayConsoleSegment,
   RelayDesiredState,
+  RelayInstanceRecovery,
   RelayInstance,
   RelayInstancePortProtocol,
   RelayInstanceResources,
@@ -53,9 +54,11 @@ import {
   observedInstancePowerState,
   type InstancePowerAction,
   type InstancePowerTransition,
+  type ObservedInstancePowerState,
 } from "./power-state.js"
 import { WEB_ROUTE_LABEL_PREFIX } from "./web-route-labels.js"
 import type { RelayWebRouteLabelSnapshot } from "./web-route-labels.js"
+import type { RuntimeRecoveryManager } from "./runtime-recovery.js"
 
 interface DockerInspect {
   Config: {
@@ -97,6 +100,7 @@ interface DockerInspect {
     OOMKilled: boolean
     Restarting: boolean
     Running: boolean
+    FinishedAt: string
     StartedAt: string
     Status: string
   }
@@ -384,6 +388,7 @@ export class DockerDriver {
   readonly #consoleSizePending = new Map<string, Promise<void>>()
   readonly #diskUsageCache = new Map<string, DiskUsageCacheEntry>()
   readonly #powerTransitions = new Map<string, InstancePowerTransition>()
+  readonly #runtimeRecovery: RuntimeRecoveryManager | null
   readonly #readySessions = new Map<
     string,
     { readonly readyAt: string | null; readonly startedAt: string }
@@ -393,9 +398,13 @@ export class DockerDriver {
   readonly #resourceCache = new Map<string, ResourceCacheEntry>()
   readonly #resourceHistory = new Map<string, Array<RelayInstanceResources>>()
 
-  constructor(config: RelayConfig) {
+  constructor(
+    config: RelayConfig,
+    runtimeRecovery: RuntimeRecoveryManager | null = null
+  ) {
     this.#config = config
     this.#resources = relayResourceNames(config)
+    this.#runtimeRecovery = runtimeRecovery
   }
 
   async inspectInstances(): Promise<Array<RelayInstance>> {
@@ -444,26 +453,14 @@ export class DockerDriver {
       Effect.forEach(
         discovered,
         ({ config, container }) => {
-          const marker = installationMarkerName(
-            container.Config.Labels?.[INSTALLATION_MARKER_LABEL]
-          )
           if (
             !config.managedByRelay ||
-            !container.State.Running ||
-            container.HostConfig?.RestartPolicy?.Name !== "no" ||
-            !marker ||
-            !existsSync(
-              resolve(this.#config.rootDirectory, config.directory, marker)
-            )
+            container.HostConfig?.RestartPolicy?.Name === "no"
           ) {
             return Effect.void
           }
           return promiseEffect(() =>
-            command("docker", [
-              "update",
-              "--restart=unless-stopped",
-              config.service,
-            ])
+            command("docker", ["update", "--restart=no", config.service])
           ).pipe(Effect.ignore)
         },
         { concurrency: "unbounded", discard: true }
@@ -504,21 +501,72 @@ export class DockerDriver {
       })
     )
 
+    const runtimeRecoveries = this.#runtimeRecovery
+      ? await runEffect(
+          this.#runtimeRecovery.reconcile(
+            discovered.map(({ config, container }) => {
+              const marker = installationMarkerName(
+                container.Config.Labels?.[INSTALLATION_MARKER_LABEL]
+              )
+              const transition = this.#powerTransitions.get(config.id)
+              const ready =
+                observedInstancePowerState(
+                  container.State,
+                  transition,
+                  now,
+                  readiness.get(config.id)
+                ).observedState === "running"
+              return {
+                exitCode: container.State.ExitCode,
+                finishedAt: container.State.FinishedAt,
+                installationReady:
+                  !marker ||
+                  existsSync(
+                    resolve(
+                      this.#config.rootDirectory,
+                      config.directory,
+                      marker
+                    )
+                  ),
+                instanceId: config.id,
+                managedByRelay: config.managedByRelay,
+                oomKilled: container.State.OOMKilled,
+                ready,
+                running: container.State.Running,
+                service: config.service,
+                startedAt: container.State.StartedAt,
+                transitionActive: transition !== undefined,
+              }
+            })
+          )
+        )
+      : new Map()
+
     const instances = discovered.map(({ config, container }) => {
       const transition = this.#powerTransitions.get(config.id)
-      const desiredState: RelayDesiredState = transition
-        ? transition.action === "stop" || transition.action === "kill"
-          ? "stopped"
-          : "running"
-        : container.State.Running
-          ? "running"
-          : "stopped"
-      const powerState = observedInstancePowerState(
+      const recoveryState = runtimeRecoveries.get(config.id)
+      const desiredState: RelayDesiredState = recoveryState
+        ? recoveryState.desiredState
+        : transition
+          ? transition.action === "stop" || transition.action === "kill"
+            ? "stopped"
+            : "running"
+          : container.State.Running
+            ? "running"
+            : "stopped"
+      const inspectedPowerState = observedInstancePowerState(
         container.State,
         transition,
         now,
         readiness.get(config.id)
       )
+      const powerState: ObservedInstancePowerState = recoveryState?.recovery
+        ? {
+            observedState:
+              recoveryState.recovery.phase === "failed" ? "failed" : "starting",
+            transitionComplete: inspectedPowerState.transitionComplete,
+          }
+        : inspectedPowerState
       if (powerState.transitionComplete) {
         this.#powerTransitions.delete(config.id)
       }
@@ -551,13 +599,15 @@ export class DockerDriver {
         containerId: container.Id.slice(0, 12),
         desiredState,
         observedState: powerState.observedState,
+        recovery: recoveryState?.recovery ?? null,
         startedAt: container.State.Running ? container.State.StartedAt : null,
         readyAt:
           currentReadySession?.startedAt === containerStartedAt
             ? currentReadySession.readyAt
             : null,
         status:
-          powerState.observedState === "running"
+          recoveryStatus(recoveryState?.recovery, now) ??
+          (powerState.observedState === "running"
             ? "Running"
             : powerState.observedState === "starting"
               ? "Starting"
@@ -566,7 +616,7 @@ export class DockerDriver {
                 : powerState.observedState === "failed" &&
                     container.State.Running
                   ? "Unhealthy"
-                  : `Exited (${container.State.ExitCode})`,
+                  : `Exited (${container.State.ExitCode})`),
         resources,
       }
     })
@@ -621,6 +671,21 @@ export class DockerDriver {
     return history.filter((sample) => Date.parse(sample.sampledAt) >= cutoff)
   }
 
+  async recordProvisionedState(
+    instanceId: string,
+    desiredState: RelayDesiredState
+  ): Promise<void> {
+    if (!this.#runtimeRecovery) return
+    await runEffect(
+      this.#runtimeRecovery.recordProvisioned(instanceId, desiredState)
+    )
+  }
+
+  async forgetRecoveryState(instanceId: string): Promise<void> {
+    if (!this.#runtimeRecovery) return
+    await runEffect(this.#runtimeRecovery.forget(instanceId))
+  }
+
   async webRouteLabelSnapshots(): Promise<Array<RelayWebRouteLabelSnapshot>> {
     return (await this.#discover()).map(({ config, container }) => ({
       instanceId: config.id,
@@ -634,6 +699,12 @@ export class DockerDriver {
     action: InstancePowerAction
   ): Promise<RelayInstance> {
     const discovered = await this.#findDiscovered(instance.id)
+    const previousRecovery =
+      instance.managedByRelay && this.#runtimeRecovery
+        ? await runEffect(
+            this.#runtimeRecovery.recordPowerAction(instance.id, action)
+          )
+        : null
     const transition: InstancePowerTransition = {
       action,
       commandCompleted: false,
@@ -653,6 +724,7 @@ export class DockerDriver {
               ? (INSTANCE_STOP_TIMEOUT_SECONDS + 60) * 1_000
               : (INSTANCE_STOP_TIMEOUT_SECONDS + 15) * 1_000
         if (instance.managedByRelay) {
+          await command("docker", ["update", "--restart=no", instance.service])
           const actionArguments =
             action === "stop" || action === "restart"
               ? [
@@ -684,11 +756,21 @@ export class DockerDriver {
         }
       }).pipe(
         Effect.onError(() =>
-          Effect.sync(() => {
-            if (this.#powerTransitions.get(instance.id) === transition) {
-              this.#powerTransitions.delete(instance.id)
-            }
-          })
+          Effect.all(
+            [
+              Effect.sync(() => {
+                if (this.#powerTransitions.get(instance.id) === transition) {
+                  this.#powerTransitions.delete(instance.id)
+                }
+              }),
+              instance.managedByRelay && this.#runtimeRecovery
+                ? this.#runtimeRecovery
+                    .restore(instance.id, previousRecovery)
+                    .pipe(Effect.ignore)
+                : Effect.void,
+            ],
+            { discard: true }
+          )
         )
       )
     )
@@ -768,6 +850,10 @@ export class DockerDriver {
       portConfiguration === undefined
         ? current.HostConfig.PortBindings
         : portConfiguration.bindings
+    const runtimeRecovery = this.#runtimeRecovery
+    const previousRecovery = runtimeRecovery
+      ? await runEffect(runtimeRecovery.recordPowerAction(instance.id, action))
+      : null
     const transition: InstancePowerTransition = {
       action,
       commandCompleted: false,
@@ -796,11 +882,21 @@ export class DockerDriver {
         await command("docker", ["rename", instance.service, backupName])
       }).pipe(
         Effect.onError(() =>
-          Effect.sync(() => {
-            if (this.#powerTransitions.get(instance.id) === transition) {
-              this.#powerTransitions.delete(instance.id)
-            }
-          })
+          Effect.all(
+            [
+              Effect.sync(() => {
+                if (this.#powerTransitions.get(instance.id) === transition) {
+                  this.#powerTransitions.delete(instance.id)
+                }
+              }),
+              runtimeRecovery
+                ? runtimeRecovery
+                    .restore(instance.id, previousRecovery)
+                    .pipe(Effect.ignore)
+                : Effect.void,
+            ],
+            { discard: true }
+          )
         )
       )
     )
@@ -822,6 +918,7 @@ export class DockerDriver {
               ...current.HostConfig,
               NetworkMode: primaryNetwork,
               PortBindings: portBindings,
+              RestartPolicy: { Name: "no" },
             },
             Labels: labels,
             NetworkingConfig: {
@@ -886,6 +983,11 @@ export class DockerDriver {
               ).pipe(Effect.ignore)
             }
             yield* Effect.sync(clearTransition)
+            if (runtimeRecovery) {
+              yield* runtimeRecovery
+                .restore(instance.id, previousRecovery)
+                .pipe(Effect.ignore)
+            }
             return yield* Effect.fail(
               new Error(
                 `Kiln could not ${portConfiguration ? "apply port allocations to" : "apply web routes to"} ${instance.name}; the previous container was restored.`,
@@ -1140,13 +1242,32 @@ export class DockerDriver {
     instance: RelayInstanceConfig,
     input: string
   ): Promise<void> {
-    await this.#withConsoleLock(instance.id, async () => {
-      const discovered = await this.#findDiscovered(instance.id)
-      if (!discovered.container.State.Running) {
-        throw new Error(`${instance.name} is not running`)
-      }
-      await this.#writeConsoleInput(discovered.container.Id, `${input}\n`)
-    })
+    const intentionalStop = isIntentionalServerStopCommand(instance.game, input)
+    const previousRecovery =
+      intentionalStop && this.#runtimeRecovery
+        ? await runEffect(
+            this.#runtimeRecovery.recordPowerAction(instance.id, "stop")
+          )
+        : null
+    await runEffect(
+      promiseEffect(() =>
+        this.#withConsoleLock(instance.id, async () => {
+          const discovered = await this.#findDiscovered(instance.id)
+          if (!discovered.container.State.Running) {
+            throw new Error(`${instance.name} is not running`)
+          }
+          await this.#writeConsoleInput(discovered.container.Id, `${input}\n`)
+        })
+      ).pipe(
+        Effect.onError(() =>
+          intentionalStop && this.#runtimeRecovery
+            ? this.#runtimeRecovery
+                .restore(instance.id, previousRecovery)
+                .pipe(Effect.ignore)
+            : Effect.void
+        )
+      )
+    )
   }
 
   async completeCommand(
@@ -2835,6 +2956,33 @@ function promiseEffect<A>(run: () => Promise<A>): Effect.Effect<A, unknown> {
     try: run,
     catch: (cause) => cause,
   })
+}
+
+function recoveryStatus(
+  recovery: RelayInstanceRecovery | null | undefined,
+  now: number
+): string | null {
+  if (!recovery) return null
+  if (recovery.phase === "failed") {
+    return `Recovery stopped after ${recovery.attempt} attempt${recovery.attempt === 1 ? "" : "s"}`
+  }
+  if (recovery.phase === "restarting") {
+    return `Restarting (${recovery.attempt}/${recovery.maxAttempts})`
+  }
+  const nextAttemptAt = recovery.nextAttemptAt
+    ? Date.parse(recovery.nextAttemptAt)
+    : now
+  const seconds = Math.max(Math.ceil((nextAttemptAt - now) / 1_000), 0)
+  return `Restarting in ${seconds}s (${recovery.attempt}/${recovery.maxAttempts})`
+}
+
+export function isIntentionalServerStopCommand(
+  game: string,
+  input: string
+): boolean {
+  if (game.trim().toLowerCase() !== "minecraft") return false
+  const normalized = input.trim().replace(/^\//u, "").toLowerCase()
+  return normalized === "stop"
 }
 
 function runEffect<A>(effect: Effect.Effect<A, unknown>): Promise<A> {

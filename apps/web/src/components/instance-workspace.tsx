@@ -1124,7 +1124,10 @@ interface ResourceItem {
 }
 
 function useInstanceUptime(
-  instance: InstanceRuntime | null | undefined
+  instance:
+    | Pick<InstanceRuntime, "id" | "observedState" | "startedAt">
+    | null
+    | undefined
 ): string | null {
   const [now, setNow] = React.useState<number | null>(null)
   const startedAt = instance?.startedAt ? Date.parse(instance.startedAt) : NaN

@@ -36,6 +36,9 @@ service on port 2022. Both Relay ports are configurable:
 KILN_RELAY_HOST=relay.example.com
 KILN_RELAY_GAME_HOST=games.example.com
 KILN_RELAY_GAME_PORT_RANGE=30000-39999
+KILN_RELAY_CRASH_RETRY_LIMIT=2
+KILN_RELAY_CRASH_RETRY_DELAY_SECONDS=5
+KILN_RELAY_CRASH_STABILITY_SECONDS=300
 KILN_RELAY_PORT=4100
 KILN_RELAY_SFTP_PORT=2022
 KILN_RELAY_TLS_MODE=managed
@@ -55,6 +58,13 @@ does not configure NAT or firewall rules; the assigned game ports must still be
 reachable at that address. Relay assigns the public side of each primary game
 port from `KILN_RELAY_GAME_PORT_RANGE` when a Brick does not request a fixed
 host port, so forward and allow that range on the Relay host.
+
+Relay owns game-server crash recovery instead of Docker's unbounded restart
+policy. It retries an unexpected exit twice by default, with bounded backoff,
+and resets that budget after five healthy minutes. Exact Minecraft `stop` and
+`/stop` console commands are treated as intentional stops. Configure the retry
+count, initial delay, and stability window with the three
+`KILN_RELAY_CRASH_*` variables above.
 
 Set `KILN_RELAY_PROXY=traefik` to let Relay manage an isolated, pinned Traefik
 edge on public ports 80/443, or `KILN_RELAY_PROXY=coolify` to reuse Coolify's

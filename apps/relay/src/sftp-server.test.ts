@@ -407,6 +407,11 @@ function testConfig(dataDirectory: string): RelayConfig {
     proxyMode: "none",
     resourceNamespace: null,
     rootDirectory: resolve(dataDirectory, "instances"),
+    runtimeRecovery: {
+      initialDelayMs: 5_000,
+      maxRetries: 2,
+      stabilityMs: 300_000,
+    },
     serverIdLabel: "kiln.server.id",
     sftpDevAuthentication: true,
     sftpPort: 0,

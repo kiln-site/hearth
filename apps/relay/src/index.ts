@@ -81,6 +81,7 @@ import { actionsForRole, relayActions } from "./permissions.js"
 import type { RelayAction } from "./permissions.js"
 import { normalizeSourceCidrs } from "./source-policy.js"
 import { RelaySnapshotHub } from "./snapshot-hub.js"
+import { RuntimeRecoveryManager } from "./runtime-recovery.js"
 import { SystemUpdateManager } from "./system-updates.js"
 import { assignRelayWebRouteIds } from "./web-route-ids.js"
 import { planWebRouteRecovery } from "./web-route-labels.js"
@@ -126,7 +127,12 @@ let relayIdentity = startupCore.identity
 config.nodeId = relayIdentity.fingerprint
 config.nodeName = relayIdentity.name
 const bricks = new BrickCatalog(config.brickCatalogUrl)
-const docker = new DockerDriver(config)
+const runtimeRecovery = new RuntimeRecoveryManager(config, startupCore.state)
+await runRelayEffect(
+  "relay.startup.runtimeRecovery",
+  runtimeRecovery.initialize()
+)
+const docker = new DockerDriver(config, runtimeRecovery)
 const systemUpdates = new SystemUpdateManager(config)
 const filesystem = new FilesystemDriver(config)
 const lifecycle = new LifecycleDriver(config, docker, bricks)
@@ -202,6 +208,9 @@ const instanceMutations = new Map<
 >()
 const webRouteMutation = Semaphore.makeUnsafe(1)
 const snapshotHub = new RelaySnapshotHub(relaySnapshot)
+// Keep one shared snapshot sampler active so crash recovery does not depend on
+// a Hearth control connection. Interactive readers reuse the same cached loop.
+snapshotHub.subscribe(() => undefined, false)
 
 async function loadStartupWebRoutes() {
   const { initialized, persisted } = await runRelayEffect(

@@ -2206,7 +2206,7 @@ export class LifecycleDriver {
       "--interactive",
       "--tty",
       "--restart",
-      managedInstallationMarker ? "no" : "unless-stopped",
+      "no",
       "--read-only",
       "--tmpfs",
       "/tmp:rw,exec,nosuid,nodev,size=128m",
@@ -2356,6 +2356,10 @@ export class LifecycleDriver {
             timeout: 120_000,
           })
         }
+        await this.#docker.recordProvisionedState(
+          id,
+          input.start ? "running" : "stopped"
+        )
         if (networking?.enabled) {
           await this.#refreshCoreDnsConfiguration(networking)
         }
@@ -2737,6 +2741,7 @@ export class LifecycleDriver {
         )
       )
     )
+    await this.#docker.forgetRecoveryState(instance.id)
     if (deleteData) {
       await rm(join(this.#config.rootDirectory, instance.directory), {
         recursive: true,

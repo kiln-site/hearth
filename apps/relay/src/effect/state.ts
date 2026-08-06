@@ -2,6 +2,8 @@ import { SqliteClient, SqliteMigrator } from "@effect/sql-sqlite-node"
 import { Context, Effect, Layer, Schema } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import type {
+  RelayDesiredState,
+  RelayInstanceRecovery,
   RelayInstancePendingPrimaryPort,
   RelayInstancePortProtocol,
   RelayInstanceWebRoute,
@@ -82,6 +84,28 @@ export interface RelayStoredPendingPrimaryPort extends RelayInstancePendingPrima
   readonly instanceId: string
 }
 
+export type RelayRuntimeRecoveryPhase =
+  | "idle"
+  | "pending"
+  | "restarting"
+  | "monitoring"
+  | "failed"
+
+export interface RelayRuntimeRecoveryRecord {
+  readonly attempts: number
+  readonly desiredState: RelayDesiredState
+  readonly instanceId: string
+  readonly lastExitAt: number | null
+  readonly lastExitCode: number | null
+  readonly lastOomKilled: boolean
+  readonly lastReason: RelayInstanceRecovery["reason"] | null
+  readonly lastRuntimeMs: number | null
+  readonly lastStartedAt: string | null
+  readonly nextAttemptAt: number | null
+  readonly phase: RelayRuntimeRecoveryPhase
+  readonly updatedAt: number
+}
+
 const RelayClientRoleSchema = Schema.Literals([
   "custom",
   "full_access",
@@ -142,6 +166,35 @@ const RelayPendingPrimaryPortRowSchema = Schema.Struct({
   protocol: RelayInstancePortProtocolSchema,
 })
 
+const RelayDesiredStateSchema = Schema.Literals(["stopped", "running"])
+const RelayRuntimeRecoveryPhaseSchema = Schema.Literals([
+  "idle",
+  "pending",
+  "restarting",
+  "monitoring",
+  "failed",
+])
+const RelayRuntimeRecoveryReasonSchema = Schema.Literals([
+  "clean_exit",
+  "process_exit",
+  "out_of_memory",
+  "start_failed",
+])
+const RelayRuntimeRecoveryRowSchema = Schema.Struct({
+  attempts: Schema.Number,
+  desiredState: RelayDesiredStateSchema,
+  instanceId: Schema.String,
+  lastExitAt: Schema.NullOr(Schema.Number),
+  lastExitCode: Schema.NullOr(Schema.Number),
+  lastOomKilled: Schema.Number,
+  lastReason: Schema.NullOr(RelayRuntimeRecoveryReasonSchema),
+  lastRuntimeMs: Schema.NullOr(Schema.Number),
+  lastStartedAt: Schema.NullOr(Schema.String),
+  nextAttemptAt: Schema.NullOr(Schema.Number),
+  phase: RelayRuntimeRecoveryPhaseSchema,
+  updatedAt: Schema.Number,
+})
+
 export class RelayStateStore extends Context.Service<
   RelayStateStore,
   {
@@ -181,6 +234,13 @@ export class RelayStateStore extends Context.Service<
       ReadonlyArray<RelayStoredInstanceName>,
       RelayStateError
     >
+    readonly getRuntimeRecovery: (
+      instanceId: string
+    ) => Effect.Effect<RelayRuntimeRecoveryRecord | null, RelayStateError>
+    readonly listRuntimeRecoveries: () => Effect.Effect<
+      ReadonlyArray<RelayRuntimeRecoveryRecord>,
+      RelayStateError
+    >
     readonly getPendingPrimaryPort: (
       instanceId: string
     ) => Effect.Effect<RelayStoredPendingPrimaryPort | null, RelayStateError>
@@ -213,6 +273,12 @@ export class RelayStateStore extends Context.Service<
     readonly setInstanceName: (
       instanceId: string,
       name: string
+    ) => Effect.Effect<void, RelayStateError>
+    readonly setRuntimeRecovery: (
+      recovery: RelayRuntimeRecoveryRecord
+    ) => Effect.Effect<void, RelayStateError>
+    readonly deleteRuntimeRecovery: (
+      instanceId: string
     ) => Effect.Effect<void, RelayStateError>
     readonly deleteInstanceName: (
       instanceId: string
@@ -353,6 +419,29 @@ const migrations = SqliteMigrator.fromRecord({
       SET name = substr(hostname, 1, 32)
     `
   }),
+  "4_runtime_recovery": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`
+      CREATE TABLE relay_runtime_recovery (
+        instance_id TEXT PRIMARY KEY NOT NULL,
+        desired_state TEXT NOT NULL
+          CHECK (desired_state IN ('stopped', 'running')),
+        phase TEXT NOT NULL
+          CHECK (phase IN ('idle', 'pending', 'restarting', 'monitoring', 'failed')),
+        attempts INTEGER NOT NULL CHECK (attempts >= 0),
+        next_attempt_at INTEGER,
+        last_started_at TEXT,
+        last_exit_code INTEGER,
+        last_exit_at INTEGER,
+        last_oom_killed INTEGER NOT NULL
+          CHECK (last_oom_killed IN (0, 1)),
+        last_reason TEXT
+          CHECK (last_reason IS NULL OR last_reason IN ('clean_exit', 'process_exit', 'out_of_memory', 'start_failed')),
+        last_runtime_ms INTEGER CHECK (last_runtime_ms IS NULL OR last_runtime_ms >= 0),
+        updated_at INTEGER NOT NULL
+      ) STRICT
+    `
+  }),
 })
 
 const makeRelayStateStore = Effect.gen(function* () {
@@ -376,6 +465,9 @@ const makeRelayStateStore = Effect.gen(function* () {
   )
   const decodePendingPrimaryPortRows = Schema.decodeUnknownEffect(
     Schema.Array(RelayPendingPrimaryPortRowSchema)
+  )
+  const decodeRuntimeRecoveryRows = Schema.decodeUnknownEffect(
+    Schema.Array(RelayRuntimeRecoveryRowSchema)
   )
 
   const pendingPrimaryPorts = Effect.fn("RelayStateStore.pendingPrimaryPorts")(
@@ -408,6 +500,55 @@ const makeRelayStateStore = Effect.gen(function* () {
             name: "Default Server",
             protocol: row.protocol,
           }) satisfies RelayStoredPendingPrimaryPort
+      )
+    }
+  )
+
+  const runtimeRecoveries = Effect.fn("RelayStateStore.runtimeRecoveries")(
+    function* (instanceId?: string) {
+      const rows = instanceId
+        ? yield* sql<Record<string, unknown>>`
+            SELECT
+              instance_id AS instanceId,
+              desired_state AS desiredState,
+              phase,
+              attempts,
+              next_attempt_at AS nextAttemptAt,
+              last_started_at AS lastStartedAt,
+              last_exit_code AS lastExitCode,
+              last_exit_at AS lastExitAt,
+              last_oom_killed AS lastOomKilled,
+              last_reason AS lastReason,
+              last_runtime_ms AS lastRuntimeMs,
+              updated_at AS updatedAt
+            FROM relay_runtime_recovery
+            WHERE instance_id = ${instanceId}
+            LIMIT 1
+          `
+        : yield* sql<Record<string, unknown>>`
+            SELECT
+              instance_id AS instanceId,
+              desired_state AS desiredState,
+              phase,
+              attempts,
+              next_attempt_at AS nextAttemptAt,
+              last_started_at AS lastStartedAt,
+              last_exit_code AS lastExitCode,
+              last_exit_at AS lastExitAt,
+              last_oom_killed AS lastOomKilled,
+              last_reason AS lastReason,
+              last_runtime_ms AS lastRuntimeMs,
+              updated_at AS updatedAt
+            FROM relay_runtime_recovery
+            ORDER BY instance_id ASC
+          `
+      const decoded = yield* decodeRuntimeRecoveryRows(rows)
+      return decoded.map(
+        (row) =>
+          ({
+            ...row,
+            lastOomKilled: row.lastOomKilled === 1,
+          }) satisfies RelayRuntimeRecoveryRecord
       )
     }
   )
@@ -632,6 +773,13 @@ const makeRelayStateStore = Effect.gen(function* () {
           return rows[0]?.value ?? null
         })
       ),
+    getRuntimeRecovery: (instanceId) =>
+      run(
+        "get_runtime_recovery",
+        runtimeRecoveries(instanceId).pipe(
+          Effect.map((recoveries) => recoveries[0] ?? null)
+        )
+      ),
     listClients: () =>
       run(
         "list_clients",
@@ -751,6 +899,8 @@ const makeRelayStateStore = Effect.gen(function* () {
           ORDER BY instance_id ASC
         `
       ),
+    listRuntimeRecoveries: () =>
+      run("list_runtime_recoveries", runtimeRecoveries()),
     getPendingPrimaryPort: (instanceId) =>
       run(
         "get_pending_primary_port",
@@ -914,11 +1064,63 @@ const makeRelayStateStore = Effect.gen(function* () {
           SET name = excluded.name, updated_at = excluded.updated_at
         `.pipe(Effect.asVoid)
       ),
+    setRuntimeRecovery: (recovery) =>
+      run(
+        "set_runtime_recovery",
+        sql`
+          INSERT INTO relay_runtime_recovery (
+            instance_id,
+            desired_state,
+            phase,
+            attempts,
+            next_attempt_at,
+            last_started_at,
+            last_exit_code,
+            last_exit_at,
+            last_oom_killed,
+            last_reason,
+            last_runtime_ms,
+            updated_at
+          ) VALUES (
+            ${recovery.instanceId},
+            ${recovery.desiredState},
+            ${recovery.phase},
+            ${recovery.attempts},
+            ${recovery.nextAttemptAt},
+            ${recovery.lastStartedAt},
+            ${recovery.lastExitCode},
+            ${recovery.lastExitAt},
+            ${recovery.lastOomKilled ? 1 : 0},
+            ${recovery.lastReason},
+            ${recovery.lastRuntimeMs},
+            ${recovery.updatedAt}
+          )
+          ON CONFLICT (instance_id) DO UPDATE SET
+            desired_state = excluded.desired_state,
+            phase = excluded.phase,
+            attempts = excluded.attempts,
+            next_attempt_at = excluded.next_attempt_at,
+            last_started_at = excluded.last_started_at,
+            last_exit_code = excluded.last_exit_code,
+            last_exit_at = excluded.last_exit_at,
+            last_oom_killed = excluded.last_oom_killed,
+            last_reason = excluded.last_reason,
+            last_runtime_ms = excluded.last_runtime_ms,
+            updated_at = excluded.updated_at
+        `.pipe(Effect.asVoid)
+      ),
     deleteInstanceName: (instanceId) =>
       run(
         "delete_instance_name",
         sql`
           DELETE FROM relay_instance_names WHERE instance_id = ${instanceId}
+        `.pipe(Effect.asVoid)
+      ),
+    deleteRuntimeRecovery: (instanceId) =>
+      run(
+        "delete_runtime_recovery",
+        sql`
+          DELETE FROM relay_runtime_recovery WHERE instance_id = ${instanceId}
         `.pipe(Effect.asVoid)
       ),
     deletePendingPrimaryPort: (instanceId) =>

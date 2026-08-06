@@ -20,6 +20,32 @@ describe("loadConfig", () => {
     expect(config.tlsMode).toBe("development")
     expect(config.sftpDevAuthentication).toBe(true)
     expect(config.mclogsApiUrl).toBe("https://api.mclo.gs/1/log")
+    expect(config.runtimeRecovery).toEqual({
+      initialDelayMs: 5_000,
+      maxRetries: 2,
+      stabilityMs: 300_000,
+    })
+  })
+
+  it("configures bounded server crash recovery", () => {
+    const config = loadConfig({
+      KILN_RELAY_CRASH_RETRY_DELAY_SECONDS: "10",
+      KILN_RELAY_CRASH_RETRY_LIMIT: "4",
+      KILN_RELAY_CRASH_STABILITY_SECONDS: "600",
+      NODE_ENV: "development",
+    })
+
+    expect(config.runtimeRecovery).toEqual({
+      initialDelayMs: 10_000,
+      maxRetries: 4,
+      stabilityMs: 600_000,
+    })
+    expect(() =>
+      loadConfig({
+        KILN_RELAY_CRASH_RETRY_LIMIT: "11",
+        NODE_ENV: "development",
+      })
+    ).toThrow("KILN_RELAY_CRASH_RETRY_LIMIT must be an integer from 0 to 10")
   })
 
   it("validates the managed game port range", () => {

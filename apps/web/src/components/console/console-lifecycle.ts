@@ -1,11 +1,21 @@
-import type { RelayConsoleLine, RelayObservedState } from "@workspace/contracts"
+import type {
+  RelayConsoleLine,
+  RelayInstanceRecovery,
+  RelayObservedState,
+} from "@workspace/contracts"
 
 export function initialConsoleStateLines(
   startedAt: string | null,
   state: RelayObservedState | undefined,
-  readyAt: string | null = null
+  readyAt: string | null = null,
+  recovery: RelayInstanceRecovery | null = null
 ): Array<RelayConsoleLine> {
-  if (!startedAt) return state ? [consoleStateLine(state, null)] : []
+  const recoveryLines = recovery ? [consoleRecoveryLine(recovery, null)] : []
+  if (!startedAt) {
+    return state
+      ? [consoleStateLine(state, null), ...recoveryLines]
+      : recoveryLines
+  }
 
   const lines = [consoleStateLine("starting", startedAt)]
   if (state === "running") {
@@ -17,19 +27,35 @@ export function initialConsoleStateLines(
   ) {
     lines.push(consoleStateLine(state, null))
   }
-  return lines
+  return [...lines, ...recoveryLines]
 }
 
 export function mergeConsoleStateLines(
   lines: ReadonlyArray<RelayConsoleLine>,
   startedAt: string | null,
   state: RelayObservedState | undefined,
-  readyAt: string | null = null
+  readyAt: string | null = null,
+  recovery: RelayInstanceRecovery | null = null
 ): Array<RelayConsoleLine> {
   return [
-    ...initialConsoleStateLines(startedAt, state, readyAt),
+    ...initialConsoleStateLines(startedAt, state, readyAt, recovery),
     ...lines,
   ].sort(compareConsoleLineOrder)
+}
+
+export function consoleRecoveryLine(
+  recovery: RelayInstanceRecovery,
+  timestamp: string | null
+): RelayConsoleLine {
+  const text = recoveryMessage(recovery)
+  const color = recovery.phase === "failed" ? "#f87171" : "#fbbf24"
+  return {
+    id: `kiln-recovery:${recovery.attempt}:${recovery.phase}:${recovery.nextAttemptAt ?? "now"}`,
+    timestamp,
+    level: recovery.phase === "failed" ? "error" : "warn",
+    text,
+    segments: [{ text, color, bold: true }],
+  }
 }
 
 export function mergeConsoleHistory(
@@ -72,6 +98,10 @@ export function isConsoleStateLine(line: Pick<RelayConsoleLine, "id">) {
   return line.id.startsWith("kiln-state:")
 }
 
+export function isConsoleRecoveryLine(line: Pick<RelayConsoleLine, "id">) {
+  return line.id.startsWith("kiln-recovery:")
+}
+
 export function shouldRecordConsoleStateTransition(
   previous: RelayObservedState | undefined,
   next: RelayObservedState
@@ -105,5 +135,36 @@ function consoleTimestamp(timestamp: string | null): number {
 
 function linePosition(line: RelayConsoleLine): number {
   if (line.id.endsWith(":starting")) return -1
-  return isConsoleStateLine(line) ? 1 : 0
+  return isConsoleStateLine(line) || isConsoleRecoveryLine(line) ? 1 : 0
+}
+
+function recoveryMessage(recovery: RelayInstanceRecovery): string {
+  if (recovery.phase === "failed") {
+    const cause =
+      recovery.reason === "out_of_memory"
+        ? "The server ran out of memory repeatedly."
+        : "The server failed repeatedly."
+    return `${cause} Automatic recovery stopped after ${recovery.attempt} attempt${recovery.attempt === 1 ? "" : "s"}. Check the console above, try a different Brick, or contact support.`
+  }
+
+  const action =
+    recovery.phase === "restarting"
+      ? "Restarting now"
+      : `Restarting in ${retryDelaySeconds(recovery.nextAttemptAt)}s`
+  const cause =
+    recovery.reason === "out_of_memory"
+      ? "Server ran out of memory."
+      : recovery.reason === "clean_exit"
+        ? "Server stopped internally."
+        : recovery.reason === "start_failed"
+          ? "Relay could not restart the server."
+          : `Server exited unexpectedly${recovery.exitCode === null ? "" : ` (code ${recovery.exitCode})`}.`
+  return `${cause} ${action} — attempt ${recovery.attempt} of ${recovery.maxAttempts}.`
+}
+
+function retryDelaySeconds(nextAttemptAt: string | null): number {
+  const parsed = nextAttemptAt ? Date.parse(nextAttemptAt) : Date.now()
+  return Number.isFinite(parsed)
+    ? Math.max(Math.ceil((parsed - Date.now()) / 1_000), 0)
+    : 0
 }

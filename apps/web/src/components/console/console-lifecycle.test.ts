@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vite-plus/test"
 
 import {
+  consoleRecoveryLine,
   consoleStateLine,
   initialConsoleStateLines,
+  isConsoleRecoveryLine,
   isConsoleStateLine,
   mergeConsoleHistory,
   mergeConsoleStateLines,
@@ -145,6 +147,46 @@ describe("console lifecycle lines", () => {
     expect(line?.text).toBe("Server stopped")
     expect(line && isConsoleStateLine(line)).toBe(true)
     expect(isConsoleStateLine({ id: "docker:log-line" })).toBe(false)
+  })
+
+  it("explains an internal stop while Relay schedules recovery", () => {
+    const line = consoleRecoveryLine(
+      {
+        attempt: 1,
+        exitCode: 0,
+        maxAttempts: 2,
+        nextAttemptAt: new Date(Date.now() + 5_000).toISOString(),
+        oomKilled: false,
+        phase: "pending",
+        reason: "clean_exit",
+        runtimeMs: 60_000,
+      },
+      null
+    )
+
+    expect(line.text).toContain("Server stopped internally.")
+    expect(line.text).toContain("attempt 1 of 2")
+    expect(line.level).toBe("warn")
+    expect(isConsoleRecoveryLine(line)).toBe(true)
+  })
+
+  it("gives an actionable message when automatic recovery is exhausted", () => {
+    const lines = initialConsoleStateLines(null, "failed", null, {
+      attempt: 2,
+      exitCode: 137,
+      maxAttempts: 2,
+      nextAttemptAt: null,
+      oomKilled: true,
+      phase: "failed",
+      reason: "out_of_memory",
+      runtimeMs: 1_000,
+    })
+
+    expect(lines[0]?.text).toBe("Server failed")
+    expect(lines[1]?.text).toContain("Automatic recovery stopped")
+    expect(lines[1]?.text).toContain("try a different Brick")
+    expect(lines[1]?.text).toContain("contact support")
+    expect(lines[1]?.level).toBe("error")
   })
 
   it("ignores stale states that move a stopping lifecycle backwards", () => {

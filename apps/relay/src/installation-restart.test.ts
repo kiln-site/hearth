@@ -23,9 +23,10 @@ afterEach(async () => {
   )
 })
 
-describe("installer restart policy", () => {
+describe("Relay-owned restart policy", () => {
   async function inspectInstaller(input: {
     installationComplete: boolean
+    restartPolicy?: string
     startedAt: string
   }) {
     const dataDirectory = await mkdtemp(join(tmpdir(), "kiln-installation-"))
@@ -61,7 +62,7 @@ describe("installer restart policy", () => {
       HostConfig: {
         Memory: 1024 * 1024 * 1024,
         PortBindings: {},
-        RestartPolicy: { Name: "no" },
+        RestartPolicy: { Name: input.restartPolicy ?? "no" },
       },
       Id: "container-id",
       Mounts: [{ Destination: "/server", RW: true, Source: serverDirectory }],
@@ -92,20 +93,21 @@ describe("installer restart policy", () => {
     return new DockerDriver(config).inspectInstances()
   }
 
-  it("enables automatic restarts as soon as an Ember reports installation complete", async () => {
+  it("takes over restart ownership from an existing Docker policy", async () => {
     await inspectInstaller({
       installationComplete: true,
+      restartPolicy: "unless-stopped",
       startedAt: new Date().toISOString(),
     })
 
     expect(commandMock).toHaveBeenCalledWith("docker", [
       "update",
-      "--restart=unless-stopped",
+      "--restart=no",
       "installation-test-kiln-aaaaaaaa",
     ])
   })
 
-  it("keeps automatic restarts disabled until installation completes", async () => {
+  it("leaves installer-aware containers on restart=no", async () => {
     await inspectInstaller({
       installationComplete: false,
       startedAt: "2026-08-05T20:00:00.000Z",

@@ -47,6 +47,24 @@ export const relayObservedStateSchema = z
 
 export const relayDesiredStateSchema = z.enum(["stopped", "running"])
 
+export const relayInstanceRecoverySchema = z
+  .object({
+    attempt: z.number().int().nonnegative(),
+    exitCode: z.number().int().nullable(),
+    maxAttempts: z.number().int().nonnegative(),
+    nextAttemptAt: z.string().datetime().nullable(),
+    oomKilled: z.boolean(),
+    phase: z.enum(["pending", "restarting", "failed"]),
+    reason: z.enum([
+      "clean_exit",
+      "process_exit",
+      "out_of_memory",
+      "start_failed",
+    ]),
+    runtimeMs: z.number().int().nonnegative().nullable(),
+  })
+  .strict()
+
 export const brickIdSchema = z.string().regex(/^[a-z0-9][a-z0-9.-]{0,63}$/u)
 
 export const brickVariableValueSchema = z.union([
@@ -787,6 +805,7 @@ export const relayInstanceSchema = z.object({
   directory: z.string().min(1),
   desiredState: relayDesiredStateSchema,
   observedState: relayObservedStateSchema,
+  recovery: relayInstanceRecoverySchema.nullable().default(null),
   startedAt: z.string().datetime().nullable().default(null),
   readyAt: z.string().datetime().nullable().default(null),
   containerId: z.string().nullable(),
@@ -1165,6 +1184,7 @@ export type RelayInstanceWebRouteState = z.infer<
   typeof relayInstanceWebRouteStateSchema
 >
 export type RelayObservedState = z.infer<typeof relayObservedStateSchema>
+export type RelayInstanceRecovery = z.infer<typeof relayInstanceRecoverySchema>
 export type RelayInstanceResources = z.infer<
   typeof relayInstanceResourcesSchema
 >
