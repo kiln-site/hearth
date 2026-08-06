@@ -14,8 +14,10 @@ import type {
 } from "./effect/state.js"
 
 const MAXIMUM_RETRY_DELAY_MS = 60_000
+const START_CONFIRMATION_TIMEOUT_MS = 30_000
 
 export interface RuntimeRecoveryObservation {
+  readonly dockerRestartConfigured: boolean
   readonly exitCode: number
   readonly finishedAt: string
   readonly installationReady: boolean
@@ -23,6 +25,7 @@ export interface RuntimeRecoveryObservation {
   readonly managedByRelay: boolean
   readonly oomKilled: boolean
   readonly ready: boolean
+  readonly restarting: boolean
   readonly running: boolean
   readonly service: string
   readonly startedAt: string
@@ -40,7 +43,9 @@ export type RuntimeRecoveryStart = (
 
 export class RuntimeRecoveryManager {
   readonly #config: RelayConfig["runtimeRecovery"]
+  readonly #activeStarts = new Map<string, symbol>()
   readonly #locks = new Map<string, Semaphore.Semaphore>()
+  readonly #now: () => number
   readonly #records = new Map<string, RelayRuntimeRecoveryRecord>()
   readonly #startContainer: RuntimeRecoveryStart
   readonly #state: RelayStateStore["Service"]
@@ -48,9 +53,11 @@ export class RuntimeRecoveryManager {
   constructor(
     config: RelayConfig,
     state: RelayStateStore["Service"],
-    startContainer: RuntimeRecoveryStart = defaultStartContainer
+    startContainer: RuntimeRecoveryStart = defaultStartContainer,
+    now: () => number = Date.now
   ) {
     this.#config = config.runtimeRecovery
+    this.#now = now
     this.#startContainer = startContainer
     this.#state = state
   }
@@ -163,7 +170,9 @@ export class RuntimeRecoveryManager {
     return Effect.suspend(() => {
       const existing = this.#records.get(observation.instanceId)
       if (!observation.managedByRelay) {
-        const snapshot = unmanagedSnapshot(observation.running)
+        const snapshot = unmanagedSnapshot(
+          observation.running || observation.restarting
+        )
         return existing
           ? this.#delete(observation.instanceId).pipe(
               Effect.as([observation.instanceId, snapshot] as const)
@@ -171,13 +180,26 @@ export class RuntimeRecoveryManager {
           : Effect.succeed([observation.instanceId, snapshot] as const)
       }
       if (!existing) {
-        const desiredState = observation.running ? "running" : "stopped"
+        const preserveRunningIntent =
+          observation.running ||
+          (observation.installationReady &&
+            (observation.restarting ||
+              (observation.dockerRestartConfigured &&
+                observation.exitCode !== 0)))
+        const desiredState = preserveRunningIntent ? "running" : "stopped"
         const initial = initialRecoveryRecord(
           observation.instanceId,
           desiredState,
           now,
-          observation.running ? null : observation.startedAt
+          preserveRunningIntent ? null : observation.startedAt
         )
+        if (
+          desiredState === "running" &&
+          !observation.running &&
+          !observation.restarting
+        ) {
+          return this.#recordExit(initial, observation, now)
+        }
         return this.#persist(initial).pipe(
           Effect.map((record) => this.#entry(record))
         )
@@ -219,24 +241,41 @@ export class RuntimeRecoveryManager {
         }).pipe(Effect.map((record) => this.#entry(record)))
       }
 
+      if (observation.restarting) {
+        return Effect.succeed(this.#entry(existing))
+      }
+
       if (
         existing.phase === "pending" &&
         existing.nextAttemptAt !== null &&
         existing.nextAttemptAt <= now
       ) {
-        return this.#restart(existing, observation, now)
+        return this.#requestRestart(existing, observation, now)
       }
 
       if (
         existing.phase === "restarting" &&
         existing.lastStartedAt === observation.startedAt
       ) {
-        return this.#persist({
-          ...existing,
-          nextAttemptAt: now,
-          phase: "pending",
-          updatedAt: now,
-        }).pipe(Effect.map((record) => this.#entry(record)))
+        if (this.#activeStarts.has(observation.instanceId)) {
+          return Effect.succeed(this.#entry(existing))
+        }
+        if (existing.nextAttemptAt === null) {
+          return this.#persist({
+            ...existing,
+            nextAttemptAt: now + START_CONFIRMATION_TIMEOUT_MS,
+            updatedAt: now,
+          }).pipe(Effect.map((record) => this.#entry(record)))
+        }
+        if (existing.nextAttemptAt > now) {
+          return Effect.succeed(this.#entry(existing))
+        }
+        return this.#recordStartFailure(
+          existing,
+          observation,
+          new Error("Docker start completed without starting the container"),
+          now
+        )
       }
 
       if (existing.lastStartedAt === observation.startedAt) {
@@ -370,72 +409,145 @@ export class RuntimeRecoveryManager {
     )
   }
 
-  #restart(
+  #requestRestart(
     existing: RelayRuntimeRecoveryRecord,
     observation: RuntimeRecoveryObservation,
     now: number
   ): Effect.Effect<readonly [string, RuntimeRecoverySnapshot], unknown> {
-    return this.#startContainer(observation.service).pipe(
-      Effect.matchEffect({
-        onFailure: (cause) => {
-          if (existing.attempts >= this.#config.maxRetries) {
-            return this.#exhaust(
-              {
-                ...existing,
-                lastReason: "start_failed",
-                nextAttemptAt: null,
-                updatedAt: now,
-              },
-              observation,
-              cause
-            )
-          }
-          const attempt = existing.attempts + 1
-          return this.#persist({
-            ...existing,
-            attempts: attempt,
-            lastReason: "start_failed",
-            nextAttemptAt:
-              now + retryDelayMs(attempt, this.#config.initialDelayMs),
-            phase: "pending",
-            updatedAt: now,
-          }).pipe(
-            Effect.tap(() =>
-              Effect.logWarning(
-                "Server recovery start failed; retry scheduled",
-                {
-                  attempt,
-                  instanceId: observation.instanceId,
-                  maxAttempts: this.#config.maxRetries,
-                }
-              )
-            ),
-            Effect.map((record) => this.#entry(record))
-          )
-        },
-        onSuccess: () =>
-          this.#persist({
-            ...existing,
-            nextAttemptAt: null,
-            phase: "restarting",
-            updatedAt: now,
-          }).pipe(
-            Effect.tap(() =>
-              Effect.logInfo("Server recovery start requested", {
-                attempt: existing.attempts,
-                instanceId: observation.instanceId,
-                maxAttempts: this.#config.maxRetries,
-              })
-            ),
-            Effect.map((record) => this.#entry(record))
+    const token = Symbol(observation.instanceId)
+    const requested = {
+      ...existing,
+      nextAttemptAt: now + START_CONFIRMATION_TIMEOUT_MS,
+      phase: "restarting" as const,
+      updatedAt: now,
+    }
+    return this.#persist(requested).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          this.#activeStarts.set(observation.instanceId, token)
+        })
+      ),
+      Effect.tap(() =>
+        this.#performRestart(observation, now, token).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (this.#activeStarts.get(observation.instanceId) === token) {
+                this.#activeStarts.delete(observation.instanceId)
+              }
+            })
           ),
-      }),
-      Effect.withSpan("relay.runtimeRecovery.restart", {
+          Effect.forkDetach({ startImmediately: true })
+        )
+      ),
+      Effect.tap(() =>
+        Effect.logInfo("Server recovery start requested", {
+          attempt: existing.attempts,
+          instanceId: observation.instanceId,
+          maxAttempts: this.#config.maxRetries,
+        })
+      ),
+      Effect.map((record) => this.#entry(record)),
+      Effect.withSpan("relay.runtimeRecovery.requestRestart", {
         attributes: {
           "kiln.recovery.attempt": existing.attempts,
           "kiln.recovery.instance_id": observation.instanceId,
         },
       })
+    )
+  }
+
+  #performRestart(
+    observation: RuntimeRecoveryObservation,
+    requestedAt: number,
+    token: symbol
+  ): Effect.Effect<void, never> {
+    return this.#startContainer(observation.service).pipe(
+      Effect.tap(() =>
+        Effect.logInfo("Docker accepted the server recovery start", {
+          instanceId: observation.instanceId,
+        })
+      ),
+      Effect.catch((cause) =>
+        this.#lock(observation.instanceId).withPermit(
+          Effect.suspend(() => {
+            const current = this.#records.get(observation.instanceId)
+            if (
+              !current ||
+              this.#activeStarts.get(observation.instanceId) !== token ||
+              current.desiredState !== "running" ||
+              current.phase !== "restarting" ||
+              current.updatedAt !== requestedAt
+            ) {
+              return Effect.void
+            }
+            return this.#recordStartFailure(
+              current,
+              observation,
+              cause,
+              this.#now()
+            ).pipe(Effect.asVoid)
+          })
+        )
+      ),
+      Effect.catch((cause) =>
+        Effect.sync(() => {
+          Sentry.captureException(cause, {
+            tags: {
+              "kiln.instance_id": observation.instanceId,
+              "kiln.recovery": "worker_failed",
+            },
+          })
+        }).pipe(
+          Effect.andThen(
+            Effect.logError("Server recovery worker failed", {
+              instanceId: observation.instanceId,
+            })
+          )
+        )
+      ),
+      Effect.withSpan("relay.runtimeRecovery.restartWorker", {
+        attributes: {
+          "kiln.recovery.instance_id": observation.instanceId,
+        },
+      })
+    )
+  }
+
+  #recordStartFailure(
+    existing: RelayRuntimeRecoveryRecord,
+    observation: RuntimeRecoveryObservation,
+    cause: unknown,
+    now: number
+  ): Effect.Effect<readonly [string, RuntimeRecoverySnapshot], unknown> {
+    if (existing.attempts >= this.#config.maxRetries) {
+      return this.#exhaust(
+        {
+          ...existing,
+          lastReason: "start_failed",
+          nextAttemptAt: null,
+          updatedAt: now,
+        },
+        observation,
+        cause
+      )
+    }
+    const attempt = existing.attempts + 1
+    return this.#persist({
+      ...existing,
+      attempts: attempt,
+      lastReason: "start_failed",
+      nextAttemptAt: now + retryDelayMs(attempt, this.#config.initialDelayMs),
+      phase: "pending",
+      updatedAt: now,
+    }).pipe(
+      Effect.tap(() =>
+        Effect.logWarning("Server recovery start failed; retry scheduled", {
+          attempt,
+          instanceId: observation.instanceId,
+          maxAttempts: this.#config.maxRetries,
+        })
+      ),
+      Effect.map((record) => this.#entry(record))
     )
   }
 

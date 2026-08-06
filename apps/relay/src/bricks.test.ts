@@ -71,11 +71,18 @@ const recipe: BrickRecipe = brickRecipeSchema.parse({
   readiness: {
     logs: [" Server ready "],
   },
+  console: {
+    stopCommands: [" stop ", "/stop"],
+  },
 })
 
 describe("Brick recipes", () => {
   it("normalizes literal startup readiness logs", () => {
     expect(recipe.readiness?.logs).toEqual(["Server ready"])
+  })
+
+  it("normalizes exact console stop commands", () => {
+    expect(recipe.console?.stopCommands).toEqual(["stop", "/stop"])
   })
 
   it("defaults SRV support off and accepts an explicit opt-in", () => {

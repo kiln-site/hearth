@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, assert, describe, layer } from "@effect/vitest"
-import { Effect, Ref } from "effect"
+import { Deferred, Effect, Fiber, Ref } from "effect"
 
 import { loadConfig } from "./config.js"
 import { makeRelayStateLayer, RelayStateStore } from "./effect/state.js"
@@ -22,6 +22,7 @@ function observation(
   overrides: Partial<RuntimeRecoveryObservation> = {}
 ): RuntimeRecoveryObservation {
   return {
+    dockerRestartConfigured: false,
     exitCode: 0,
     finishedAt: "0001-01-01T00:00:00.000Z",
     installationReady: true,
@@ -29,6 +30,7 @@ function observation(
     managedByRelay: true,
     oomKilled: false,
     ready: true,
+    restarting: false,
     running: true,
     service: `kiln-${instanceId.slice(0, 8)}`,
     startedAt: "2026-08-06T12:00:00.000Z",
@@ -294,6 +296,167 @@ describe("runtime recovery", () => {
           recovery: null,
         })
         assert.isNull(yield* state.getRuntimeRecovery(instanceId))
+      })
+    )
+
+    it.effect("preserves running intent while Docker is restarting", () =>
+      Effect.gen(function* () {
+        const state = yield* RelayStateStore
+        const config = loadConfig({ NODE_ENV: "test" })
+        const manager = new RuntimeRecoveryManager(config, state)
+        yield* manager.initialize()
+
+        const instanceId = "6".repeat(40)
+        const result = yield* manager.reconcile(
+          [
+            observation(instanceId, {
+              dockerRestartConfigured: true,
+              exitCode: 1,
+              ready: false,
+              restarting: true,
+              running: false,
+            }),
+          ],
+          100
+        )
+
+        assert.strictEqual(result.get(instanceId)?.desiredState, "running")
+        assert.strictEqual(
+          (yield* state.getRuntimeRecovery(instanceId))?.desiredState,
+          "running"
+        )
+      })
+    )
+
+    it.effect(
+      "takes over a failed container with a legacy restart policy",
+      () =>
+        Effect.gen(function* () {
+          const state = yield* RelayStateStore
+          const config = loadConfig({ NODE_ENV: "test" })
+          const manager = new RuntimeRecoveryManager(config, state)
+          yield* manager.initialize()
+
+          const instanceId = "7".repeat(40)
+          const result = yield* manager.reconcile(
+            [
+              observation(instanceId, {
+                dockerRestartConfigured: true,
+                exitCode: 1,
+                finishedAt: "2026-08-06T12:00:02.000Z",
+                ready: false,
+                running: false,
+              }),
+            ],
+            Date.parse("2026-08-06T12:00:02.000Z")
+          )
+
+          assert.deepInclude(result.get(instanceId)?.recovery, {
+            attempt: 1,
+            phase: "pending",
+            reason: "process_exit",
+          })
+        })
+    )
+
+    it.effect(
+      "does not block reconciliation on an in-flight Docker start",
+      () =>
+        Effect.gen(function* () {
+          const state = yield* RelayStateStore
+          const config = loadConfig({
+            KILN_RELAY_CRASH_RETRY_DELAY_SECONDS: "0",
+            NODE_ENV: "test",
+          })
+          const started = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+          const manager = new RuntimeRecoveryManager(config, state, () =>
+            Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Deferred.await(release))
+            )
+          )
+          yield* manager.initialize()
+
+          const instanceId = "8".repeat(40)
+          yield* manager.recordProvisioned(instanceId, "running", 100)
+          yield* manager.reconcile(
+            [
+              observation(instanceId, {
+                exitCode: 1,
+                ready: false,
+                running: false,
+              }),
+            ],
+            200
+          )
+          const reconcileFiber = yield* manager
+            .reconcile(
+              [
+                observation(instanceId, {
+                  exitCode: 1,
+                  ready: false,
+                  running: false,
+                }),
+              ],
+              201
+            )
+            .pipe(Effect.forkChild)
+
+          yield* Deferred.await(started)
+          yield* Effect.yieldNow
+          assert.isDefined(reconcileFiber.pollUnsafe())
+          yield* Deferred.succeed(release, undefined)
+          yield* Fiber.join(reconcileFiber)
+        })
+    )
+
+    it.effect("bounds an unconfirmed Docker start with the retry budget", () =>
+      Effect.gen(function* () {
+        const state = yield* RelayStateStore
+        const config = loadConfig({
+          KILN_RELAY_CRASH_RETRY_DELAY_SECONDS: "0",
+          KILN_RELAY_CRASH_RETRY_LIMIT: "2",
+          NODE_ENV: "test",
+        })
+        const starts = yield* Ref.make(0)
+        let currentTime = 100
+        const manager = new RuntimeRecoveryManager(
+          config,
+          state,
+          () => Ref.update(starts, (count) => count + 1),
+          () => currentTime
+        )
+        yield* manager.initialize()
+
+        const instanceId = "9".repeat(40)
+        const stopped = observation(instanceId, {
+          exitCode: 1,
+          ready: false,
+          running: false,
+        })
+        yield* manager.recordProvisioned(instanceId, "running", currentTime)
+        currentTime = 200
+        yield* manager.reconcile([stopped], currentTime)
+        currentTime = 201
+        const restarting = yield* manager.reconcile([stopped], currentTime)
+        yield* Effect.yieldNow
+
+        const confirmationAt = Date.parse(
+          restarting.get(instanceId)?.recovery?.nextAttemptAt ?? ""
+        )
+        assert.isAbove(confirmationAt, currentTime)
+        currentTime = confirmationAt - 1
+        yield* manager.reconcile([stopped], currentTime)
+        assert.strictEqual(yield* Ref.get(starts), 1)
+
+        currentTime = confirmationAt
+        const retry = yield* manager.reconcile([stopped], currentTime)
+        assert.deepInclude(retry.get(instanceId)?.recovery, {
+          attempt: 2,
+          phase: "pending",
+          reason: "start_failed",
+        })
+        assert.strictEqual(yield* Ref.get(starts), 1)
       })
     )
   })

@@ -2280,6 +2280,12 @@ export class LifecycleDriver {
         `kiln.brick.readiness=${JSON.stringify(definition.readiness)}`
       )
     }
+    if (definition.console) {
+      arguments_.push(
+        "--label",
+        `kiln.brick.console-stop-commands=${JSON.stringify(definition.console.stopCommands)}`
+      )
+    }
     if (hostname) {
       const privatePort =
         definition.network.mode === "minecraft-proxy"

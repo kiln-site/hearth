@@ -150,7 +150,7 @@ function recoveryMessage(recovery: RelayInstanceRecovery): string {
   const action =
     recovery.phase === "restarting"
       ? "Restarting now"
-      : `Restarting in ${retryDelaySeconds(recovery.nextAttemptAt)}s`
+      : "Automatic restart scheduled"
   const cause =
     recovery.reason === "out_of_memory"
       ? "Server ran out of memory."
@@ -160,11 +160,4 @@ function recoveryMessage(recovery: RelayInstanceRecovery): string {
           ? "Relay could not restart the server."
           : `Server exited unexpectedly${recovery.exitCode === null ? "" : ` (code ${recovery.exitCode})`}.`
   return `${cause} ${action} — attempt ${recovery.attempt} of ${recovery.maxAttempts}.`
-}
-
-function retryDelaySeconds(nextAttemptAt: string | null): number {
-  const parsed = nextAttemptAt ? Date.parse(nextAttemptAt) : Date.now()
-  return Number.isFinite(parsed)
-    ? Math.max(Math.ceil((parsed - Date.now()) / 1_000), 0)
-    : 0
 }

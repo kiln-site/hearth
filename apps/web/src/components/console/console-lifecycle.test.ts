@@ -165,6 +165,8 @@ describe("console lifecycle lines", () => {
     )
 
     expect(line.text).toContain("Server stopped internally.")
+    expect(line.text).toContain("Automatic restart scheduled")
+    expect(line.text).not.toMatch(/Restarting in \d+s/u)
     expect(line.text).toContain("attempt 1 of 2")
     expect(line.level).toBe("warn")
     expect(isConsoleRecoveryLine(line)).toBe(true)

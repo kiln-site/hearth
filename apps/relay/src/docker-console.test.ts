@@ -92,10 +92,12 @@ describe("Docker console parsing", () => {
     ).toBeNull()
   })
 
-  it("recognizes only exact Minecraft console stop commands", () => {
-    expect(isIntentionalServerStopCommand("Minecraft", "stop")).toBe(true)
-    expect(isIntentionalServerStopCommand("minecraft", " /STOP ")).toBe(true)
-    expect(isIntentionalServerStopCommand("Minecraft", "stop now")).toBe(false)
-    expect(isIntentionalServerStopCommand("Palworld", "stop")).toBe(false)
+  it("recognizes only exact recipe-declared console stop commands", () => {
+    const stopCommands = ["stop", "/stop"]
+    expect(isIntentionalServerStopCommand(stopCommands, "stop")).toBe(true)
+    expect(isIntentionalServerStopCommand(stopCommands, " /stop ")).toBe(true)
+    expect(isIntentionalServerStopCommand(stopCommands, "/STOP")).toBe(false)
+    expect(isIntentionalServerStopCommand(stopCommands, "stop now")).toBe(false)
+    expect(isIntentionalServerStopCommand([], "stop")).toBe(false)
   })
 })

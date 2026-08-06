@@ -101,6 +101,12 @@ export const brickReadinessSchema = z
   })
   .strict()
 
+export const brickConsoleSchema = z
+  .object({
+    stopCommands: z.array(z.string().trim().min(1).max(128)).min(1).max(8),
+  })
+  .strict()
+
 export const brickRecipeSchema = z
   .object({
     format: z.literal("kiln.brick/v1"),
@@ -154,6 +160,7 @@ export const brickRecipeSchema = z
       })
       .strict(),
     readiness: brickReadinessSchema.optional(),
+    console: brickConsoleSchema.optional(),
     network: z
       .object({
         mode: z.enum(["minecraft-backend", "minecraft-proxy", "direct"]),

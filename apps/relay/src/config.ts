@@ -13,6 +13,7 @@ import type {
 export interface RelayInstanceConfig {
   brickFormat?: string
   brickId?: string
+  brickConsoleStopCommands?: ReadonlyArray<string>
   brickNetworkMode?: "direct" | "minecraft-backend" | "minecraft-proxy"
   brickPrimaryPort?: number
   brickPrimaryPortProtocol?: RelayInstancePortProtocol

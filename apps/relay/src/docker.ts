@@ -26,6 +26,7 @@ import type {
 } from "@workspace/contracts"
 import {
   builtinTailscaleBrickId,
+  brickConsoleSchema,
   brickReadinessSchema,
   brickVariableValuesSchema,
   DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
@@ -517,6 +518,9 @@ export class DockerDriver {
                   readiness.get(config.id)
                 ).observedState === "running"
               return {
+                dockerRestartConfigured:
+                  container.HostConfig?.RestartPolicy?.Name !== undefined &&
+                  container.HostConfig.RestartPolicy.Name !== "no",
                 exitCode: container.State.ExitCode,
                 finishedAt: container.State.FinishedAt,
                 installationReady:
@@ -532,6 +536,7 @@ export class DockerDriver {
                 managedByRelay: config.managedByRelay,
                 oomKilled: container.State.OOMKilled,
                 ready,
+                restarting: container.State.Restarting,
                 running: container.State.Running,
                 service: config.service,
                 startedAt: container.State.StartedAt,
@@ -1242,7 +1247,10 @@ export class DockerDriver {
     instance: RelayInstanceConfig,
     input: string
   ): Promise<void> {
-    const intentionalStop = isIntentionalServerStopCommand(instance.game, input)
+    const intentionalStop = isIntentionalServerStopCommand(
+      instance.brickConsoleStopCommands ?? [],
+      input
+    )
     const previousRecovery =
       intentionalStop && this.#runtimeRecovery
         ? await runEffect(
@@ -2208,6 +2216,9 @@ export class DockerDriver {
     return {
       brickFormat: labels["kiln.brick.format"],
       brickId: validBrickId,
+      brickConsoleStopCommands: parseBrickConsoleStopCommandsLabel(
+        labels["kiln.brick.console-stop-commands"]
+      ),
       brickNetworkMode: validNetworkMode,
       brickPrimaryPort:
         effectivePrimaryPort &&
@@ -2452,6 +2463,15 @@ function parseBrickVariablesLabel(
   return Result.try(() =>
     brickVariableValuesSchema.parse(JSON.parse(value))
   ).pipe(Result.getOrUndefined)
+}
+
+function parseBrickConsoleStopCommandsLabel(
+  value: string | undefined
+): ReadonlyArray<string> {
+  if (!value) return []
+  return Result.try(() =>
+    brickConsoleSchema.shape.stopCommands.parse(JSON.parse(value))
+  ).pipe(Result.getOrElse(() => []))
 }
 
 function parseBrickReadinessLabel(value: string | undefined) {
@@ -2977,12 +2997,11 @@ function recoveryStatus(
 }
 
 export function isIntentionalServerStopCommand(
-  game: string,
+  stopCommands: ReadonlyArray<string>,
   input: string
 ): boolean {
-  if (game.trim().toLowerCase() !== "minecraft") return false
-  const normalized = input.trim().replace(/^\//u, "").toLowerCase()
-  return normalized === "stop"
+  const normalized = input.trim()
+  return stopCommands.includes(normalized)
 }
 
 function runEffect<A>(effect: Effect.Effect<A, unknown>): Promise<A> {
