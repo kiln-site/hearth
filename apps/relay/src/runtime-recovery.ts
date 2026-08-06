@@ -7,7 +7,10 @@ import type {
 
 import { commandEffect } from "./command.js"
 import type { RelayConfig } from "./config.js"
-import type { InstancePowerAction } from "./power-state.js"
+import {
+  INSTANCE_STOP_TIMEOUT_SECONDS,
+  type InstancePowerAction,
+} from "./power-state.js"
 import type {
   RelayRuntimeRecoveryRecord,
   RelayStateStore,
@@ -41,6 +44,10 @@ export type RuntimeRecoveryStart = (
   service: string
 ) => Effect.Effect<void, unknown>
 
+export type RuntimeRecoveryStop = (
+  service: string
+) => Effect.Effect<void, unknown>
+
 export class RuntimeRecoveryManager {
   readonly #config: RelayConfig["runtimeRecovery"]
   readonly #activeStarts = new Map<string, symbol>()
@@ -49,17 +56,20 @@ export class RuntimeRecoveryManager {
   readonly #records = new Map<string, RelayRuntimeRecoveryRecord>()
   readonly #startContainer: RuntimeRecoveryStart
   readonly #state: RelayStateStore["Service"]
+  readonly #stopContainer: RuntimeRecoveryStop
 
   constructor(
     config: RelayConfig,
     state: RelayStateStore["Service"],
     startContainer: RuntimeRecoveryStart = defaultStartContainer,
-    now: () => number = Date.now
+    now: () => number = Date.now,
+    stopContainer: RuntimeRecoveryStop = defaultStopContainer
   ) {
     this.#config = config.runtimeRecovery
     this.#now = now
     this.#startContainer = startContainer
     this.#state = state
+    this.#stopContainer = stopContainer
   }
 
   initialize(): Effect.Effect<void, unknown> {
@@ -467,28 +477,21 @@ export class RuntimeRecoveryManager {
           instanceId: observation.instanceId,
         })
       ),
-      Effect.catch((cause) =>
-        this.#lock(observation.instanceId).withPermit(
-          Effect.suspend(() => {
-            const current = this.#records.get(observation.instanceId)
-            if (
-              !current ||
-              this.#activeStarts.get(observation.instanceId) !== token ||
-              current.desiredState !== "running" ||
-              current.phase !== "restarting" ||
-              current.updatedAt !== requestedAt
-            ) {
-              return Effect.void
-            }
-            return this.#recordStartFailure(
-              current,
-              observation,
-              cause,
-              this.#now()
-            ).pipe(Effect.asVoid)
-          })
-        )
-      ),
+      Effect.matchEffect({
+        onFailure: (cause) =>
+          this.#recordRestartFailure(
+            observation,
+            requestedAt,
+            token,
+            cause
+          ),
+        onSuccess: () => this.#enforceDesiredStateAfterStart(observation),
+      }),
+      Effect.withSpan("relay.runtimeRecovery.restartWorker", {
+        attributes: {
+          "kiln.recovery.instance_id": observation.instanceId,
+        },
+      }),
       Effect.catch((cause) =>
         Effect.sync(() => {
           Sentry.captureException(cause, {
@@ -504,11 +507,65 @@ export class RuntimeRecoveryManager {
             })
           )
         )
-      ),
-      Effect.withSpan("relay.runtimeRecovery.restartWorker", {
-        attributes: {
-          "kiln.recovery.instance_id": observation.instanceId,
-        },
+      )
+    )
+  }
+
+  #recordRestartFailure(
+    observation: RuntimeRecoveryObservation,
+    requestedAt: number,
+    token: symbol,
+    cause: unknown
+  ): Effect.Effect<void, unknown> {
+    return this.#lock(observation.instanceId).withPermit(
+      Effect.suspend(() => {
+        const current = this.#records.get(observation.instanceId)
+        if (
+          !current ||
+          this.#activeStarts.get(observation.instanceId) !== token ||
+          current.desiredState !== "running" ||
+          current.phase !== "restarting" ||
+          current.updatedAt !== requestedAt
+        ) {
+          return Effect.void
+        }
+        return this.#recordStartFailure(
+          current,
+          observation,
+          cause,
+          this.#now()
+        ).pipe(Effect.asVoid)
+      })
+    )
+  }
+
+  #enforceDesiredStateAfterStart(
+    observation: RuntimeRecoveryObservation
+  ): Effect.Effect<void, unknown> {
+    return this.#lock(observation.instanceId).withPermit(
+      Effect.suspend(() => {
+        const shouldStop =
+          this.#records.get(observation.instanceId)?.desiredState === "stopped"
+        return (
+          shouldStop
+            ? this.#stopContainer(observation.service).pipe(
+                Effect.tap(() =>
+                  Effect.logInfo(
+                    "Stopped server after an in-flight recovery start",
+                    {
+                      instanceId: observation.instanceId,
+                    }
+                  )
+                )
+              )
+            : Effect.void
+        ).pipe(
+          Effect.withSpan("relay.runtimeRecovery.enforceDesiredState", {
+            attributes: {
+              "kiln.recovery.instance_id": observation.instanceId,
+            },
+          })
+        )
       })
     )
   }
@@ -650,6 +707,18 @@ const defaultStartContainer: RuntimeRecoveryStart = (service) =>
   commandEffect("docker", ["start", service], { timeout: 120_000 }).pipe(
     Effect.asVoid
   )
+
+const defaultStopContainer: RuntimeRecoveryStop = (service) =>
+  commandEffect(
+    "docker",
+    [
+      "stop",
+      "--time",
+      String(INSTANCE_STOP_TIMEOUT_SECONDS),
+      service,
+    ],
+    { timeout: (INSTANCE_STOP_TIMEOUT_SECONDS + 15) * 1_000 }
+  ).pipe(Effect.asVoid)
 
 export function retryDelayMs(attempt: number, initialDelayMs: number): number {
   if (initialDelayMs === 0) return 0

@@ -1283,30 +1283,17 @@ export class DockerDriver {
   async #consoleStopCommands(
     instance: RelayInstanceConfig
   ): Promise<ReadonlyArray<string>> {
-    if (instance.brickConsoleStopCommands) {
-      return instance.brickConsoleStopCommands
-    }
     const bricks = this.#bricks
-    const source = instance.brickSource
-    if (!bricks || !source) return []
     return runEffect(
-      promiseEffect(() => bricks.recipe(source)).pipe(
-        Effect.map((recipe) => recipe.console?.stopCommands ?? []),
-        Effect.catch(() =>
-          Effect.logWarning(
-            "Could not resolve legacy container console commands",
-            {
-              instanceId: instance.id,
-              recipe: instance.brickSource,
-            }
-          ).pipe(Effect.as([]))
-        ),
-        Effect.withSpan("relay.console.resolveStopCommands", {
-          attributes: {
-            "kiln.instance_id": instance.id,
-          },
-        })
-      )
+      resolveConsoleStopCommands({
+        configured: instance.brickConsoleStopCommands,
+        instanceId: instance.id,
+        load: bricks
+          ? async (source) =>
+              (await bricks.recipe(source)).console?.stopCommands ?? []
+          : null,
+        source: instance.brickSource,
+      })
     )
   }
 
@@ -2531,6 +2518,41 @@ export interface ParsedConsoleLine {
   text: string
   timestamp: string | null
 }
+
+export interface ConsoleStopCommandsInput {
+  readonly configured: ReadonlyArray<string> | undefined
+  readonly instanceId: string
+  readonly load: ((source: string) => Promise<ReadonlyArray<string>>) | null
+  readonly source: string | undefined
+}
+
+export const resolveConsoleStopCommands = Effect.fn(
+  "relay.console.resolveStopCommands"
+)(function* ({
+  configured,
+  instanceId,
+  load,
+  source,
+}: ConsoleStopCommandsInput) {
+  yield* Effect.annotateCurrentSpan({ "kiln.instance_id": instanceId })
+  if (configured && configured.length > 0) return configured
+  if (!load || !source) return []
+  return yield* promiseEffect(() => load(source)).pipe(
+    Effect.withSpan("relay.console.loadRecipeStopCommands", {
+      attributes: {
+        "kiln.instance_id": instanceId,
+        "kiln.recipe.source": source,
+      },
+    }),
+    Effect.catch((cause) =>
+      Effect.logWarning("Could not resolve legacy container console commands", {
+        cause,
+        instanceId,
+        recipe: source,
+      }).pipe(Effect.as([]))
+    )
+  )
+})
 
 export function observedSessionReadyAt(
   detectedReadyAt: string | undefined,

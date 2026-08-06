@@ -410,6 +410,59 @@ describe("runtime recovery", () => {
         })
     )
 
+    it.effect("stops a recovery start that loses to intentional stop", () =>
+      Effect.gen(function* () {
+        const state = yield* RelayStateStore
+        const config = loadConfig({
+          KILN_RELAY_CRASH_RETRY_DELAY_SECONDS: "0",
+          NODE_ENV: "test",
+        })
+        const startBegan = yield* Deferred.make<void>()
+        const releaseStart = yield* Deferred.make<void>()
+        const compensatingStop = yield* Deferred.make<void>()
+        let stoppedService: string | null = null
+        const manager = new RuntimeRecoveryManager(
+          config,
+          state,
+          () =>
+            Deferred.succeed(startBegan, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseStart))
+            ),
+          Date.now,
+          (service) =>
+            Effect.sync(() => {
+              stoppedService = service
+            }).pipe(Effect.andThen(Deferred.succeed(compensatingStop, undefined)))
+        )
+        yield* manager.initialize()
+
+        const instanceId = "c".repeat(40)
+        const stopped = observation(instanceId, {
+          exitCode: 1,
+          ready: false,
+          running: false,
+        })
+        yield* manager.recordProvisioned(instanceId, "running", 100)
+        yield* manager.reconcile([stopped], 200)
+        yield* manager.reconcile([stopped], 201)
+        yield* Deferred.await(startBegan)
+
+        yield* manager.recordPowerAction(instanceId, "stop", 202)
+        yield* Deferred.succeed(releaseStart, undefined)
+        yield* Deferred.await(compensatingStop)
+
+        assert.strictEqual(stoppedService, "kiln-cccccccc")
+        assert.deepStrictEqual(manager.snapshot(instanceId), {
+          desiredState: "stopped",
+          recovery: null,
+        })
+        assert.strictEqual(
+          (yield* state.getRuntimeRecovery(instanceId))?.desiredState,
+          "stopped"
+        )
+      })
+    )
+
     it.effect("bounds an unconfirmed Docker start with the retry budget", () =>
       Effect.gen(function* () {
         const state = yield* RelayStateStore
