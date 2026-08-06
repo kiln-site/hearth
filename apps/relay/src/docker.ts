@@ -9,6 +9,7 @@ import { basename, relative, resolve } from "node:path"
 import { Cause, Effect, Option, Queue, Result, Semaphore, Stream } from "effect"
 
 import { command } from "./command.js"
+import type { BrickCatalog } from "./bricks.js"
 import { directoryApparentSizeEffect } from "./disk-usage.js"
 import { ensuringPromise } from "./effect/promise.js"
 import type {
@@ -381,6 +382,7 @@ export function initialDiskUsageCacheEntry(): DiskUsageCacheEntry {
 }
 
 export class DockerDriver {
+  readonly #bricks: BrickCatalog | null
   readonly #config: RelayConfig
   readonly #resources: RelayResourceNames
   #cachedDockerVersion: string | null | undefined
@@ -401,8 +403,10 @@ export class DockerDriver {
 
   constructor(
     config: RelayConfig,
-    runtimeRecovery: RuntimeRecoveryManager | null = null
+    runtimeRecovery: RuntimeRecoveryManager | null = null,
+    bricks: BrickCatalog | null = null
   ) {
+    this.#bricks = bricks
     this.#config = config
     this.#resources = relayResourceNames(config)
     this.#runtimeRecovery = runtimeRecovery
@@ -1247,10 +1251,8 @@ export class DockerDriver {
     instance: RelayInstanceConfig,
     input: string
   ): Promise<void> {
-    const intentionalStop = isIntentionalServerStopCommand(
-      instance.brickConsoleStopCommands ?? [],
-      input
-    )
+    const stopCommands = await this.#consoleStopCommands(instance)
+    const intentionalStop = isIntentionalServerStopCommand(stopCommands, input)
     const previousRecovery =
       intentionalStop && this.#runtimeRecovery
         ? await runEffect(
@@ -1274,6 +1276,36 @@ export class DockerDriver {
                 .pipe(Effect.ignore)
             : Effect.void
         )
+      )
+    )
+  }
+
+  async #consoleStopCommands(
+    instance: RelayInstanceConfig
+  ): Promise<ReadonlyArray<string>> {
+    if (instance.brickConsoleStopCommands) {
+      return instance.brickConsoleStopCommands
+    }
+    const bricks = this.#bricks
+    const source = instance.brickSource
+    if (!bricks || !source) return []
+    return runEffect(
+      promiseEffect(() => bricks.recipe(source)).pipe(
+        Effect.map((recipe) => recipe.console?.stopCommands ?? []),
+        Effect.catch(() =>
+          Effect.logWarning(
+            "Could not resolve legacy container console commands",
+            {
+              instanceId: instance.id,
+              recipe: instance.brickSource,
+            }
+          ).pipe(Effect.as([]))
+        ),
+        Effect.withSpan("relay.console.resolveStopCommands", {
+          attributes: {
+            "kiln.instance_id": instance.id,
+          },
+        })
       )
     )
   }
@@ -2467,11 +2499,14 @@ function parseBrickVariablesLabel(
 
 function parseBrickConsoleStopCommandsLabel(
   value: string | undefined
-): ReadonlyArray<string> {
-  if (!value) return []
-  return Result.try(() =>
-    brickConsoleSchema.shape.stopCommands.parse(JSON.parse(value))
-  ).pipe(Result.getOrElse(() => []))
+): ReadonlyArray<string> | undefined {
+  if (!value) return undefined
+  return Result.try(() => {
+    const parsed: unknown = JSON.parse(value)
+    return Array.isArray(parsed) && parsed.length === 0
+      ? []
+      : brickConsoleSchema.shape.stopCommands.parse(parsed)
+  }).pipe(Result.getOrUndefined)
 }
 
 function parseBrickReadinessLabel(value: string | undefined) {

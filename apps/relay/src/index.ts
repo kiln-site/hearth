@@ -132,7 +132,7 @@ await runRelayEffect(
   "relay.startup.runtimeRecovery",
   runtimeRecovery.initialize()
 )
-const docker = new DockerDriver(config, runtimeRecovery)
+const docker = new DockerDriver(config, runtimeRecovery, bricks)
 const systemUpdates = new SystemUpdateManager(config)
 const filesystem = new FilesystemDriver(config)
 const lifecycle = new LifecycleDriver(config, docker, bricks)
