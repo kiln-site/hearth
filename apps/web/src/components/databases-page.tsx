@@ -44,8 +44,12 @@ import {
   DropdownMenuTrigger,
 } from "@workspace/ui/components/dropdown-menu"
 import { Input } from "@workspace/ui/components/input"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@workspace/ui/components/popover"
 import { showToast } from "@workspace/ui/components/sonner"
-import { Switch } from "@workspace/ui/components/switch"
 import {
   Tooltip,
   TooltipContent,
@@ -61,6 +65,10 @@ import {
   useWorkspaceTableSearchInput,
 } from "@/components/workspace-data-table"
 import type { WorkspaceTableSearchStore } from "@/components/workspace-data-table"
+import {
+  ServerPickerList,
+  serverPickerOptionKey,
+} from "@/components/server-picker-list"
 import { roleHasPermission } from "@/lib/permissions"
 import type { AccessPermission } from "@/lib/permissions"
 import {
@@ -88,7 +96,6 @@ type DatabaseDialog =
   | { kind: "credentials"; database: ManagedDatabase }
   | { kind: "delete"; database: ManagedDatabase }
   | { kind: "import"; database: ManagedDatabase }
-  | { kind: "network"; database: ManagedDatabase }
   | null
 
 const engineOptions: ReadonlyArray<{
@@ -172,16 +179,6 @@ export const DatabasesPage = React.memo(function DatabasesPage({
       ) : null}
       {dialog?.kind === "credentials" ? (
         <CredentialsDialog
-          key={`${dialog.database.relayId}:${dialog.database.id}`}
-          database={dialog.database}
-          open
-          onOpenChange={(open) => {
-            if (!open) setDialog(null)
-          }}
-        />
-      ) : null}
-      {dialog?.kind === "network" ? (
-        <DatabaseNetworkDialog
           key={`${dialog.database.relayId}:${dialog.database.id}`}
           database={dialog.database}
           open
@@ -508,12 +505,7 @@ const DatabaseActions = React.memo(function DatabaseActions({
         />
       ) : null}
       {can("database.network.write") ? (
-        <ActionIconButton
-          icon={Network}
-          label={`Manage ${database.name} connections`}
-          tooltip="Connect servers"
-          onClick={() => onDialog({ kind: "network", database })}
-        />
+        <DatabaseNetworkPicker database={database} />
       ) : null}
       {hasMenuActions ? (
         <DropdownMenu>
@@ -617,7 +609,9 @@ function CreateDatabaseDialog({
   const availableRelays = relays.filter((relay) => relay.canCreate)
   const [name, setName] = React.useState("")
   const [engine, setEngine] = React.useState<DatabaseEngine>("postgres")
-  const [relayId, setRelayId] = React.useState(availableRelays.at(0)?.id ?? "")
+  const [relayId, setRelayId] = React.useState(
+    () => availableRelays.at(0)?.id ?? ""
+  )
   const create = useMutation({
     mutationFn: () =>
       createManagedDatabase({
@@ -868,24 +862,90 @@ function CredentialField({
   )
 }
 
-function DatabaseNetworkDialog({
+const DatabaseNetworkPicker = React.memo(function DatabaseNetworkPicker({
   database,
-  open,
-  onOpenChange,
 }: {
   database: ManagedDatabase
-  open: boolean
-  onOpenChange: (open: boolean) => void
+}) {
+  const [open, setOpen] = React.useState(false)
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <Button
+              aria-label={`Connect servers to ${database.name}`}
+              aria-expanded={open}
+              className="text-muted-foreground hover:text-primary"
+              size="icon-sm"
+              type="button"
+              variant="ghost"
+            >
+              <Network />
+            </Button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Connect servers</TooltipContent>
+      </Tooltip>
+      <PopoverContent
+        align="end"
+        className="w-[min(32rem,calc(100vw-2rem))] p-1.5"
+      >
+        {open ? <DatabaseNetworkPickerContent database={database} /> : null}
+      </PopoverContent>
+    </Popover>
+  )
+})
+
+function DatabaseNetworkPickerContent({
+  database,
+}: {
+  database: ManagedDatabase
 }) {
   const queryClient = useQueryClient()
   const { data: capabilities } = useSuspenseQuery(
     accessCapabilitiesQueryOptions()
   )
   const { data: snapshot } = useQuery(relaySnapshotQueryOptions())
-  const instances =
-    snapshot?.instances.filter(
-      (instance) => instance.relayId === database.relayId
-    ) ?? []
+  const servers = React.useMemo(
+    () =>
+      (snapshot?.instances ?? [])
+        .flatMap((instance) => {
+          if (instance.relayId !== database.relayId) return []
+          const canWrite =
+            capabilities.isPlatformAdmin ||
+            capabilities.grants.some(
+              (grant) =>
+                grant.relayId === database.relayId &&
+                roleHasPermission(grant.role, "instance.network.write") &&
+                (grant.resourceType === "relay" ||
+                  (grant.resourceType === "instance" &&
+                    grant.resourceId === instance.id))
+            )
+          return canWrite
+            ? [
+                {
+                  id: instance.id,
+                  name: instance.name,
+                  relayId: instance.relayId,
+                  relayName: instance.relayName,
+                },
+              ]
+            : []
+        })
+        .sort((left, right) => left.name.localeCompare(right.name)),
+    [capabilities, database.relayId, snapshot?.instances]
+  )
+  const selectedKeys = React.useMemo(
+    () =>
+      new Set(
+        database.connectedInstanceIds.map(
+          (instanceId) => `${database.relayId}:${instanceId}`
+        )
+      ),
+    [database.connectedInstanceIds, database.relayId]
+  )
   const update = useMutation({
     mutationFn: (input: { connected: boolean; instanceId: string }) =>
       updateManagedDatabaseNetwork({
@@ -902,76 +962,29 @@ function DatabaseNetworkDialog({
     },
     onError: (error) => showOperationError("Network update failed", error),
   })
+  const pendingKey = update.isPending
+    ? serverPickerOptionKey({
+        id: update.variables.instanceId,
+        name: "",
+        relayId: database.relayId,
+        relayName: "",
+      })
+    : undefined
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Connected servers</DialogTitle>
-          <DialogDescription>
-            Servers share this database's isolated Docker network. The database
-            remains unreachable from the public internet.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="max-h-80 space-y-2 overflow-y-auto">
-          {instances.length === 0 ? (
-            <div className="rounded-lg border border-dashed p-6 text-center text-xs text-muted-foreground">
-              No accessible servers are hosted on {database.relayName}.
-            </div>
-          ) : (
-            instances.map((instance) => {
-              const connected = database.connectedInstanceIds.includes(
-                instance.id
-              )
-              const canWrite =
-                capabilities.isPlatformAdmin ||
-                capabilities.grants.some(
-                  (grant) =>
-                    grant.relayId === database.relayId &&
-                    roleHasPermission(grant.role, "instance.network.write") &&
-                    (grant.resourceType === "relay" ||
-                      (grant.resourceType === "instance" &&
-                        grant.resourceId === instance.id))
-                )
-              return (
-                <div
-                  key={instance.id}
-                  className="flex items-center gap-3 rounded-lg border border-border/70 bg-background/25 px-3 py-2.5"
-                >
-                  <span className="flex size-7 items-center justify-center rounded-md border bg-background/50">
-                    <Network className="size-3.5 text-muted-foreground" />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-xs font-medium">
-                      {instance.name}
-                    </p>
-                    <p className="truncate font-mono text-[8px] text-muted-foreground">
-                      {instance.shortId}
-                    </p>
-                  </div>
-                  <Switch
-                    aria-label={`${connected ? "Disconnect" : "Connect"} ${instance.name}`}
-                    checked={connected}
-                    disabled={!canWrite || update.isPending}
-                    onCheckedChange={(next) =>
-                      update.mutate({
-                        connected: next,
-                        instanceId: instance.id,
-                      })
-                    }
-                  />
-                </div>
-              )
-            })
-          )}
-        </div>
-        <DialogFooter>
-          <Button type="button" onClick={() => onOpenChange(false)}>
-            Done
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ServerPickerList
+      ariaLabel={`Servers available to ${database.name}`}
+      emptyMessage={`No connectable servers are hosted on ${database.relayName}.`}
+      pendingKey={pendingKey}
+      selectedKeys={selectedKeys}
+      servers={servers}
+      onSelect={(server) =>
+        update.mutate({
+          connected: !selectedKeys.has(serverPickerOptionKey(server)),
+          instanceId: server.id,
+        })
+      }
+    />
   )
 }
 
