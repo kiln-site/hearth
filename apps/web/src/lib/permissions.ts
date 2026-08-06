@@ -35,6 +35,16 @@ export const accessPermissions = [
   "instance.network.read",
   "instance.network.write",
   "instance.sftp.connect",
+  "database.read",
+  "database.create",
+  "database.credentials.read",
+  "database.credentials.rotate",
+  "database.power",
+  "database.delete",
+  "database.network.read",
+  "database.network.write",
+  "database.dump.export",
+  "database.dump.import",
 ] as const
 
 export type AccessPermission = (typeof accessPermissions)[number]
@@ -56,6 +66,13 @@ const rolePermissions: Record<AccessRole, ReadonlySet<AccessPermission>> = {
     "instance.network.read",
     "instance.network.write",
     "instance.sftp.connect",
+    "database.read",
+    "database.credentials.read",
+    "database.power",
+    "database.network.read",
+    "database.network.write",
+    "database.dump.export",
+    "database.dump.import",
   ]),
   viewer: new Set([
     "relay.read",
@@ -65,6 +82,8 @@ const rolePermissions: Record<AccessRole, ReadonlySet<AccessPermission>> = {
     "instance.logs.share",
     "instance.network.read",
     "instance.sftp.connect",
+    "database.read",
+    "database.network.read",
   ]),
 }
 
@@ -82,11 +101,13 @@ export const accessRoleDetails: Record<
   },
   operator: {
     label: "Operator",
-    description: "Operate servers, commands, files, power, and shared logs.",
+    description:
+      "Operate servers and databases, including power, files, and private networks.",
   },
   viewer: {
     label: "Viewer",
-    description: "Read-only access to instance info, console, files, and logs.",
+    description:
+      "Read-only access to assigned servers, databases, consoles, files, and logs.",
   },
 }
 

@@ -712,7 +712,13 @@ function isAuditedMutation(operation: RelayControlOperation): boolean {
     operation === "instance.files.write" ||
     operation === "instance.console.write" ||
     operation === "instance.network.ports.write" ||
-    operation === "instance.network.routes.write"
+    operation === "instance.network.routes.write" ||
+    operation === "database.create" ||
+    operation === "database.delete" ||
+    operation === "database.action" ||
+    operation === "database.credentials.rotate" ||
+    operation === "database.network.write" ||
+    operation === "database.dump.import"
   )
 }
 
@@ -738,6 +744,9 @@ export function auditDetailsForRequest(
   const payload = Object.fromEntries(Object.entries(request.payload))
   if (typeof payload.instanceId === "string") {
     details.instanceId = payload.instanceId
+  }
+  if (typeof payload.databaseId === "string") {
+    details.databaseId = payload.databaseId
   }
   if (
     request.operation === "instance.action" &&
@@ -840,6 +849,22 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
     case "brick.catalog":
     case "brick.recipe":
       return "brick.read"
+    case "database.list":
+      return "database.read"
+    case "database.create":
+      return "database.create"
+    case "database.delete":
+      return "database.delete"
+    case "database.action":
+      return "database.power"
+    case "database.credentials.rotate":
+      return "database.credentials.rotate"
+    case "database.network.write":
+      return "database.network.write"
+    case "database.dump.export":
+      return "database.dump.export"
+    case "database.dump.import":
+      return "database.dump.import"
     case "instance.create":
     case "instance.startup.write":
       return "instance.create"

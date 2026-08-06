@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-query"
 import {
   ChevronsUpDown,
+  Database,
   Folder,
   ListTodo,
   LoaderCircle,
@@ -55,6 +56,7 @@ import type { AuthenticatedUser } from "@/lib/auth-session"
 import { clearAppearanceCache } from "@/lib/appearance"
 import {
   accessCapabilitiesQueryOptions,
+  managedDatabasesQueryOptions,
   relayConnectionQueryOptions,
   relaySnapshotQueryOptions,
 } from "@/lib/query-options"
@@ -194,11 +196,51 @@ function InfrastructureNavigation({
       <SidebarGroupContent>
         <SidebarMenu>
           <ServersNavigationItem relayConfigured={relayConfigured} />
+          <DatabasesNavigationItem relayConfigured={relayConfigured} />
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
   )
 }
+
+function DatabasesNavigationItem({
+  relayConfigured,
+}: {
+  relayConfigured: boolean
+}) {
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton asChild tooltip="Databases">
+        <Link
+          to="/infra/databases"
+          activeOptions={{ exact: true, includeSearch: false }}
+          activeProps={{ "data-active": true }}
+          preload="intent"
+        >
+          <Database />
+          <span>Databases</span>
+        </Link>
+      </SidebarMenuButton>
+      <SidebarMenuBadge className="text-sidebar-foreground/25">
+        <DatabaseCount relayConfigured={relayConfigured} />
+      </SidebarMenuBadge>
+    </SidebarMenuItem>
+  )
+}
+
+const DatabaseCount = React.memo(function DatabaseCount({
+  relayConfigured,
+}: {
+  relayConfigured: boolean
+}) {
+  const { data: count = 0 } = useQuery({
+    ...managedDatabasesQueryOptions(),
+    enabled: relayConfigured,
+    select: (data) => data.databases.length,
+  })
+
+  return count
+})
 
 function ServersNavigationItem({
   relayConfigured,

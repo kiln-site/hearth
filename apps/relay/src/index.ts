@@ -10,6 +10,12 @@ import {
   relayConsoleCommandSchema,
   relayConsoleCompletionInputSchema,
   relayConsoleShareInputSchema,
+  relayCreateDatabaseSchema,
+  relayDatabaseActionSchema,
+  relayDatabaseDumpSchema,
+  relayDatabaseExportSchema,
+  relayDatabaseNetworkSchema,
+  relayDeleteDatabaseSchema,
   relayAuditQuerySchema,
   relayCreateInstanceSchema,
   relayInstanceActionSchema,
@@ -26,6 +32,7 @@ import {
   relayTailscaleStackApplySchema,
   relayTailscaleStackDnsSchema,
   relayTailscaleStackRemoveSchema,
+  relayRotateDatabaseCredentialsSchema,
   relayUpdateInstanceStartupSchema,
   relayBootstrapDiscoveryTranscript,
 } from "@workspace/contracts"
@@ -44,6 +51,7 @@ import {
 } from "./config.js"
 import { attachControlSocket } from "./control-socket.js"
 import { DockerDriver } from "./docker.js"
+import { DatabaseDriver } from "./databases.js"
 import { FilesystemDriver } from "./files.js"
 import { LifecycleDriver } from "./lifecycle.js"
 import { nodeSnapshot } from "./node.js"
@@ -112,7 +120,10 @@ if (gameHostSource === "public_ip") {
   )
 }
 await mkdir(config.rootDirectory, { recursive: true })
-await mkdir(`${config.dataDirectory}/network`, { recursive: true, mode: 0o700 })
+await mkdir(`${config.dataDirectory}/network`, {
+  recursive: true,
+  mode: 0o700,
+})
 initializeRelayRuntime(config)
 const startupCore = await runRelayEffect(
   "relay.startup",
@@ -133,6 +144,7 @@ await runRelayEffect(
   runtimeRecovery.initialize()
 )
 const docker = new DockerDriver(config, runtimeRecovery, bricks)
+const databases = new DatabaseDriver(config, docker)
 const systemUpdates = new SystemUpdateManager(config)
 const filesystem = new FilesystemDriver(config)
 const lifecycle = new LifecycleDriver(config, docker, bricks)
@@ -995,6 +1007,30 @@ async function executeControlRequest(
         ...(await bricks.recipe(requiredString(payload, "source"))),
         source: requiredString(payload, "source"),
       }
+    case "database.list":
+      return databases.list()
+    case "database.create":
+      return databases.create(relayCreateDatabaseSchema.parse(request.payload))
+    case "database.delete":
+      return databases.delete(relayDeleteDatabaseSchema.parse(request.payload))
+    case "database.action":
+      return databases.action(relayDatabaseActionSchema.parse(request.payload))
+    case "database.credentials.rotate":
+      return databases.rotateCredentials(
+        relayRotateDatabaseCredentialsSchema.parse(request.payload)
+      )
+    case "database.network.write":
+      return databases.updateNetwork(
+        relayDatabaseNetworkSchema.parse(request.payload)
+      )
+    case "database.dump.export":
+      return databases.exportDump(
+        relayDatabaseExportSchema.parse(request.payload)
+      )
+    case "database.dump.import":
+      return databases.importDump(
+        relayDatabaseDumpSchema.parse(request.payload)
+      )
     case "instance.create": {
       if (!config.canProvisionInstances) {
         throw new Error("New server provisioning is disabled on this Relay")

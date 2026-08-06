@@ -20,7 +20,7 @@ import {
 interface GrantRow extends RowDataPacket {
   id: string
   relay_id: string
-  resource_type: "instance" | "relay"
+  resource_type: "database" | "instance" | "relay"
   resource_id: string
   role: string
 }
@@ -29,7 +29,7 @@ export interface AccessGrant {
   id: string
   relayId: string
   resourceId: string
-  resourceType: "instance" | "relay"
+  resourceType: "database" | "instance" | "relay"
   role: AccessRole
 }
 
@@ -87,6 +87,7 @@ export async function hasRelayPermission(input: {
   user: AuthenticatedUser
   relayId: string
   permission: AccessPermission
+  databaseId?: string
   instanceId?: string
 }): Promise<boolean> {
   if (isPlatformAdmin(input.user)) return true
@@ -94,7 +95,14 @@ export async function hasRelayPermission(input: {
   return grants.some((grant) => {
     if (!roleHasPermission(grant.role, input.permission)) return false
     if (grant.resourceType === "relay") return true
-    return Boolean(input.instanceId && grant.resourceId === input.instanceId)
+    return Boolean(
+      (grant.resourceType === "instance" &&
+        input.instanceId &&
+        grant.resourceId === input.instanceId) ||
+      (grant.resourceType === "database" &&
+        input.databaseId &&
+        grant.resourceId === input.databaseId)
+    )
   })
 }
 
@@ -102,6 +110,7 @@ export async function requireRelayPermission(input: {
   user: AuthenticatedUser
   relayId: string
   permission: AccessPermission
+  databaseId?: string
   instanceId?: string
 }): Promise<void> {
   return runAppEffect(
@@ -116,6 +125,7 @@ export const requireRelayPermissionEffect = Effect.fn(
   user: AuthenticatedUser
   relayId: string
   permission: AccessPermission
+  databaseId?: string
   instanceId?: string
 }) {
   if (isPlatformAdmin(input.user)) return
@@ -123,7 +133,14 @@ export const requireRelayPermissionEffect = Effect.fn(
   const allowed = grants.some((grant) => {
     if (!roleHasPermission(grant.role, input.permission)) return false
     if (grant.resourceType === "relay") return true
-    return Boolean(input.instanceId && grant.resourceId === input.instanceId)
+    return Boolean(
+      (grant.resourceType === "instance" &&
+        input.instanceId &&
+        grant.resourceId === input.instanceId) ||
+      (grant.resourceType === "database" &&
+        input.databaseId &&
+        grant.resourceId === input.databaseId)
+    )
   })
   if (!allowed) {
     return yield* PermissionDeniedError.make({

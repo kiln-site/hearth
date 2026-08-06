@@ -65,6 +65,92 @@ export const relayInstanceRecoverySchema = z
   })
   .strict()
 
+export const databaseEngineSchema = z.enum([
+  "mysql",
+  "mariadb",
+  "postgres",
+  "redis",
+  "valkey",
+])
+
+export const databaseIdSchema = z.string().regex(/^[a-f0-9]{40}$/u)
+
+export const relayDatabaseNameSchema = z.string().trim().min(1).max(120)
+
+export const relayManagedDatabaseSchema = z
+  .object({
+    connectedInstanceIds: z.array(z.string().regex(/^[a-f0-9]{40}$/u)),
+    containerId: z.string().nullable(),
+    createdAt: z.string().datetime(),
+    databaseName: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u),
+    engine: databaseEngineSchema,
+    hostname: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/u),
+    id: databaseIdSchema,
+    image: z.string().min(1).max(512),
+    internalPort: z.number().int().min(1).max(65_535),
+    name: relayDatabaseNameSchema,
+    observedState: z.enum(["starting", "running", "stopped", "failed"]),
+    shortId: z.string().regex(/^[a-f0-9]{8}$/u),
+    status: z.string().min(1).max(280),
+    supportsImportExport: z.boolean(),
+  })
+  .strict()
+
+export const relayCreateDatabaseSchema = z
+  .object({
+    databaseName: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u),
+    engine: databaseEngineSchema,
+    id: databaseIdSchema,
+    name: relayDatabaseNameSchema,
+    password: z.string().min(24).max(256),
+    username: z.string().regex(/^[a-z][a-z0-9_]{0,31}$/u),
+  })
+  .strict()
+
+export const relayDatabaseActionSchema = z
+  .object({
+    action: z.enum(["start", "stop", "restart"]),
+    databaseId: databaseIdSchema,
+  })
+  .strict()
+
+export const relayDeleteDatabaseSchema = z
+  .object({
+    databaseId: databaseIdSchema,
+    deleteData: z.boolean().default(true),
+  })
+  .strict()
+
+export const relayRotateDatabaseCredentialsSchema = z
+  .object({
+    currentPassword: z.string().min(24).max(256),
+    databaseId: databaseIdSchema,
+    nextPassword: z.string().min(24).max(256),
+    username: z.string().regex(/^[a-z][a-z0-9_]{0,31}$/u),
+  })
+  .strict()
+
+export const relayDatabaseNetworkSchema = z
+  .object({
+    connected: z.boolean(),
+    databaseId: databaseIdSchema,
+    instanceId: z.string().regex(/^[a-f0-9]{40}$/u),
+  })
+  .strict()
+
+export const relayDatabaseDumpSchema = z
+  .object({
+    content: z.string().max(700_000),
+    databaseId: databaseIdSchema,
+    password: z.string().min(24).max(256),
+    username: z.string().regex(/^[a-z][a-z0-9_]{0,31}$/u),
+  })
+  .strict()
+
+export const relayDatabaseExportSchema = relayDatabaseDumpSchema.omit({
+  content: true,
+})
+
 export const brickIdSchema = z.string().regex(/^[a-z0-9][a-z0-9.-]{0,63}$/u)
 
 export const brickVariableValueSchema = z.union([
@@ -1140,6 +1226,17 @@ export const brickCatalogDocumentSchema = z
   .strict()
 
 export type RelayDesiredState = z.infer<typeof relayDesiredStateSchema>
+export type DatabaseEngine = z.infer<typeof databaseEngineSchema>
+export type RelayManagedDatabase = z.infer<typeof relayManagedDatabaseSchema>
+export type RelayCreateDatabase = z.infer<typeof relayCreateDatabaseSchema>
+export type RelayDatabaseAction = z.infer<typeof relayDatabaseActionSchema>
+export type RelayDeleteDatabase = z.infer<typeof relayDeleteDatabaseSchema>
+export type RelayRotateDatabaseCredentials = z.infer<
+  typeof relayRotateDatabaseCredentialsSchema
+>
+export type RelayDatabaseNetwork = z.infer<typeof relayDatabaseNetworkSchema>
+export type RelayDatabaseDump = z.infer<typeof relayDatabaseDumpSchema>
+export type RelayDatabaseExport = z.infer<typeof relayDatabaseExportSchema>
 export type BrickId = z.infer<typeof brickIdSchema>
 export type BrickVariableValue = z.infer<typeof brickVariableValueSchema>
 export type BrickVariable = z.infer<typeof brickVariableSchema>
