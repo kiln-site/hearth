@@ -50,7 +50,7 @@ if [[ -n "${installation_marker}" ]]; then
 fi
 
 read -r -a extra_java_args <<< "${KILN_JAVA_ARGS:-}"
-read -r -a server_args <<< "${KILN_SERVER_ARGS:---nogui}"
+read -r -a server_args <<< "${KILN_SERVER_ARGS---nogui}"
 java_memory_args=(-Xms"${MIN_RAM:-512M}")
 if [[ -n "${MAX_RAM:-}" ]]; then
   java_memory_args+=(-Xmx"${MAX_RAM}")
