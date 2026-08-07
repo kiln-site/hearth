@@ -54,6 +54,16 @@ on:
         required: false
         type: boolean
         default: false
+      publish_provenance:
+        description: Provenance mode used for published images
+        required: false
+        type: string
+        default: mode=min
+      publish_sbom:
+        description: Whether published images include an SBOM attestation
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: read
   packages: write
@@ -138,8 +148,8 @@ jobs:
           # publishing is not delayed by a remote cache export.
           cache-from: type=registry,ref=ghcr.io/kiln-site/${{ inputs.cache_scope }}-build-cache:${{ matrix.architecture }}
           cache-to: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && format('type=registry,ref=ghcr.io/kiln-site/{0}-build-cache:{1},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd', inputs.cache_scope, matrix.architecture) || '' }}
-          provenance: ${{ github.event_name != 'pull_request' && 'mode=min' || 'false' }}
-          sbom: false
+          provenance: ${{ github.event_name != 'pull_request' && inputs.publish_provenance || 'false' }}
+          sbom: ${{ github.event_name != 'pull_request' && inputs.publish_sbom }}
 
       - name: Export image digest
         if: github.event_name != 'pull_request'

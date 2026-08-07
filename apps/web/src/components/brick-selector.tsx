@@ -62,7 +62,7 @@ function isOfficialBrick(brick: Brick): boolean {
       () =>
         new URL(brick.source).hostname.toLowerCase() ===
           "raw.githubusercontent.com" &&
-        brick.source.includes("/kiln-site/bricks/")
+        brick.source.includes("/kiln-site/hearth/main/apps/bricks/")
     ),
     () => false
   )

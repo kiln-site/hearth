@@ -1,0 +1,7 @@
+format: kiln.catalog/v1
+recipes:
+  - recipes/paper.yml
+  - recipes/folia.yml
+  - recipes/fabric.yml
+  - recipes/velocity.yml
+  - recipes/palworld.yml

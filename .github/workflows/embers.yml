@@ -1,0 +1,56 @@
+name: Ember images
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 1 * *"
+  push:
+    branches: [main]
+    paths:
+      - "apps/bricks/embers/**"
+      - ".github/workflows/embers.yml"
+      - ".github/workflows/reusable-image.yml"
+  pull_request:
+    paths:
+      - "apps/bricks/embers/**"
+      - ".github/workflows/embers.yml"
+      - ".github/workflows/reusable-image.yml"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ember-images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  java:
+    name: Java ${{ matrix.version }} Ember
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [11, 17, 21, 25]
+    uses: ./.github/workflows/reusable-image.yml
+    with:
+      name: Java ${{ matrix.version }} Ember
+      image: ghcr.io/kiln-site/bricks-java
+      dockerfile: apps/bricks/embers/java/Dockerfile
+      cache_scope: ember-java-${{ matrix.version }}
+      build_args: JAVA_VERSION=${{ matrix.version }}
+      tags: type=raw,value=${{ matrix.version }}
+      publish_provenance: mode=max
+      publish_sbom: true
+
+  steamcmd:
+    name: SteamCMD Ember
+    uses: ./.github/workflows/reusable-image.yml
+    with:
+      name: SteamCMD Ember
+      image: ghcr.io/kiln-site/bricks-steamcmd
+      dockerfile: apps/bricks/embers/steamcmd/Dockerfile
+      cache_scope: ember-steamcmd
+      architectures: '["amd64"]'
+      tags: type=raw,value=latest
+      publish_provenance: mode=max
+      publish_sbom: true

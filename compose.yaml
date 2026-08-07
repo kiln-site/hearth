@@ -74,7 +74,7 @@ services:
       KILN_RELAY_TLS_MODE: ${KILN_RELAY_TLS_MODE:-managed}
       KILN_RELAY_TLS_CERT_FILE: ${KILN_RELAY_TLS_CERT_FILE:-}
       KILN_RELAY_TLS_KEY_FILE: ${KILN_RELAY_TLS_KEY_FILE:-}
-      KILN_BRICKS_CATALOG_URL: ${KILN_BRICKS_CATALOG_URL:-https://raw.githubusercontent.com/kiln-site/bricks/main/catalog.yml}
+      KILN_BRICKS_CATALOG_URL: ${KILN_BRICKS_CATALOG_URL:-https://raw.githubusercontent.com/kiln-site/hearth/main/apps/bricks/catalog.yml}
       MCLOGS_API_URL: ${MCLOGS_API_URL:-}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}

@@ -1,0 +1,17 @@
+{
+  "name": "@kiln-site/bricks",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs && bash -n embers/java/entrypoint.sh embers/steamcmd/entrypoint.sh"
+  },
+  "devDependencies": {
+    "ajv": "8.17.1",
+    "ajv-formats": "3.0.1",
+    "yaml": "2.8.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,54 @@
+format: kiln.brick/v1
+metadata:
+  id: palworld
+  name: Palworld
+  description: Native Linux dedicated server installed and updated through SteamCMD.
+  game: Palworld
+  author: Kiln
+  tags: [steam, survival, direct]
+variables:
+  version:
+    type: string
+    label: Release channel
+    description: Palworld currently follows the latest Steam build.
+    required: true
+    default: latest
+    options: [latest]
+  memory:
+    type: string
+    label: Memory
+    description: Container memory limit; 16G or more is recommended.
+    required: true
+    default: 16G
+    rules: { pattern: "^[0-9]+[MG]$", maxLength: 12 }
+  server_args:
+    type: string
+    label: Server arguments
+    description: Optional additional arguments passed directly to PalServer.
+    required: false
+    default: "Pal -publiclobby -useperfthreads -NoAsyncLoadingThread -UseMultithreadForDS -port=8211 -publicport=8211"
+    rules: { maxLength: 2048 }
+runtime:
+  image: ghcr.io/kiln-site/bricks-steamcmd:latest
+  name: SteamCMD
+  user: "1000:1000"
+  environment:
+    KILN_VERSION: "{{ variables.version }}"
+    KILN_STEAM_APP_ID: "2394010"
+    KILN_STEAM_EXECUTABLE: Pal/Binaries/Linux/PalServer-Linux-Shipping
+    KILN_INSTALLATION_MARKER: .kiln-ember-installed
+    KILN_SERVER_ARGS: "{{ variables.server_args }}"
+  resources:
+    memory: "{{ variables.memory }}"
+    memoryReservation: "{{ variables.memory }}"
+    pids: 2048
+  storage: { mount: /server }
+network:
+  mode: direct
+  primaryPort: game
+  hostname: "{{ brick.id }}"
+  ports:
+    - { name: game, container: 8211, host: 8211, protocol: udp }
+constraints:
+  architectures: [amd64]
+  singleton: true

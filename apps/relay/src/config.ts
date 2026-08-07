@@ -158,7 +158,7 @@ export function loadConfig(
       !environment.KILN_RELAY_HOST?.trim() && !coolifyPublicOrigin,
     brickCatalogUrl:
       environment.KILN_BRICKS_CATALOG_URL?.trim() ||
-      "https://raw.githubusercontent.com/kiln-site/bricks/main/catalog.yml",
+      "https://raw.githubusercontent.com/kiln-site/hearth/main/apps/bricks/catalog.yml",
     bootstrapToken: bootstrapToken(environment),
     browserOrigin:
       proxyMode === "traefik"
