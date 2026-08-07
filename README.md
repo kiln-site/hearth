@@ -1,97 +1,15 @@
-Kiln is an open-source, self-hosted platform for creating and managing
-game-server environments. It is a modern reimagining of Pterodactyl's panel and
-Wings model, built around a simpler setup and a faster, more focused experience.
+# Hearth
 
-> Connect a Relay, choose a Brick, and launch an Instance.
+Kiln is a self-hosted platform for running game servers. Hearth is the web panel that manages them; Relay is the agent that runs on each host.
 
-## Vocabulary
+## Development
 
-- **Kiln**: the umbrella product and ecosystem.
-- **Hearth**: the web control plane that manages users, configuration, and
-  orchestration.
-- **Relay**: the agent that's deployed on a node/server with Docker that orchestrates and reports via Hearth
-- **Ember**: the minimal container runtime in which an Instance runs.
-- **Brick**: a reusable recipe that tells Relay which Ember to use and how to
-  provision and configure an instance.
-- **Instance**: a deployed workload created from a Brick and managed by Relay.
+Requires Node 20+, pnpm, Docker, and OrbStack.
 
-## Priorities
-
-- **Performance**: keep the panel responsive and Relay interactions fast.
-- **End-user experience**: make powerful server management feel approachable.
-- **Simple setup and operation**: require as little infrastructure knowledge and
-  configuration as possible.
-- **Stability and reliability**: recover cleanly and behave predictably.
-- **Safe self-hosting**: keep privileged node access on Relay, not the public
-  Hearth control plane.
-
-## Relay networking
-
-Relay listens for control and direct-transfer traffic on port 4100 by default.
-It can serve HTTPS/WSS itself, or receive private HTTP/WS behind bundled
-Traefik or Coolify's existing Traefik. SFTP is a separate, shell-free SSH
-service on port 2022. Both Relay ports are configurable:
-
-```env
-KILN_RELAY_HOST=relay.example.com
-KILN_RELAY_GAME_HOST=games.example.com
-KILN_RELAY_GAME_PORT_RANGE=30000-39999
-KILN_RELAY_CRASH_RETRY_LIMIT=2
-KILN_RELAY_CRASH_RETRY_DELAY_SECONDS=5
-KILN_RELAY_CRASH_STABILITY_SECONDS=300
-KILN_RELAY_PORT=4100
-KILN_RELAY_SFTP_PORT=2022
-KILN_RELAY_TLS_MODE=managed
-KILN_RELAY_PROXY=none
+```sh
+vp install --frozen-lockfile
+pnpm dev:setup
+pnpm dev:docker
 ```
 
-Set `KILN_RELAY_PUBLIC_PORT` when a reverse proxy maps the listener to a
-different external port. If `KILN_RELAY_HOST` is omitted, Relay makes one
-short, disableable public-DNS attempt and clearly labels the resulting address
-as unverified. Set `KILN_RELAY_DISCOVER_PUBLIC_IP=false` to avoid that lookup.
-
-New game instances advertise `KILN_RELAY_GAME_HOST`, falling back to the
-resolved `KILN_RELAY_HOST` when it is empty. Set
-`KILN_RELAY_GAME_HOST=public-ip` to ignore both configured hostnames and make a
-required two-second public IPv4 discovery attempt at Relay startup. Discovery
-does not configure NAT or firewall rules; the assigned game ports must still be
-reachable at that address. Relay assigns the public side of each primary game
-port from `KILN_RELAY_GAME_PORT_RANGE` when a Brick does not request a fixed
-host port, so forward and allow that range on the Relay host.
-
-Relay owns game-server crash recovery instead of Docker's unbounded restart
-policy. It retries an unexpected exit twice by default, with bounded backoff,
-and resets that budget after five healthy minutes. Exact Minecraft `stop` and
-`/stop` console commands are treated as intentional stops. Configure the retry
-count, initial delay, and stability window with the three
-`KILN_RELAY_CRASH_*` variables above.
-
-Set `KILN_RELAY_PROXY=traefik` to let Relay manage an isolated, pinned Traefik
-edge on public ports 80/443, or `KILN_RELAY_PROXY=coolify` to reuse Coolify's
-public domain, certificate, and Traefik proxy. In both modes Relay port 4100
-stays private and the edge handles browser-trusted TLS. `none` leaves edge
-ownership manual, while `hearth` keeps supported browser traffic behind the
-Hearth fallback path.
-
-On a fresh `/data`, Relay prints a one-time pairing URI that expires after 15
-minutes. Paste it into Hearth's Relay settings, review the Relay
-identity and TLS fingerprint, and confirm. Later invitations are created in
-Hearth or with `kiln-relay pair create`; their secret URI is returned only to
-the caller. `kiln-relay pair list|revoke` and `kiln-relay hearth list|revoke`
-remain available as host recovery commands.
-
-Managed TLS creates a unique Relay CA and renewable leaf certificate in
-`/data/network/tls`. Install only the public CA shown by Hearth in browsers that
-need direct console, resource, upload, or download access. Mounted certificates
-use `KILN_RELAY_TLS_MODE=external` with `KILN_RELAY_TLS_CERT_FILE` and
-`KILN_RELAY_TLS_KEY_FILE`; Relay validates and hot-reloads replacements.
-
-Back up the whole Relay `/data` directory. It contains the Relay identity,
-client trust records, TLS CA, and SFTP host key. Hearth stores a different,
-encrypted private key for every paired Relay. Losing either side requires a new
-pairing; long-term private keys are never copied between Hearth installations.
-
-Pre-WSS bearer-token Relays are intentionally incompatible. There is no
-in-place credential migration: back up instance data, remove the old Hearth
-Relay registration and old Relay networking identity/state, restart Relay, and
-pair it again. Instance directories can remain in place.
+`dev:setup` only needs to run once per clone. Open the OrbStack URL printed by `dev:docker` to use the panel.
