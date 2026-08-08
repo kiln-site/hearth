@@ -1,4 +1,4 @@
-# Hearth
+# Kiln
 
 Kiln is a self-hosted platform for running game servers. Hearth is the web panel that manages them; Relay is the agent that runs on each host.
 
@@ -57,3 +57,9 @@ pnpm dev:docker
 ```
 
 `dev:setup` only needs to run once per clone. Open the OrbStack URL printed by `dev:docker` to use the panel.
+
+## License
+
+AGPL-3.0 with an optional [Commercial License](./COMMERCIAL_LICENSE.md). See [LICENSE](./LICENSE). Contributors must sign the [CLA](./CLA.md) — details in [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+Copyright © 2026 Marco Technology Consulting Inc. (“QuartzDev”).
