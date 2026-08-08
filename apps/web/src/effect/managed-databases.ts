@@ -19,9 +19,22 @@ interface ManagedDatabaseRow extends RowDataPacket {
   database_name: string
   engine: string
   name: string
-  password_ciphertext: string
   relay_id: string
+}
+
+interface ManagedDatabaseCredentialRow extends ManagedDatabaseRow {
+  password_ciphertext: string
   username: string
+}
+
+interface ManagedDatabaseIdRow extends RowDataPacket {
+  database_id: string
+}
+
+interface ManagedDatabaseDirectoryRow extends RowDataPacket {
+  database_id: string
+  name: string
+  relay_id: string
 }
 
 export interface ManagedDatabaseRecord {
@@ -32,7 +45,12 @@ export interface ManagedDatabaseRecord {
   engine: DatabaseEngine
   name: string
   relayId: string
-  username: string
+}
+
+export interface ManagedDatabaseDirectoryRecord {
+  databaseId: string
+  name: string
+  relayId: string
 }
 
 export const listManagedDatabaseRecordsEffect = Effect.fn(
@@ -41,12 +59,44 @@ export const listManagedDatabaseRecordsEffect = Effect.fn(
   const database = yield* Database
   const rows = yield* database.queryRows<ManagedDatabaseRow>(
     "managed_databases_list",
-    `SELECT database_id, relay_id, name, engine, database_name, username,
-            password_ciphertext, created_by, created_at
+    `SELECT database_id, relay_id, name, engine, database_name, created_by,
+            created_at
        FROM ${databaseTable("database")}
       ORDER BY name ASC, created_at ASC`
   )
   return rows.map(toRecord)
+})
+
+export const listManagedDatabaseDirectoryEffect = Effect.fn(
+  "managedDatabases.directory"
+)(function* () {
+  const database = yield* Database
+  const rows = yield* database.queryRows<ManagedDatabaseDirectoryRow>(
+    "managed_databases_directory",
+    `SELECT database_id, relay_id, name
+       FROM ${databaseTable("database")}
+      ORDER BY name ASC, created_at ASC`
+  )
+  return rows.map((row) => ({
+    databaseId: row.database_id,
+    name: row.name,
+    relayId: row.relay_id,
+  }))
+})
+
+export const managedDatabaseNameExistsEffect = Effect.fn(
+  "managedDatabases.nameExists"
+)(function* (relayId: string, name: string) {
+  const database = yield* Database
+  const rows = yield* database.queryRows<ManagedDatabaseIdRow>(
+    "managed_database_name_exists",
+    `SELECT database_id
+       FROM ${databaseTable("database")}
+      WHERE relay_id = ? AND name = ?
+      LIMIT 1`,
+    [relayId, name]
+  )
+  return rows.length > 0
 })
 
 export const createManagedDatabaseRecordEffect = Effect.fn(
@@ -86,7 +136,7 @@ export const loadManagedDatabaseCredentialEffect = Effect.fn(
   "managedDatabases.credential"
 )(function* (relayId: string, databaseId: string) {
   const database = yield* Database
-  const rows = yield* database.queryRows<ManagedDatabaseRow>(
+  const rows = yield* database.queryRows<ManagedDatabaseCredentialRow>(
     "managed_database_credential",
     `SELECT database_id, relay_id, name, engine, database_name, username,
             password_ciphertext, created_by, created_at
@@ -111,6 +161,7 @@ export const loadManagedDatabaseCredentialEffect = Effect.fn(
   return {
     ...toRecord(row),
     password: decrypted.plaintext,
+    username: row.username,
   }
 })
 
@@ -168,7 +219,6 @@ function toRecord(row: ManagedDatabaseRow): ManagedDatabaseRecord {
     engine: databaseEngineSchema.parse(row.engine),
     name: row.name,
     relayId: row.relay_id,
-    username: row.username,
   }
 }
 

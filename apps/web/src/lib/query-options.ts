@@ -12,6 +12,7 @@ import { getBrickCatalog, getInstanceStartup } from "@/server/bricks"
 import { getDomainSettings, getInstanceDomain } from "@/server/domains"
 import {
   getManagedDatabaseCredential,
+  getManagedDatabaseDirectory,
   getManagedDatabases,
 } from "@/server/databases"
 import { getUiPreferences } from "@/server/preferences"
@@ -59,6 +60,7 @@ export const queryKeys = {
     all: ["databases"] as const,
     credential: (relayId: string, databaseId: string) =>
       ["databases", relayId, databaseId, "credential"] as const,
+    directory: ["databases", "directory"] as const,
     list: ["databases", "list"] as const,
   },
   relay: {
@@ -174,6 +176,15 @@ export function managedDatabasesQueryOptions() {
     queryFn: () => getManagedDatabases(),
     refetchOnWindowFocus: "always",
     staleTime: 5_000,
+  })
+}
+
+export function managedDatabaseDirectoryQueryOptions() {
+  return queryOptions({
+    queryKey: queryKeys.databases.directory,
+    queryFn: () => getManagedDatabaseDirectory(),
+    refetchOnWindowFocus: false,
+    staleTime: 30_000,
   })
 }
 

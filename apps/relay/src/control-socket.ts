@@ -750,6 +750,12 @@ export function auditDetailsForRequest(
     details.databaseId = payload.databaseId
   }
   if (
+    request.operation === "database.create" &&
+    typeof payload.id === "string"
+  ) {
+    details.databaseId = payload.id
+  }
+  if (
     request.operation === "instance.action" &&
     typeof payload.action === "string"
   ) {

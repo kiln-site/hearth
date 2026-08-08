@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test"
 
-import { databaseEngineSpec, databaseRecoveryLabels } from "./databases.js"
+import {
+  databaseAclLoadArguments,
+  databaseEngineSpec,
+  databaseRecoveryLabels,
+} from "./databases.js"
 
 describe("managed database recovery metadata", () => {
   it("uses supported official images and private internal ports", () => {
@@ -92,4 +96,30 @@ describe("managed database recovery metadata", () => {
       second["kiln.database.volume"]
     )
   })
+})
+
+describe("managed database credential rotation", () => {
+  const credentialRotationCases: ReadonlyArray<
+    readonly ["redis" | "valkey", string, string]
+  > = [
+    ["redis", "REDISCLI_AUTH", "redis-cli"],
+    ["valkey", "VALKEYCLI_AUTH", "valkey-cli"],
+  ]
+
+  it.each(credentialRotationCases)(
+    "passes %s authentication through the client environment",
+    (engine, environmentName, client) => {
+      const arguments_ = databaseAclLoadArguments(
+        engine,
+        "container-id",
+        "kiln_user",
+        "current-password"
+      )
+
+      expect(arguments_).toContain(`${environmentName}=current-password`)
+      expect(arguments_).toContain(client)
+      expect(arguments_).not.toContain("-a")
+      expect(arguments_).not.toContain("current-password")
+    }
+  )
 })

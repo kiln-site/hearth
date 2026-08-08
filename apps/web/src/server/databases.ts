@@ -8,15 +8,20 @@ import {
   relayIdSchema,
   relayManagedDatabaseSchema,
 } from "@workspace/contracts"
-import type { RelayControlOperation } from "@workspace/contracts"
+import type {
+  RelayControlOperation,
+  RelayManagedDatabase,
+} from "@workspace/contracts"
 import { Effect, Result } from "effect"
 import { z } from "zod"
 
 import {
   createManagedDatabaseRecordEffect,
   deleteManagedDatabaseRecordEffect,
+  listManagedDatabaseDirectoryEffect,
   listManagedDatabaseRecordsEffect,
   loadManagedDatabaseCredentialEffect,
+  managedDatabaseNameExistsEffect,
   rotateManagedDatabaseCredentialEffect,
 } from "@/effect/managed-databases"
 import { runAppEffect } from "@/effect/runtime"
@@ -58,6 +63,85 @@ const databasePermissions = accessPermissions.filter((permission) =>
   permission.startsWith("database.")
 )
 
+const databaseEngineDetails = {
+  mariadb: {
+    image: "mariadb:11.8",
+    internalPort: 3306,
+    supportsImportExport: true,
+  },
+  mysql: {
+    image: "mysql:8.4",
+    internalPort: 3306,
+    supportsImportExport: true,
+  },
+  postgres: {
+    image: "postgres:17",
+    internalPort: 5432,
+    supportsImportExport: true,
+  },
+  redis: {
+    image: "redis:8",
+    internalPort: 6379,
+    supportsImportExport: false,
+  },
+  valkey: {
+    image: "valkey/valkey:8",
+    internalPort: 6379,
+    supportsImportExport: false,
+  },
+} satisfies Record<
+  ReturnType<typeof databaseEngineSchema.parse>,
+  { image: string; internalPort: number; supportsImportExport: boolean }
+>
+
+type DatabaseInventoryStatus = "available" | "missing" | "unavailable"
+type ManagedDatabaseListItem = RelayManagedDatabase & {
+  hasCredentials: boolean
+  inventoryStatus: DatabaseInventoryStatus
+  permissions: Array<AccessPermission>
+  relayId: string
+  relayName: string
+}
+
+export const getManagedDatabaseDirectory = createServerFn({
+  method: "GET",
+}).handler(async () => {
+  const user = await requireAuthenticatedUser()
+  const [persistedRelays, grants, records] = await Promise.all([
+    listPersistedRelays(),
+    isPlatformAdmin(user) ? Promise.resolve([]) : listUserGrants(user.id),
+    runAppEffect(
+      "managedDatabases.directory",
+      listManagedDatabaseDirectoryEffect()
+    ),
+  ])
+  const relays = persistedRelays.filter((relay) => relay.enabled)
+  const relayNames = new Map(relays.map((relay) => [relay.id, relay.name]))
+  return records.flatMap((record) => {
+    const relayName = relayNames.get(record.relayId)
+    if (
+      !relayName ||
+      !hasDatabasePermission(
+        user,
+        grants,
+        record.relayId,
+        record.databaseId,
+        "database.read"
+      )
+    ) {
+      return []
+    }
+    return [
+      {
+        id: record.databaseId,
+        name: record.name,
+        relayId: record.relayId,
+        relayName,
+      },
+    ]
+  })
+})
+
 export const getManagedDatabases = createServerFn({ method: "GET" }).handler(
   async () => {
     const user = await requireAuthenticatedUser()
@@ -88,44 +172,127 @@ export const getManagedDatabases = createServerFn({ method: "GET" }).handler(
         record,
       ])
     )
+    const readableRelaysById = new Map(
+      readableRelays.map((relay) => [relay.id, relay])
+    )
     const relayErrors: Array<{
       message: string
       relayId: string
       relayName: string
     }> = []
-    const databases = settled.flatMap((result, index) => {
-      if (result.status === "rejected") {
-        const relay = readableRelays[index]
-        if (relay) {
-          relayErrors.push({
-            message:
-              result.reason instanceof Error
-                ? result.reason.message
-                : "Relay database inventory is unavailable",
-            relayId: relay.id,
-            relayName: relay.name,
-          })
+    const inventoriedDatabaseIds = new Set<string>()
+    const inventoryByRelay = new Map<string, DatabaseInventoryStatus>()
+    const databases: Array<ManagedDatabaseListItem> = settled.flatMap(
+      (result, index) => {
+        if (result.status === "rejected") {
+          const relay = readableRelays[index]
+          if (relay) {
+            inventoryByRelay.set(relay.id, "unavailable")
+            relayErrors.push({
+              message:
+                result.reason instanceof Error
+                  ? result.reason.message
+                  : "Relay database inventory is unavailable",
+              relayId: relay.id,
+              relayName: relay.name,
+            })
+          }
+          return []
         }
-        return []
+        const { relay } = result.value
+        inventoryByRelay.set(relay.id, "available")
+        return result.value.databases.flatMap((database) => {
+          const permissions = databasePermissions.filter((permission) =>
+            hasDatabasePermission(
+              user,
+              grants,
+              relay.id,
+              database.id,
+              permission
+            )
+          )
+          if (!permissions.includes("database.read")) return []
+          const recordKey = `${relay.id}:${database.id}`
+          inventoriedDatabaseIds.add(recordKey)
+          const record = recordsById.get(`${relay.id}:${database.id}`)
+          const inventoryStatus: DatabaseInventoryStatus = "available"
+          return [
+            {
+              ...database,
+              hasCredentials: Boolean(record),
+              inventoryStatus,
+              permissions,
+              relayId: relay.id,
+              relayName: relay.name,
+            },
+          ]
+        })
       }
-      const { relay } = result.value
-      return result.value.databases.flatMap((database) => {
-        const permissions = databasePermissions.filter((permission) =>
-          hasDatabasePermission(user, grants, relay.id, database.id, permission)
+    )
+    for (const record of records) {
+      const recordKey = `${record.relayId}:${record.databaseId}`
+      if (inventoriedDatabaseIds.has(recordKey)) continue
+      const relay = readableRelaysById.get(record.relayId)
+      if (!relay) continue
+      const permissions = databasePermissions.filter((permission) =>
+        hasDatabasePermission(
+          user,
+          grants,
+          relay.id,
+          record.databaseId,
+          permission
         )
-        if (!permissions.includes("database.read")) return []
-        const record = recordsById.get(`${relay.id}:${database.id}`)
-        return [
-          {
-            ...database,
-            hasCredentials: Boolean(record),
-            permissions,
-            relayId: relay.id,
-            relayName: relay.name,
-          },
-        ]
+      )
+      if (!permissions.includes("database.read")) continue
+      const inventoryStatus = inventoryByRelay.get(relay.id)
+      if (!inventoryStatus || inventoryStatus === "available") {
+        const details = databaseEngineDetails[record.engine]
+        databases.push({
+          connectedInstanceIds: [],
+          containerId: null,
+          createdAt: record.createdAt,
+          databaseName: record.databaseName,
+          engine: record.engine,
+          hasCredentials: true,
+          hostname: `database-${record.databaseId}`,
+          id: record.databaseId,
+          image: details.image,
+          internalPort: details.internalPort,
+          inventoryStatus: "missing",
+          name: record.name,
+          observedState: "failed",
+          permissions,
+          relayId: relay.id,
+          relayName: relay.name,
+          shortId: record.databaseId.slice(0, 8),
+          status: "Container missing",
+          supportsImportExport: details.supportsImportExport,
+        })
+        continue
+      }
+      const details = databaseEngineDetails[record.engine]
+      databases.push({
+        connectedInstanceIds: [],
+        containerId: null,
+        createdAt: record.createdAt,
+        databaseName: record.databaseName,
+        engine: record.engine,
+        hasCredentials: true,
+        hostname: `database-${record.databaseId}`,
+        id: record.databaseId,
+        image: details.image,
+        internalPort: details.internalPort,
+        inventoryStatus,
+        name: record.name,
+        observedState: "failed",
+        permissions,
+        relayId: relay.id,
+        relayName: relay.name,
+        shortId: record.databaseId.slice(0, 8),
+        status: "Relay inventory unavailable",
+        supportsImportExport: details.supportsImportExport,
       })
-    })
+    }
     return {
       databases,
       relayErrors,
@@ -176,6 +343,15 @@ export const createManagedDatabase = createServerFn({ method: "POST" })
       relayId: relay.id,
       user,
     })
+    const nameExists = await runAppEffect(
+      "managedDatabases.name.preflight",
+      managedDatabaseNameExistsEffect(relay.id, data.name)
+    )
+    if (nameExists) {
+      throw new Error(
+        `A database named "${data.name}" already exists on ${relay.name}`
+      )
+    }
     const id = randomBytes(20).toString("hex")
     const username = `kiln_${randomBytes(6).toString("hex")}`
     const password = randomBytes(36).toString("base64url")

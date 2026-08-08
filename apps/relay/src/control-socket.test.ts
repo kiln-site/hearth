@@ -90,6 +90,27 @@ describe("Relay control audit details", () => {
       subject: "user-123",
     })
   })
+
+  it("attributes created databases from the request", () => {
+    const databaseId = "b".repeat(40)
+    const request: RelayControlRequest = {
+      deadline: Date.now() + 5_000,
+      id: "request",
+      operation: "database.create",
+      payload: { id: databaseId, name: "Primary" },
+      subject: "user-123",
+      timeoutMs: 5_000,
+      type: "request",
+      v: 1,
+    }
+
+    expect(auditDetailsForRequest(request, {})).toEqual({
+      databaseId,
+      operation: "database.create",
+      permission: "database.create",
+      subject: "user-123",
+    })
+  })
 })
 
 describe("Relay control socket", () => {

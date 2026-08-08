@@ -3,7 +3,12 @@ import { Effect, Layer } from "effect"
 import type { ResultSetHeader } from "mysql2/promise"
 
 import { Database } from "./database"
-import { deleteManagedDatabaseRecordEffect } from "./managed-databases"
+import {
+  deleteManagedDatabaseRecordEffect,
+  listManagedDatabaseDirectoryEffect,
+  listManagedDatabaseRecordsEffect,
+  managedDatabaseNameExistsEffect,
+} from "./managed-databases"
 
 const emptyResult: ResultSetHeader = {
   affectedRows: 0,
@@ -20,10 +25,19 @@ const statements: Array<{
   sql: string
   values: ReadonlyArray<unknown>
 }> = []
+const queries: Array<{
+  operation: string
+  sql: string
+  values: ReadonlyArray<unknown>
+}> = []
 
 const databaseLayer = Layer.succeed(Database)({
   execute: () => Effect.die("Unexpected standalone database write"),
-  queryRows: () => Effect.die("Unexpected database query"),
+  queryRows: (operation, sql, values) =>
+    Effect.sync(() => {
+      queries.push({ operation, sql, values: values ?? [] })
+      return []
+    }),
   transaction: (_operation, run) =>
     run({
       execute: (sql, values) =>
@@ -35,8 +49,54 @@ const databaseLayer = Layer.succeed(Database)({
     }),
 })
 
-describe("managed database cleanup", () => {
+describe("managed database persistence", () => {
   layer(databaseLayer)((it) => {
+    it.effect("lists metadata without loading encrypted passwords", () =>
+      Effect.gen(function* () {
+        queries.length = 0
+
+        yield* listManagedDatabaseRecordsEffect()
+
+        assert.strictEqual(queries.length, 1)
+        assert.notInclude(queries[0]?.sql, "password_ciphertext")
+        assert.notInclude(queries[0]?.sql, "username")
+      })
+    )
+
+    it.effect(
+      "loads only the fields needed by global database navigation",
+      () =>
+        Effect.gen(function* () {
+          queries.length = 0
+
+          yield* listManagedDatabaseDirectoryEffect()
+
+          assert.strictEqual(queries.length, 1)
+          assert.include(queries[0]?.sql, "database_id, relay_id, name")
+          assert.notInclude(queries[0]?.sql, "engine")
+          assert.notInclude(queries[0]?.sql, "password_ciphertext")
+        })
+    )
+
+    it.effect("checks a Relay-scoped name before provisioning", () =>
+      Effect.gen(function* () {
+        queries.length = 0
+
+        const exists = yield* managedDatabaseNameExistsEffect(
+          "relay-one",
+          "Primary"
+        )
+
+        assert.isFalse(exists)
+        assert.strictEqual(
+          queries[0]?.operation,
+          "managed_database_name_exists"
+        )
+        assert.include(queries[0]?.sql, "WHERE relay_id = ? AND name = ?")
+        assert.deepEqual(queries[0]?.values, ["relay-one", "Primary"])
+      })
+    )
+
     it.effect("removes grants, pending invitations, and credentials", () =>
       Effect.gen(function* () {
         statements.length = 0

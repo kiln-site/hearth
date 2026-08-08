@@ -401,7 +401,10 @@ const DatabaseTableRow = React.memo(function DatabaseTableRow({
   return (
     <tr className="group transition-colors hover:bg-accent/25">
       <WorkspaceTableCell className="px-2 sm:px-3">
-        <DatabaseStatus state={database.observedState} />
+        <DatabaseStatus
+          inventoryStatus={database.inventoryStatus}
+          state={database.observedState}
+        />
       </WorkspaceTableCell>
       <WorkspaceTableCell>
         <div className="flex min-w-0 items-center gap-2.5">
@@ -431,14 +434,30 @@ const DatabaseTableRow = React.memo(function DatabaseTableRow({
           {database.relayName}
         </p>
         <p className="font-mono text-[8px] text-muted-foreground">
-          {database.connectedInstanceIds.length} connected
+          {database.inventoryStatus === "available"
+            ? `${database.connectedInstanceIds.length} connected`
+            : database.inventoryStatus === "missing"
+              ? "container missing"
+              : "inventory unavailable"}
         </p>
       </WorkspaceTableCell>
       <WorkspaceTableCell className="hidden xl:table-cell">
-        <p className="truncate font-mono text-[9px] text-foreground">
-          {database.hostname}:{database.internalPort}
-        </p>
-        <p className="text-[8px] text-muted-foreground">private network only</p>
+        {database.inventoryStatus === "available" ? (
+          <>
+            <p className="truncate font-mono text-[9px] text-foreground">
+              {database.hostname}:{database.internalPort}
+            </p>
+            <p className="text-[8px] text-muted-foreground">
+              private network only
+            </p>
+          </>
+        ) : (
+          <p className="text-[9px] text-muted-foreground">
+            {database.inventoryStatus === "missing"
+              ? "Container missing"
+              : "Relay unavailable"}
+          </p>
+        )}
       </WorkspaceTableCell>
       <WorkspaceTableCell className="px-1 sm:px-3">
         <DatabaseActions database={database} onDialog={onDialog} />
@@ -487,18 +506,23 @@ const DatabaseActions = React.memo(function DatabaseActions({
     [database.permissions]
   )
   const running = database.observedState === "running"
+  const available = database.inventoryStatus === "available"
   const busy = action.isPending || exportDump.isPending
   const canExport =
+    available &&
     database.hasCredentials &&
     database.supportsImportExport &&
     can("database.dump.export")
   const canImport =
+    available &&
     database.hasCredentials &&
     database.supportsImportExport &&
     can("database.dump.import")
   const hasDumpActions = canExport || canImport
   const hasMenuActions =
-    can("database.power") || hasDumpActions || can("database.delete")
+    (available && can("database.power")) ||
+    hasDumpActions ||
+    can("database.delete")
 
   return (
     <div className="flex items-center justify-end gap-1">
@@ -510,7 +534,7 @@ const DatabaseActions = React.memo(function DatabaseActions({
           onClick={() => onDialog({ kind: "credentials", database })}
         />
       ) : null}
-      {can("database.network.write") ? (
+      {available && can("database.network.write") ? (
         <DatabaseNetworkPicker database={database} />
       ) : null}
       {hasMenuActions ? (
@@ -536,7 +560,7 @@ const DatabaseActions = React.memo(function DatabaseActions({
             <TooltipContent side="bottom">More actions</TooltipContent>
           </Tooltip>
           <DropdownMenuContent align="end" className="min-w-44">
-            {can("database.power") ? (
+            {available && can("database.power") ? (
               <>
                 <DropdownMenuItem
                   onSelect={() => action.mutate(running ? "stop" : "start")}
@@ -549,7 +573,8 @@ const DatabaseActions = React.memo(function DatabaseActions({
                 </DropdownMenuItem>
               </>
             ) : null}
-            {can("database.power") &&
+            {available &&
+            can("database.power") &&
             (hasDumpActions || can("database.delete")) ? (
               <DropdownMenuSeparator />
             ) : null}
@@ -639,7 +664,7 @@ function CreateDatabaseDialog({
       }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({
-        queryKey: queryKeys.databases.list,
+        queryKey: queryKeys.databases.all,
       })
       showToast({ message: `${name.trim()} is ready`, type: "success" })
       onOpenChange(false)
@@ -792,17 +817,26 @@ function CredentialsDialog({
           <p className="text-xs text-destructive">{credential.error.message}</p>
         ) : credential.data ? (
           <div className="space-y-3">
-            <CredentialField label="Host" value={database.hostname} />
-            <div className="grid grid-cols-2 gap-3">
-              <CredentialField
-                label="Port"
-                value={String(database.internalPort)}
-              />
+            {database.inventoryStatus === "available" ? (
+              <>
+                <CredentialField label="Host" value={database.hostname} />
+                <div className="grid grid-cols-2 gap-3">
+                  <CredentialField
+                    label="Port"
+                    value={String(database.internalPort)}
+                  />
+                  <CredentialField
+                    label="Database"
+                    value={credential.data.databaseName}
+                  />
+                </div>
+              </>
+            ) : (
               <CredentialField
                 label="Database"
                 value={credential.data.databaseName}
               />
-            </div>
+            )}
             <CredentialField
               label="Username"
               value={credential.data.username}
@@ -818,7 +852,8 @@ function CredentialsDialog({
           <p className="text-xs text-destructive">{rotate.error.message}</p>
         ) : null}
         <DialogFooter className="sm:justify-between">
-          {database.permissions.includes("database.credentials.rotate") ? (
+          {database.inventoryStatus === "available" &&
+          database.permissions.includes("database.credentials.rotate") ? (
             <Button
               disabled={rotate.isPending}
               type="button"
@@ -1138,7 +1173,7 @@ function DeleteDatabaseDialog({
         queryKey: queryKeys.databases.credential(database.relayId, database.id),
       })
       await queryClient.invalidateQueries({
-        queryKey: queryKeys.databases.list,
+        queryKey: queryKeys.databases.all,
       })
       showToast({ message: `${database.name} deleted`, type: "success" })
       onOpenChange(false)
@@ -1190,19 +1225,41 @@ function DeleteDatabaseDialog({
   )
 }
 
-function DatabaseStatus({ state }: { state: string }) {
+function DatabaseStatus({
+  inventoryStatus,
+  state,
+}: {
+  inventoryStatus: ManagedDatabase["inventoryStatus"]
+  state: string
+}) {
   const status =
-    state === "running"
-      ? { dot: "bg-emerald-400", label: "Running", text: "text-emerald-300" }
-      : state === "starting"
-        ? { dot: "bg-amber-300", label: "Starting", text: "text-amber-200" }
-        : state === "failed"
-          ? { dot: "bg-destructive", label: "Failed", text: "text-destructive" }
-          : {
-              dot: "bg-muted-foreground",
-              label: "Stopped",
-              text: "text-muted-foreground",
+    inventoryStatus === "missing"
+      ? { dot: "bg-destructive", label: "Missing", text: "text-destructive" }
+      : inventoryStatus === "unavailable"
+        ? {
+            dot: "bg-amber-300",
+            label: "Unavailable",
+            text: "text-amber-200",
+          }
+        : state === "running"
+          ? {
+              dot: "bg-emerald-400",
+              label: "Running",
+              text: "text-emerald-300",
             }
+          : state === "starting"
+            ? { dot: "bg-amber-300", label: "Starting", text: "text-amber-200" }
+            : state === "failed"
+              ? {
+                  dot: "bg-destructive",
+                  label: "Failed",
+                  text: "text-destructive",
+                }
+              : {
+                  dot: "bg-muted-foreground",
+                  label: "Stopped",
+                  text: "text-muted-foreground",
+                }
   return (
     <span
       aria-label={status.label}

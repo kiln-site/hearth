@@ -56,7 +56,7 @@ import type { AuthenticatedUser } from "@/lib/auth-session"
 import { clearAppearanceCache } from "@/lib/appearance"
 import {
   accessCapabilitiesQueryOptions,
-  managedDatabasesQueryOptions,
+  managedDatabaseDirectoryQueryOptions,
   relayConnectionQueryOptions,
   relaySnapshotQueryOptions,
 } from "@/lib/query-options"
@@ -234,9 +234,9 @@ const DatabaseCount = React.memo(function DatabaseCount({
   relayConfigured: boolean
 }) {
   const { data: count = 0 } = useQuery({
-    ...managedDatabasesQueryOptions(),
+    ...managedDatabaseDirectoryQueryOptions(),
     enabled: relayConfigured,
-    select: (data) => data.databases.length,
+    select: (databases) => databases.length,
   })
 
   return count

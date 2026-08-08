@@ -26,7 +26,7 @@ import type { AccessRole } from "@/lib/permissions"
 import { accessRoleDetails, accessRoles, isAccessRole } from "@/lib/permissions"
 import {
   accessOverviewQueryOptions,
-  managedDatabasesQueryOptions,
+  managedDatabaseDirectoryQueryOptions,
   queryKeys,
 } from "@/lib/query-options"
 import {
@@ -36,10 +36,12 @@ import {
   revokeAccessInvitation,
   updateAccessGrant,
 } from "@/server/access"
-import type { getManagedDatabases } from "@/server/databases"
+import type { getManagedDatabaseDirectory } from "@/server/databases"
 
 type AccessOverview = Awaited<ReturnType<typeof getAccessOverview>>
-type ManagedDatabaseOverview = Awaited<ReturnType<typeof getManagedDatabases>>
+type ManagedDatabaseDirectory = Awaited<
+  ReturnType<typeof getManagedDatabaseDirectory>
+>
 type InvitationForm = {
   email: string
   targetKey: string
@@ -66,8 +68,8 @@ export function AccessPage({
 }) {
   const queryClient = useQueryClient()
   const { data: overview } = useSuspenseQuery(accessOverviewQueryOptions())
-  const { data: databaseOverview } = useSuspenseQuery(
-    managedDatabasesQueryOptions()
+  const { data: databases } = useSuspenseQuery(
+    managedDatabaseDirectoryQueryOptions()
   )
   const inviteMutation = useMutation({
     mutationFn: createAccessInvitation,
@@ -84,6 +86,9 @@ export function AccessPage({
         queryClient.invalidateQueries({
           queryKey: queryKeys.access.capabilities,
         }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.databases.directory,
+        }),
       ]),
   })
   const removeGrantMutation = useMutation({
@@ -95,6 +100,9 @@ export function AccessPage({
         }),
         queryClient.invalidateQueries({
           queryKey: queryKeys.access.capabilities,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.databases.directory,
         }),
       ]),
   })
@@ -136,7 +144,7 @@ export function AccessPage({
               ]
             : []
         ),
-        ...databaseOverview.databases.flatMap((database) =>
+        ...databases.flatMap((database) =>
           database.relayId === relay.id
             ? [
                 {
@@ -151,7 +159,7 @@ export function AccessPage({
             : []
         ),
       ]),
-    [databaseOverview.databases, instances, overview.relays]
+    [databases, instances, overview.relays]
   )
 
   async function invite(form: InvitationForm) {
@@ -292,7 +300,7 @@ export function AccessPage({
           <div className="space-y-5">
             <AccessGrantList
               grants={overview.grants}
-              databases={databaseOverview.databases}
+              databases={databases}
               instances={instances}
               ownerRelayIds={ownerRelayIds}
               pending={pending}
@@ -302,7 +310,7 @@ export function AccessPage({
 
             <PendingInvitationList
               invitations={overview.invitations}
-              databases={databaseOverview.databases}
+              databases={databases}
               instances={instances}
               ownerRelayIds={ownerRelayIds}
               pending={pending}
@@ -442,7 +450,7 @@ function AccessGrantList({
   onRoleChange,
   onRemove,
 }: {
-  databases: ManagedDatabaseOverview["databases"]
+  databases: ManagedDatabaseDirectory
   grants: AccessOverview["grants"]
   instances: Array<FleetRelayInstance>
   ownerRelayIds: ReadonlySet<string>
@@ -561,7 +569,7 @@ function PendingInvitationList({
   pending,
   onRevoke,
 }: {
-  databases: ManagedDatabaseOverview["databases"]
+  databases: ManagedDatabaseDirectory
   invitations: AccessOverview["invitations"]
   instances: Array<FleetRelayInstance>
   ownerRelayIds: ReadonlySet<string>

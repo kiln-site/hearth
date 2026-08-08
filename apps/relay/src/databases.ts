@@ -279,6 +279,7 @@ export class DatabaseDriver {
       throw new Error("Start the database before rotating its password")
     }
     if (database.engine === "redis" || database.engine === "valkey") {
+      const engine = database.engine
       const labels = await this.#labels(database.id)
       const volume = requiredLabel(labels, "kiln.database.volume")
       await writeAclFile(
@@ -290,17 +291,12 @@ export class DatabaseDriver {
       const loaded = await promiseResult(() =>
         runProcess(
           "docker",
-          [
-            "exec",
+          databaseAclLoadArguments(
+            engine,
             container,
-            database.engine === "redis" ? "redis-cli" : "valkey-cli",
-            "--user",
             input.username,
-            "-a",
-            input.currentPassword,
-            "ACL",
-            "LOAD",
-          ],
+            input.currentPassword
+          ),
           undefined,
           60_000
         )
@@ -658,6 +654,25 @@ function databaseClientArguments(
     ...(mode === "export"
       ? ["--clean", "--if-exists", "--no-owner"]
       : ["--set", "ON_ERROR_STOP=on"]),
+  ]
+}
+
+export function databaseAclLoadArguments(
+  engine: "redis" | "valkey",
+  container: string,
+  username: string,
+  password: string
+): Array<string> {
+  return [
+    "exec",
+    "-e",
+    `${engine === "redis" ? "REDISCLI_AUTH" : "VALKEYCLI_AUTH"}=${password}`,
+    container,
+    engine === "redis" ? "redis-cli" : "valkey-cli",
+    "--user",
+    username,
+    "ACL",
+    "LOAD",
   ]
 }
 
