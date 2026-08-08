@@ -66,9 +66,7 @@ function PrivacyRoute() {
         <p>
           You can stop using Hearth, remove connected Relays through an
           authorized administrator, and avoid optional sharing such as mclo.gs
-          uploads. For account or data requests, contact the QuartzDev operator
-          responsible for your deployment through the Discord link in the
-          footer.
+          uploads. For account or data requests, email contact@kiln.site.
         </p>
       </LegalSection>
 

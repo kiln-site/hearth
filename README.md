@@ -57,3 +57,7 @@ pnpm dev:docker
 ```
 
 `dev:setup` only needs to run once per clone. Open the OrbStack URL printed by `dev:docker` to use the panel.
+
+## Contact
+
+Email contact@kiln.site.

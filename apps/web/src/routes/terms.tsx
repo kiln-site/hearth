@@ -83,7 +83,7 @@ function TermsRoute() {
         <p>
           We may update these Terms by posting a new version here. Continued use
           after an update means you accept the revised Terms. Questions can be
-          raised through the Discord link in the panel footer.
+          sent to contact@kiln.site.
         </p>
       </LegalSection>
     </LegalPage>
