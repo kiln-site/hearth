@@ -537,6 +537,14 @@ function authenticateSocket(
     return operation.pipe(
       Effect.catch((cause) =>
         Effect.sync(() => {
+          if (!controller.signal.aborted) {
+            Sentry.captureException(cause, {
+              tags: {
+                "kiln.operation": request.operation,
+                "kiln.transport": "control-socket",
+              },
+            })
+          }
           sendError(
             socket,
             request.id,
@@ -545,7 +553,7 @@ function authenticateSocket(
               : "operation_failed",
             controller.signal.aborted
               ? "Relay request was cancelled"
-              : safeErrorMessage(cause)
+              : relayControlErrorMessage(cause)
           )
         })
       ),
@@ -993,12 +1001,18 @@ function sendError(
   send(socket, error)
 }
 
-function safeErrorMessage(cause: unknown): string {
+export function relayControlErrorMessage(cause: unknown): string {
   if (!cause || typeof cause !== "object" || !("message" in cause)) {
     return "Relay operation failed"
   }
   const message = (cause as { message?: unknown }).message
-  return typeof message === "string" && message.length <= 240
-    ? message
-    : "Relay operation failed"
+  if (typeof message !== "string") return "Relay operation failed"
+  const normalized = message.trim()
+  if (normalized.length <= 240) return normalized
+  const detail = normalized
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .at(-1)
+  return detail && detail.length <= 240 ? detail : "Relay operation failed"
 }

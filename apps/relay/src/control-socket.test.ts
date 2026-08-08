@@ -22,6 +22,7 @@ import {
   attachControlSocket,
   auditDetailsForRequest,
   isAuditedOperation,
+  relayControlErrorMessage,
 } from "./control-socket.js"
 import { fingerprint } from "./effect/identity.js"
 import { RelayStateStore } from "./effect/state.js"
@@ -62,6 +63,27 @@ describe("Relay control timeouts", () => {
         10_000
       )
     ).toBe(5_000)
+  })
+})
+
+describe("Relay control errors", () => {
+  it("returns a safe final command detail when the full message is too long", () => {
+    const command = `docker network create ${"hearth-feature-".repeat(16)}`
+    expect(
+      relayControlErrorMessage(
+        new Error(
+          `Command failed: ${command}\nError response from daemon: all predefined address pools have been fully subnetted\n`
+        )
+      )
+    ).toBe(
+      "Error response from daemon: all predefined address pools have been fully subnetted"
+    )
+  })
+
+  it("does not expose an overlong single-line error", () => {
+    expect(relayControlErrorMessage(new Error("x".repeat(241)))).toBe(
+      "Relay operation failed"
+    )
   })
 })
 

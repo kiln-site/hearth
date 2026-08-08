@@ -24,7 +24,7 @@ variables:
   java_version:
     type: string
     label: Java version
-    description: JDK release used to run the server.
+    description: Recommended JDK is selected from the Minecraft version; override it when needed.
     required: true
     default: "21"
     options: ["11", "17", "21", "25"]

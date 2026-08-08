@@ -37,7 +37,9 @@ import {
 import { WorkspaceSummaryCard } from "@/components/workspace-summary-card"
 import {
   defaultBrickVariables,
+  unavailableMinecraftJavaVersion,
   updateBrickVariable,
+  withRecommendedMinecraftJava,
 } from "@/lib/brick-variables"
 import {
   brickCatalogQueryOptions,
@@ -215,6 +217,21 @@ const StartupForm = React.memo(function StartupForm({
     event.preventDefault()
     if (!canEdit || pending || submittingRef.current) return
     setError(null)
+    const minecraftVersion = variables.version
+    const unavailableJavaVersion =
+      typeof minecraftVersion === "string"
+        ? unavailableMinecraftJavaVersion(
+            view.id,
+            view.variables,
+            minecraftVersion
+          )
+        : null
+    if (unavailableJavaVersion) {
+      setError(
+        `Minecraft ${minecraftVersion} requires Java ${unavailableJavaVersion}, but that Ember is not published yet.`
+      )
+      return
+    }
     const diskLimitBytes = gibibytesToBytes(diskLimitGiB)
     if (diskLimitBytes === null) {
       setError("Enter a valid disk quota in GiB.")
@@ -325,7 +342,16 @@ const StartupForm = React.memo(function StartupForm({
           onSubmit={onSubmit}
           onVariableChange={(name, value) => {
             if (!canEdit) return
-            setVariables((current) => updateBrickVariable(current, name, value))
+            setVariables((current) => {
+              const updated = updateBrickVariable(current, name, value)
+              return name === "version"
+                ? withRecommendedMinecraftJava(
+                    view.id,
+                    view.variables,
+                    updated
+                  )
+                : updated
+            })
           }}
         />
       </div>
