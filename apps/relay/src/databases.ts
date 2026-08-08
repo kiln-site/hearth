@@ -246,27 +246,50 @@ export class DatabaseDriver {
   }
 
   async delete(input: RelayDeleteDatabase) {
-    const database = await this.#required(input.databaseId)
-    const labels = await this.#labels(input.databaseId)
-    const container = requiredContainerId(database)
-    const network = requiredLabel(labels, "kiln.database.network")
-    const volume = requiredLabel(labels, "kiln.database.volume")
-    const connected = await this.#attachedContainers(network)
-    for (const attached of connected) {
-      if (attached.Id === container) continue
-      await ignoreCommand([
+    const database = (await this.list()).find(
+      (candidate) => candidate.id === input.databaseId
+    )
+    const labels = database ? await this.#labels(input.databaseId) : {}
+    const container = database?.containerId ?? null
+    const [network, volume] = await Promise.all([
+      this.#ownedDatabaseResource(
         "network",
-        "disconnect",
-        "--force",
-        network,
-        attached.Name.replace(/^\//u, ""),
-      ])
+        input.databaseId,
+        "network",
+        labels["kiln.database.network"]
+      ),
+      this.#ownedDatabaseResource(
+        "volume",
+        input.databaseId,
+        "data",
+        labels["kiln.database.volume"]
+      ),
+    ])
+    if (!container && !network && !volume) {
+      throw new Error("Database not found")
     }
-    await command("docker", ["rm", "--force", container], {
-      timeout: 90_000,
-    })
-    await ignoreCommand(["network", "rm", network])
-    if (input.deleteData) await command("docker", ["volume", "rm", volume])
+    if (network) {
+      const connected = await this.#attachedContainers(network)
+      for (const attached of connected) {
+        if (attached.Id === container) continue
+        await ignoreCommand([
+          "network",
+          "disconnect",
+          "--force",
+          network,
+          attached.Name.replace(/^\//u, ""),
+        ])
+      }
+    }
+    if (container) {
+      await command("docker", ["rm", "--force", container], {
+        timeout: 90_000,
+      })
+    }
+    if (network) await ignoreCommand(["network", "rm", network])
+    if (input.deleteData && volume) {
+      await command("docker", ["volume", "rm", volume])
+    }
     return { databaseId: input.databaseId, deleted: true }
   }
 
@@ -509,6 +532,46 @@ export class DatabaseDriver {
     return JSON.parse(
       (await command("docker", ["inspect", ...ids])).stdout
     ) as Array<AttachedContainerInspect>
+  }
+
+  async #ownedDatabaseResource(
+    kind: "network" | "volume",
+    databaseId: string,
+    suffix: "data" | "network",
+    preferredName?: string
+  ): Promise<string | null> {
+    const fullName = databaseResourceName(this.#config, databaseId, suffix)
+    const legacyName = databaseResourceName(
+      this.#config,
+      databaseId.slice(0, 8),
+      suffix
+    )
+    const candidates = [preferredName, fullName, legacyName].flatMap(
+      (name, index, names) =>
+        name && names.indexOf(name) === index ? [name] : []
+    )
+    for (const name of candidates) {
+      const inspected = await promiseResult(() =>
+        command("docker", [
+          kind,
+          "inspect",
+          "--format",
+          "{{json .Labels}}",
+          name,
+        ])
+      )
+      if (Result.isFailure(inspected)) continue
+      const labels = stringLabels(JSON.parse(inspected.success.stdout))
+      if (
+        labels[DATABASE_KIND_LABEL] === DATABASE_KIND &&
+        labels["kiln.database.id"] === databaseId &&
+        labels[`kiln.database.${kind}`] === name &&
+        relayOwnsLabels(this.#config, labels)
+      ) {
+        return name
+      }
+    }
+    return null
   }
 
   async #ensureImage(image: string) {
@@ -763,6 +826,15 @@ function requiredLabel(
   const value = labels[name]
   if (!value) throw new Error(`Database recovery label ${name} is missing`)
   return value
+}
+
+function stringLabels(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+  const labels: Record<string, string> = {}
+  for (const [name, label] of Object.entries(value)) {
+    if (typeof label === "string") labels[name] = label
+  }
+  return labels
 }
 
 function safeFileName(name: string): string {

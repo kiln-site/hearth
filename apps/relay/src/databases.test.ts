@@ -1,10 +1,23 @@
-import { describe, expect, it } from "vite-plus/test"
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test"
+
+import type { command as commandFunction } from "./command.js"
+
+const commandMock = vi.hoisted(() => vi.fn<typeof commandFunction>())
+
+vi.mock("./command.js", () => ({ command: commandMock }))
 
 import {
+  DatabaseDriver,
   databaseAclLoadArguments,
   databaseEngineSpec,
   databaseRecoveryLabels,
 } from "./databases.js"
+import { loadConfig } from "./config.js"
+import { DockerDriver } from "./docker.js"
+
+beforeEach(() => {
+  commandMock.mockReset()
+})
 
 describe("managed database recovery metadata", () => {
   it("uses supported official images and private internal ports", () => {
@@ -122,4 +135,94 @@ describe("managed database credential rotation", () => {
       expect(arguments_).not.toContain("current-password")
     }
   )
+})
+
+describe("managed database deletion", () => {
+  it("removes owned network and volume resources without a container", async () => {
+    const databaseId = "d".repeat(40)
+    const config = loadConfig({
+      KILN_RELAY_ALLOW_PROVISIONING: "true",
+      KILN_RELAY_RESOURCE_NAMESPACE: "kiln-test",
+      NODE_ENV: "test",
+    })
+    const network = `kiln-test-kiln-db-${databaseId}-network`
+    const volume = `kiln-test-kiln-db-${databaseId}-data`
+    commandMock.mockImplementation(async (_executable, arguments_) => {
+      if (arguments_[0] === "container" && arguments_[1] === "ls") {
+        return {
+          stderr: "",
+          stdout: arguments_.includes(`network=${network}`)
+            ? "server-container\n"
+            : "",
+        }
+      }
+      if (arguments_[0] === "inspect" && arguments_[1] === "server-container") {
+        return {
+          stderr: "",
+          stdout: JSON.stringify([
+            {
+              Config: { Labels: {} },
+              Id: "server-container",
+              Name: "/game-server",
+            },
+          ]),
+        }
+      }
+      if (arguments_[0] === "network" && arguments_[1] === "inspect") {
+        if (arguments_.at(-1) !== network) throw new Error("Network not found")
+        return {
+          stderr: "",
+          stdout: JSON.stringify({
+            "kiln.database.id": databaseId,
+            "kiln.database.network": network,
+            "kiln.relay.owner": "kiln-test",
+            "kiln.resource.kind": "database",
+          }),
+        }
+      }
+      if (arguments_[0] === "volume" && arguments_[1] === "inspect") {
+        if (arguments_.at(-1) !== volume) throw new Error("Volume not found")
+        return {
+          stderr: "",
+          stdout: JSON.stringify({
+            "kiln.database.id": databaseId,
+            "kiln.database.volume": volume,
+            "kiln.relay.owner": "kiln-test",
+            "kiln.resource.kind": "database",
+          }),
+        }
+      }
+      if (
+        (arguments_[0] === "network" && arguments_[1] === "rm") ||
+        (arguments_[0] === "volume" && arguments_[1] === "rm")
+      ) {
+        return { stderr: "", stdout: "" }
+      }
+      throw new Error(`Unexpected Docker arguments: ${arguments_.join(" ")}`)
+    })
+    const driver = new DatabaseDriver(config, new DockerDriver(config))
+
+    await expect(
+      driver.delete({ databaseId, deleteData: true })
+    ).resolves.toEqual({ databaseId, deleted: true })
+
+    expect(commandMock).toHaveBeenCalledWith("docker", [
+      "network",
+      "disconnect",
+      "--force",
+      network,
+      "game-server",
+    ])
+    expect(commandMock).toHaveBeenCalledWith("docker", [
+      "network",
+      "rm",
+      network,
+    ])
+    expect(commandMock).toHaveBeenCalledWith("docker", ["volume", "rm", volume])
+    expect(commandMock).not.toHaveBeenCalledWith(
+      "docker",
+      expect.arrayContaining(["rm", "--force"]),
+      expect.anything()
+    )
+  })
 })
