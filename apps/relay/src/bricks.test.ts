@@ -46,10 +46,18 @@ const recipe: BrickRecipe = brickRecipeSchema.parse({
       required: false,
       default: false,
     },
+    java_version: {
+      type: "string",
+      label: "Java version",
+      description: "JDK release used to run the server.",
+      required: true,
+      default: "21",
+      options: ["11", "17", "21", "25"],
+    },
   },
   runtime: {
-    image: "registry.example.com/custom/server:latest",
-    name: "Custom runtime",
+    image: "registry.example.com/custom/server:{{ variables.java_version }}",
+    name: "Java {{ variables.java_version }}",
     environment: {
       VERSION: "{{ variables.version }}",
       DEBUG: "{{ variables.debug }}",
@@ -101,6 +109,7 @@ describe("Brick recipes", () => {
       version: "1.2.3",
       memory: "4G",
       debug: false,
+      java_version: "21",
     })
     expect(resolved.environment).toEqual({
       VERSION: "1.2.3",
@@ -108,6 +117,14 @@ describe("Brick recipes", () => {
       BRICK: "example",
     })
     expect(resolved.memory).toBe("4G")
+    expect(resolved.image).toBe("registry.example.com/custom/server:21")
+    expect(resolved.runtimeName).toBe("Java 21")
+    const java25 = resolveBrick(recipe, {
+      java_version: "25",
+      memory: "4G",
+    })
+    expect(java25.image).toBe("registry.example.com/custom/server:25")
+    expect(java25.runtimeName).toBe("Java 25")
     expect(
       interpolateTemplate("{{ variables.version }}.{{ brick.id }}", recipe, {
         version: "2.0",

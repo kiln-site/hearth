@@ -115,9 +115,11 @@ interface CachedCatalog {
 
 export interface ResolvedBrick {
   environment: Readonly<Record<string, string>>
+  image: string
   memory: string
   memoryReservation: string
   recipe: BrickRecipe
+  runtimeName: string
   values: Readonly<Record<string, BrickVariableValue>>
 }
 
@@ -277,9 +279,11 @@ export function resolveBrick(
         interpolate(value),
       ])
     ),
+    image: interpolate(recipe.runtime.image),
     memory,
     memoryReservation,
     recipe,
+    runtimeName: interpolate(recipe.runtime.name),
     values,
   }
 }

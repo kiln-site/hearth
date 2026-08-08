@@ -2046,7 +2046,7 @@ export class LifecycleDriver {
     const version = Object.hasOwn(resolved.values, "version")
       ? String(resolved.values.version)
       : "custom"
-    const image = definition.runtime.image
+    const image = resolved.image
     const memoryLimit = resolved.memory
     const directory = join(this.#config.rootDirectory, id)
     const hostDirectory = join(await this.#hostDataDirectory(), "instances", id)
@@ -2249,7 +2249,7 @@ export class LifecycleDriver {
       "--label",
       `kiln.instance.version=${version}`,
       "--label",
-      `kiln.instance.java=${definition.runtime.name}`,
+      `kiln.instance.java=${resolved.runtimeName}`,
       "--label",
       `kiln.instance.game=${definition.metadata.game}`,
       "--label",

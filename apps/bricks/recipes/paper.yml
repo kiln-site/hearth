@@ -21,9 +21,16 @@ variables:
     required: true
     default: 2G
     rules: { pattern: "^[0-9]+[MG]$", maxLength: 12 }
+  java_version:
+    type: string
+    label: Java version
+    description: JDK release used to run the server.
+    required: true
+    default: "21"
+    options: ["11", "17", "21", "25"]
 runtime:
-  image: ghcr.io/kiln-site/bricks-java:21
-  name: Java 21
+  image: "ghcr.io/kiln-site/bricks-java:{{ variables.java_version }}"
+  name: "Java {{ variables.java_version }}"
   environment:
     KILN_IMPLEMENTATION: paper
     KILN_VERSION: "{{ variables.version }}"

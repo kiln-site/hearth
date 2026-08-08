@@ -241,6 +241,7 @@ const AddServerConfiguration = React.memo(function AddServerConfiguration({
   const relayCompatible =
     selectedRelay !== undefined &&
     relaySupportsSelection(selectedRelay, selection)
+  const versionDefinition = minecraftVersionDefinition(selection)
 
   const selectRelayConnected = React.useCallback(
     (connection: RelayConnection) =>
@@ -295,6 +296,12 @@ const AddServerConfiguration = React.memo(function AddServerConfiguration({
       })
       return
     }
+    const variables =
+      selection.kind === "catalog" ? defaultBrickVariables(selection.brick) : {}
+    const submittedVersion = formData.get("version")
+    if (typeof submittedVersion === "string" && submittedVersion.trim()) {
+      variables.version = submittedVersion.trim()
+    }
 
     submittingRef.current = true
     await Effect.runPromise(
@@ -307,10 +314,7 @@ const AddServerConfiguration = React.memo(function AddServerConfiguration({
               recipe,
               relayId,
               start: false,
-              variables:
-                selection.kind === "catalog"
-                  ? defaultBrickVariables(selection.brick)
-                  : {},
+              variables,
             },
           }),
         catch: (cause) => cause,
@@ -359,6 +363,40 @@ const AddServerConfiguration = React.memo(function AddServerConfiguration({
           required
         />
       </label>
+      {versionDefinition ? (
+        <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
+          <span className="flex items-center justify-between gap-3">
+            <span>{versionDefinition.label}</span>
+            {versionDefinition.default === undefined ? null : (
+              <span className="font-mono text-[9px] font-normal tracking-[0.06em] text-muted-foreground/60 uppercase">
+                {String(versionDefinition.default)} default
+              </span>
+            )}
+          </span>
+          <Input
+            key={`${selectionIdentity}:version`}
+            name="version"
+            defaultValue={
+              versionDefinition.default === undefined
+                ? ""
+                : String(versionDefinition.default)
+            }
+            placeholder="1.21.11 or 26.2"
+            pattern={versionDefinition.rules?.pattern}
+            minLength={versionDefinition.rules?.minLength}
+            maxLength={versionDefinition.rules?.maxLength}
+            disabled={pending}
+            className="font-mono tabular-nums"
+            required={
+              versionDefinition.required &&
+              versionDefinition.default === undefined
+            }
+          />
+          <span className="block text-[9px] leading-relaxed font-normal text-muted-foreground/65">
+            {versionDefinition.description}
+          </span>
+        </label>
+      ) : null}
       <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
         <span className="flex items-center justify-between gap-3">
           <span>Disk quota</span>
@@ -487,6 +525,17 @@ function relaySupportsSelection(
   return architectures.some(
     (architecture) => normalizeArchitecture(architecture) === relayArchitecture
   )
+}
+
+function minecraftVersionDefinition(selection: BrickSelection | null) {
+  if (
+    selection?.kind !== "catalog" ||
+    selection.brick.metadata.game.trim().toLowerCase() !== "minecraft"
+  ) {
+    return null
+  }
+  const definition = selection.brick.variables.version
+  return definition?.type === "string" ? definition : null
 }
 
 function normalizeArchitecture(architecture: string): string {
