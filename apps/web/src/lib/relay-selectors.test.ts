@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test"
 import type { RelayInstance, RelaySnapshot } from "@workspace/contracts"
 
 import {
+  addRelayInstanceToSnapshot,
   relayInstanceRouteId,
   type RelayFleetSnapshot,
 } from "@/lib/relay-fleet"
@@ -74,6 +75,31 @@ describe("Relay render selectors", () => {
     expect(relayInstanceRouteId("relay-one", "aaaaaaaa")).toBe(
       "relay-one-aaaaaaaa"
     )
+  })
+
+  it("makes a newly provisioned instance immediately routable", () => {
+    const snapshot = snapshotWithCpu(1)
+    const created = {
+      ...instance,
+      id: "b".repeat(40),
+      name: "New server",
+      shortId: "bbbbbbbb",
+    }
+
+    const updated = addRelayInstanceToSnapshot(snapshot, created, {
+      id: "relay-one",
+      name: "Relay one",
+    })
+
+    expect(updated?.instances[0]).toMatchObject({
+      id: created.id,
+      relayId: "relay-one",
+      relayStatus: "connected",
+      routeId: "relay-one-bbbbbbbb",
+    })
+    expect(
+      resolveRelayInstance(updated?.instances ?? [], "relay-one-bbbbbbbb")
+    ).toMatchObject({ status: "found", instance: { id: created.id } })
   })
 
   it("keeps sidebar and workspace data unchanged across resource samples", () => {

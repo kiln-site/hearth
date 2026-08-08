@@ -132,6 +132,33 @@ describe("Brick recipes", () => {
     ).toBe("2.0.example")
   })
 
+  it("derives the Java Ember from Minecraft unless explicitly overridden", () => {
+    const paper = brickRecipeSchema.parse({
+      ...recipe,
+      metadata: { ...recipe.metadata, game: "Minecraft", id: "paper" },
+      variables: {
+        ...recipe.variables,
+        version: { ...recipe.variables.version, default: "1.21.11" },
+        java_version: {
+          ...recipe.variables.java_version,
+          options: undefined,
+          rules: { pattern: "^(?:11|17|21|25)$" },
+        },
+      },
+    })
+
+    expect(resolveBrick(paper, { version: "26.2" }).values.java_version).toBe(
+      "25"
+    )
+    expect(
+      resolveBrick(paper, { java_version: "21", version: "26.2" }).values
+        .java_version
+    ).toBe("21")
+    expect(() => resolveBrick(paper, { version: "1.16.5" })).toThrow(
+      /requires Java 16/u
+    )
+  })
+
   it("rejects undeclared and invalid variable values", () => {
     expect(() => resolveBrick(recipe, { unknown: "value" })).toThrow(
       BrickRecipeError

@@ -23,3 +23,35 @@ export interface RelayFleetSnapshot {
 export function relayInstanceRouteId(relayId: string, shortId: string): string {
   return `${relayId}-${shortId}`
 }
+
+export function addRelayInstanceToSnapshot(
+  snapshot: RelayFleetSnapshot | undefined,
+  instance: RelayInstance,
+  relay: { id: string; name: string }
+): RelayFleetSnapshot | undefined {
+  if (!snapshot) return snapshot
+
+  const relayInstance: FleetRelayInstance = {
+    ...instance,
+    relayId: relay.id,
+    relayName: relay.name,
+    relayStatus: "connected",
+    routeId: relayInstanceRouteId(relay.id, instance.shortId),
+  }
+  const existingIndex = snapshot.instances.findIndex(
+    (item) => item.id === instance.id && item.relayId === relay.id
+  )
+  if (existingIndex === -1) {
+    return {
+      ...snapshot,
+      instances: [relayInstance, ...snapshot.instances],
+    }
+  }
+
+  return {
+    ...snapshot,
+    instances: snapshot.instances.map((item, index) =>
+      index === existingIndex ? relayInstance : item
+    ),
+  }
+}

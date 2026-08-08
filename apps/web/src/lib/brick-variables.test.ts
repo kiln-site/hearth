@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vite-plus/test"
-import { brickRecipeSchema } from "@workspace/contracts"
+import {
+  brickRecipeSchema,
+  requiredMinecraftJavaVersion,
+} from "@workspace/contracts"
 
 import {
   defaultBrickVariables,
-  requiredMinecraftJavaVersion,
   unavailableMinecraftJavaVersion,
   withRecommendedMinecraftJava,
 } from "./brick-variables.js"
@@ -31,7 +33,7 @@ const paper = brickRecipeSchema.parse({
       description: "Java Ember release.",
       required: true,
       default: "17",
-      options: ["11", "17", "21", "25"],
+      rules: { pattern: "^(?:11|17|21|25)$" },
     },
   },
   runtime: {

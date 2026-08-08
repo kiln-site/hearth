@@ -27,7 +27,11 @@ import {
   unavailableMinecraftJavaVersion,
   withRecommendedMinecraftJava,
 } from "@/lib/brick-variables"
-import { relayInstanceRouteId } from "@/lib/relay-fleet"
+import {
+  addRelayInstanceToSnapshot,
+  relayInstanceRouteId,
+  type RelayFleetSnapshot,
+} from "@/lib/relay-fleet"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import {
   brickCatalogQueryOptions,
@@ -157,13 +161,19 @@ const AddServerForm = React.memo(function AddServerForm({
   const { isPending: pending, mutateAsync: provisionServer } = useMutation({
     mutationFn: createBrickInstance,
     onSuccess: async (instance, variables) => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.bricks }),
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.relay.connection,
-        }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.relay.snapshot }),
-      ])
+      const relay = relays.find((item) => item.id === variables.data.relayId)
+      if (!relay) throw new Error("Provisioning Relay is no longer available")
+
+      const addInstance = (snapshot: RelayFleetSnapshot | undefined) =>
+        addRelayInstanceToSnapshot(snapshot, instance, relay)
+      queryClient.setQueryData(queryKeys.relay.snapshot, addInstance)
+      queryClient.setQueryData<RelayConnection>(
+        queryKeys.relay.connection,
+        (connection) =>
+          connection?.status === "connected"
+            ? { ...connection, snapshot: addInstance(connection.snapshot)! }
+            : connection
+      )
       onClose()
       await navigate({
         to: "/server/$serverId/startup",
@@ -174,6 +184,13 @@ const AddServerForm = React.memo(function AddServerForm({
           ),
         },
       })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.bricks }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.relay.connection,
+        }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.relay.snapshot }),
+      ])
     },
   })
 

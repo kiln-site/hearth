@@ -27,7 +27,7 @@ variables:
     description: Recommended JDK is selected from the Minecraft version; override it when needed.
     required: true
     default: "21"
-    options: ["11", "17", "21", "25"]
+    rules: { pattern: "^(?:11|17|21|25)$", maxLength: 2 }
 runtime:
   image: "ghcr.io/kiln-site/bricks-java:{{ variables.java_version }}"
   name: "Java {{ variables.java_version }}"
