@@ -25,14 +25,25 @@ import { listPersistedRelays } from "@/lib/relay-registry"
 import { requireAuthenticatedUser } from "@/server/auth"
 
 const tokenSchema = z.object({ token: z.string().min(32).max(256) })
-const relayResourceIdSchema = z.object({ id: z.uuid(), relayId: relayIdSchema })
-const invitationSchema = z.object({
-  email: z.email().transform((value) => value.trim().toLowerCase()),
-  instanceId: z.string().min(1).max(64).nullable(),
+const relayResourceIdSchema = z.object({
+  id: z.uuid(),
   relayId: relayIdSchema,
-  resourceName: z.string().trim().min(1).max(160),
-  role: z.enum(accessRoles),
 })
+const invitationSchema = z
+  .object({
+    databaseId: z
+      .string()
+      .regex(/^[a-f0-9]{40}$/u)
+      .nullable(),
+    email: z.email().transform((value) => value.trim().toLowerCase()),
+    instanceId: z.string().min(1).max(64).nullable(),
+    relayId: relayIdSchema,
+    resourceName: z.string().trim().min(1).max(160),
+    role: z.enum(accessRoles),
+  })
+  .refine((value) => !(value.databaseId && value.instanceId), {
+    message: "Choose one invitation scope",
+  })
 const updateGrantSchema = relayResourceIdSchema.extend({
   role: z.enum(accessRoles),
 })
@@ -42,6 +53,7 @@ interface InvitationRow extends RowDataPacket {
   email: string
   expires_at: Date
   id: string
+  database_id: string | null
   instance_id: string | null
   invited_by: string
   relay_id: string
@@ -55,7 +67,7 @@ interface AccessOverviewRow extends RowDataPacket {
   id: string
   name: string
   resource_id: string
-  resource_type: "instance" | "relay"
+  resource_type: "database" | "instance" | "relay"
   role: (typeof accessRoles)[number]
   user_id: string
 }
@@ -65,8 +77,13 @@ interface PendingInvitationRow extends RowDataPacket {
   email: string
   expires_at: Date
   id: string
+  database_id: string | null
   instance_id: string | null
   role: (typeof accessRoles)[number]
+}
+
+interface DatabaseResourceRow extends RowDataPacket {
+  database_id: string
 }
 
 export const getAccessCapabilities = createServerFn({ method: "GET" }).handler(
@@ -150,7 +167,7 @@ async function relayAccessOverview(
       [relay.id]
     ),
     databasePool.query<Array<PendingInvitationRow>>(
-      `SELECT id, email, instance_id, role, expires_at, created_at
+      `SELECT id, email, instance_id, database_id, role, expires_at, created_at
          FROM ${databaseTable("invitation")}
         WHERE relay_id = ?
           AND accepted_at IS NULL
@@ -181,6 +198,7 @@ async function relayAccessOverview(
       email: invitation.email,
       expiresAt: invitation.expires_at.toISOString(),
       id: invitation.id,
+      databaseId: invitation.database_id,
       instanceId: invitation.instance_id,
       relayId: relay.id,
       relayName: relay.name,
@@ -199,6 +217,7 @@ export const createAccessInvitation = createServerFn({ method: "POST" })
       user,
       relayId: relay.id,
       permission: "access.invite",
+      databaseId: data.databaseId ?? undefined,
       instanceId: data.instanceId ?? undefined,
     })
     if (data.role === "owner" && !(await canManageOwners(user, relay.id))) {
@@ -215,19 +234,28 @@ export const createAccessInvitation = createServerFn({ method: "POST" })
           SET revoked_at = CURRENT_TIMESTAMP(3)
         WHERE email = ? AND relay_id = ?
           AND ((instance_id IS NULL AND ? IS NULL) OR instance_id = ?)
+          AND ((database_id IS NULL AND ? IS NULL) OR database_id = ?)
           AND accepted_at IS NULL AND revoked_at IS NULL`,
-      [data.email, relay.id, data.instanceId, data.instanceId]
+      [
+        data.email,
+        relay.id,
+        data.instanceId,
+        data.instanceId,
+        data.databaseId,
+        data.databaseId,
+      ]
     )
     await databasePool.execute(
       `INSERT INTO ${databaseTable("invitation")}
-        (id, token_hash, email, relay_id, instance_id, role, invited_by, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, token_hash, email, relay_id, instance_id, database_id, role, invited_by, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         hashToken(token),
         data.email,
         relay.id,
         data.instanceId,
+        data.databaseId,
         data.role,
         user.id,
         expiresAt,
@@ -249,7 +277,11 @@ export const createAccessInvitation = createServerFn({ method: "POST" })
             inviterName: user.name,
             resourceName: data.resourceName,
             role: data.role,
-            scope: data.instanceId ? "instance" : "relay",
+            scope: data.databaseId
+              ? "database"
+              : data.instanceId
+                ? "instance"
+                : "relay",
           }),
         },
         { idempotencyKey: `access-invitation/${id}` }
@@ -279,6 +311,7 @@ export const getInvitationPreview = createServerFn({ method: "GET" })
     const relay = await relayById(invitation.relay_id)
     return {
       email: invitation.email,
+      databaseId: invitation.database_id,
       expiresAt: invitation.expires_at.toISOString(),
       instanceId: invitation.instance_id,
       relayName: relay?.name ?? "Kiln Relay",
@@ -299,7 +332,7 @@ export const acceptAccessInvitation = createServerFn({ method: "POST" })
         return yield* database.transaction("access.invitation.accept", (tx) =>
           Effect.gen(function* () {
             const rows = yield* tx.queryRows<InvitationRow>(
-              `SELECT id, email, relay_id, instance_id, role, invited_by,
+              `SELECT id, email, relay_id, instance_id, database_id, role, invited_by,
                 expires_at, accepted_at, revoked_at
            FROM ${databaseTable("invitation")} WHERE token_hash = ? FOR UPDATE`,
               [hashToken(data.token)]
@@ -317,8 +350,27 @@ export const acceptAccessInvitation = createServerFn({ method: "POST" })
                 )
               )
             }
-            const resourceType = invitation.instance_id ? "instance" : "relay"
-            const resourceId = invitation.instance_id ?? invitation.relay_id
+            if (invitation.database_id) {
+              const databases = yield* tx.queryRows<DatabaseResourceRow>(
+                `SELECT database_id FROM ${databaseTable("database")}
+                  WHERE relay_id = ? AND database_id = ? FOR UPDATE`,
+                [invitation.relay_id, invitation.database_id]
+              )
+              if (!databases.at(0)) {
+                return yield* Effect.fail(
+                  new Error("This database no longer exists")
+                )
+              }
+            }
+            const resourceType = invitation.database_id
+              ? "database"
+              : invitation.instance_id
+                ? "instance"
+                : "relay"
+            const resourceId =
+              invitation.database_id ??
+              invitation.instance_id ??
+              invitation.relay_id
             yield* tx.execute(
               `INSERT INTO ${databaseTable("access_grant")}
           (id, user_id, relay_id, resource_type, resource_id, role, granted_by)
@@ -440,7 +492,7 @@ async function relayById(id: string) {
 
 async function readInvitation(token: string): Promise<InvitationRow | null> {
   const [rows] = await databasePool.query<Array<InvitationRow>>(
-    `SELECT id, email, relay_id, instance_id, role, invited_by,
+    `SELECT id, email, relay_id, instance_id, database_id, role, invited_by,
             expires_at, accepted_at, revoked_at
        FROM ${databaseTable("invitation")} WHERE token_hash = ? LIMIT 1`,
     [hashToken(token)]

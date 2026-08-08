@@ -10,6 +10,10 @@ import {
 import { getActivity } from "@/server/activity"
 import { getBrickCatalog, getInstanceStartup } from "@/server/bricks"
 import { getDomainSettings, getInstanceDomain } from "@/server/domains"
+import {
+  getManagedDatabaseCredential,
+  getManagedDatabases,
+} from "@/server/databases"
 import { getUiPreferences } from "@/server/preferences"
 import { reconcilePendingPowerSnapshot } from "@/lib/instance-power-state"
 import {
@@ -50,6 +54,12 @@ export const queryKeys = {
     instance: (relayId: string, instanceId: string) =>
       ["domains", "instances", relayId, instanceId] as const,
     settings: ["domains", "settings"] as const,
+  },
+  databases: {
+    all: ["databases"] as const,
+    credential: (relayId: string, databaseId: string) =>
+      ["databases", relayId, databaseId, "credential"] as const,
+    list: ["databases", "list"] as const,
   },
   relay: {
     all: ["relay"] as const,
@@ -155,6 +165,27 @@ export function relaySnapshotQueryOptions() {
     queryFn: async () =>
       reconcilePendingPowerSnapshot(await getRelaySnapshot()),
     staleTime: connectedRelayPollDelayMs,
+  })
+}
+
+export function managedDatabasesQueryOptions() {
+  return queryOptions({
+    queryKey: queryKeys.databases.list,
+    queryFn: () => getManagedDatabases(),
+    refetchOnWindowFocus: "always",
+    staleTime: 5_000,
+  })
+}
+
+export function managedDatabaseCredentialQueryOptions(
+  relayId: string,
+  databaseId: string
+) {
+  return queryOptions({
+    queryKey: queryKeys.databases.credential(relayId, databaseId),
+    queryFn: () =>
+      getManagedDatabaseCredential({ data: { databaseId, relayId } }),
+    staleTime: Infinity,
   })
 }
 

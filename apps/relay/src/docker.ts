@@ -2080,8 +2080,10 @@ export class DockerDriver {
     const inspectResult = await command("docker", ["inspect", ...ids])
     const containers = (
       JSON.parse(inspectResult.stdout) as Array<DockerInspect>
-    ).filter((container) =>
-      relayOwnsLabels(this.#config, container.Config.Labels)
+    ).filter(
+      (container) =>
+        container.Config.Labels?.["kiln.resource.kind"] !== "database" &&
+        relayOwnsLabels(this.#config, container.Config.Labels)
     )
     if (containers.length === 0) return []
     const diskLimitCandidates = containers.map((container) => ({
