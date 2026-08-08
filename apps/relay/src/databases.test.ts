@@ -46,7 +46,7 @@ describe("managed database recovery metadata", () => {
     expect(labels).toMatchObject({
       "kiln.database.database-name": "kiln_app",
       "kiln.database.engine": "postgres",
-      "kiln.database.hostname": "database-aaaaaaaa",
+      "kiln.database.hostname": `database-${"a".repeat(40)}`,
       "kiln.database.id": "a".repeat(40),
       "kiln.database.image": "postgres:17",
       "kiln.database.name": "Main database",
@@ -57,6 +57,39 @@ describe("managed database recovery metadata", () => {
     })
     expect(Object.keys(labels).join(" ")).not.toMatch(
       /password|username|secret/u
+    )
+  })
+
+  it("does not collide resources when database ids share a short prefix", () => {
+    const first = databaseRecoveryLabels(
+      { resourceNamespace: "kiln-test" },
+      {
+        databaseName: "kiln_first",
+        engine: "postgres",
+        id: `${"a".repeat(8)}${"b".repeat(32)}`,
+        name: "First database",
+      },
+      "2026-08-06T12:00:00.000Z"
+    )
+    const second = databaseRecoveryLabels(
+      { resourceNamespace: "kiln-test" },
+      {
+        databaseName: "kiln_second",
+        engine: "postgres",
+        id: `${"a".repeat(8)}${"c".repeat(32)}`,
+        name: "Second database",
+      },
+      "2026-08-06T12:00:00.000Z"
+    )
+
+    expect(first["kiln.database.hostname"]).not.toBe(
+      second["kiln.database.hostname"]
+    )
+    expect(first["kiln.database.network"]).not.toBe(
+      second["kiln.database.network"]
+    )
+    expect(first["kiln.database.volume"]).not.toBe(
+      second["kiln.database.volume"]
     )
   })
 })

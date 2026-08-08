@@ -138,11 +138,6 @@ export const deleteManagedDatabaseRecordEffect = Effect.fn(
   yield* database.transaction("managed_database_delete", (transaction) =>
     Effect.gen(function* () {
       yield* transaction.execute(
-        `DELETE FROM ${databaseTable("access_grant")}
-          WHERE relay_id = ? AND resource_type = 'database' AND resource_id = ?`,
-        [relayId, databaseId]
-      )
-      yield* transaction.execute(
         `DELETE FROM ${databaseTable("invitation")}
           WHERE relay_id = ? AND database_id = ?
             AND accepted_at IS NULL
@@ -153,6 +148,11 @@ export const deleteManagedDatabaseRecordEffect = Effect.fn(
       yield* transaction.execute(
         `DELETE FROM ${databaseTable("database")}
           WHERE relay_id = ? AND database_id = ?`,
+        [relayId, databaseId]
+      )
+      yield* transaction.execute(
+        `DELETE FROM ${databaseTable("access_grant")}
+          WHERE relay_id = ? AND resource_type = 'database' AND resource_id = ?`,
         [relayId, databaseId]
       )
     })
