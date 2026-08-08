@@ -82,6 +82,10 @@ interface PendingInvitationRow extends RowDataPacket {
   role: (typeof accessRoles)[number]
 }
 
+interface DatabaseResourceRow extends RowDataPacket {
+  database_id: string
+}
+
 export const getAccessCapabilities = createServerFn({ method: "GET" }).handler(
   async () => {
     const user = await requireAuthenticatedUser()
@@ -345,6 +349,18 @@ export const acceptAccessInvitation = createServerFn({ method: "POST" })
                   `Sign in as ${invitation.email} to accept this invitation`
                 )
               )
+            }
+            if (invitation.database_id) {
+              const databases = yield* tx.queryRows<DatabaseResourceRow>(
+                `SELECT database_id FROM ${databaseTable("database")}
+                  WHERE relay_id = ? AND database_id = ? FOR UPDATE`,
+                [invitation.relay_id, invitation.database_id]
+              )
+              if (!databases.at(0)) {
+                return yield* Effect.fail(
+                  new Error("This database no longer exists")
+                )
+              }
             }
             const resourceType = invitation.database_id
               ? "database"

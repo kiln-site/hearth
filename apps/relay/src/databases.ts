@@ -228,11 +228,7 @@ export class DatabaseDriver {
 
   async action(input: RelayDatabaseAction): Promise<RelayManagedDatabase> {
     const database = await this.#required(input.databaseId)
-    const container = databaseResourceName(
-      this.#config,
-      database.id,
-      "database"
-    )
+    const container = requiredContainerId(database)
     if (input.action === "stop") {
       await command("docker", ["stop", "--time", "30", container], {
         timeout: 45_000,
@@ -252,16 +248,12 @@ export class DatabaseDriver {
   async delete(input: RelayDeleteDatabase) {
     const database = await this.#required(input.databaseId)
     const labels = await this.#labels(input.databaseId)
-    const container = databaseResourceName(
-      this.#config,
-      database.id,
-      "database"
-    )
+    const container = requiredContainerId(database)
     const network = requiredLabel(labels, "kiln.database.network")
     const volume = requiredLabel(labels, "kiln.database.volume")
     const connected = await this.#attachedContainers(network)
     for (const attached of connected) {
-      if (attached.Name.replace(/^\//u, "") === container) continue
+      if (attached.Id === container) continue
       await ignoreCommand([
         "network",
         "disconnect",
@@ -282,11 +274,7 @@ export class DatabaseDriver {
     input: RelayRotateDatabaseCredentials
   ): Promise<RelayManagedDatabase> {
     const database = await this.#required(input.databaseId)
-    const container = databaseResourceName(
-      this.#config,
-      database.id,
-      "database"
-    )
+    const container = requiredContainerId(database)
     if (!database.observedState.match(/^(?:running|starting)$/u)) {
       throw new Error("Start the database before rotating its password")
     }
@@ -543,11 +531,16 @@ function databaseResourceName(
   suffix: "data" | "database" | "network"
 ): string {
   const prefix = config.resourceNamespace ? `${config.resourceNamespace}-` : ""
-  return `${prefix}kiln-db-${id.slice(0, 8)}-${suffix}`
+  return `${prefix}kiln-db-${id}-${suffix}`
 }
 
 function databaseHostname(id: string): string {
-  return `database-${id.slice(0, 8)}`
+  return `database-${id}`
+}
+
+function requiredContainerId(database: RelayManagedDatabase): string {
+  if (!database.containerId) throw new Error("Database container ID is missing")
+  return database.containerId
 }
 
 function labelArguments(
