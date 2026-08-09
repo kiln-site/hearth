@@ -89,6 +89,51 @@ describeLinux("Relay direct file transfers", () => {
     )
   )
 
+  it.effect(
+    "collects archive downloads without writing into the instance",
+    () =>
+      withSetup(({ driver, instance, root }) =>
+        Effect.gen(function* () {
+          yield* fromPromise(() =>
+            Promise.all([
+              mkdir(resolve(root, "world", "config")),
+              writeFile(resolve(root, "world", "data.txt"), "data"),
+            ])
+          )
+          yield* fromPromise(() =>
+            writeFile(resolve(root, "world", "config", "server.yml"), "server")
+          )
+          const before = yield* fromPromise(() =>
+            readdir(resolve(root, "world"))
+          )
+
+          const entries = yield* driver.withArchiveDownload(
+            instance,
+            ["world/config/", "world/data.txt"],
+            (downloadEntries) =>
+              Effect.succeed(
+                downloadEntries.map((entry) => ({
+                  kind: entry.kind,
+                  name: entry.name,
+                }))
+              )
+          )
+
+          assert.deepInclude(entries, { kind: "directory", name: "config" })
+          assert.deepInclude(entries, {
+            kind: "file",
+            name: "config/server.yml",
+          })
+          assert.deepInclude(entries, { kind: "file", name: "data.txt" })
+          const after = yield* fromPromise(() =>
+            readdir(resolve(root, "world"))
+          )
+          assert.deepEqual(after, before)
+          assert.notInclude(after, "selected-files.zip")
+        })
+      )
+  )
+
   it.effect("refuses a final symlink for transfers and file actions", () =>
     withSetup(({ directory, driver, instance, root }) =>
       Effect.gen(function* () {

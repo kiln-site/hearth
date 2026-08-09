@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test"
 
-import { createEditorSessionStore } from "@/components/files/file-workspace-stores"
+import {
+  createEditorSessionStore,
+  deletedPathContainsSelection,
+  fileUploadRelativePath,
+} from "@/components/files/file-workspace-stores"
 
 const firstRevision = "2026-07-23T12:00:00.000Z"
 const secondRevision = "2026-07-23T12:01:00.000Z"
@@ -75,5 +79,41 @@ describe("editor session revisions", () => {
     expect(store.getValue()).toBe("remote edit")
     expect(store.getDirtySnapshot()).toBe(false)
     expect(store.getDiskConflictSnapshot()).toBe(false)
+  })
+})
+
+describe("file workspace path handling", () => {
+  it("only treats exact files and actual directory descendants as deleted", () => {
+    expect(deletedPathContainsSelection("m", "mods/foo")).toBe(false)
+    expect(deletedPathContainsSelection("server", "server.properties")).toBe(
+      false
+    )
+    expect(
+      deletedPathContainsSelection("server.properties", "server.properties")
+    ).toBe(true)
+    expect(deletedPathContainsSelection("mods/", "mods/foo")).toBe(true)
+    expect(deletedPathContainsSelection("mods/", "mods/")).toBe(true)
+    expect(deletedPathContainsSelection("mods/", "mods-old/foo")).toBe(false)
+  })
+
+  it("preserves nested paths supplied by directory uploads", () => {
+    expect(
+      fileUploadRelativePath({
+        name: "config.yml",
+        webkitRelativePath: "pack/config/config.yml",
+      })
+    ).toBe("pack/config/config.yml")
+    expect(
+      fileUploadRelativePath({
+        name: "config.yml",
+        webkitRelativePath: "pack/overrides/config.yml",
+      })
+    ).toBe("pack/overrides/config.yml")
+    expect(
+      fileUploadRelativePath({
+        name: "config.yml",
+        webkitRelativePath: "../config.yml",
+      })
+    ).toBe("config.yml")
   })
 })

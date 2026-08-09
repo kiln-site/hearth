@@ -95,6 +95,40 @@ export async function downloadRelayFile(
   })
 }
 
+export async function downloadRelayArchive(
+  input: Omit<FileTransferInput, "path"> & {
+    name: string
+    paths: ReadonlyArray<string>
+  }
+): Promise<void> {
+  if (!input.paths.length) throw new Error("Select files to download")
+  const name = input.name.trim()
+  if (!isValidRelayDownloadName(name)) {
+    throw new Error("Enter a valid file name without slashes")
+  }
+  const serializedPaths = JSON.stringify(input.paths)
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(serializedPaths)
+  )
+  const path = `@archive/${Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("")}`
+  const authorization = await runTransfer(
+    transferOperation(() =>
+      relayFileAuthorization({ ...input, path }, "POST")
+    ).pipe(
+      Effect.mapError((cause) => directTransferUnavailable("download", cause))
+    )
+  )
+  submitNativeDownload(authorization, {
+    compression: "zip",
+    name,
+    path,
+    serializedPaths,
+  })
+}
+
 export function isValidRelayDownloadName(name: string): boolean {
   const trimmed = name.trim()
   if (!trimmed || trimmed.length > 255 || trimmed === "." || trimmed === "..") {
@@ -113,7 +147,12 @@ export function isValidRelayDownloadName(name: string): boolean {
 
 function submitNativeDownload(
   authorization: RelayFileAuthorization,
-  input: { compression: DownloadCompression; name: string; path: string }
+  input: {
+    compression: DownloadCompression
+    name: string
+    path: string
+    serializedPaths?: string
+  }
 ): void {
   const target = `kiln-download-${crypto.randomUUID()}`
   const frame = document.createElement("iframe")
@@ -133,6 +172,9 @@ function submitNativeDownload(
     proof: authorization.headers["X-Kiln-Proof"],
     publicKey: authorization.headers["X-Kiln-Public-Key"],
     requestedAt: authorization.headers["X-Kiln-Requested-At"],
+    ...(input.serializedPaths === undefined
+      ? {}
+      : { archivePaths: input.serializedPaths }),
   }
   for (const [key, value] of Object.entries(values)) {
     const field = document.createElement("input")

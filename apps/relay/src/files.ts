@@ -338,6 +338,29 @@ export class FilesystemDriver {
     }).pipe(Effect.withSpan("relay.files.download"))
   }
 
+  withArchiveDownload<TResult, TError, TRequirements>(
+    instance: RelayInstanceConfig,
+    requestedPaths: ReadonlyArray<string>,
+    use: (
+      entries: ReadonlyArray<ArchiveDownloadEntry>
+    ) => Effect.Effect<TResult, TError, TRequirements>
+  ) {
+    return Effect.gen({ self: this }, function* () {
+      yield* requireLinuxDescriptorAnchoring()
+      const root = yield* this.#instanceRoot(instance)
+      const paths = distinctMutationPaths(requestedPaths)
+      if (!paths.length) {
+        return yield* filesystemFailure(
+          "invalid_path",
+          "download.archive",
+          "Select files to download"
+        )
+      }
+      const entries = yield* collectArchiveEntries(root, paths)
+      return yield* use(entries)
+    }).pipe(Effect.withSpan("relay.files.downloadArchive"))
+  }
+
   upload(
     instance: RelayInstanceConfig,
     requestedPath: string,
@@ -661,7 +684,7 @@ interface MutationEntry {
   kind: "directory" | "file"
 }
 
-interface ArchiveEntry extends MutationEntry {
+export interface ArchiveDownloadEntry extends MutationEntry {
   name: string
   size: number
 }
@@ -771,7 +794,7 @@ const availableDuplicatePath = Effect.fn("relay.files.availableDuplicatePath")(
 
 const collectArchiveEntries = Effect.fn("relay.files.collectArchiveEntries")(
   function* (root: string, requestedPaths: ReadonlyArray<string>) {
-    const entries: Array<ArchiveEntry> = []
+    const entries: Array<ArchiveDownloadEntry> = []
     let totalSize = 0
 
     const visit = (
@@ -837,7 +860,7 @@ const collectArchiveEntries = Effect.fn("relay.files.collectArchiveEntries")(
 
 function writeZipArchive(
   destination: string,
-  entries: ReadonlyArray<ArchiveEntry>,
+  entries: ReadonlyArray<ArchiveDownloadEntry>,
   signal: AbortSignal
 ): Promise<void> {
   return new Promise((resolveArchive, reject) => {

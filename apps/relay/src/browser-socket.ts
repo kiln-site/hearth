@@ -5,6 +5,7 @@ import {
   randomUUID,
   verify,
 } from "node:crypto"
+import { createReadStream } from "node:fs"
 import type { ReadStream } from "node:fs"
 import type { FileHandle } from "node:fs/promises"
 import type { Readable } from "node:stream"
@@ -39,7 +40,7 @@ import {
   encodeNewestConsoleBatch,
 } from "./console-frames.js"
 import { MAX_TRANSFER_BYTES } from "./files.js"
-import type { FilesystemDriver } from "./files.js"
+import type { ArchiveDownloadEntry, FilesystemDriver } from "./files.js"
 import type { RelayInstanceConfig } from "./config.js"
 import type { RelayIdentity } from "./effect/identity.js"
 import { forkPromise } from "./effect/promise.js"
@@ -54,7 +55,8 @@ const HTTP_PROOF_WINDOW_MS = 30_000
 const MAX_BROWSER_SESSIONS = 512
 const MAX_DIRECT_TRANSFERS = 32
 const MAX_DIRECT_TRANSFERS_PER_CLIENT = 8
-const MAX_DOWNLOAD_FORM_BYTES = 32 * 1024
+const MAX_DOWNLOAD_FORM_BYTES = 2 * 1024 * 1024
+const MAX_ARCHIVE_SELECTION_PATHS = 5_000
 const COMPRESSION_SAMPLE_BYTES = 1024 * 1024
 
 type BrowserFileMethod = "GET" | "HEAD" | "POST" | "PUT"
@@ -68,6 +70,7 @@ interface BrowserRequestCredentials {
 }
 
 interface BrowserDownloadForm {
+  archivePaths: ReadonlyArray<string> | null
   compression: DownloadCompression
   credentials: BrowserRequestCredentials
   name: string
@@ -730,6 +733,43 @@ async function handleBrowserFileRequest(
         browserJson(response, 200, uploaded, origin)
         return
       }
+      if (downloadForm?.archivePaths) {
+        await options.runEffect(
+          options.filesystem.withArchiveDownload(
+            instance,
+            downloadForm.archivePaths,
+            (entries) =>
+              Effect.tryPromise({
+                try: async () => {
+                  const downloadName = normalizedDownloadName(
+                    downloadForm.name,
+                    "files.zip"
+                  )
+                  response.writeHead(
+                    200,
+                    browserCorsHeaders(origin, {
+                      "Cache-Control": "no-store",
+                      "Content-Disposition": contentDisposition(downloadName),
+                      "Content-Type": "application/zip",
+                      "X-Content-Type-Options": "nosniff",
+                      "X-Kiln-Download-Max-Size": String(MAX_TRANSFER_BYTES),
+                    })
+                  )
+                  const result = await streamArchiveDownload(entries, response)
+                  void auditBrowserTransfer(
+                    options,
+                    authentication,
+                    method,
+                    result.bytes,
+                    result.completed ? "completed" : "aborted"
+                  )
+                },
+                catch: (cause) => cause,
+              })
+          )
+        )
+        return
+      }
       await options.runEffect(
         options.filesystem.withDownload(instance, path, (download) =>
           Effect.tryPromise({
@@ -1170,7 +1210,29 @@ async function readBrowserDownloadForm(
   ) {
     throw new Error("Download compression is invalid")
   }
+  const path = required("path")
+  const serializedPaths = form.get("archivePaths")
+  const archivePaths = serializedPaths
+    ? Schema.decodeUnknownSync(Schema.Array(Schema.String))(
+        JSON.parse(serializedPaths)
+      )
+    : null
+  if (archivePaths) {
+    if (
+      compression !== "zip" ||
+      !archivePaths.length ||
+      archivePaths.length > MAX_ARCHIVE_SELECTION_PATHS ||
+      archivePaths.some(
+        (archivePath) => archivePath.length === 0 || archivePath.length > 2_048
+      ) ||
+      serializedPaths === null ||
+      path !== archiveSelectionRequestPath(serializedPaths)
+    ) {
+      throw new Error("Download archive selection is invalid")
+    }
+  }
   return {
+    archivePaths,
     compression,
     credentials: {
       authorization: required("authorization"),
@@ -1180,8 +1242,12 @@ async function readBrowserDownloadForm(
       requestedAt: required("requestedAt"),
     },
     name: required("name"),
-    path: required("path"),
+    path,
   }
+}
+
+function archiveSelectionRequestPath(serializedPaths: string): string {
+  return `@archive/${createHash("sha256").update(serializedPaths).digest("hex")}`
 }
 
 async function estimateCompressedSizes(
@@ -1287,6 +1353,83 @@ function streamDownload(
         else if (!settled) archive.finalize()
       })
     }
+  })
+}
+
+function streamArchiveDownload(
+  entries: ReadonlyArray<ArchiveDownloadEntry>,
+  response: ServerResponse
+): Promise<{ bytes: number; completed: boolean }> {
+  return new Promise((resolveStream, reject) => {
+    const archive = new ZipStream({
+      forceZip64: entries.some((entry) => entry.size > 0xffffffff),
+      zlib: { level: zlibConstants.Z_BEST_SPEED },
+    })
+    let activeSource: ReturnType<typeof createReadStream> | null = null
+    let bytes = 0
+    let settled = false
+    const cleanup = () => {
+      archive.off("error", failed)
+      archive.off("data", received)
+      response.off("finish", finished)
+      response.off("close", closed)
+      activeSource?.off("error", failed)
+    }
+    const complete = (completed: boolean) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolveStream({ bytes, completed })
+    }
+    const failed = (cause: Error) => {
+      if (settled) return
+      settled = true
+      activeSource?.destroy()
+      archive.destroy()
+      cleanup()
+      if (!response.destroyed) response.destroy(cause)
+      reject(cause)
+    }
+    const received = (chunk: Buffer | string) => {
+      bytes += Buffer.byteLength(chunk)
+    }
+    const finished = () => complete(true)
+    const closed = () => {
+      activeSource?.destroy()
+      archive.destroy()
+      complete(false)
+    }
+    archive.once("error", failed)
+    archive.on("data", received)
+    response.once("finish", finished)
+    response.once("close", closed)
+    archive.pipe(response)
+
+    const append = (index: number) => {
+      if (settled) return
+      const entry = entries[index]
+      if (!entry) {
+        archive.finalize()
+        return
+      }
+      if (entry.kind === "directory") {
+        archive.entry(null, { name: `${entry.name}/` }, (cause) => {
+          if (cause) failed(cause)
+          else append(index + 1)
+        })
+        return
+      }
+      const source = createReadStream(entry.absolute)
+      activeSource = source
+      source.once("error", failed)
+      archive.entry(source, { name: entry.name }, (cause) => {
+        source.off("error", failed)
+        activeSource = null
+        if (cause) failed(cause)
+        else append(index + 1)
+      })
+    }
+    append(0)
   })
 }
 

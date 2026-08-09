@@ -92,7 +92,9 @@ import {
   createEditorSessionStore,
   createFileEditorPreferencesStore,
   createFileSelectionStore,
+  deletedPathContainsSelection,
   fileEditorFontSizes,
+  fileUploadRelativePath,
 } from "@/components/files/file-workspace-stores"
 import { FileDownloadDialog } from "@/components/files/file-download-dialog"
 import type {
@@ -103,7 +105,10 @@ import type {
 } from "@/components/files/file-workspace-stores"
 import { redactSensitiveText } from "@/lib/redaction"
 import { fileLanguageForPath } from "@/lib/file-language"
-import { downloadRelayFile, uploadRelayFile } from "@/lib/relay-file-transfer"
+import {
+  downloadRelayArchive,
+  uploadRelayFile,
+} from "@/lib/relay-file-transfer"
 import {
   loadSyntaxCodeEditorModule,
   warmSyntaxCodeEditorModule,
@@ -238,7 +243,7 @@ function useFileUploadAction({
                 uploadRelayFile({
                   file,
                   instanceId: instance.id,
-                  path: joinFilePath(directory, file.name),
+                  path: joinFilePath(directory, fileUploadRelativePath(file)),
                   relayId: instance.relayId,
                 }),
               catch: (cause) => cause,
@@ -2249,6 +2254,7 @@ function useFileActions({
   const queryClient = useQueryClient()
   const [dialog, setDialog] = React.useState<FileActionDialogState>(null)
   const [downloadPath, setDownloadPath] = React.useState<string | null>(null)
+  const [downloadPending, setDownloadPending] = React.useState(false)
   const mutation = useMutation({
     mutationFn: (input: RelayFileMutationInput) =>
       mutateRelayFiles({
@@ -2300,11 +2306,7 @@ function useFileActions({
   )
 
   const archive = React.useCallback(
-    async (
-      paths: ReadonlyArray<string>,
-      requestedName: string,
-      download: boolean
-    ) => {
+    async (paths: ReadonlyArray<string>, requestedName: string) => {
       const name = requestedName.trim().endsWith(".zip")
         ? requestedName.trim()
         : `${requestedName.trim()}.zip`
@@ -2319,21 +2321,47 @@ function useFileActions({
       const destination = joinFilePath(directoryPath(paths[0] ?? ""), name)
       const result = await runMutation(
         { operation: "archive", paths: [...paths], destination },
-        download ? "Download archive prepared" : "Archive created"
+        "Archive created"
       )
-      if (!result) return false
-      if (download) {
-        await downloadRelayFile({
-          compression: "none",
+      return Boolean(result)
+    },
+    [runMutation]
+  )
+
+  const downloadArchive = React.useCallback(
+    async (paths: ReadonlyArray<string>, requestedName: string) => {
+      const toastId = showToast({
+        type: "loading",
+        message: "Preparing download",
+        duration: Number.POSITIVE_INFINITY,
+      })
+      setDownloadPending(true)
+      try {
+        await downloadRelayArchive({
           instanceId: instance.id,
-          name,
-          path: destination,
+          name: requestedName.endsWith(".zip")
+            ? requestedName
+            : `${requestedName}.zip`,
+          paths,
           relayId: instance.relayId,
         })
+        dismissToast(toastId)
+        showToast({ type: "success", message: "Download started" })
+      } catch (cause) {
+        dismissToast(toastId)
+        showToast({
+          type: "error",
+          message: "Download failed",
+          description:
+            cause instanceof Error
+              ? cause.message
+              : "The Relay could not prepare this download.",
+        })
+      } finally {
+        setDownloadPending(false)
       }
-      return true
     },
-    [instance.id, instance.relayId, runMutation]
+    [instance.id, instance.relayId]
   )
 
   const request = React.useCallback(
@@ -2347,7 +2375,7 @@ function useFileActions({
         const first = paths[0] ?? "files"
         const defaultName =
           paths.length === 1 ? formatName(first) : "selected-files"
-        void archive(paths, defaultName, true)
+        void downloadArchive(paths, defaultName)
         return
       }
       if (!canWrite) return
@@ -2372,7 +2400,7 @@ function useFileActions({
         )
       }
     },
-    [archive, canWrite, runMutation]
+    [canWrite, downloadArchive, runMutation]
   )
 
   async function submitDialog(value?: string) {
@@ -2386,7 +2414,11 @@ function useFileActions({
       )
       if (result) {
         const selectedPath = selectionStore.getSnapshot()
-        if (dialog.paths.some((path) => selectedPath.startsWith(path))) {
+        if (
+          dialog.paths.some((path) =>
+            deletedPathContainsSelection(path, selectedPath)
+          )
+        ) {
           onPathChange(directoryPath(dialog.paths[0] ?? ""))
         }
         setDialog(null)
@@ -2410,17 +2442,13 @@ function useFileActions({
       }
       return
     }
-    const created = await archive(
-      dialog.paths,
-      value?.trim() || "archive",
-      false
-    )
+    const created = await archive(dialog.paths, value?.trim() || "archive")
     if (created) setDialog(null)
   }
 
   return {
     controller: {
-      busy: mutation.isPending,
+      busy: mutation.isPending || downloadPending,
       canWrite,
       request,
     } satisfies FileActionsController,

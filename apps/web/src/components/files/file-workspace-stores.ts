@@ -5,6 +5,30 @@ export const fileEditorFontSizes = [10, 11, 12, 14, 16]
 const fileEditorFontSizeStorageKey = "kiln:file-editor-font-size"
 const defaultFileEditorFontSize = 16
 
+export function deletedPathContainsSelection(
+  deletedPath: string,
+  selectedPath: string
+): boolean {
+  return deletedPath.endsWith("/")
+    ? selectedPath === deletedPath || selectedPath.startsWith(deletedPath)
+    : selectedPath === deletedPath
+}
+
+export function fileUploadRelativePath(file: {
+  name: string
+  webkitRelativePath: string
+}): string {
+  const relativePath = file.webkitRelativePath.replaceAll("\\", "/")
+  if (
+    !relativePath ||
+    relativePath.startsWith("/") ||
+    relativePath.split("/").some((segment) => segment === "..")
+  ) {
+    return file.name
+  }
+  return relativePath
+}
+
 export interface EditorSearchStore {
   getSnapshot: () => string
   setQuery: (query: string) => void
