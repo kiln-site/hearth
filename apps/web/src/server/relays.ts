@@ -248,7 +248,6 @@ export const updateRelayTailscale = createServerFn({ method: "POST" })
       dnsPort: data.dnsPort,
       domain: data.domain,
       hostname: data.hostname,
-      proxyPort: data.proxyPort,
     })
     return relayTailscaleOverviewSchema.parse(
       await relayRpc(relay, "relay.tailscale.write", settings, 90_000, user.id)

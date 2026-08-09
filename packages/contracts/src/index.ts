@@ -250,7 +250,7 @@ export const brickRecipeSchema = z
     console: brickConsoleSchema.optional(),
     network: z
       .object({
-        mode: z.enum(["minecraft-backend", "minecraft-proxy", "direct"]),
+        mode: z.enum(["minecraft-backend", "direct"]),
         primaryPort: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/u),
         supportsSrv: z.boolean().default(false),
         hostname: z.string().min(1).max(256).optional(),
@@ -275,10 +275,9 @@ export const brickRecipeSchema = z
           .array(z.enum(["amd64", "arm64"]))
           .min(1)
           .optional(),
-        singleton: z.boolean().default(false),
       })
       .strict()
-      .default({ singleton: false }),
+      .default({}),
   })
   .strict()
 
@@ -361,7 +360,7 @@ export const builtinTailscaleBrick = brickSchema.parse({
       { name: "dns-udp", container: 53, protocol: "udp" },
     ],
   },
-  constraints: { singleton: false },
+  constraints: {},
   source: builtinTailscaleBrickSource,
 })
 
@@ -443,9 +442,8 @@ export const relayTailscaleSettingsSchema = z
     dnsPort: z.number().int().min(1).max(65_535).default(53),
     domain: relayTailscaleDomainSchema,
     hostname: relayTailscaleHostnameSchema,
-    proxyPort: z.number().int().min(1).max(65_535).default(25_565),
   })
-  .strict()
+  .strip()
 
 export const relayTailscaleInstallSchema = z
   .object({
@@ -538,7 +536,6 @@ export const relayNetworkingSchema = z.object({
     ),
   address: z.union([z.ipv4(), z.ipv6()]),
   dnsPort: z.number().int().min(1).max(65_535).default(53),
-  proxyPort: z.number().int().min(1).max(65_535).default(25_565),
 })
 
 export const relayProxyModeSchema = z.enum([
@@ -906,9 +903,7 @@ export const relayInstanceSchema = z.object({
   status: z.string(),
   brickId: brickIdSchema.optional(),
   brickFormat: z.string().min(1).optional(),
-  brickNetworkMode: z
-    .enum(["direct", "minecraft-backend", "minecraft-proxy"])
-    .optional(),
+  brickNetworkMode: z.enum(["direct", "minecraft-backend"]).optional(),
   brickPrimaryPort: z.number().int().min(1).max(65_535).optional(),
   brickPrimaryPortProtocol: relayInstancePortProtocolSchema.optional(),
   brickSupportsSrv: z.boolean().default(false),

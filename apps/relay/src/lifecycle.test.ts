@@ -31,7 +31,6 @@ import {
   traefikDynamicConfiguration,
   traefikRouteLabels,
   traefikStaticConfiguration,
-  velocityForcedHosts,
 } from "./lifecycle.js"
 
 describe("managed game ports", () => {
@@ -164,7 +163,6 @@ describe("CoreDNS Brick hostnames", () => {
         dnsPort: 53,
         domain: "test",
         hostname: "kiln-node",
-        proxyPort: 25_565,
       },
       "100.91.22.14",
       ["1.21.11.paper.test"]
@@ -480,51 +478,6 @@ describe("Tailscale Brick networking", () => {
       status: "Removal pending",
     })
     expect(pending.bindings).toEqual(config.bindings)
-  })
-})
-
-describe("Velocity forced hosts", () => {
-  it("coalesces the default Brick hostname with its implementation alias", () => {
-    const forcedHosts = velocityForcedHosts("kiln.test", [
-      {
-        hostname: "paper.kiln.test",
-        implementation: "paper",
-        name: "kiln-paper-one",
-        target: "kiln-paper-one:25565",
-        version: "1.21.11",
-      },
-      {
-        hostname: "paper.kiln.test",
-        implementation: "paper",
-        name: "kiln-paper-two",
-        target: "kiln-paper-two:25565",
-        version: "1.21.10",
-      },
-    ])
-
-    expect(forcedHosts).toBe(
-      '"paper.kiln.test" = ["kiln-paper-one", "kiln-paper-two", "limbo"]'
-    )
-    expect(forcedHosts.match(/"paper[.]kiln[.]test"/gu)).toHaveLength(1)
-  })
-
-  it("keeps a version hostname separate from its implementation alias", () => {
-    const forcedHosts = velocityForcedHosts("kiln.test", [
-      {
-        hostname: "1.21.11.paper.kiln.test",
-        implementation: "paper",
-        name: "kiln-paper-one",
-        target: "kiln-paper-one:25565",
-        version: "1.21.11",
-      },
-    ])
-
-    expect(forcedHosts).toContain(
-      '"1.21.11.paper.kiln.test" = ["kiln-paper-one", "limbo"]'
-    )
-    expect(forcedHosts).toContain(
-      '"paper.kiln.test" = ["kiln-paper-one", "limbo"]'
-    )
   })
 })
 

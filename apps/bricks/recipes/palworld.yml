@@ -48,7 +48,6 @@ network:
   primaryPort: game
   hostname: "{{ brick.id }}"
   ports:
-    - { name: game, container: 8211, host: 8211, protocol: udp }
+    - { name: game, container: 8211, protocol: udp }
 constraints:
   architectures: [amd64]
-  singleton: true

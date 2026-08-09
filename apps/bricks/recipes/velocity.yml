@@ -2,10 +2,10 @@ format: kiln.brick/v1
 metadata:
   id: velocity
   name: Velocity
-  description: Modern Minecraft proxy and hostname entrypoint for a Relay.
+  description: Modern Minecraft proxy running on Kiln's standard Java Ember.
   game: Minecraft
   author: Kiln
-  tags: [minecraft, java, proxy]
+  tags: [minecraft, java]
 variables:
   version:
     type: string
@@ -37,7 +37,6 @@ runtime:
     KILN_ARTIFACT_URL: "https://mcjarfiles.com/api/get-jar/proxies/velocity/{{ variables.version }}"
     KILN_ARTIFACT_FILE: velocity.jar
     KILN_INSTALLATION_MARKER: .kiln-ember-installed
-    KILN_SERVER_KIND: proxy
     KILN_SERVER_ARGS: ""
     KILN_JAVA_MAX_RAM_PERCENTAGE: "75.0"
     MIN_RAM: 512M
@@ -49,11 +48,10 @@ runtime:
 console:
   stopCommands: [end, /end, shutdown, /shutdown, stop, /stop]
 network:
-  mode: minecraft-proxy
+  mode: minecraft-backend
   primaryPort: game
   hostname: "{{ brick.id }}"
   ports:
     - { name: game, container: 25565, protocol: tcp }
 constraints:
   architectures: [amd64, arm64]
-  singleton: true

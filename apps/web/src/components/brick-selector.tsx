@@ -27,14 +27,13 @@ export type BrickSelection =
   | { kind: "catalog"; brick: Brick }
   | { kind: "custom"; source: string }
 
-type BrickCategoryId = "all" | "minecraft" | "proxy" | "steam" | "other"
+type BrickCategoryId = "all" | "minecraft" | "steam" | "other"
 type BrickSourceFilter = "all" | "official" | "community"
 type BrickSort = "featured" | "name-asc" | "name-desc"
 
 const CATEGORIES: ReadonlyArray<{ id: BrickCategoryId; label: string }> = [
   { id: "all", label: "All" },
   { id: "minecraft", label: "Minecraft" },
-  { id: "proxy", label: "Proxy" },
   { id: "steam", label: "Steam" },
   { id: "other", label: "Other" },
 ]
@@ -73,9 +72,6 @@ function brickCategory(brick: Brick): Exclude<BrickCategoryId, "all"> {
   const tags = new Set(
     (brick.metadata.tags ?? []).map((tag) => tag.toLowerCase())
   )
-  if (brick.network.mode === "minecraft-proxy" || tags.has("proxy")) {
-    return "proxy"
-  }
   if (
     tags.has("steam") ||
     brick.runtime.image.toLowerCase().includes("steam")
@@ -528,12 +524,6 @@ const BrickDetailsPanel = React.memo(function BrickDetailsPanel({
               {(brick.constraints.architectures ?? ["any"]).join(", ")}
             </dd>
           </div>
-          {brick.constraints.singleton ? (
-            <div className="flex items-start justify-between gap-3">
-              <dt className="text-muted-foreground">Constraint</dt>
-              <dd className="text-right font-medium">Singleton on Relay</dd>
-            </div>
-          ) : null}
         </dl>
 
         {tags.length > 0 ? (

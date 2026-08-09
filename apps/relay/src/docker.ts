@@ -1650,19 +1650,14 @@ export class DockerDriver {
   ): Promise<boolean | undefined> {
     const protocol =
       instance.brickPrimaryPortProtocol ??
-      (instance.brickNetworkMode === "minecraft-backend" ||
-      instance.brickNetworkMode === "minecraft-proxy"
-        ? "tcp"
-        : undefined)
+      (instance.brickNetworkMode === "minecraft-backend" ? "tcp" : undefined)
     const port = instance.brickPrimaryPort
     if ((protocol !== "tcp" && protocol !== "both") || !port) return undefined
 
     const addresses = Object.values(
       container.NetworkSettings?.Networks ?? {}
     ).flatMap(({ IPAddress: address }) => (address ? [address] : []))
-    const minecraft =
-      instance.brickNetworkMode === "minecraft-backend" ||
-      instance.brickNetworkMode === "minecraft-proxy"
+    const minecraft = instance.brickNetworkMode === "minecraft-backend"
     const probe = minecraft ? minecraftStatusReady : tcpPortOpen
     const attempts = await Promise.all(
       addresses.map((address) => probe(address, port))
@@ -2186,9 +2181,7 @@ export class DockerDriver {
         : undefined
     const brickNetworkMode = labels["kiln.brick.network-mode"]
     const validNetworkMode =
-      brickNetworkMode === "direct" ||
-      brickNetworkMode === "minecraft-backend" ||
-      brickNetworkMode === "minecraft-proxy"
+      brickNetworkMode === "direct" || brickNetworkMode === "minecraft-backend"
         ? brickNetworkMode
         : undefined
     const brickReadiness = parseBrickReadinessLabel(

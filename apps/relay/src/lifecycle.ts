@@ -262,14 +262,6 @@ function formatAllocationBytes(bytes: number): string {
   return `${gibibytes.toFixed(gibibytes >= 10 ? 0 : 1)} GiB`
 }
 
-export interface BackendRoute {
-  hostname: string
-  implementation: string
-  name: string
-  target: string
-  version: string
-}
-
 export class LifecycleDriver {
   readonly #bricks: BrickCatalog
   readonly #config: RelayConfig
@@ -317,7 +309,6 @@ export class LifecycleDriver {
     )
     if (input.enabled) await this.#ensureInfrastructure(input)
     else await this.#removeInfrastructure()
-    await this.#refreshVelocityConfigurations(input)
     return input
   }
 
@@ -425,17 +416,13 @@ export class LifecycleDriver {
   ): Promise<RelayTailscaleOverview> {
     const settings = relayTailscaleSettingsSchema.parse(input)
     const previous = await this.tailscaleSettings()
-    if (
-      previous &&
-      (previous.domain !== settings.domain ||
-        previous.proxyPort !== settings.proxyPort)
-    ) {
+    if (previous && previous.domain !== settings.domain) {
       const connectedInstances = (await this.#docker.inspectInstances()).filter(
         (instance) => instance.managedByRelay && instance.tailscale.enabled
       )
       if (connectedInstances.length > 0) {
         throw new Error(
-          "Disconnect Tailscale-enabled servers before changing the global domain or proxy port"
+          "Disconnect Tailscale-enabled servers before changing the global domain"
         )
       }
     }
@@ -1500,9 +1487,6 @@ export class LifecycleDriver {
                 await this.#refreshCoreDnsConfiguration(networking)
               }
               await this.#refreshTailscaleDns()
-              if (updated.brickNetworkMode === "minecraft-backend") {
-                await this.#refreshVelocityConfigurations(networking)
-              }
             }
             return updated
           }
@@ -1712,9 +1696,6 @@ export class LifecycleDriver {
           await this.#refreshCoreDnsConfiguration(networking)
         }
         await this.#refreshTailscaleDns()
-        if (updated.brickNetworkMode === "minecraft-backend") {
-          await this.#refreshVelocityConfigurations(networking)
-        }
         return updated
       }).pipe(
         Effect.ensuring(
@@ -2010,20 +1991,6 @@ export class LifecycleDriver {
       existing,
       memoryLimitBytes,
     })
-    if (
-      input.prepareDirectory &&
-      definition.constraints.singleton &&
-      existing.some(
-        (instance) =>
-          instance.managedByRelay &&
-          (instance.brickSource === input.recipe ||
-            instance.brickId === definition.metadata.id)
-      )
-    ) {
-      throw new Error(
-        `This Relay already has the singleton Brick ${definition.metadata.name}`
-      )
-    }
     const architecture =
       process.arch === "x64"
         ? "amd64"
@@ -2143,14 +2110,6 @@ export class LifecycleDriver {
           ),
           Effect.asVoid
         )
-      )
-    }
-
-    if (definition.network.mode === "minecraft-proxy") {
-      await this.#writeVelocityConfig(
-        directory,
-        networking,
-        this.#backendRoutes(existing)
       )
     }
 
@@ -2288,13 +2247,9 @@ export class LifecycleDriver {
     }
     if (hostname) {
       const privatePort =
-        definition.network.mode === "minecraft-proxy"
-          ? (tailscaleSettings?.proxyPort ??
-            networking?.proxyPort ??
-            this.#config.connectPort)
-          : definition.network.mode === "direct"
-            ? primaryAllocation.internalPort
-            : this.#config.connectPort
+        definition.network.mode === "direct"
+          ? primaryAllocation.internalPort
+          : this.#config.connectPort
       arguments_.push(
         "--label",
         `kiln.instance.hostname=${
@@ -2370,9 +2325,6 @@ export class LifecycleDriver {
           await this.#refreshCoreDnsConfiguration(networking)
         }
         await this.#refreshTailscaleDns()
-        if (definition.network.mode === "minecraft-backend") {
-          await this.#refreshVelocityConfigurations(networking)
-        }
       }).pipe(
         Effect.catch((error) =>
           lifecycleOperation(() =>
@@ -2757,8 +2709,6 @@ export class LifecycleDriver {
     const networking = await this.networking()
     if (networking?.enabled) await this.#refreshCoreDnsConfiguration(networking)
     await this.#refreshTailscaleDns()
-    if (instance.brickNetworkMode === "minecraft-backend")
-      await this.#refreshVelocityConfigurations(networking)
   }
 
   async #ensureNetwork(): Promise<void> {
@@ -2784,10 +2734,7 @@ export class LifecycleDriver {
     const instances = await this.#docker.inspectInstances()
     await writeFile(
       join(coreDns, "Corefile"),
-      coreDnsConfiguration(
-        networking,
-        this.#dnsHostnames(instances, networking)
-      )
+      coreDnsConfiguration(networking, this.#dnsHostnames(instances))
     )
     await writeFile(
       join(limbo, "server.toml"),
@@ -3106,27 +3053,17 @@ export class LifecycleDriver {
     const instances = await this.#docker.inspectInstances()
     await writeFile(
       join(this.#config.dataDirectory, "infrastructure", "coredns", "Corefile"),
-      coreDnsConfiguration(
-        networking,
-        this.#dnsHostnames(instances, networking)
-      )
+      coreDnsConfiguration(networking, this.#dnsHostnames(instances))
     )
     await command("docker", ["restart", this.#resources.coreDnsContainer], {
       timeout: 90_000,
     })
   }
 
-  #dnsHostnames(
-    instances: Array<RelayInstance>,
-    networking: RelayNetworking
-  ): Array<string> {
-    const routes = this.#backendRoutes(instances)
-    return [
-      ...instances
-        .filter((instance) => instance.managedByRelay)
-        .map((instance) => instance.connectAddress.split(":")[0] ?? ""),
-      ...routes.map((route) => `${route.implementation}.${networking.domain}`),
-    ]
+  #dnsHostnames(instances: Array<RelayInstance>): Array<string> {
+    return instances
+      .filter((instance) => instance.managedByRelay)
+      .map((instance) => instance.connectAddress.split(":")[0] ?? "")
   }
 
   #tailscaleContainerArguments(
@@ -4227,86 +4164,6 @@ export class LifecycleDriver {
     }
     return this.#config.dataDirectory
   }
-
-  async #refreshVelocityConfigurations(
-    networking: RelayNetworking | null
-  ): Promise<void> {
-    const instances = await this.#docker.inspectInstances()
-    const routes = this.#backendRoutes(instances)
-    for (const proxy of instances.filter(
-      (instance) =>
-        instance.managedByRelay &&
-        instance.brickNetworkMode === "minecraft-proxy"
-    )) {
-      await this.#writeVelocityConfig(
-        join(this.#config.rootDirectory, proxy.directory),
-        networking,
-        routes
-      )
-      if (proxy.observedState === "running") {
-        await command("docker", ["restart", proxy.service], { timeout: 90_000 })
-      }
-    }
-  }
-
-  #backendRoutes(instances: Array<RelayInstance>): Array<BackendRoute> {
-    return instances
-      .filter(
-        (instance) =>
-          instance.managedByRelay &&
-          instance.brickNetworkMode === "minecraft-backend"
-      )
-      .map((instance) => ({
-        hostname: instance.connectAddress.split(":")[0] ?? instance.name,
-        implementation:
-          instance.brickId ?? instance.implementation.toLowerCase(),
-        name: instance.name,
-        target: `${instance.service}:${instance.brickPrimaryPort ?? 25_565}`,
-        version: instance.version,
-      }))
-  }
-
-  async #writeVelocityConfig(
-    directory: string,
-    networking: RelayNetworking | null,
-    routes: Array<BackendRoute>
-  ): Promise<void> {
-    const tailscale = await this.tailscaleSettings()
-    const domain =
-      tailscale?.domain ?? networking?.domain ?? this.#config.connectDomain
-    const servers = [
-      ...routes.map((route) => `"${route.name}" = "${route.target}"`),
-      '"limbo" = "limbo:25565"',
-    ].join("\n")
-    const forcedHosts = velocityForcedHosts(domain, routes)
-    await writeFile(
-      join(directory, "velocity.toml"),
-      `config-version = "2.8"\nbind = "0.0.0.0:25565"\nmotd = "<#f97316>Kiln managed network"\nshow-max-players = 500\nonline-mode = true\nforce-key-authentication = true\nplayer-info-forwarding-mode = "none"\nannounce-forge = false\nping-passthrough = "DISABLED"\nenable-player-address-logging = true\n\n[servers]\n${servers}\ntry = ["limbo"]\n\n[forced-hosts]\n${forcedHosts}\n\n[advanced]\ncompression-threshold = 256\ncompression-level = -1\nlogin-ratelimit = 3000\nconnection-timeout = 5000\nread-timeout = 30000\n\n[query]\nenabled = false\nport = 25565\nmap = "Kiln"\nshow-plugins = false\n`
-    )
-  }
-}
-
-export function velocityForcedHosts(
-  domain: string,
-  routes: ReadonlyArray<BackendRoute>
-): string {
-  const byHostname = new Map<string, Array<string>>()
-  const addRoute = (hostname: string, name: string): void => {
-    const names = byHostname.get(hostname) ?? []
-    if (!names.includes(name)) names.push(name)
-    byHostname.set(hostname, names)
-  }
-
-  for (const route of routes) {
-    addRoute(route.hostname, route.name)
-    addRoute(`${route.implementation}.${domain}`, route.name)
-  }
-
-  return Array.from(
-    byHostname,
-    ([hostname, names]) =>
-      `"${hostname}" = [${names.map((name) => `"${name}"`).join(", ")}, "limbo"]`
-  ).join("\n")
 }
 
 function escapeRegex(value: string): string {

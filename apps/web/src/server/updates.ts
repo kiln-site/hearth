@@ -290,7 +290,7 @@ export const startSystemUpdates = createServerFn({ method: "POST" })
                     targetImage: target.targetImage,
                     version: targetVersion,
                   })),
-                  // A singleton can also be understood by Relays from before
+                  // A single target can also be understood by Relays from before
                   // batched updates, preserving the rolling upgrade path.
                   ...(legacyTarget
                     ? {

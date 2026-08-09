@@ -16,9 +16,8 @@ This prevents a misspelling from silently producing a less secure container.
   the server when a user sends them through Hearth's console. Relay uses this
   only to suppress automatic crash recovery for that panel action; it does not
   interpret container signals, external console clients, or server log lines.
-- `network` declares ports and one of three stable Relay routing modes.
-- `constraints` can limit CPU architectures or allow only one instance of the
-  recipe on a Relay.
+- `network` declares ports and one of two stable Relay routing modes.
+- `constraints` can limit CPU architectures.
 
 The normative schema is [`schema/recipe-v1.schema.json`](../schema/recipe-v1.schema.json).
 
@@ -44,15 +43,13 @@ resolved value.
 
 ## Networking modes
 
-- `minecraft-backend` joins Relay's private game network and participates in
-  generated Velocity routes without publishing a host port.
-- `minecraft-proxy` publishes the primary TCP port at Relay's configured proxy
-  port and receives Relay's generated Velocity configuration.
-- `direct` publishes every declared port at `host` (or the same container port)
-  for games that expose themselves directly.
+- `minecraft-backend` applies Minecraft-aware readiness and SRV behavior.
+- `direct` publishes every declared port for games that expose themselves
+  directly.
 
-The named `primaryPort` must match one entry in `ports`. Host port conflicts are
-reported by Docker. Use `constraints.singleton: true` for fixed-port packages.
+The named `primaryPort` must match one entry in `ports`. Relay generates an
+available host port unless a recipe explicitly declares `host`; fixed host port
+conflicts are reported by Docker.
 
 ## Security boundary
 

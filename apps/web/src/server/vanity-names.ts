@@ -123,9 +123,7 @@ export function managedDomainSrvConfiguration(
     | "game"
   >
 ): { protocol: "tcp" | "udp"; service: string } | null {
-  const minecraftNetwork =
-    instance.brickNetworkMode === "minecraft-backend" ||
-    instance.brickNetworkMode === "minecraft-proxy"
+  const minecraftNetwork = instance.brickNetworkMode === "minecraft-backend"
   if (!instance.brickSupportsSrv && !minecraftNetwork) return null
 
   const protocol =

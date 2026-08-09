@@ -17,7 +17,11 @@
         "description": { "type": "string", "minLength": 1, "maxLength": 280 },
         "game": { "type": "string", "minLength": 1, "maxLength": 80 },
         "author": { "type": "string", "minLength": 1, "maxLength": 80 },
-        "documentation": { "type": "string", "format": "uri", "maxLength": 2048 },
+        "documentation": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 2048
+        },
         "tags": {
           "type": "array",
           "maxItems": 12,
@@ -55,7 +59,11 @@
           "maxItems": 64,
           "items": { "type": "string", "maxLength": 2048 }
         },
-        "workingDirectory": { "type": "string", "pattern": "^/", "maxLength": 256 },
+        "workingDirectory": {
+          "type": "string",
+          "pattern": "^/",
+          "maxLength": 256
+        },
         "stopSignal": { "type": "string", "pattern": "^SIG[A-Z0-9]+$" },
         "user": { "type": "string", "pattern": "^[0-9]+(?::[0-9]+)?$" },
         "resources": {
@@ -64,8 +72,17 @@
           "required": ["memory"],
           "properties": {
             "memory": { "type": "string", "minLength": 1, "maxLength": 128 },
-            "memoryReservation": { "type": "string", "minLength": 1, "maxLength": 128 },
-            "pids": { "type": "integer", "minimum": 16, "maximum": 32768, "default": 512 }
+            "memoryReservation": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "pids": {
+              "type": "integer",
+              "minimum": 16,
+              "maximum": 32768,
+              "default": 512
+            }
           }
         },
         "storage": {
@@ -97,8 +114,11 @@
       "additionalProperties": false,
       "required": ["mode", "primaryPort", "ports"],
       "properties": {
-        "mode": { "enum": ["minecraft-backend", "minecraft-proxy", "direct"] },
-        "primaryPort": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+        "mode": { "enum": ["minecraft-backend", "direct"] },
+        "primaryPort": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
         "hostname": { "type": "string", "minLength": 1, "maxLength": 256 },
         "ports": {
           "type": "array",
@@ -117,8 +137,7 @@
           "minItems": 1,
           "uniqueItems": true,
           "items": { "enum": ["amd64", "arm64"] }
-        },
-        "singleton": { "type": "boolean", "default": false }
+        }
       }
     }
   },
