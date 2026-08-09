@@ -2,6 +2,7 @@ import type {
   RelayConsoleLine,
   RelayConsoleStreamEvent,
 } from "@workspace/contracts"
+import { Effect } from "effect"
 
 export interface FollowLogOutput {
   initialLines: ReadonlyArray<RelayConsoleLine>
@@ -24,4 +25,21 @@ export function prepareFollowLogOutput(
       return event.line
     },
   }
+}
+
+export function withFollowLogReader<TResult, TError, TRequirements>(
+  body: ReadableStream<Uint8Array>,
+  use: (
+    reader: ReadableStreamDefaultReader<Uint8Array>
+  ) => Effect.Effect<TResult, TError, TRequirements>
+) {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => body.getReader()),
+    use,
+    (reader) =>
+      Effect.tryPromise({
+        try: () => reader.cancel(),
+        catch: () => undefined,
+      }).pipe(Effect.ignore)
+  )
 }

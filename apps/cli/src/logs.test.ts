@@ -2,9 +2,10 @@ import type {
   RelayConsoleLine,
   RelayConsoleStreamEvent,
 } from "@workspace/contracts"
-import { describe, expect, it } from "vite-plus/test"
+import { assert, describe, it } from "@effect/vitest"
+import { Effect } from "effect"
 
-import { prepareFollowLogOutput } from "./logs.js"
+import { prepareFollowLogOutput, withFollowLogReader } from "./logs.js"
 
 describe("followed CLI logs", () => {
   it("prints a limited chronological snapshot before unseen live lines", () => {
@@ -37,16 +38,34 @@ describe("followed CLI logs", () => {
       { line: live, type: "line" },
     ]
 
-    expect(output.initialLines.map((entry) => entry.text)).toEqual([
-      "Recent",
-      "Newest",
-    ])
-    expect(
+    assert.deepEqual(
+      output.initialLines.map((entry) => entry.text),
+      ["Recent", "Newest"]
+    )
+    assert.deepEqual(
       streamEvents
         .map(output.liveLine)
         .filter((entry) => entry !== undefined)
-        .map((entry) => entry.text)
-    ).toEqual(["Live"])
+        .map((entry) => entry.text),
+      ["Live"]
+    )
+  })
+
+  it.effect("cancels the stream when history bootstrap fails", () => {
+    let canceled = false
+    const body = new ReadableStream<Uint8Array>({
+      cancel: () => {
+        canceled = true
+      },
+    })
+
+    return Effect.gen(function* () {
+      yield* withFollowLogReader(body, () =>
+        Effect.fail("history bootstrap failed")
+      ).pipe(Effect.catch(() => Effect.void))
+
+      assert.isTrue(canceled)
+    })
   })
 })
 

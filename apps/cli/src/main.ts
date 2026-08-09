@@ -36,7 +36,7 @@ import {
   publicJsonEffect,
 } from "./http.js"
 import type { CliRequestInit } from "./http.js"
-import { prepareFollowLogOutput } from "./logs.js"
+import { prepareFollowLogOutput, withFollowLogReader } from "./logs.js"
 import {
   formatBytes,
   reportErrorEffect,
@@ -311,41 +311,44 @@ const logsEffect = Effect.fn("cli.logs")(function* (
       message: "Hearth did not return a log stream.",
     })
   }
-  const historyQuery = targetQuery(target)
-  historyQuery.set("limit", String(args.limit))
-  const history = yield* apiJsonEffect(
-    session,
-    `/api/cli/v1/logs?${historyQuery}`,
-    relayConsoleSchema
-  )
-  const output = prepareFollowLogOutput(history.lines, args.limit)
-  for (const line of output.initialLines) writeLine(line.text)
+  return yield* withFollowLogReader(response.body, (reader) =>
+    Effect.gen(function* () {
+      const historyQuery = targetQuery(target)
+      historyQuery.set("limit", String(args.limit))
+      const history = yield* apiJsonEffect(
+        session,
+        `/api/cli/v1/logs?${historyQuery}`,
+        relayConsoleSchema
+      )
+      const output = prepareFollowLogOutput(history.lines, args.limit)
+      for (const line of output.initialLines) writeLine(line.text)
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffered = ""
-  for (;;) {
-    const chunk = yield* Effect.tryPromise({
-      try: () => reader.read(),
-      catch: (cause) =>
-        commandError({
-          cause,
-          code: "stream_interrupted",
-          message: "The server log stream was interrupted.",
-          retryable: true,
-        }),
+      const decoder = new TextDecoder()
+      let buffered = ""
+      for (;;) {
+        const chunk = yield* Effect.tryPromise({
+          try: () => reader.read(),
+          catch: (cause) =>
+            commandError({
+              cause,
+              code: "stream_interrupted",
+              message: "The server log stream was interrupted.",
+              retryable: true,
+            }),
+        })
+        buffered += decoder.decode(chunk.value, { stream: !chunk.done })
+        const records = buffered.split("\n")
+        buffered = records.pop() ?? ""
+        for (const record of records) {
+          if (!record) continue
+          const event = yield* parseConsoleEventEffect(record)
+          const line = output.liveLine(event)
+          if (line) writeLine(line.text)
+        }
+        if (chunk.done) break
+      }
     })
-    buffered += decoder.decode(chunk.value, { stream: !chunk.done })
-    const records = buffered.split("\n")
-    buffered = records.pop() ?? ""
-    for (const record of records) {
-      if (!record) continue
-      const event = yield* parseConsoleEventEffect(record)
-      const line = output.liveLine(event)
-      if (line) writeLine(line.text)
-    }
-    if (chunk.done) break
-  }
+  )
 })
 
 const filesEffect = Effect.fn("cli.files")(function* (
