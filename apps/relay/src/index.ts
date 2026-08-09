@@ -20,6 +20,7 @@ import {
   relayCreateInstanceSchema,
   relayInstanceActionSchema,
   relayInstanceNameSchema,
+  relayInstanceSchema,
   relayInstancePortLeaseReleaseSchema,
   relayInstancePortLeaseRequestSchema,
   relayInstancePortInputsSchema,
@@ -89,6 +90,7 @@ import { actionsForRole, relayActions } from "./permissions.js"
 import type { RelayAction } from "./permissions.js"
 import { normalizeSourceCidrs } from "./source-policy.js"
 import { RelaySnapshotHub } from "./snapshot-hub.js"
+import { retainProvisioningInstances } from "./instance-mutation-snapshot.js"
 import { RuntimeRecoveryManager } from "./runtime-recovery.js"
 import { SystemUpdateManager } from "./system-updates.js"
 import { assignRelayWebRouteIds } from "./web-route-ids.js"
@@ -216,7 +218,11 @@ const tailscaleFirewallFiber = forkRelayEffect(
 )
 const instanceMutations = new Map<
   string,
-  { references: number; semaphore: Semaphore.Semaphore }
+  {
+    references: number
+    retainedInstance?: RelayInstance
+    semaphore: Semaphore.Semaphore
+  }
 >()
 const webRouteMutation = Semaphore.makeUnsafe(1)
 const snapshotHub = new RelaySnapshotHub(relaySnapshot)
@@ -748,12 +754,16 @@ async function relaySnapshot() {
         { concurrency: 4 }
       )
     )
+  const visibleInstances = applyStoredPendingPrimaryPorts(
+    applyStoredInstanceNames(instances, storedNames),
+    pendingPrimaryPorts
+  )
+  const retainedInstances = Array.from(instanceMutations.values()).flatMap(
+    (entry) => (entry.retainedInstance ? [entry.retainedInstance] : [])
+  )
   return {
     node,
-    instances: applyStoredPendingPrimaryPorts(
-      applyStoredInstanceNames(instances, storedNames),
-      pendingPrimaryPorts
-    ),
+    instances: retainProvisioningInstances(visibleInstances, retainedInstances),
     relay: {
       id: relayIdentity.fingerprint,
       name: relayIdentity.name,
@@ -1063,15 +1073,26 @@ async function executeControlRequest(
           )
         )
       )
-      return relayInstanceWithStoredName(instance)
+      return refreshRelayInstance(instance)
     }
     case "instance.startup.write": {
       const instanceId = requiredString(payload, "instanceId")
       const input = relayUpdateInstanceStartupSchema.parse(payload)
-      const instance = await serializeInstanceMutation(instanceId, () =>
-        lifecycle.reconfigureInstance(instanceId, input)
+      const existing =
+        (await snapshotHub.read()).instances.find(
+          (candidate) => candidate.id === instanceId
+        ) ?? relayInstanceSchema.parse(await requiredInstance(payload))
+      return serializeInstanceMutation(
+        instanceId,
+        async () => {
+          const instance = await lifecycle.reconfigureInstance(
+            instanceId,
+            input
+          )
+          return refreshRelayInstance(instance)
+        },
+        existing
       )
-      return relayInstanceWithStoredName(instance)
     }
     case "instance.rename": {
       const instance = await requiredInstance(payload)
@@ -1128,51 +1149,59 @@ async function executeControlRequest(
     }
     case "instance.action": {
       const instance = await requiredInstance(payload)
+      const retainedInstance =
+        (await snapshotHub.read()).instances.find(
+          (candidate) => candidate.id === instance.id
+        ) ?? relayInstanceSchema.parse(instance)
       const input = relayInstanceActionSchema.parse(payload)
       const runAction = () =>
-        serializeInstanceMutation(instance.id, async () => {
-          const [routes, pendingPrimaryPort] = await Effect.runPromise(
-            Effect.all(
-              [
-                relayOperation(() =>
-                  runRelayEffect(
-                    "relay.network.routes.forAction",
-                    startup.state.listInstanceRoutes(instance.id)
-                  )
-                ),
-                relayOperation(() =>
-                  runRelayEffect(
-                    "relay.instance.pendingPrimaryPort.forAction",
-                    startup.state.getPendingPrimaryPort(instance.id)
-                  )
-                ),
-              ] as const,
-              { concurrency: 2 }
+        serializeInstanceMutation(
+          instance.id,
+          async () => {
+            const [routes, pendingPrimaryPort] = await Effect.runPromise(
+              Effect.all(
+                [
+                  relayOperation(() =>
+                    runRelayEffect(
+                      "relay.network.routes.forAction",
+                      startup.state.listInstanceRoutes(instance.id)
+                    )
+                  ),
+                  relayOperation(() =>
+                    runRelayEffect(
+                      "relay.instance.pendingPrimaryPort.forAction",
+                      startup.state.getPendingPrimaryPort(instance.id)
+                    )
+                  ),
+                ] as const,
+                { concurrency: 2 }
+              )
             )
-          )
-          const updated = await lifecycle.runInstanceAction(
-            instance,
-            input.action,
-            routes,
-            pendingPrimaryPort
-          )
-          if (
-            pendingPrimaryPort &&
-            (input.action === "start" || input.action === "restart") &&
-            updated.ports.some((allocation) => allocation.kind === "primary")
-          ) {
-            await runRelayEffect(
-              "relay.instance.pendingPrimaryPort.applied",
-              startup.state.deletePendingPrimaryPort(instance.id)
+            const updated = await lifecycle.runInstanceAction(
+              instance,
+              input.action,
+              routes,
+              pendingPrimaryPort
             )
-          }
-          return updated
-        })
+            if (
+              pendingPrimaryPort &&
+              (input.action === "start" || input.action === "restart") &&
+              updated.ports.some((allocation) => allocation.kind === "primary")
+            ) {
+              await runRelayEffect(
+                "relay.instance.pendingPrimaryPort.applied",
+                startup.state.deletePendingPrimaryPort(instance.id)
+              )
+            }
+            return refreshRelayInstance(updated)
+          },
+          retainedInstance
+        )
       const updated =
         input.action === "start" || input.action === "restart"
           ? await serializeWebRouteMutation(runAction)
           : await runAction()
-      return relayInstanceWithStoredName(updated)
+      return updated
     }
     case "instance.resources.read": {
       const instanceId = requiredString(payload, "instanceId")
@@ -1264,33 +1293,41 @@ async function executeControlRequest(
     case "instance.network.ports.write": {
       return serializeWebRouteMutation(async () => {
         const instance = await requiredInstance(payload)
+        const retainedInstance =
+          (await snapshotHub.read()).instances.find(
+            (candidate) => candidate.id === instance.id
+          ) ?? relayInstanceSchema.parse(instance)
         const ports = relayInstancePortInputsSchema.parse(payload.ports)
         const routes = await runRelayEffect(
           "relay.network.ports.routes",
           startup.state.listInstanceRoutes(instance.id)
         )
-        return serializeInstanceMutation(instance.id, async () => {
-          const updated = await lifecycle.updateInstancePorts(
-            instance.id,
-            ports,
-            routes
-          )
-          if (updated.pendingPrimaryPort) {
-            await runRelayEffect(
-              "relay.instance.pendingPrimaryPort.set",
-              startup.state.setPendingPrimaryPort(
-                instance.id,
-                updated.pendingPrimaryPort
+        return serializeInstanceMutation(
+          instance.id,
+          async () => {
+            const updated = await lifecycle.updateInstancePorts(
+              instance.id,
+              ports,
+              routes
+            )
+            if (updated.pendingPrimaryPort) {
+              await runRelayEffect(
+                "relay.instance.pendingPrimaryPort.set",
+                startup.state.setPendingPrimaryPort(
+                  instance.id,
+                  updated.pendingPrimaryPort
+                )
               )
-            )
-          } else {
-            await runRelayEffect(
-              "relay.instance.pendingPrimaryPort.clear",
-              startup.state.deletePendingPrimaryPort(instance.id)
-            )
-          }
-          return relayInstanceWithStoredName(updated)
-        })
+            } else {
+              await runRelayEffect(
+                "relay.instance.pendingPrimaryPort.clear",
+                startup.state.deletePendingPrimaryPort(instance.id)
+              )
+            }
+            return refreshRelayInstance(updated)
+          },
+          retainedInstance
+        )
       })
     }
     case "instance.network.routes.read": {
@@ -1506,6 +1543,14 @@ async function relayInstanceWithStoredName(instance: RelayInstance) {
   )
 }
 
+async function refreshRelayInstance(instance: RelayInstance) {
+  const snapshot = await snapshotHub.refresh()
+  return (
+    snapshot.instances.find((candidate) => candidate.id === instance.id) ??
+    relayInstanceWithStoredName(instance)
+  )
+}
+
 function applyStoredPendingPrimaryPorts(
   instances: ReadonlyArray<RelayInstance>,
   pendingPrimaryPorts: ReadonlyArray<RelayStoredPendingPrimaryPort>
@@ -1524,7 +1569,8 @@ function applyStoredPendingPrimaryPorts(
 
 function serializeInstanceMutation<T>(
   instanceId: string,
-  mutate: () => Promise<T>
+  mutate: () => Promise<T>,
+  retainedInstance?: RelayInstance
 ): Promise<T> {
   let entry = instanceMutations.get(instanceId)
   if (!entry) {
@@ -1533,8 +1579,20 @@ function serializeInstanceMutation<T>(
   }
   entry.references += 1
   const activeEntry = entry
+  const operation = relayOperation(async () => {
+    if (retainedInstance) activeEntry.retainedInstance = retainedInstance
+    return mutate()
+  }).pipe(
+    Effect.ensuring(
+      Effect.sync(() => {
+        if (activeEntry.retainedInstance === retainedInstance) {
+          delete activeEntry.retainedInstance
+        }
+      })
+    )
+  )
   return Effect.runPromise(
-    activeEntry.semaphore.withPermit(relayOperation(mutate)).pipe(
+    activeEntry.semaphore.withPermit(operation).pipe(
       Effect.ensuring(
         Effect.sync(() => {
           activeEntry.references -= 1
