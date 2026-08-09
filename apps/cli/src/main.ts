@@ -36,6 +36,7 @@ import {
   publicJsonEffect,
 } from "./http.js"
 import type { CliRequestInit } from "./http.js"
+import { prepareFollowLogOutput } from "./logs.js"
 import {
   formatBytes,
   reportErrorEffect,
@@ -289,7 +290,6 @@ const logsEffect = Effect.fn("cli.logs")(function* (
 ) {
   const query = targetQuery(target)
   query.set("limit", String(args.limit))
-  if (args.follow) query.set("follow", "true")
   if (!args.follow) {
     const result = yield* apiJsonEffect(
       session,
@@ -299,6 +299,7 @@ const logsEffect = Effect.fn("cli.logs")(function* (
     for (const line of result.lines) writeLine(line.text)
     return
   }
+  query.set("follow", "true")
   const response = yield* apiResponseEffect(
     session,
     `/api/cli/v1/logs?${query}`,
@@ -310,6 +311,16 @@ const logsEffect = Effect.fn("cli.logs")(function* (
       message: "Hearth did not return a log stream.",
     })
   }
+  const historyQuery = targetQuery(target)
+  historyQuery.set("limit", String(args.limit))
+  const history = yield* apiJsonEffect(
+    session,
+    `/api/cli/v1/logs?${historyQuery}`,
+    relayConsoleSchema
+  )
+  const output = prepareFollowLogOutput(history.lines, args.limit)
+  for (const line of output.initialLines) writeLine(line.text)
+
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffered = ""
@@ -330,10 +341,8 @@ const logsEffect = Effect.fn("cli.logs")(function* (
     for (const record of records) {
       if (!record) continue
       const event = yield* parseConsoleEventEffect(record)
-      if (event.type === "line") writeLine(event.line.text)
-      else if (event.type === "history" || event.type === "reset") {
-        for (const line of event.lines) writeLine(line.text)
-      }
+      const line = output.liveLine(event)
+      if (line) writeLine(line.text)
     }
     if (chunk.done) break
   }
