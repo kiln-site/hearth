@@ -221,6 +221,7 @@ export function accessOverviewQueryOptions() {
   return queryOptions({
     queryKey: queryKeys.access.overview,
     queryFn: () => getAccessOverview(),
+    staleTime: 10_000,
   })
 }
 
