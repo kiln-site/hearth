@@ -142,6 +142,17 @@ function directoryPath(path: string): string {
   return segments.length ? `${segments.join("/")}/` : ""
 }
 
+function fileTreeParentDirectoryPaths(path: string): Array<string> {
+  const parent = directoryPath(path)
+  const parents: Array<string> = []
+  let current = ""
+  for (const segment of parent.split("/").filter(Boolean)) {
+    current = `${current}${segment}/`
+    parents.push(current)
+  }
+  return parents
+}
+
 function normalizeDirectoryPath(path: string): string {
   const normalized = path.replace(/^\/+|\/+$/gu, "")
   return normalized ? `${normalized}/` : ""
@@ -425,9 +436,28 @@ const fileTreeLayoutCss = `
     height: 14px;
   }
 
-  [data-external-file-drop-target="true"] {
-    background: color-mix(in oklch, var(--primary) 24%, transparent) !important;
-    box-shadow: inset 2px 0 0 var(--primary), inset 0 0 0 1px color-mix(in oklch, var(--primary) 42%, transparent);
+  [data-item-path][data-external-file-drop-target="true"] {
+    background: color-mix(in oklch, var(--primary) 22%, var(--card)) !important;
+    color: var(--foreground) !important;
+    outline: 1px solid color-mix(in oklch, var(--primary) 72%, transparent);
+    outline-offset: -1px;
+    box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--primary) 16%, transparent), 0 0 12px color-mix(in oklch, var(--primary) 10%, transparent);
+  }
+
+  [data-item-path][data-external-file-drop-target="true"] [data-item-section="icon"] {
+    color: var(--primary) !important;
+  }
+
+  [data-external-file-drop-segment="true"] {
+    border-radius: 2px;
+    background: color-mix(in oklch, var(--primary) 24%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in oklch, var(--primary) 48%, transparent);
+    color: var(--foreground);
+    font-weight: 600;
+  }
+
+  :host([data-external-file-drop-root="true"]) [data-file-tree-virtualized-wrapper="true"] {
+    box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--primary) 48%, transparent);
   }
 `
 function clampFileTreeWidth(width: number, workspaceWidth: number) {
@@ -2598,6 +2628,9 @@ function FileTreePanel({
   const selectedPath = selectionStore.getSnapshot()
   const initialPath =
     selectedPath && tree.paths.includes(selectedPath) ? selectedPath : undefined
+  const initialExpandedPaths = initialPath
+    ? fileTreeParentDirectoryPaths(initialPath)
+    : []
   const selectionHandlers = React.useRef({
     onFileSelected,
     onPathChange,
@@ -2606,6 +2639,7 @@ function FileTreePanel({
   const { model } = useFileTree({
     paths: tree.paths,
     initialExpansion: "closed",
+    initialExpandedPaths,
     initialSelectedPaths: initialPath ? [initialPath] : [],
     onSelectionChange: (paths) => {
       const selected = paths.at(-1)
@@ -2644,7 +2678,11 @@ function FileTreePanel({
   const uploadInputRef = React.useRef<HTMLInputElement>(null)
   const dragDepth = React.useRef(0)
   const activeDropElement = React.useRef<HTMLElement | null>(null)
+  const activeDropSegment = React.useRef<HTMLElement | null>(null)
+  const activeTreeHost = React.useRef<HTMLElement | null>(null)
   const dropDirectory = React.useRef("")
+  const dropExpandDirectory = React.useRef("")
+  const dropExpandTimer = React.useRef<number | null>(null)
   const dropPathLabelRef = React.useRef<HTMLSpanElement>(null)
 
   const handleFilesSelected = React.useCallback(
@@ -2658,28 +2696,95 @@ function FileTreePanel({
 
   function clearTreeDropTarget() {
     activeDropElement.current?.removeAttribute("data-external-file-drop-target")
+    activeDropSegment.current?.removeAttribute(
+      "data-external-file-drop-segment"
+    )
+    activeTreeHost.current?.removeAttribute("data-external-file-drop-root")
     activeDropElement.current = null
+    activeDropSegment.current = null
+    activeTreeHost.current = null
     dropDirectory.current = ""
+    dropExpandDirectory.current = ""
+    if (dropExpandTimer.current !== null) {
+      window.clearTimeout(dropExpandTimer.current)
+      dropExpandTimer.current = null
+    }
     if (panelRef.current) panelRef.current.dataset.fileDropActive = "false"
+  }
+
+  function scheduleTreeDropExpansion(directory: string) {
+    if (dropExpandDirectory.current === directory) return
+    if (dropExpandTimer.current !== null) {
+      window.clearTimeout(dropExpandTimer.current)
+      dropExpandTimer.current = null
+    }
+    dropExpandDirectory.current = directory
+    const item = model.getItem(directory)
+    if (!directory || !item || !("isExpanded" in item) || item.isExpanded())
+      return
+    dropExpandTimer.current = window.setTimeout(() => {
+      dropExpandTimer.current = null
+      const currentItem = model.getItem(directory)
+      if (
+        currentItem &&
+        "isExpanded" in currentItem &&
+        !currentItem.isExpanded()
+      ) {
+        currentItem.expand()
+      }
+    }, 650)
   }
 
   function showTreeDropTarget(event: React.DragEvent) {
     const directory = resolveTreeDropDirectory(event)
     dropDirectory.current = directory
     activeDropElement.current?.removeAttribute("data-external-file-drop-target")
-    activeDropElement.current = null
-    const treeHost = panelRef.current?.querySelector("file-tree")
-    const candidates = treeHost?.shadowRoot?.querySelectorAll<HTMLElement>(
-      "[data-item-path], [data-item-flattened-subitem]"
+    activeDropSegment.current?.removeAttribute(
+      "data-external-file-drop-segment"
     )
-    for (const candidate of candidates ?? []) {
-      const candidatePath =
-        candidate.dataset.itemFlattenedSubitem ?? candidate.dataset.itemPath
-      if (normalizeDirectoryPath(candidatePath ?? "") !== directory) continue
-      candidate.setAttribute("data-external-file-drop-target", "true")
-      activeDropElement.current = candidate
+    activeDropElement.current = null
+    activeDropSegment.current = null
+    const treeHost = panelRef.current?.querySelector<HTMLElement>(
+      "file-tree-container"
+    )
+    activeTreeHost.current?.removeAttribute("data-external-file-drop-root")
+    activeTreeHost.current = treeHost ?? null
+    if (!directory)
+      treeHost?.setAttribute("data-external-file-drop-root", "true")
+    const rows =
+      treeHost?.shadowRoot?.querySelectorAll<HTMLElement>("[data-item-path]")
+    for (const row of rows ?? []) {
+      if (normalizeDirectoryPath(row.dataset.itemPath ?? "") === directory) {
+        activeDropElement.current = row
+      } else {
+        const segments = row.querySelectorAll<HTMLElement>(
+          "[data-item-flattened-subitem]"
+        )
+        for (const segment of segments) {
+          if (
+            normalizeDirectoryPath(
+              segment.dataset.itemFlattenedSubitem ?? ""
+            ) !== directory
+          ) {
+            continue
+          }
+          activeDropElement.current = row
+          activeDropSegment.current = segment
+          break
+        }
+      }
+      if (!activeDropElement.current) continue
+      activeDropElement.current.setAttribute(
+        "data-external-file-drop-target",
+        "true"
+      )
+      activeDropSegment.current?.setAttribute(
+        "data-external-file-drop-segment",
+        "true"
+      )
       break
     }
+    scheduleTreeDropExpansion(directory)
     if (panelRef.current) panelRef.current.dataset.fileDropActive = "true"
     if (dropPathLabelRef.current) {
       dropPathLabelRef.current.textContent = `/data/${directory}`
@@ -2799,8 +2904,12 @@ function FileTreePanel({
   React.useLayoutEffect(() => {
     if (previousTreePaths.current === tree.paths) return
     previousTreePaths.current = tree.paths
-    model.resetPaths(tree.paths, { initialExpandedPaths: [] })
-  }, [model, tree.paths])
+    model.resetPaths(tree.paths, {
+      initialExpandedPaths: fileTreeParentDirectoryPaths(
+        selectionStore.getSnapshot()
+      ),
+    })
+  }, [model, selectionStore, tree.paths])
 
   React.useLayoutEffect(() => {
     if (mobileOpen) {
@@ -2846,6 +2955,9 @@ function FileTreePanel({
       }
       if (transitionOverflowTimer.current !== null) {
         window.clearTimeout(transitionOverflowTimer.current)
+      }
+      if (dropExpandTimer.current !== null) {
+        window.clearTimeout(dropExpandTimer.current)
       }
       if (resizeSession.current) restoreDocumentAfterResize()
     },
@@ -3098,7 +3210,11 @@ function FileTreePanel({
       <div
         className={`order-1 mb-11 min-h-0 flex-1 overflow-hidden bg-card py-1.5 md:order-2 md:mb-0 md:block md:w-[var(--file-tree-width)] md:shrink-0 ${mobileContentVisible ? "block" : "hidden"} ${collapsed ? "md:invisible" : ""}`}
       >
-        <FileTreeSelectionSync model={model} selectionStore={selectionStore} />
+        <FileTreeSelectionSync
+          model={model}
+          selectionStore={selectionStore}
+          treePaths={tree.paths}
+        />
         <FileTree
           model={model}
           aria-label={`${instance.name} files`}
@@ -3327,9 +3443,11 @@ function FileTreeSearchInput({
 function FileTreeSelectionSync({
   model,
   selectionStore,
+  treePaths,
 }: {
   model: ReturnType<typeof useFileTree>["model"]
   selectionStore: FileSelectionStore
+  treePaths: ReadonlyArray<string>
 }) {
   const selectedPath = React.useSyncExternalStore(
     selectionStore.subscribe,
@@ -3340,6 +3458,12 @@ function FileTreeSelectionSync({
   React.useLayoutEffect(() => {
     const currentSelection = model.getSelectedPaths()
     if (selectedPath) {
+      for (const parentPath of fileTreeParentDirectoryPaths(selectedPath)) {
+        const parent = model.getItem(parentPath)
+        if (parent && "isExpanded" in parent && !parent.isExpanded()) {
+          parent.expand()
+        }
+      }
       if (
         currentSelection.length !== 1 ||
         currentSelection[0] !== selectedPath
@@ -3347,10 +3471,11 @@ function FileTreeSelectionSync({
         for (const path of currentSelection) model.getItem(path)?.deselect()
         model.getItem(selectedPath)?.select()
       }
+      model.scrollToPath(selectedPath, { focus: false, offset: "nearest" })
       return
     }
     for (const path of currentSelection) model.getItem(path)?.deselect()
-  }, [model, selectedPath])
+  }, [model, selectedPath, treePaths])
 
   return null
 }
