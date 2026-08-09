@@ -21,6 +21,7 @@ import { Input } from "@workspace/ui/components/input"
 import { cn } from "@workspace/ui/lib/utils"
 
 import { ServerTypeIcon } from "@/components/server-type-icon"
+import { defaultBrickRuntimeName } from "@/lib/brick-variables"
 
 export type BrickSelection =
   | { kind: "catalog"; brick: Brick }
@@ -512,7 +513,7 @@ const BrickDetailsPanel = React.memo(function BrickDetailsPanel({
           <div className="flex items-start justify-between gap-3">
             <dt className="text-muted-foreground">Runtime</dt>
             <dd className="truncate text-right font-medium">
-              {brick.runtime.name}
+              {defaultBrickRuntimeName(brick)}
             </dd>
           </div>
           <div className="flex items-start justify-between gap-3">

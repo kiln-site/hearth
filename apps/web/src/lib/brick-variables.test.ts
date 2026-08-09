@@ -6,6 +6,7 @@ import {
 
 import {
   defaultBrickVariables,
+  defaultBrickRuntimeName,
   hydrateBrickVariables,
   unavailableMinecraftJavaVersion,
   withRecommendedMinecraftJava,
@@ -78,6 +79,9 @@ describe("Minecraft Java defaults", () => {
         java_version: "21",
       })
     ).toEqual({ version: "26.2", java_version: "25" })
+    expect(defaultBrickRuntimeName({ ...paper, source: "paper.yml" })).toBe(
+      "Java 21"
+    )
   })
 
   it("hydrates missing legacy Startup variables without replacing overrides", () => {
@@ -101,6 +105,9 @@ describe("Minecraft Java defaults", () => {
     ).toBe("16")
     expect(
       unavailableMinecraftJavaVersion("paper", paper.variables, "1.21.11")
+    ).toBeNull()
+    expect(
+      unavailableMinecraftJavaVersion("paper", paper.variables, "1.16.5", "21")
     ).toBeNull()
   })
 })

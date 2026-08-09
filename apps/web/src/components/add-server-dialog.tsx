@@ -396,7 +396,12 @@ const AddServerConfiguration = React.memo(function AddServerConfiguration({
                 ? ""
                 : String(versionDefinition.default)
             }
-            placeholder="1.21.11 or 26.2"
+            placeholder={
+              selection?.kind === "catalog" &&
+              selection.brick.metadata.id === "velocity"
+                ? "3.5.1"
+                : "1.21.11 or 26.2"
+            }
             pattern={versionDefinition.rules?.pattern}
             minLength={versionDefinition.rules?.minLength}
             maxLength={versionDefinition.rules?.maxLength}

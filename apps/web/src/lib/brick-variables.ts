@@ -73,9 +73,13 @@ export function withRecommendedMinecraftJava(
 export function unavailableMinecraftJavaVersion(
   brickId: string,
   definitions: Brick["variables"],
-  version: string
+  version: string,
+  selectedJavaVersion?: BrickVariableValue
 ): string | null {
-  const javaVersion = requiredMinecraftJavaVersion(brickId, version)
+  const javaVersion =
+    typeof selectedJavaVersion === "string"
+      ? selectedJavaVersion
+      : requiredMinecraftJavaVersion(brickId, version)
   const javaDefinition = definitions.java_version
   if (!javaVersion || javaDefinition?.type !== "string") return null
   return stringVariableAllows(javaDefinition, javaVersion) ? null : javaVersion
@@ -115,4 +119,19 @@ export function defaultBrickInstanceName(brick: Brick): string {
     ? brick.variables.version.default
     : undefined
   return `${brick.metadata.name}${version === undefined ? "" : ` ${String(version)}`}`
+}
+
+export function defaultBrickRuntimeName(brick: Brick): string {
+  const variables = defaultBrickVariables(brick)
+  return brick.runtime.name
+    .replace(
+      /\{\{\s*variables\.([a-z][a-z0-9_]{0,47})\s*\}\}/gu,
+      (template, variable: string) =>
+        Object.hasOwn(variables, variable)
+          ? String(variables[variable])
+          : template
+    )
+    .replace(/\{\{\s*brick\.(id|name)\s*\}\}/gu, (_template, field: string) =>
+      field === "name" ? brick.metadata.name : brick.metadata.id
+    )
 }

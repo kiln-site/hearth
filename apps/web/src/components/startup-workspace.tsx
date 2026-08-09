@@ -223,7 +223,8 @@ const StartupForm = React.memo(function StartupForm({
         ? unavailableMinecraftJavaVersion(
             view.id,
             view.variables,
-            minecraftVersion
+            minecraftVersion,
+            variables.java_version
           )
         : null
     if (unavailableJavaVersion) {
@@ -345,11 +346,7 @@ const StartupForm = React.memo(function StartupForm({
             setVariables((current) => {
               const updated = updateBrickVariable(current, name, value)
               return name === "version"
-                ? withRecommendedMinecraftJava(
-                    view.id,
-                    view.variables,
-                    updated
-                  )
+                ? withRecommendedMinecraftJava(view.id, view.variables, updated)
                 : updated
             })
           }}
