@@ -132,12 +132,14 @@ export function AuthPage({
             return
           }
 
+          sessionStorage.setItem("kiln:auth:return", returnPath(redirectPath))
           const result = await authClient.signIn.email({
             email,
             password,
             callbackURL: destination(redirectPath),
           })
           if (result.error) {
+            sessionStorage.removeItem("kiln:auth:return")
             if (isUnverifiedError(result.error)) {
               setVerification({
                 email,
@@ -149,9 +151,15 @@ export function AuthPage({
             }
             throw new Error(readAuthError(result.error))
           }
-          if (!("twoFactorRedirect" in result.data)) {
-            window.location.assign(destination(redirectPath))
+          if (
+            "twoFactorRedirect" in result.data &&
+            result.data.twoFactorRedirect
+          ) {
+            window.location.assign("/two-factor")
+            return
           }
+          sessionStorage.removeItem("kiln:auth:return")
+          window.location.assign(destination(redirectPath))
         },
         catch: (cause) => cause,
       }).pipe(
@@ -317,15 +325,33 @@ export function AuthPage({
   }
 
   async function signInWithPasskey() {
-    setPending("passkey")
-    setError(null)
-    const result = await authClient.signIn.passkey()
-    setPending(null)
-    if (result.error) {
-      setError(readAuthError(result.error))
+    if (!("PublicKeyCredential" in window)) {
+      setError("This browser does not support passkeys")
       return
     }
-    window.location.assign(destination(redirectPath))
+    setPending("passkey")
+    setError(null)
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => {
+          const result = await authClient.signIn.passkey({ autoFill: false })
+          if (result.error) throw new Error(readAuthError(result.error))
+          if (!result.data) throw new Error("Passkey sign-in was not completed")
+          sessionStorage.removeItem("kiln:auth:return")
+          window.location.assign(destination(redirectPath))
+        },
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() =>
+            setError(
+              cause instanceof Error ? cause.message : "Passkey sign-in failed"
+            )
+          )
+        ),
+        Effect.ensuring(Effect.sync(() => setPending(null)))
+      )
+    )
   }
 
   async function skipForDevelopment() {
@@ -512,7 +538,9 @@ export function AuthPage({
                 ) : (
                   <Fingerprint />
                 )}
-                Sign in with a passkey
+                {pending === "passkey"
+                  ? "Waiting for your passkey…"
+                  : "Sign in with a passkey"}
               </Button>
             ) : null}
 
@@ -886,12 +914,21 @@ function Notice({
 }
 
 async function signIn(email: string, password: string, redirectPath?: string) {
+  sessionStorage.setItem("kiln:auth:return", returnPath(redirectPath))
   const result = await authClient.signIn.email({
     email,
     password,
     callbackURL: destination(redirectPath),
   })
-  if (result.error) throw new Error(readAuthError(result.error))
+  if (result.error) {
+    sessionStorage.removeItem("kiln:auth:return")
+    throw new Error(readAuthError(result.error))
+  }
+  if ("twoFactorRedirect" in result.data && result.data.twoFactorRedirect) {
+    window.location.assign("/two-factor")
+    return
+  }
+  sessionStorage.removeItem("kiln:auth:return")
   window.location.assign(destination(redirectPath))
 }
 
@@ -908,8 +945,14 @@ function displayNameFromEmail(email: string): string {
 }
 
 function destination(redirectPath?: string): string {
-  const path = redirectPath?.startsWith("/") ? redirectPath : "/"
-  return `${window.location.origin}${path}`
+  return `${window.location.origin}${returnPath(redirectPath)}`
+}
+
+function returnPath(redirectPath?: string): string {
+  if (!redirectPath?.startsWith("/")) return "/"
+  const destinationUrl = new URL(redirectPath, window.location.origin)
+  if (destinationUrl.origin !== window.location.origin) return "/"
+  return `${destinationUrl.pathname}${destinationUrl.search}${destinationUrl.hash}`
 }
 
 function isUnverifiedError(error: {

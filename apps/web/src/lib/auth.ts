@@ -147,6 +147,7 @@ export const auth = betterAuth({
   plugins: [
     admin({ defaultRole: "user", adminRoles: ["admin"] }),
     emailOTP({
+      changeEmail: { enabled: true },
       disableSignUp: true,
       expiresIn: 60 * 10,
       otpLength: 6,

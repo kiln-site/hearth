@@ -28,7 +28,6 @@ import { Route as AppAccessRouteImport } from './routes/_app.access'
 import { Route as AppActivityRouteImport } from './routes/_app.activity'
 import { Route as AppInfraRouteImport } from './routes/_app.infra'
 import { Route as AppOperationsRouteImport } from './routes/_app.operations'
-import { Route as AppSecurityRouteImport } from './routes/_app.security'
 import { Route as AppServersRouteImport } from './routes/_app.servers'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as ApiHealthRouteImport } from './routes/api.health'
@@ -150,11 +149,6 @@ const AppInfraRoute = AppInfraRouteImport.update({
 const AppOperationsRoute = AppOperationsRouteImport.update({
   id: '/operations',
   path: '/operations',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppSecurityRoute = AppSecurityRouteImport.update({
-  id: '/security',
-  path: '/security',
   getParentRoute: () => AppRoute,
 } as any)
 const AppServersRoute = AppServersRouteImport.update({
@@ -321,7 +315,6 @@ export interface FileRoutesByFullPath {
   '/activity': typeof AppActivityRoute
   '/infra': typeof AppInfraRouteWithChildren
   '/operations': typeof AppOperationsRoute
-  '/security': typeof AppSecurityRoute
   '/servers': typeof AppServersRoute
   '/settings': typeof AppSettingsRouteWithChildren
   '/api/health': typeof ApiHealthRoute
@@ -369,7 +362,6 @@ export interface FileRoutesByTo {
   '/access': typeof AppAccessRoute
   '/activity': typeof AppActivityRoute
   '/operations': typeof AppOperationsRoute
-  '/security': typeof AppSecurityRoute
   '/servers': typeof AppServersRoute
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
@@ -418,7 +410,6 @@ export interface FileRoutesById {
   '/_app/activity': typeof AppActivityRoute
   '/_app/infra': typeof AppInfraRouteWithChildren
   '/_app/operations': typeof AppOperationsRoute
-  '/_app/security': typeof AppSecurityRoute
   '/_app/servers': typeof AppServersRoute
   '/_app/settings': typeof AppSettingsRouteWithChildren
   '/api/health': typeof ApiHealthRoute
@@ -469,7 +460,6 @@ export interface FileRouteTypes {
     | '/activity'
     | '/infra'
     | '/operations'
-    | '/security'
     | '/servers'
     | '/settings'
     | '/api/health'
@@ -517,7 +507,6 @@ export interface FileRouteTypes {
     | '/access'
     | '/activity'
     | '/operations'
-    | '/security'
     | '/servers'
     | '/api/health'
     | '/api/sentry-check'
@@ -565,7 +554,6 @@ export interface FileRouteTypes {
     | '/_app/activity'
     | '/_app/infra'
     | '/_app/operations'
-    | '/_app/security'
     | '/_app/servers'
     | '/_app/settings'
     | '/api/health'
@@ -750,13 +738,6 @@ declare module '@tanstack/react-router' {
       path: '/operations'
       fullPath: '/operations'
       preLoaderRoute: typeof AppOperationsRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/security': {
-      id: '/_app/security'
-      path: '/security'
-      fullPath: '/security'
-      preLoaderRoute: typeof AppSecurityRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/servers': {
@@ -1047,7 +1028,6 @@ interface AppRouteChildren {
   AppActivityRoute: typeof AppActivityRoute
   AppInfraRoute: typeof AppInfraRouteWithChildren
   AppOperationsRoute: typeof AppOperationsRoute
-  AppSecurityRoute: typeof AppSecurityRoute
   AppServersRoute: typeof AppServersRoute
   AppSettingsRoute: typeof AppSettingsRouteWithChildren
   AppServerServerIdRoute: typeof AppServerServerIdRouteWithChildren
@@ -1059,7 +1039,6 @@ const AppRouteChildren: AppRouteChildren = {
   AppActivityRoute: AppActivityRoute,
   AppInfraRoute: AppInfraRouteWithChildren,
   AppOperationsRoute: AppOperationsRoute,
-  AppSecurityRoute: AppSecurityRoute,
   AppServersRoute: AppServersRoute,
   AppSettingsRoute: AppSettingsRouteWithChildren,
   AppServerServerIdRoute: AppServerServerIdRouteWithChildren,

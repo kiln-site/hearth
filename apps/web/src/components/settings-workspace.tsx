@@ -553,7 +553,7 @@ function InstanceUsersCard({
               />
               {usersQuery.data.users.map((user) => (
                 <AccessUserRow
-                  key={user.id}
+                  key={user.userId}
                   email={user.email}
                   userId={user.userId}
                   instanceId={instance.id}
@@ -564,6 +564,7 @@ function InstanceUsersCard({
                   onRemove={() => setRemoveTarget(user)}
                   onTransferOwnership={() => setTransferTarget(user)}
                   protectedOwnerGrant={user.role === "owner"}
+                  relayAccess={user.resourceType === "relay"}
                 />
               ))}
               {usersQuery.data.platformAdministrators.length > 0 ? (
@@ -728,6 +729,7 @@ function AccessUserRow({
   onRemove,
   onTransferOwnership,
   protectedOwnerGrant = false,
+  relayAccess = false,
   userId,
 }: {
   canManage?: boolean
@@ -742,9 +744,11 @@ function AccessUserRow({
   onRemove?: () => void
   onTransferOwnership?: () => void
   protectedOwnerGrant?: boolean
+  relayAccess?: boolean
   userId: string | null
 }) {
-  const removalProtected = owner || protectedOwnerGrant
+  const removalProtected = !relayAccess && (owner || protectedOwnerGrant)
+  const canManageDirectGrant = canManage && !relayAccess
 
   return (
     <tr className="border-b last:border-b-0">
@@ -775,6 +779,15 @@ function AccessUserRow({
               {directlyListed ? "Also listed above" : "Implicit access"}
             </span>
           ) : null}
+          {relayAccess ? (
+            <Badge
+              variant="outline"
+              className="font-mono text-[8px] text-muted-foreground"
+              title="Access to every server on this Relay"
+            >
+              Relay
+            </Badge>
+          ) : null}
         </div>
       </td>
       <td className="px-4 py-2">
@@ -795,7 +808,7 @@ function AccessUserRow({
               <TooltipContent side="bottom">View activity</TooltipContent>
             </Tooltip>
           ) : null}
-          {canManage ? (
+          {canManageDirectGrant ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -838,7 +851,7 @@ function AccessUserRow({
               </TooltipContent>
             </Tooltip>
           ) : null}
-          {!removalProtected && canManage ? (
+          {!removalProtected && canManageDirectGrant ? (
             <>
               {canTransferOwnership ? (
                 <Tooltip>

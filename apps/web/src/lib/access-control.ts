@@ -33,6 +33,23 @@ export interface AccessGrant {
   role: AccessRole
 }
 
+export function deduplicateEffectiveInstanceGrants<
+  TGrant extends {
+    resourceType: "instance" | "relay"
+    userId: string
+  },
+>(grants: Iterable<TGrant>): Array<TGrant> {
+  const grantsByUserId = new Map<string, TGrant>()
+  for (const grant of grants) {
+    const existingGrant = grantsByUserId.get(grant.userId)
+    if (existingGrant?.resourceType === "instance") continue
+    if (!existingGrant || grant.resourceType === "instance") {
+      grantsByUserId.set(grant.userId, grant)
+    }
+  }
+  return [...grantsByUserId.values()]
+}
+
 export function isCurrentInstanceOwnerGrant(input: {
   grantUserId: string | null
   ownerId: string | null

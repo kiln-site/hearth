@@ -1,7 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router"
-import { CircleUserRound } from "lucide-react"
 
-import { SettingsPlaceholderPage } from "@/components/settings-placeholder-page"
+import { AccountSettingsPage } from "@/components/account-settings-page"
 import { pageTitle } from "@/lib/page-title"
 
 export const Route = createFileRoute("/_app/settings/account")({
@@ -10,11 +9,6 @@ export const Route = createFileRoute("/_app/settings/account")({
 })
 
 function AccountSettingsRoute() {
-  return (
-    <SettingsPlaceholderPage
-      title="Account"
-      description="Profile and account controls will live here."
-      icon={CircleUserRound}
-    />
-  )
+  const { user } = Route.useRouteContext()
+  return <AccountSettingsPage user={user} />
 }

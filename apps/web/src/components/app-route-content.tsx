@@ -182,6 +182,5 @@ function routeLabel(section: Exclude<GlobalSection, null>) {
   if (section === "infra") return "Infrastructure"
   if (section === "activity") return "Activity"
   if (section === "access") return "Administration / Access"
-  if (section === "security") return "Account / Security"
   return "Settings"
 }
