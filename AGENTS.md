@@ -43,23 +43,40 @@ vp install --frozen-lockfile
 pnpm dev:setup
 ```
 
-Name branches as `<type>/<task>`, with a short lowercase kebab-case task:
+Name branches as `<type>(<app>)/<task>`, with a short lowercase kebab-case task. Apps are `hearth`, `bricks`, and `relay`. For work spanning multiple apps, list them comma-separated:
 
 | Prefix      | Use for                                      |
 | ----------- | -------------------------------------------- |
-| `feat/`     | New capabilities                             |
-| `fix/`      | Bugs and regressions                         |
-| `refactor/` | Behavior-preserving code changes             |
-| `ui/`       | Visual and interaction changes               |
-| `perf/`     | Performance improvements                     |
-| `infra/`    | Docker, deployment, and runtime tooling      |
-| `docs/`     | Documentation only                           |
-| `test/`     | Test-only changes                            |
-| `chore/`    | Dependencies and repository maintenance      |
-| `ci/`       | CI and release automation                    |
+| `feat`      | New capabilities                             |
+| `fix`       | Bugs and regressions                         |
+| `refactor`  | Behavior-preserving code changes             |
+| `ui`        | Visual and interaction changes               |
+| `perf`      | Performance improvements                     |
+| `infra`     | Docker, deployment, and runtime tooling      |
+| `docs`      | Documentation only                           |
+| `test`      | Test-only changes                            |
+| `chore`     | Dependencies and repository maintenance      |
+| `ci`        | CI and release automation                    |
 
-For example: `fix/worktree-env-mount`. Do not use personal or agent-name
-prefixes.
+For example: `fix(hearth)/panel-disconnect` or
+`feat(hearth,relay)/server-events`. Do not use personal or agent-name prefixes.
+
+## Pull request descriptions
+
+Keep PR descriptions minimal and human:
+
+```md
+why
+> What it fixes or implements. Link an issue when one exists.
+
+summary
+> Brief summary.
+
+notes
+> Breaking changes, compatibility notes, migration steps, or anything else reviewers need to know.
+```
+
+Do not update the description during review for follow-up commits or fixes unless the overall PR changes.
 
 For every change:
 
