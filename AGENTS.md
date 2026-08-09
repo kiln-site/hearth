@@ -61,10 +61,10 @@ Name branches as `<type>/<task>`, with a short lowercase kebab-case task:
 For example: `fix/panel-disconnect`. Do not use personal or agent-name
 prefixes.
 
-Use `<type>(<scope>)/<task>` for PR titles. Scopes are `hearth`, `bricks`,
+Use `<type>(<scope>): <task>` for PR titles. Scopes are `hearth`, `bricks`,
 `relay`, and `repo` for repo-wide changes. For work spanning multiple scopes,
-list them comma-separated. For example: `fix(hearth)/panel-disconnect` or
-`feat(hearth,relay)/server-events`.
+list them comma-separated. For example: `fix(hearth): panel-disconnect` or
+`feat(hearth,relay): server-events`.
 
 ## Pull request descriptions
 
