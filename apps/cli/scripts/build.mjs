@@ -119,11 +119,11 @@ function publishedManifest() {
     description:
       "Agent-first command-line access to Kiln and self-hosted Hearth instances.",
     type: "module",
-    bin: { kiln: "./kiln.mjs" },
+    bin: { kiln: "kiln.mjs" },
     engines: { node: ">=20" },
     repository: {
       type: "git",
-      url: "https://github.com/kiln-site/hearth.git",
+      url: "git+https://github.com/kiln-site/hearth.git",
       directory: "apps/cli",
     },
     homepage: "https://kiln.site",

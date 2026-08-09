@@ -26,6 +26,17 @@ it("uses the exact app version supplied by a release build", async () => {
   )
 })
 
+it("allows an isolated test build for the npm bootstrap", async () => {
+  const repositoryRoot = await fixture({ releaseLine: "0.3.0" })
+  assert.equal(
+    await resolveCliVersion({
+      repositoryRoot,
+      environment: { KILN_VERSION: "0.3.0-test.20260809.211537" },
+    }),
+    "0.3.0-test.20260809.211537"
+  )
+})
+
 it("rejects versions outside Kiln's release format", async () => {
   const repositoryRoot = await fixture({ releaseLine: "1.0.0" })
   await assert.rejects(

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 
-const kilnVersionPattern = /^0\.\d+\.\d+(?:-nightly\.\d{8}\.\d{6})?$/u
+const kilnVersionPattern = /^0\.\d+\.\d+(?:-(?:nightly|test)\.\d{8}\.\d{6})?$/u
 
 export async function resolveCliVersion({
   repositoryRoot,
