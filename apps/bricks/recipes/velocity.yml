@@ -37,6 +37,7 @@ runtime:
     KILN_ARTIFACT_URL: "https://mcjarfiles.com/api/get-jar/proxies/velocity/{{ variables.version }}"
     KILN_ARTIFACT_FILE: velocity.jar
     KILN_INSTALLATION_MARKER: .kiln-ember-installed
+    KILN_SERVER_KIND: application
     KILN_SERVER_ARGS: ""
     KILN_JAVA_MAX_RAM_PERCENTAGE: "75.0"
     MIN_RAM: 512M

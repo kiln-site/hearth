@@ -2179,11 +2179,9 @@ export class DockerDriver {
       brickId && /^[a-z0-9][a-z0-9.-]{0,63}$/u.test(brickId)
         ? brickId
         : undefined
-    const brickNetworkMode = labels["kiln.brick.network-mode"]
-    const validNetworkMode =
-      brickNetworkMode === "direct" || brickNetworkMode === "minecraft-backend"
-        ? brickNetworkMode
-        : undefined
+    const validNetworkMode = normalizedBrickNetworkMode(
+      labels["kiln.brick.network-mode"]
+    )
     const brickReadiness = parseBrickReadinessLabel(
       labels["kiln.brick.readiness"]
     )
@@ -2292,6 +2290,13 @@ export class DockerDriver {
       this.#config.projectName,
     ]
   }
+}
+
+export function normalizedBrickNetworkMode(
+  mode: string | undefined
+): RelayInstanceConfig["brickNetworkMode"] {
+  if (mode === "minecraft-proxy") return "minecraft-backend"
+  return mode === "direct" || mode === "minecraft-backend" ? mode : undefined
 }
 
 function recreatedNetworkAliases(

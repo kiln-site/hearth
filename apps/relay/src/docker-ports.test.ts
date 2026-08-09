@@ -11,11 +11,23 @@ import {
   dockerPublishedPrimaryPort,
   instanceConnectAddress,
   instancePublicHost,
+  normalizedBrickNetworkMode,
   procNetTcpHasListener,
   publicConnectAddress,
 } from "./docker.js"
 
 describe("Docker public game ports", () => {
+  it("normalizes legacy Minecraft proxy instances as Minecraft backends", () => {
+    expect(normalizedBrickNetworkMode("minecraft-proxy")).toBe(
+      "minecraft-backend"
+    )
+    expect(normalizedBrickNetworkMode("minecraft-backend")).toBe(
+      "minecraft-backend"
+    )
+    expect(normalizedBrickNetworkMode("direct")).toBe("direct")
+    expect(normalizedBrickNetworkMode("unknown")).toBeUndefined()
+  })
+
   it("discovers Docker's assigned primary host port", () => {
     expect(
       dockerPublishedPort(

@@ -34,7 +34,7 @@ if [[ -n "${KILN_ARTIFACT_SHA256:-}" ]]; then
   printf '%s  %s\n' "${KILN_ARTIFACT_SHA256}" "${KILN_ARTIFACT_FILE}" | sha256sum --check --status
 fi
 
-if [[ "${KILN_SERVER_KIND:-application}" == "minecraft" ]]; then
+if [[ "${KILN_SERVER_KIND:-minecraft}" == "minecraft" ]]; then
   printf 'eula=true\n' > eula.txt
   if [[ ! -f server.properties ]]; then
     printf '%s\n' \

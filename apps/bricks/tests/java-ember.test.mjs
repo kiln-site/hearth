@@ -166,7 +166,6 @@ echo 'fake server started'
         KILN_ARTIFACT_URL: "https://example.invalid/paper.jar",
         KILN_IMPLEMENTATION: "paper",
         KILN_INSTALLATION_MARKER: ".kiln-ember-installed",
-        KILN_SERVER_KIND: "minecraft",
         KILN_TEST_SERVER_DIRECTORY: serverDirectory,
         KILN_VERSION: "1.21.11",
         PATH: `${binDirectory}:${process.env.PATH ?? ""}`,
@@ -190,6 +189,10 @@ echo 'fake server started'
   assert.equal(
     await readFile(join(serverDirectory, ".kiln-ember-installed"), "utf8"),
     ""
+  )
+  assert.equal(
+    await readFile(join(serverDirectory, "eula.txt"), "utf8"),
+    "eula=true\n"
   )
   assert.doesNotMatch(
     await readFile(join(serverDirectory, "server.properties"), "utf8"),
@@ -236,6 +239,7 @@ printf '%s\n' "$@" > "$FAKE_JAVA_ARGUMENTS"
       KILN_ARTIFACT_FILE: "velocity.jar",
       KILN_ARTIFACT_URL: "https://example.invalid/velocity.jar",
       KILN_IMPLEMENTATION: "velocity",
+      KILN_SERVER_KIND: "application",
       KILN_TEST_SERVER_DIRECTORY: temporaryDirectory,
       KILN_VERSION: "3.5.1",
       PATH: `${binDirectory}:${process.env.PATH ?? ""}`,
@@ -272,6 +276,12 @@ printf '%s\n' "$@" > "$FAKE_JAVA_ARGUMENTS"
     "--nogui",
   ])
   assert.deepEqual(await runEmber("empty", ""), baseArguments)
+  await assert.rejects(
+    readFile(join(temporaryDirectory, "server.properties")),
+    {
+      code: "ENOENT",
+    }
+  )
 })
 
 test("the Java Ember rejects marker names outside the reserved namespace", async (context) => {
