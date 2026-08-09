@@ -5,6 +5,7 @@ import type { RelayInstance } from "@workspace/contracts"
 import {
   getAccessCapabilities,
   getAccessOverview,
+  getInstanceUsers,
   getInvitationPreview,
 } from "@/server/access"
 import { getActivity } from "@/server/activity"
@@ -46,6 +47,8 @@ export const queryKeys = {
   },
   access: {
     capabilities: ["access", "capabilities"] as const,
+    instanceUsers: (relayId: string, instanceId: string) =>
+      ["access", "instances", relayId, instanceId, "users"] as const,
     invitation: (token: string) => ["access", "invitation", token] as const,
     overview: ["access", "overview"] as const,
   },
@@ -212,6 +215,14 @@ export function accessOverviewQueryOptions() {
   return queryOptions({
     queryKey: queryKeys.access.overview,
     queryFn: () => getAccessOverview(),
+  })
+}
+
+export function instanceUsersQueryOptions(relayId: string, instanceId: string) {
+  return queryOptions({
+    queryKey: queryKeys.access.instanceUsers(relayId, instanceId),
+    queryFn: () => getInstanceUsers({ data: { instanceId, relayId } }),
+    staleTime: 10_000,
   })
 }
 

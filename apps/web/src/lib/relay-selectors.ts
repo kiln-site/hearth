@@ -68,6 +68,9 @@ export type InstanceRuntime = Pick<
 
 export type InstanceSettingsInstance = Pick<
   RelayInstance,
+  | "brickFormat"
+  | "brickId"
+  | "brickSource"
   | "connectAddress"
   | "containerId"
   | "directory"
@@ -76,10 +79,12 @@ export type InstanceSettingsInstance = Pick<
   | "implementation"
   | "javaVersion"
   | "name"
+  | "publicHost"
+  | "publicPort"
   | "service"
   | "shortId"
   | "version"
-> & { relayId: string }
+> & { relayId: string; routeId: string }
 
 export type RelayNodeSummary = Pick<RelayNode, "id" | "name">
 
@@ -236,6 +241,9 @@ export function selectInstanceSettings(instanceId: string, relayId?: string) {
     if (!instance) return null
     return {
       instance: {
+        brickFormat: instance.brickFormat,
+        brickId: instance.brickId,
+        brickSource: instance.brickSource,
         connectAddress: instance.connectAddress,
         containerId: instance.containerId,
         directory: instance.directory,
@@ -244,7 +252,10 @@ export function selectInstanceSettings(instanceId: string, relayId?: string) {
         implementation: instance.implementation,
         javaVersion: instance.javaVersion,
         name: instance.name,
+        publicHost: instance.publicHost,
+        publicPort: instance.publicPort,
         relayId: instance.relayId,
+        routeId: instance.routeId,
         service: instance.service,
         shortId: instance.shortId,
         version: instance.version,

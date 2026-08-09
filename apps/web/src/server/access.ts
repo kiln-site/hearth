@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto"
 
 import { createServerFn } from "@tanstack/react-start"
-import { relayIdSchema } from "@workspace/contracts"
+import { relayAuditRecordSchema, relayIdSchema } from "@workspace/contracts"
 import { Effect } from "effect"
 import type { RowDataPacket } from "mysql2/promise"
 import { Resend } from "resend"
@@ -16,10 +16,15 @@ import {
   listUserGrants,
   requireRelayPermission,
 } from "@/lib/access-control"
+import {
+  activityPermissionForAudit,
+  auditInstanceId,
+  auditUserId,
+} from "@/lib/activity"
 import { databasePool } from "@/lib/database"
 import { databaseTable } from "@/lib/database-config"
 import { emailDeliveryConfig, kilnPublicUrl } from "@/lib/environment"
-import { accessRoles, roleHasPermission } from "@/lib/permissions"
+import { accessRoles, isAccessRole, roleHasPermission } from "@/lib/permissions"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import { listPersistedRelays } from "@/lib/relay-registry"
 import { requireAuthenticatedUser } from "@/server/auth"
@@ -29,6 +34,11 @@ const relayResourceIdSchema = z.object({
   id: z.uuid(),
   relayId: relayIdSchema,
 })
+const instanceScopeSchema = z.object({
+  instanceId: z.string().regex(/^[a-f0-9]{40}$/u),
+  relayId: relayIdSchema,
+})
+const instanceGrantSchema = instanceScopeSchema.extend({ id: z.uuid() })
 const invitationSchema = z
   .object({
     databaseId: z
@@ -84,6 +94,19 @@ interface PendingInvitationRow extends RowDataPacket {
 
 interface DatabaseResourceRow extends RowDataPacket {
   database_id: string
+}
+
+interface InstanceGrantRow extends RowDataPacket {
+  created_at: Date
+  email: string
+  id: string
+  role: string
+  user_id: string
+}
+
+interface InstanceUserRow extends RowDataPacket {
+  email: string
+  id: string
 }
 
 export const getAccessCapabilities = createServerFn({ method: "GET" }).handler(
@@ -150,6 +173,78 @@ export const getAccessOverview = createServerFn({ method: "GET" }).handler(
     }
   }
 )
+
+export const getInstanceUsers = createServerFn({ method: "GET" })
+  .validator(instanceScopeSchema)
+  .handler(async ({ data }) => {
+    const user = await requireAuthenticatedUser()
+    const relay = await requiredRelay(data.relayId)
+    await requireRelayPermission({
+      user,
+      relayId: relay.id,
+      permission: "instance.read",
+      instanceId: data.instanceId,
+    })
+
+    const userGrants = isPlatformAdmin(user)
+      ? []
+      : await listUserGrants(user.id, relay.id)
+    const canManage =
+      isPlatformAdmin(user) ||
+      userGrants.some(
+        (grant) =>
+          roleHasPermission(grant.role, "access.manage") &&
+          (grant.resourceType === "relay" ||
+            (grant.resourceType === "instance" &&
+              grant.resourceId === data.instanceId))
+      )
+    const canOpenAccessPage =
+      isPlatformAdmin(user) ||
+      userGrants.some(
+        (grant) =>
+          grant.resourceType === "relay" &&
+          roleHasPermission(grant.role, "access.manage")
+      )
+
+    const [grantRows, creatorId] = await Promise.all([
+      databasePool.query<Array<InstanceGrantRow>>(
+        `SELECT grant_row.id, grant_row.user_id, grant_row.role,
+                grant_row.created_at, auth_user.email
+           FROM ${databaseTable("access_grant")} AS grant_row
+           JOIN ${databaseTable("user")} AS auth_user
+             ON auth_user.id = grant_row.user_id
+          WHERE grant_row.relay_id = ?
+            AND grant_row.resource_type = 'instance'
+            AND grant_row.resource_id = ?
+          ORDER BY grant_row.created_at ASC`,
+        [relay.id, data.instanceId]
+      ),
+      instanceCreatorId(relay, data.instanceId),
+    ])
+    const grants = grantRows[0].flatMap((grant) =>
+      isAccessRole(grant.role)
+        ? [
+            {
+              createdAt: grant.created_at.toISOString(),
+              email: grant.email,
+              id: grant.id,
+              role: grant.role,
+              userId: grant.user_id,
+            },
+          ]
+        : []
+    )
+    const creator = creatorId
+      ? await instanceCreatorUser(creatorId, user)
+      : null
+
+    return {
+      canManage,
+      canOpenAccessPage,
+      creator,
+      users: grants.filter((grant) => grant.userId !== creator?.id),
+    }
+  })
 
 async function relayAccessOverview(
   user: Awaited<ReturnType<typeof requireAuthenticatedUser>>,
@@ -448,6 +543,26 @@ export const removeAccessGrant = createServerFn({ method: "POST" })
     return { removed: true }
   })
 
+export const removeInstanceAccessGrant = createServerFn({ method: "POST" })
+  .validator(instanceGrantSchema)
+  .handler(async ({ data }) => {
+    const user = await requireAuthenticatedUser()
+    const relay = await requiredRelay(data.relayId)
+    await requireRelayPermission({
+      user,
+      relayId: relay.id,
+      permission: "access.manage",
+      instanceId: data.instanceId,
+    })
+    await databasePool.execute(
+      `DELETE FROM ${databaseTable("access_grant")}
+        WHERE id = ? AND relay_id = ?
+          AND resource_type = 'instance' AND resource_id = ?`,
+      [data.id, relay.id, data.instanceId]
+    )
+    return { removed: true }
+  })
+
 export const revokeAccessInvitation = createServerFn({ method: "POST" })
   .validator(relayResourceIdSchema)
   .handler(async ({ data }) => {
@@ -534,4 +649,49 @@ async function grantRole(id: string, relayId: string): Promise<string | null> {
     [id, relayId]
   )
   return rows[0]?.role ?? null
+}
+
+async function instanceCreatorId(
+  relay: PersistedRelay,
+  instanceId: string
+): Promise<string | null> {
+  try {
+    const { relayRpc } = await import("@/lib/relay-connection")
+    const records = z.array(relayAuditRecordSchema).parse(
+      await relayRpc(relay, "relay.audit.list", {
+        instanceIds: [instanceId],
+        limit: 2_000,
+      })
+    )
+    for (let index = records.length - 1; index >= 0; index -= 1) {
+      const record = records[index]
+      if (
+        record &&
+        auditInstanceId(record) === instanceId &&
+        activityPermissionForAudit(record) === "instance.create"
+      ) {
+        return auditUserId(record)
+      }
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+async function instanceCreatorUser(
+  creatorId: string,
+  currentUser: Awaited<ReturnType<typeof requireAuthenticatedUser>>
+) {
+  if (creatorId === currentUser.id) {
+    return { email: currentUser.email, id: currentUser.id }
+  }
+  const [rows] = await databasePool.query<Array<InstanceUserRow>>(
+    `SELECT id, email FROM ${databaseTable("user")} WHERE id = ? LIMIT 1`,
+    [creatorId]
+  )
+  const creator = rows[0]
+  return creator
+    ? { email: creator.email, id: creator.id }
+    : { email: "Former user", id: creatorId }
 }
