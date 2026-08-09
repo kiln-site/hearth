@@ -1,5 +1,5 @@
 {
-  "name": "@kiln-site/cli",
+  "name": "kiln-cli",
   "version": "0.0.1",
   "type": "module",
   "private": true,
@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "bun scripts/build.mjs",
+    "build:npm": "bun scripts/build.mjs --npm-only",
     "dev": "bun src/main.ts",
     "format": "vp fmt \"src/**/*.ts\"",
     "lint": "vp lint src",

@@ -4,10 +4,27 @@ Agent-first command-line access to Hearth. Output is JSON by default, log
 streams are NDJSON, and failures use a stable `error.code`, `message`, and
 `retryable` shape.
 
+## Install
+
+Run without a global install:
+
+```sh
+npx kiln-cli --version
+npx kiln-cli login
+```
+
+Or install it globally. The npm package is named `kiln-cli`; both installation
+methods expose the `kiln` command.
+
+```sh
+npm install --global kiln-cli
+kiln login
+```
+
 ## Build locally
 
 ```sh
-pnpm --filter @kiln-site/cli build
+pnpm --filter kiln-cli build
 ./apps/cli/dist/kiln --version
 ```
 

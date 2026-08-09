@@ -42,8 +42,9 @@ import {
   type OutputMode,
 } from "./output.js"
 import { downloadSftpFileEffect, uploadSftpFileEffect } from "./sftp.js"
+import release from "../../../release.json" with { type: "json" }
 
-const VERSION = "0.0.1"
+const VERSION = process.env.KILN_VERSION?.trim() || release.releaseLine
 
 const genericObjectSchema = z.record(z.string(), z.unknown())
 const powerResponseSchema = z.object({

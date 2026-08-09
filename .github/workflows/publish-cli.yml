@@ -1,0 +1,113 @@
+name: Publish CLI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing Kiln release tag to publish or retry
+        required: true
+        type: string
+  workflow_run:
+    workflows: [Stable release]
+    types: [completed]
+
+concurrency:
+  group: kiln-cli-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish kiln-cli
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Resolve app version
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          case "$EVENT_NAME" in
+            push)
+              source_ref="$GITHUB_SHA"
+              release_line="$(jq -er '.releaseLine' release.json)"
+              commit_timestamp="$(git show -s --format=%cI "$source_ref")"
+              timestamp="$(date -u -d "$commit_timestamp" +%Y%m%d.%H%M%S)"
+              version="${release_line}-nightly.${timestamp}"
+              ;;
+            workflow_run)
+              source_ref="$(gh release list --exclude-pre-releases --limit 1 \
+                --json tagName --jq '.[0].tagName')"
+              test -n "$source_ref"
+              version="${source_ref#v}"
+              ;;
+            workflow_dispatch)
+              source_ref="$REQUESTED_TAG"
+              test -n "$source_ref"
+              version="${source_ref#v}"
+              gh release view "$source_ref" >/dev/null
+              ;;
+            *) exit 1 ;;
+          esac
+
+          printf '%s\n' "$version" \
+            | grep -Eq '^0\.[0-9]+\.[0-9]+(-nightly\.[0-9]{8}\.[0-9]{6})?$'
+          test "$(git rev-parse "$source_ref^{commit}")"
+          echo "source_ref=$source_ref" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check out release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ steps.release.outputs.source_ref }}
+
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1.15.0
+        with:
+          cache: false
+          node-version-file: .node-version
+          run-install: |
+            - cwd: .
+              args: ["--frozen-lockfile"]
+
+      - name: Configure npm trusted publishing
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.1.0
+        with:
+          node-version-file: .node-version
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Build npm package
+        env:
+          KILN_VERSION: ${{ steps.release.outputs.version }}
+        run: pnpm --filter kiln-cli build:npm
+
+      - name: Verify package contents
+        run: npm pack --dry-run ./apps/cli/dist/npm
+
+      - name: Check whether the version already exists
+        id: published
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          if npm view "kiln-cli@$VERSION" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish package
+        if: steps.published.outputs.exists != 'true'
+        run: npm publish ./apps/cli/dist/npm --access public --tag latest
