@@ -378,6 +378,24 @@ const olderFileDateFormatter = new Intl.DateTimeFormat(undefined, {
   day: "numeric",
   year: "numeric",
 })
+const relativeFileMinuteMs = 60_000
+const relativeFileHourMs = 60 * relativeFileMinuteMs
+const relativeFileDayMs = 24 * relativeFileHourMs
+
+function shortRelativeFileTime(timestamp: number): string | null {
+  const elapsed = Math.max(0, Date.now() - timestamp)
+  if (elapsed < relativeFileMinuteMs) return "just now"
+  if (elapsed < relativeFileHourMs) {
+    return `${Math.floor(elapsed / relativeFileMinuteMs)}m ago`
+  }
+  if (elapsed < relativeFileDayMs) {
+    return `${Math.floor(elapsed / relativeFileHourMs)}h ago`
+  }
+  if (elapsed < 7 * relativeFileDayMs) {
+    return `${Math.floor(elapsed / relativeFileDayMs)}d ago`
+  }
+  return null
+}
 
 function persistFileTreeWidth(width: number) {
   document.cookie = `${fileTreeWidthCookieName}=${width}; path=/; max-age=${fileTreeCookieMaxAge}; SameSite=Lax`
@@ -3379,14 +3397,8 @@ function fileActivityTime(entry: RelayFileActivityEntry): string {
         new Date(entry.lastEditedAt).getTime()
       )
     : new Date(entry.lastViewedAt).getTime()
-  const elapsed = Math.max(0, Date.now() - latest)
-  const minute = 60_000
-  const hour = 60 * minute
-  const day = 24 * hour
-  if (elapsed < minute) return "just now"
-  if (elapsed < hour) return `${Math.floor(elapsed / minute)}m ago`
-  if (elapsed < day) return `${Math.floor(elapsed / hour)}h ago`
-  if (elapsed < 7 * day) return `${Math.floor(elapsed / day)}d ago`
+  const relative = shortRelativeFileTime(latest)
+  if (relative) return relative
   const activityDate = new Date(latest)
   const currentDate = new Date()
   return (
@@ -3711,7 +3723,15 @@ function formatFileSize(bytes: number): string {
 }
 
 function formatFileModifiedAt(modifiedAt: number): string {
-  return modifiedAt > 0 ? fileModifiedAtFormatter.format(modifiedAt) : "—"
+  if (modifiedAt <= 0) return "—"
+  return (
+    shortRelativeFileTime(modifiedAt) ??
+    fileModifiedAtFormatter.format(modifiedAt)
+  )
+}
+
+function formatFileModifiedAtTitle(modifiedAt: number): string | undefined {
+  return modifiedAt > 0 ? fileModifiedAtFormatter.format(modifiedAt) : undefined
 }
 
 function directoryEntries(
@@ -3935,6 +3955,7 @@ function RootDirectoryList({
                   ? new Date(entry.modifiedAt).toISOString()
                   : undefined
               }
+              title={formatFileModifiedAtTitle(entry.modifiedAt)}
               suppressHydrationWarning
             >
               {formatFileModifiedAt(entry.modifiedAt)}
@@ -4157,6 +4178,7 @@ function DirectoryView({
                     ? new Date(entry.modifiedAt).toISOString()
                     : undefined
                 }
+                title={formatFileModifiedAtTitle(entry.modifiedAt)}
                 suppressHydrationWarning
               >
                 {formatFileModifiedAt(entry.modifiedAt)}
