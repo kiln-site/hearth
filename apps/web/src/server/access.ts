@@ -778,28 +778,31 @@ async function instanceInitialOwnerId(
   relay: PersistedRelay,
   instanceId: string
 ): Promise<string | null> {
-  try {
-    const { relayRpc } = await import("@/lib/relay-connection")
-    const records = z.array(relayAuditRecordSchema).parse(
-      await relayRpc(relay, "relay.audit.list", {
-        instanceIds: [instanceId],
-        limit: 2_000,
-      })
-    )
-    for (let index = records.length - 1; index >= 0; index -= 1) {
-      const record = records[index]
-      if (
-        record &&
-        auditInstanceId(record) === instanceId &&
-        activityPermissionForAudit(record) === "instance.create"
-      ) {
-        return auditUserId(record)
-      }
-    }
-  } catch {
-    return null
-  }
-  return null
+  return Effect.runPromise(
+    Effect.tryPromise({
+      try: async () => {
+        const { relayRpc } = await import("@/lib/relay-connection")
+        const records = z.array(relayAuditRecordSchema).parse(
+          await relayRpc(relay, "relay.audit.list", {
+            instanceIds: [instanceId],
+            limit: 2_000,
+          })
+        )
+        for (let index = records.length - 1; index >= 0; index -= 1) {
+          const record = records[index]
+          if (
+            record &&
+            auditInstanceId(record) === instanceId &&
+            activityPermissionForAudit(record) === "instance.create"
+          ) {
+            return auditUserId(record)
+          }
+        }
+        return null
+      },
+      catch: (cause) => cause,
+    }).pipe(Effect.catch(() => Effect.succeed(null)))
+  )
 }
 
 async function instanceOwnerGrantId(
