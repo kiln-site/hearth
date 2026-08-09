@@ -10,6 +10,7 @@ import {
   Copy,
   Cpu,
   Crown,
+  FileCode2,
   Fingerprint,
   Globe2,
   HardDrive,
@@ -46,6 +47,7 @@ import { cn } from "@workspace/ui/lib/utils"
 import { ServerDeleteDialog } from "@/components/server-delete-dialog"
 import { hostPortAddress } from "@/lib/domain-address"
 import {
+  instanceRecipeQueryOptions,
   instanceUsersQueryOptions,
   queryKeys,
   replaceRelaySnapshotInstance,
@@ -145,48 +147,7 @@ export function SettingsWorkspace({
               />
             </InfoCard>
 
-            <InfoCard>
-              <InfoCardHeader
-                icon={<Box />}
-                title="Brick info"
-                action={
-                  <Button asChild size="sm" variant="ghost">
-                    <Link
-                      to="/server/$serverId/startup"
-                      params={{ serverId: instance.routeId }}
-                    >
-                      Startup
-                      <ArrowRight />
-                    </Link>
-                  </Button>
-                }
-              />
-              <MetaRow
-                icon={Box}
-                label="Brick"
-                value={instance.brickId ?? instance.implementation}
-                mono
-              />
-              <MetaRow
-                icon={Tags}
-                label="Game version"
-                value={`${instance.game} · ${instance.version}`}
-              />
-              <MetaRow
-                icon={Cpu}
-                label="Runtime"
-                value={instance.javaVersion}
-                mono
-              />
-              <MetaRow
-                icon={HardDrive}
-                label="Recipe"
-                value={
-                  instance.brickSource ?? instance.brickFormat ?? "Built in"
-                }
-                mono
-              />
-            </InfoCard>
+            <BrickInfoCard instance={instance} />
           </div>
 
           <InstanceUsersCard instance={instance} />
@@ -340,6 +301,104 @@ function CopyMetaRow({
   )
 }
 
+function BrickInfoCard({ instance }: { instance: InstanceSettingsInstance }) {
+  const [recipeOpen, setRecipeOpen] = React.useState(false)
+  const recipeQuery = useQuery({
+    ...instanceRecipeQueryOptions(instance.relayId, instance.id),
+    enabled: recipeOpen,
+  })
+  const recipePreview = React.useMemo(
+    () =>
+      recipeQuery.data ? JSON.stringify(recipeQuery.data.brick, null, 2) : "",
+    [recipeQuery.data]
+  )
+
+  return (
+    <>
+      <InfoCard>
+        <InfoCardHeader
+          icon={<Box />}
+          title="Brick info"
+          action={
+            <Button asChild size="sm" variant="ghost">
+              <Link
+                to="/server/$serverId/startup"
+                params={{ serverId: instance.routeId }}
+              >
+                Startup
+                <ArrowRight />
+              </Link>
+            </Button>
+          }
+        />
+        <MetaRow
+          icon={Box}
+          label="Brick"
+          value={instance.brickId ?? instance.implementation}
+          mono
+          action={
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => setRecipeOpen(true)}
+            >
+              <FileCode2 />
+              Recipe
+            </Button>
+          }
+        />
+        <div className="grid grid-cols-2 divide-x">
+          <MetaRow
+            icon={Tags}
+            label="Game version"
+            value={`${instance.game} · ${instance.version}`}
+            className="border-b-0"
+          />
+          <MetaRow
+            icon={Cpu}
+            label="Runtime"
+            value={instance.javaVersion}
+            mono
+            className="border-b-0"
+          />
+        </div>
+      </InfoCard>
+
+      <Dialog open={recipeOpen} onOpenChange={setRecipeOpen}>
+        <DialogContent className="max-w-3xl overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>
+              {recipeQuery.data?.brick.metadata.name ?? "Brick recipe"}
+            </DialogTitle>
+            <DialogDescription className="font-mono text-[10px] break-all">
+              {recipeQuery.data?.brickSource ??
+                instance.brickSource ??
+                instance.brickFormat ??
+                "Loading recipe source…"}
+            </DialogDescription>
+          </DialogHeader>
+          {recipeQuery.isPending ? (
+            <div className="grid min-h-64 place-items-center rounded-lg border bg-muted/10 text-muted-foreground">
+              <LoaderCircle className="size-4 animate-spin" />
+            </div>
+          ) : recipeQuery.isError ? (
+            <div className="rounded-lg border border-destructive/25 bg-destructive/5 px-4 py-6 text-xs text-destructive">
+              {recipeQuery.error.message || "Could not load the Brick recipe"}
+            </div>
+          ) : (
+            <div className="max-h-[65vh] overflow-auto rounded-lg border bg-muted/15">
+              <pre className="min-w-max p-4 font-mono text-[11px] leading-5 text-foreground/85">
+                <code>{recipePreview}</code>
+              </pre>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
+
 function InstanceUsersCard({
   instance,
 }: {
@@ -454,6 +513,12 @@ function InstanceUsersCard({
                 email={usersQuery.data.owner?.email ?? "Unknown owner"}
                 userId={usersQuery.data.owner?.id ?? null}
                 instanceId={instance.id}
+                canManage={usersQuery.data.canManage}
+                onPermissions={() =>
+                  setPermissionsUser(
+                    usersQuery.data.owner?.email ?? "Unknown owner"
+                  )
+                }
                 owner
               />
               {usersQuery.data.users.map((user) => (
@@ -655,6 +720,22 @@ function AccessUserRow({
               <TooltipContent side="bottom">View activity</TooltipContent>
             </Tooltip>
           ) : null}
+          {canManage ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label={`Modify ${email} permissions`}
+                  onClick={onPermissions}
+                >
+                  <Pencil />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Modify permissions</TooltipContent>
+            </Tooltip>
+          ) : null}
           {owner ? (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -697,22 +778,6 @@ function AccessUserRow({
                   </TooltipContent>
                 </Tooltip>
               ) : null}
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    size="icon-sm"
-                    variant="ghost"
-                    aria-label={`Modify ${email} permissions`}
-                    onClick={onPermissions}
-                  >
-                    <Pencil />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  Modify permissions
-                </TooltipContent>
-              </Tooltip>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -922,12 +987,16 @@ function InstanceNameForm({
 }
 
 function MetaRow({
+  action,
+  className,
   icon: Icon,
   label,
   value,
   mono = false,
   wrap = false,
 }: {
+  action?: React.ReactNode
+  className?: string
   icon: typeof Server
   label: string
   value: string
@@ -935,7 +1004,12 @@ function MetaRow({
   wrap?: boolean
 }) {
   return (
-    <div className="flex min-h-14 items-center gap-3 border-b px-4 py-3 last:border-b-0">
+    <div
+      className={cn(
+        "flex min-h-14 items-center gap-3 border-b px-4 py-3 last:border-b-0",
+        className
+      )}
+    >
       <Icon className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1">
         <span className="block text-[9px] tracking-wider text-muted-foreground uppercase">
@@ -948,6 +1022,7 @@ function MetaRow({
           {value}
         </span>
       </span>
+      {action}
     </div>
   )
 }

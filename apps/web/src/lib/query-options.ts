@@ -9,7 +9,11 @@ import {
   getInvitationPreview,
 } from "@/server/access"
 import { getActivity } from "@/server/activity"
-import { getBrickCatalog, getInstanceStartup } from "@/server/bricks"
+import {
+  getBrickCatalog,
+  getInstanceRecipe,
+  getInstanceStartup,
+} from "@/server/bricks"
 import { getDomainSettings, getInstanceDomain } from "@/server/domains"
 import {
   getManagedDatabaseCredential,
@@ -83,6 +87,8 @@ export const queryKeys = {
       ] as const,
     fileActivity: (relayId: string, instanceId: string) =>
       ["relay", relayId, "instances", instanceId, "files", "activity"] as const,
+    recipe: (relayId: string, instanceId: string) =>
+      ["relay", relayId, "instances", instanceId, "recipe"] as const,
     snapshot: ["relay", "snapshot"] as const,
     tree: (relayId: string, instanceId: string) =>
       ["relay", relayId, "instances", instanceId, "files", "tree"] as const,
@@ -324,6 +330,17 @@ export function instanceStartupQueryOptions(
     queryKey: ["relay", relayId, "instances", instanceId, "startup"] as const,
     queryFn: () => getInstanceStartup({ data: { instanceId, relayId } }),
     staleTime: 15_000,
+  })
+}
+
+export function instanceRecipeQueryOptions(
+  relayId: string,
+  instanceId: string
+) {
+  return queryOptions({
+    queryKey: queryKeys.relay.recipe(relayId, instanceId),
+    queryFn: () => getInstanceRecipe({ data: { instanceId, relayId } }),
+    staleTime: 30_000,
   })
 }
 
