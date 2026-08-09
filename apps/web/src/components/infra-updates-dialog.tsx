@@ -950,7 +950,11 @@ const UpdateTargetRow = React.memo(function UpdateTargetRow({
               : "bg-background/55 text-muted-foreground"
           }`}
         >
-          <Icon className={`size-4 ${updating ? "animate-spin" : ""}`} />
+          {updating ? (
+            <LoaderCircle className="size-4 animate-spin" />
+          ) : (
+            <Icon className="size-4" />
+          )}
         </span>
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
