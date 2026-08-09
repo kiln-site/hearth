@@ -62,6 +62,18 @@ export function publicSignupEnabled(): boolean {
   return environmentFlag("KILN_ENABLE_SIGNUPS", false)
 }
 
+export function cliDefaultAccessDays(): number {
+  const configured = process.env.KILN_CLI_DEFAULT_ACCESS_DAYS?.trim()
+  if (!configured) return 30
+  const days = Number(configured)
+  if (!Number.isInteger(days) || days < 1 || days > 365) {
+    throw new Error(
+      "KILN_CLI_DEFAULT_ACCESS_DAYS must be an integer from 1 to 365"
+    )
+  }
+  return days
+}
+
 export function emailDeliveryConfig(): EmailDeliveryConfig | null {
   const apiKey = process.env.RESEND_API_KEY?.trim()
   const from = process.env.RESEND_FROM_EMAIL?.trim()

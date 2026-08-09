@@ -32,6 +32,7 @@ import { Route as AppServersRouteImport } from './routes/_app.servers'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as ApiHealthRouteImport } from './routes/api.health'
 import { Route as ApiSentryCheckRouteImport } from './routes/api.sentry-check'
+import { Route as CliAuthorizeRouteImport } from './routes/cli.authorize'
 import { Route as AppInfraIndexRouteImport } from './routes/_app.infra.index'
 import { Route as AppInfraDatabasesRouteImport } from './routes/_app.infra.databases'
 import { Route as AppInfraDomainsRouteImport } from './routes/_app.infra.domains'
@@ -55,6 +56,9 @@ import { Route as AppServerServerIdFilesRouteImport } from './routes/_app/server
 import { Route as AppServerServerIdInfoRouteImport } from './routes/_app/server/$serverId.info'
 import { Route as AppServerServerIdNetworkRouteImport } from './routes/_app/server/$serverId.network'
 import { Route as AppServerServerIdStartupRouteImport } from './routes/_app/server/$serverId.startup'
+import { Route as ApiCliAuthDeviceRouteImport } from './routes/api.cli.auth.device'
+import { Route as ApiCliAuthTokenRouteImport } from './routes/api.cli.auth.token'
+import { Route as ApiCliV1SplatRouteImport } from './routes/api.cli.v1.$'
 import { Route as AppServerServerIdFilesSplatRouteImport } from './routes/_app/server/$serverId.files.$'
 
 const IndexRoute = IndexRouteImport.update({
@@ -169,6 +173,11 @@ const ApiHealthRoute = ApiHealthRouteImport.update({
 const ApiSentryCheckRoute = ApiSentryCheckRouteImport.update({
   id: '/api/sentry-check',
   path: '/api/sentry-check',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CliAuthorizeRoute = CliAuthorizeRouteImport.update({
+  id: '/cli/authorize',
+  path: '/cli/authorize',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppInfraIndexRoute = AppInfraIndexRouteImport.update({
@@ -289,6 +298,21 @@ const AppServerServerIdStartupRoute =
     path: '/startup',
     getParentRoute: () => AppServerServerIdRoute,
   } as any)
+const ApiCliAuthDeviceRoute = ApiCliAuthDeviceRouteImport.update({
+  id: '/api/cli/auth/device',
+  path: '/api/cli/auth/device',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCliAuthTokenRoute = ApiCliAuthTokenRouteImport.update({
+  id: '/api/cli/auth/token',
+  path: '/api/cli/auth/token',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCliV1SplatRoute = ApiCliV1SplatRouteImport.update({
+  id: '/api/cli/v1/$',
+  path: '/api/cli/v1/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppServerServerIdFilesSplatRoute =
   AppServerServerIdFilesSplatRouteImport.update({
     id: '/$',
@@ -319,6 +343,7 @@ export interface FileRoutesByFullPath {
   '/settings': typeof AppSettingsRouteWithChildren
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
+  '/cli/authorize': typeof CliAuthorizeRoute
   '/infra/databases': typeof AppInfraDatabasesRoute
   '/infra/domains': typeof AppInfraDomainsRoute
   '/infra/relays': typeof AppInfraRelaysRoute
@@ -341,6 +366,9 @@ export interface FileRoutesByFullPath {
   '/server/$serverId/info': typeof AppServerServerIdInfoRoute
   '/server/$serverId/network': typeof AppServerServerIdNetworkRoute
   '/server/$serverId/startup': typeof AppServerServerIdStartupRoute
+  '/api/cli/auth/device': typeof ApiCliAuthDeviceRoute
+  '/api/cli/auth/token': typeof ApiCliAuthTokenRoute
+  '/api/cli/v1/$': typeof ApiCliV1SplatRoute
   '/server/$serverId/': typeof AppServerServerIdIndexRoute
   '/server/$serverId/files/$': typeof AppServerServerIdFilesSplatRoute
 }
@@ -365,6 +393,7 @@ export interface FileRoutesByTo {
   '/servers': typeof AppServersRoute
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
+  '/cli/authorize': typeof CliAuthorizeRoute
   '/infra/databases': typeof AppInfraDatabasesRoute
   '/infra/domains': typeof AppInfraDomainsRoute
   '/infra/relays': typeof AppInfraRelaysRoute
@@ -386,6 +415,9 @@ export interface FileRoutesByTo {
   '/server/$serverId/info': typeof AppServerServerIdInfoRoute
   '/server/$serverId/network': typeof AppServerServerIdNetworkRoute
   '/server/$serverId/startup': typeof AppServerServerIdStartupRoute
+  '/api/cli/auth/device': typeof ApiCliAuthDeviceRoute
+  '/api/cli/auth/token': typeof ApiCliAuthTokenRoute
+  '/api/cli/v1/$': typeof ApiCliV1SplatRoute
   '/server/$serverId': typeof AppServerServerIdIndexRoute
   '/server/$serverId/files/$': typeof AppServerServerIdFilesSplatRoute
 }
@@ -414,6 +446,7 @@ export interface FileRoutesById {
   '/_app/settings': typeof AppSettingsRouteWithChildren
   '/api/health': typeof ApiHealthRoute
   '/api/sentry-check': typeof ApiSentryCheckRoute
+  '/cli/authorize': typeof CliAuthorizeRoute
   '/_app/infra/databases': typeof AppInfraDatabasesRoute
   '/_app/infra/domains': typeof AppInfraDomainsRoute
   '/_app/infra/relays': typeof AppInfraRelaysRoute
@@ -436,6 +469,9 @@ export interface FileRoutesById {
   '/_app/server/$serverId/info': typeof AppServerServerIdInfoRoute
   '/_app/server/$serverId/network': typeof AppServerServerIdNetworkRoute
   '/_app/server/$serverId/startup': typeof AppServerServerIdStartupRoute
+  '/api/cli/auth/device': typeof ApiCliAuthDeviceRoute
+  '/api/cli/auth/token': typeof ApiCliAuthTokenRoute
+  '/api/cli/v1/$': typeof ApiCliV1SplatRoute
   '/_app/server/$serverId/': typeof AppServerServerIdIndexRoute
   '/_app/server/$serverId/files/$': typeof AppServerServerIdFilesSplatRoute
 }
@@ -464,6 +500,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/api/health'
     | '/api/sentry-check'
+    | '/cli/authorize'
     | '/infra/databases'
     | '/infra/domains'
     | '/infra/relays'
@@ -486,6 +523,9 @@ export interface FileRouteTypes {
     | '/server/$serverId/info'
     | '/server/$serverId/network'
     | '/server/$serverId/startup'
+    | '/api/cli/auth/device'
+    | '/api/cli/auth/token'
+    | '/api/cli/v1/$'
     | '/server/$serverId/'
     | '/server/$serverId/files/$'
   fileRoutesByTo: FileRoutesByTo
@@ -510,6 +550,7 @@ export interface FileRouteTypes {
     | '/servers'
     | '/api/health'
     | '/api/sentry-check'
+    | '/cli/authorize'
     | '/infra/databases'
     | '/infra/domains'
     | '/infra/relays'
@@ -531,6 +572,9 @@ export interface FileRouteTypes {
     | '/server/$serverId/info'
     | '/server/$serverId/network'
     | '/server/$serverId/startup'
+    | '/api/cli/auth/device'
+    | '/api/cli/auth/token'
+    | '/api/cli/v1/$'
     | '/server/$serverId'
     | '/server/$serverId/files/$'
   id:
@@ -558,6 +602,7 @@ export interface FileRouteTypes {
     | '/_app/settings'
     | '/api/health'
     | '/api/sentry-check'
+    | '/cli/authorize'
     | '/_app/infra/databases'
     | '/_app/infra/domains'
     | '/_app/infra/relays'
@@ -580,6 +625,9 @@ export interface FileRouteTypes {
     | '/_app/server/$serverId/info'
     | '/_app/server/$serverId/network'
     | '/_app/server/$serverId/startup'
+    | '/api/cli/auth/device'
+    | '/api/cli/auth/token'
+    | '/api/cli/v1/$'
     | '/_app/server/$serverId/'
     | '/_app/server/$serverId/files/$'
   fileRoutesById: FileRoutesById
@@ -601,8 +649,12 @@ export interface RootRouteChildren {
   XRoute: typeof XRoute
   ApiHealthRoute: typeof ApiHealthRoute
   ApiSentryCheckRoute: typeof ApiSentryCheckRoute
+  CliAuthorizeRoute: typeof CliAuthorizeRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiConsoleInstanceIdRoute: typeof ApiConsoleInstanceIdRoute
+  ApiCliAuthDeviceRoute: typeof ApiCliAuthDeviceRoute
+  ApiCliAuthTokenRoute: typeof ApiCliAuthTokenRoute
+  ApiCliV1SplatRoute: typeof ApiCliV1SplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -768,6 +820,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiSentryCheckRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/cli/authorize': {
+      id: '/cli/authorize'
+      path: '/cli/authorize'
+      fullPath: '/cli/authorize'
+      preLoaderRoute: typeof CliAuthorizeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_app/infra/': {
       id: '/_app/infra/'
       path: '/'
@@ -929,6 +988,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppServerServerIdStartupRouteImport
       parentRoute: typeof AppServerServerIdRoute
     }
+    '/api/cli/auth/device': {
+      id: '/api/cli/auth/device'
+      path: '/api/cli/auth/device'
+      fullPath: '/api/cli/auth/device'
+      preLoaderRoute: typeof ApiCliAuthDeviceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cli/auth/token': {
+      id: '/api/cli/auth/token'
+      path: '/api/cli/auth/token'
+      fullPath: '/api/cli/auth/token'
+      preLoaderRoute: typeof ApiCliAuthTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cli/v1/$': {
+      id: '/api/cli/v1/$'
+      path: '/api/cli/v1/$'
+      fullPath: '/api/cli/v1/$'
+      preLoaderRoute: typeof ApiCliV1SplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_app/server/$serverId/files/$': {
       id: '/_app/server/$serverId/files/$'
       path: '/$'
@@ -1063,8 +1143,12 @@ const rootRouteChildren: RootRouteChildren = {
   XRoute: XRoute,
   ApiHealthRoute: ApiHealthRoute,
   ApiSentryCheckRoute: ApiSentryCheckRoute,
+  CliAuthorizeRoute: CliAuthorizeRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiConsoleInstanceIdRoute: ApiConsoleInstanceIdRoute,
+  ApiCliAuthDeviceRoute: ApiCliAuthDeviceRoute,
+  ApiCliAuthTokenRoute: ApiCliAuthTokenRoute,
+  ApiCliV1SplatRoute: ApiCliV1SplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -660,11 +660,15 @@ class RelayConnection {
     }
     const payload = objectRecord(request.payload)
     const username = payload.username
+    const credential = payload.credential
     if (typeof username !== "string") {
       return reverseRequestFailure("SFTP username is required")
     }
+    if (credential !== undefined && typeof credential !== "string") {
+      return reverseRequestFailure("SFTP credential is invalid")
+    }
     return Effect.tryPromise({
-      try: () => resolveSftpAuthorization(this.#relay.id, username),
+      try: () => resolveSftpAuthorization(this.#relay.id, username, credential),
       catch: asError,
     }).pipe(
       Effect.flatMap((authorization) =>

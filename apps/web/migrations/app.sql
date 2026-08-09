@@ -145,6 +145,43 @@ CREATE TABLE IF NOT EXISTS kiln_auth_audit (
   KEY kiln_auth_audit_user_created_idx (user_id, created_at)
 );
 
+CREATE TABLE IF NOT EXISTS kiln_cli_credential (
+  id CHAR(36) NOT NULL PRIMARY KEY,
+  user_id VARCHAR(36) NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  token_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  access_mode ENUM('full_access', 'read_only') NOT NULL,
+  expires_at TIMESTAMP(3) NULL,
+  last_used_at TIMESTAMP(3) NULL,
+  revoked_at TIMESTAMP(3) NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  UNIQUE KEY kiln_cli_credential_token_unique (token_hash),
+  KEY kiln_cli_credential_user_created_idx (user_id, created_at),
+  KEY kiln_cli_credential_expiry_idx (expires_at, revoked_at)
+);
+
+CREATE TABLE IF NOT EXISTS kiln_cli_device (
+  id CHAR(36) NOT NULL PRIMARY KEY,
+  device_code_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  user_code_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  client_name VARCHAR(120) NOT NULL,
+  status ENUM('pending', 'approved', 'denied') NOT NULL DEFAULT 'pending',
+  user_id VARCHAR(36) NULL,
+  credential_id CHAR(36) NULL,
+  token_ciphertext TEXT NULL,
+  access_mode ENUM('full_access', 'read_only') NULL,
+  credential_expires_at TIMESTAMP(3) NULL,
+  last_polled_at TIMESTAMP(3) NULL,
+  authorized_at TIMESTAMP(3) NULL,
+  expires_at TIMESTAMP(3) NOT NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  UNIQUE KEY kiln_cli_device_code_unique (device_code_hash),
+  UNIQUE KEY kiln_cli_user_code_unique (user_code_hash),
+  KEY kiln_cli_device_expiry_idx (expires_at, status),
+  CONSTRAINT kiln_cli_device_credential_fk
+    FOREIGN KEY (credential_id) REFERENCES kiln_cli_credential (id) ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS kiln_access_grant (
   id CHAR(36) NOT NULL PRIMARY KEY,
   user_id VARCHAR(36) NOT NULL,

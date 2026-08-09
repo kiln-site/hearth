@@ -15,6 +15,14 @@ export const activityTypes = [
 
 export type ActivityType = (typeof activityTypes)[number]
 
+export const activitySources = ["web", "cli"] as const
+export type ActivitySource = (typeof activitySources)[number]
+const activitySourceValues: ReadonlySet<string> = new Set(activitySources)
+
+export function isActivitySource(value: string): value is ActivitySource {
+  return activitySourceValues.has(value)
+}
+
 const activityTypeValues: ReadonlySet<string> = new Set(activityTypes)
 
 export function isActivityType(value: string): value is ActivityType {
@@ -271,6 +279,12 @@ export function auditUserId(audit: RelayAuditRecord): string | null {
   return typeof audit.details.subject === "string"
     ? audit.details.subject
     : null
+}
+
+export function activitySourceForAudit(
+  audit: RelayAuditRecord
+): ActivitySource {
+  return audit.details.source === "cli" ? "cli" : "web"
 }
 
 function auditOperation(audit: RelayAuditRecord): string | null {

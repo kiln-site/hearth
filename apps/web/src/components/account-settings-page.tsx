@@ -10,6 +10,7 @@ import {
   LockKeyhole,
   LogOut,
   Smartphone,
+  Terminal,
   Trash2,
 } from "lucide-react"
 
@@ -29,12 +30,14 @@ import { ensuringPromise, recoverPromise } from "@/effect/promise"
 import { authClient } from "@/lib/auth-client"
 import type { AuthenticatedUser } from "@/lib/auth-session"
 import { clearAppearanceCache } from "@/lib/appearance"
+import { getCliCredentials, revokeCliCredential } from "@/server/cli"
 
 const accountDateFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
 })
 const activeSessionsQueryKey = ["account", "active-sessions"] as const
+const linkedCliQueryKey = ["account", "linked-clis"] as const
 
 type SessionListResult = Awaited<ReturnType<typeof authClient.listSessions>>
 type ActiveSession = NonNullable<SessionListResult["data"]>[number]
@@ -86,6 +89,7 @@ export function AccountSettingsPage({ user }: { user: AuthenticatedUser }) {
           ) : (
             <PasskeysCard />
           )}
+          <CliCredentialsCard enabled={!user.isDevelopmentBypass} />
           <SessionsCard enabled={!user.isDevelopmentBypass} />
         </div>
       </fieldset>
@@ -853,6 +857,132 @@ function DisabledPasskeysCard() {
         <Button type="button" variant="outline" size="sm">
           Add passkey
         </Button>
+      </div>
+    </AccountSection>
+  )
+}
+
+function CliCredentialsCard({ enabled }: { enabled: boolean }) {
+  const queryClient = useQueryClient()
+  const [pendingId, setPendingId] = React.useState<string | null>(null)
+  const linked = useQuery({
+    queryKey: linkedCliQueryKey,
+    enabled,
+    queryFn: () => getCliCredentials(),
+  })
+  const active =
+    linked.data?.credentials.filter((credential) => credential.active) ?? []
+
+  async function unlink(credentialId: string) {
+    setPendingId(credentialId)
+    const result = await recoverPromise(
+      async () => {
+        await revokeCliCredential({ data: { credentialId } })
+        await queryClient.invalidateQueries({ queryKey: linkedCliQueryKey })
+        return { error: null }
+      },
+      (cause) => ({ error: cause })
+    )
+    setPendingId(null)
+    if (result.error) {
+      showToast({
+        message: authErrorMessage(result.error, "Could not unlink the CLI"),
+        type: "error",
+      })
+      return
+    }
+    showToast({ message: "CLI unlinked.", type: "success" })
+  }
+
+  return (
+    <AccountSection title="Linked CLIs">
+      <p className="mb-3 text-xs text-muted-foreground">
+        {enabled
+          ? `${active.length} active · full access expires after ${linked.data?.defaultAccessDays ?? 30} days by default`
+          : "No persisted CLIs for the development identity"}
+      </p>
+      <div className="divide-y border bg-background/45">
+        {!enabled ? (
+          <p className="px-3 py-6 text-center text-xs text-muted-foreground">
+            Sign in with an account to link a CLI
+          </p>
+        ) : linked.isPending ? (
+          <div className="flex items-center justify-center gap-2 px-3 py-8 text-xs text-muted-foreground">
+            <LoaderCircle className="size-4 animate-spin" /> Loading CLIs
+          </div>
+        ) : linked.isError ? (
+          <div className="px-3 py-6 text-center">
+            <p className="text-xs text-destructive">
+              {authErrorMessage(linked.error, "Could not load linked CLIs")}
+            </p>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="mt-2"
+              onClick={() => void linked.refetch()}
+            >
+              Try again
+            </Button>
+          </div>
+        ) : linked.data?.credentials.length ? (
+          linked.data.credentials.map((credential) => {
+            return (
+              <div
+                key={credential.id}
+                className="grid gap-3 px-3 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(10rem,0.55fr)_auto] sm:items-center"
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="grid size-9 shrink-0 place-items-center border bg-card text-primary">
+                    <Terminal className="size-4" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-xs font-medium">
+                      {credential.name}
+                    </span>
+                    <span className="mt-0.5 block font-mono text-[8px] text-muted-foreground uppercase">
+                      {credential.mode === "read_only"
+                        ? "Read-only"
+                        : "Full access"}
+                      {!credential.active
+                        ? ` · ${credential.revokedAt ? "Unlinked" : "Expired"}`
+                        : " · Active"}
+                    </span>
+                  </span>
+                </div>
+                <div className="text-[10px] leading-4 text-muted-foreground sm:text-right">
+                  <span className="block">
+                    Last used {formatDate(credential.lastUsedAt)}
+                  </span>
+                  <span className="block">
+                    {credential.expiresAt
+                      ? `Expires ${formatDate(credential.expiresAt)}`
+                      : "No expiration"}
+                  </span>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="justify-self-start text-muted-foreground hover:text-destructive sm:justify-self-end"
+                  disabled={!credential.active || pendingId !== null}
+                  onClick={() => void unlink(credential.id)}
+                >
+                  {pendingId === credential.id ? (
+                    <LoaderCircle className="animate-spin" />
+                  ) : (
+                    <Trash2 />
+                  )}
+                  Unlink
+                </Button>
+              </div>
+            )
+          })
+        ) : (
+          <p className="px-3 py-6 text-center text-xs text-muted-foreground">
+            No CLIs linked yet. Run <code>kiln login</code> to connect one.
+          </p>
+        )}
       </div>
     </AccountSection>
   )

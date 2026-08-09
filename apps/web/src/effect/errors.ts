@@ -45,6 +45,31 @@ export class CredentialError extends Schema.TaggedErrorClass<CredentialError>()(
   }
 }
 
+export class CliAccessError extends Schema.TaggedErrorClass<CliAccessError>()(
+  "CliAccessError",
+  {
+    code: Schema.Literals([
+      "access_denied",
+      "authentication_required",
+      "authorization_pending",
+      "conflict",
+      "expired_token",
+      "forbidden",
+      "invalid_grant",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "relay_unavailable",
+      "sftp_unavailable",
+      "slow_down",
+      "unexpected_error",
+    ]),
+    message: Schema.String,
+    retryable: Schema.Boolean,
+    cause: Schema.optional(Schema.Defect()),
+  }
+) {}
+
 export class AuthenticationError extends Schema.TaggedErrorClass<AuthenticationError>()(
   "AuthenticationError",
   {
@@ -116,6 +141,7 @@ export class TailscaleOrchestrationError extends Schema.TaggedErrorClass<Tailsca
 export type AppError =
   | AuthenticationError
   | CacheError
+  | CliAccessError
   | CredentialError
   | DatabaseError
   | ExternalServiceError

@@ -3,6 +3,7 @@ import { z } from "zod"
 export * from "./relay-protocol.js"
 export * from "./release-version.js"
 export * from "./minecraft-java.js"
+export * from "./cli.js"
 
 export const relayIdSchema = z.string().regex(/^[A-Za-z\d_-]{43}$/u)
 

@@ -742,7 +742,12 @@ export function auditDetailsForRequest(
     details.permission = permission
   }
   if (request.subject) {
-    details.subject = request.subject
+    const cliSubject = parseCliSubject(request.subject)
+    details.subject = cliSubject?.userId ?? request.subject
+    if (cliSubject) {
+      details.source = "cli"
+      details.cliCredentialId = cliSubject.credentialId
+    }
   }
   if (
     !request.payload ||
@@ -782,6 +787,15 @@ export function auditDetailsForRequest(
     }
   }
   return details
+}
+
+function parseCliSubject(
+  subject: string
+): { credentialId: string; userId: string } | null {
+  const match = /^cli\/([0-9a-f-]{36})\/([0-9A-Za-z_-]{1,64})$/u.exec(subject)
+  return match?.[1] && match[2]
+    ? { credentialId: match[1], userId: match[2] }
+    : null
 }
 
 function closeClientSockets(

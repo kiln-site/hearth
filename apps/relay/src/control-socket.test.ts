@@ -133,6 +133,29 @@ describe("Relay control audit details", () => {
       subject: "user-123",
     })
   })
+
+  it("attributes CLI mutations to the owning user and credential", () => {
+    const credentialId = "12345678-1234-4123-8123-123456789abc"
+    const request: RelayControlRequest = {
+      deadline: Date.now() + 5_000,
+      id: "request",
+      operation: "instance.console.write",
+      payload: { command: "say deployed", instanceId: "a".repeat(40) },
+      subject: `cli/${credentialId}/user-123`,
+      timeoutMs: 5_000,
+      type: "request",
+      v: 1,
+    }
+
+    expect(auditDetailsForRequest(request, {})).toEqual({
+      cliCredentialId: credentialId,
+      instanceId: "a".repeat(40),
+      operation: "instance.console.write",
+      permission: "instance.console.write",
+      source: "cli",
+      subject: "user-123",
+    })
+  })
 })
 
 describe("Relay control socket", () => {

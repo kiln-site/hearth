@@ -3,7 +3,11 @@ import { z } from "zod"
 
 import { ActivityPage } from "@/components/activity-page"
 import type { ActivityFilters } from "@/components/activity-page"
-import { activityInstantSchema, activityTypes } from "@/lib/activity"
+import {
+  activityInstantSchema,
+  activitySources,
+  activityTypes,
+} from "@/lib/activity"
 import { activityQueryOptions } from "@/lib/query-options"
 import { pageTitle } from "@/lib/page-title"
 
@@ -13,6 +17,7 @@ const activitySearchSchema = z
     q: z.string().max(160).optional(),
     relay: z.string().max(64).optional(),
     server: z.string().max(64).optional(),
+    source: z.enum(activitySources).optional(),
     to: activityInstantSchema.optional(),
     type: z.enum(activityTypes).optional(),
     user: z.string().max(64).optional(),

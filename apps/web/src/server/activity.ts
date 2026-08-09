@@ -11,6 +11,7 @@ import {
   activityInstantSchema,
   activityLabelForAudit,
   activityPermissionForAudit,
+  activitySourceForAudit,
   activityTypeForAudit,
   auditInstanceId,
   auditUserId,
@@ -207,6 +208,7 @@ export const getActivity = createServerFn({ method: "GET" })
                   instance?.displayName ?? `Server ${instanceId.slice(0, 8)}`,
               }
             : null,
+          source: activitySourceForAudit(record),
           type: activityTypeForAudit(record),
         }
       })

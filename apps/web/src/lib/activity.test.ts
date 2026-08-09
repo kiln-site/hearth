@@ -6,6 +6,7 @@ import {
   activityLocalRangeToUtc,
   activityLabelForAudit,
   activityPermissionForAudit,
+  activitySourceForAudit,
   activityTypeForAudit,
   scopeAllowsAudit,
 } from "@/lib/activity"
@@ -103,6 +104,12 @@ describe("activity", () => {
     )
 
     expect(activityPermissionForAudit(record)).toBe("instance.console.write")
+  })
+
+  it("only classifies explicitly attributed Relay audits as CLI activity", () => {
+    expect(activitySourceForAudit(audit({ source: "cli" }))).toBe("cli")
+    expect(activitySourceForAudit(audit({ source: "web" }))).toBe("web")
+    expect(activitySourceForAudit(audit({ source: "unknown" }))).toBe("web")
   })
 
   it("converts local calendar days to exact UTC query bounds", () => {

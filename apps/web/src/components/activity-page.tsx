@@ -6,6 +6,7 @@ import { ensuringPromise, forkPromise } from "@/effect/promise"
 import {
   ArrowLeftRight,
   CalendarDays,
+  Bot,
   ChevronDown,
   CircleGauge,
   FileClock,
@@ -46,9 +47,10 @@ import {
 import {
   activityLocalRangeToUtc,
   activityTypes,
+  isActivitySource,
   isActivityType,
 } from "@/lib/activity"
-import type { ActivityType } from "@/lib/activity"
+import type { ActivitySource, ActivityType } from "@/lib/activity"
 import { activityQueryOptions } from "@/lib/query-options"
 import { relayInstanceRouteId } from "@/lib/relay-fleet"
 import type { ActivityData, ActivityEntry } from "@/server/activity"
@@ -58,6 +60,7 @@ export interface ActivityFilters {
   q?: string
   relay?: string
   server?: string
+  source?: ActivitySource
   to?: string
   type?: ActivityType
   user?: string
@@ -123,6 +126,7 @@ export const ActivityPage = React.memo(function ActivityPage({
     filters.user,
     filters.relay,
     filters.server,
+    filters.source,
     filters.from,
     filters.to,
   ].filter(Boolean).length
@@ -193,6 +197,21 @@ const ActivityFiltersToolbar = React.memo(function ActivityFiltersToolbar({
         </ActivitySelect>
 
         <ActivitySelect
+          ariaLabel="Filter activity by source"
+          icon={<Bot />}
+          value={filters.source ?? ""}
+          onChange={(value) =>
+            onFiltersChange({
+              source: isActivitySource(value) ? value : undefined,
+            })
+          }
+        >
+          <option value="">All sources</option>
+          <option value="web">Web</option>
+          <option value="cli">CLI</option>
+        </ActivitySelect>
+
+        <ActivitySelect
           ariaLabel="Filter activity by user"
           icon={<UserRound />}
           value={filters.user ?? ""}
@@ -252,6 +271,7 @@ const ActivityFiltersToolbar = React.memo(function ActivityFiltersToolbar({
                 q: undefined,
                 relay: undefined,
                 server: undefined,
+                source: undefined,
                 to: undefined,
                 type: undefined,
                 user: undefined,
@@ -784,6 +804,7 @@ const ActivityRow = React.memo(function ActivityRow({
       <div className="hidden min-w-0 pr-3 md:block">
         <p className="truncate text-[11px] font-medium">{entry.actor.name}</p>
         <p className="truncate font-mono text-[8px] text-muted-foreground">
+          {entry.source === "cli" ? "CLI · " : ""}
           {entry.actor.email ?? "service activity"}
         </p>
       </div>
@@ -882,6 +903,7 @@ function filterActivity(
     if (filters.user && entry.actor.id !== filters.user) return false
     if (filters.relay && entry.relay.id !== filters.relay) return false
     if (filters.server && entry.server?.id !== filters.server) return false
+    if (filters.source && entry.source !== filters.source) return false
     if (!normalized) return true
     return [
       entry.label,
