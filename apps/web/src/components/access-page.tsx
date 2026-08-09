@@ -1,6 +1,7 @@
 import * as React from "react"
 import {
   useMutation,
+  useQuery,
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query"
@@ -10,17 +11,18 @@ import {
   Activity,
   ChevronDown,
   Clock3,
-  Crown,
   Database,
+  ListFilter,
   LoaderCircle,
   Network,
   Plus,
+  RefreshCw,
   Search,
   Server,
-  ShieldCheck,
   Trash2,
   UserRound,
   Users,
+  X,
 } from "lucide-react"
 
 import { Badge } from "@workspace/ui/components/badge"
@@ -114,6 +116,18 @@ interface RemoveTarget {
   resourceName: string
 }
 
+interface AccessFilters {
+  relayId: string
+  resourceType: "" | AccessDirectoryRow["resourceType"]
+  role: "" | AccessRole
+}
+
+const emptyAccessFilters: AccessFilters = {
+  relayId: "",
+  resourceType: "",
+  role: "",
+}
+
 const invitationExpiryFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeZone: "UTC",
@@ -131,6 +145,9 @@ export function AccessPage({
   )
   const [searchStore] = React.useState(createWorkspaceTableSearchStore)
   const [addOpen, setAddOpen] = React.useState(false)
+  const [pendingOpen, setPendingOpen] = React.useState(false)
+  const [filters, setFilters] =
+    React.useState<AccessFilters>(emptyAccessFilters)
   const [removeTarget, setRemoveTarget] = React.useState<RemoveTarget | null>(
     null
   )
@@ -145,6 +162,26 @@ export function AccessPage({
   const rows = React.useMemo(
     () => accessDirectoryRows(overview, instances, databases),
     [databases, instances, overview]
+  )
+  const filteredRows = React.useMemo(
+    () =>
+      rows.filter(
+        (row) =>
+          (!filters.relayId || row.relayId === filters.relayId) &&
+          (!filters.resourceType ||
+            row.resourceType === filters.resourceType) &&
+          (!filters.role || row.role === filters.role)
+      ),
+    [filters, rows]
+  )
+  const activeFilterCount =
+    Number(Boolean(filters.relayId)) +
+    Number(Boolean(filters.resourceType)) +
+    Number(Boolean(filters.role))
+  const updateFilters = React.useCallback(
+    (change: Partial<AccessFilters>) =>
+      setFilters((current) => ({ ...current, ...change })),
+    []
   )
 
   const updateGrantMutation = useMutation({
@@ -202,23 +239,30 @@ export function AccessPage({
   )
 
   return (
-    <div className="mx-auto w-full max-w-[90rem] px-3 pb-10 sm:px-5">
+    <div className="mx-auto w-full max-w-[90rem] px-3 pt-4 pb-10 sm:px-5">
       <section
         data-slot="access-workspace"
         className="overflow-hidden rounded-xl border bg-card/45 [contain:paint]"
       >
         <AccessToolbar
+          activeFilterCount={activeFilterCount}
+          filters={filters}
+          invitationCount={overview.invitations.length}
+          relays={overview.relays}
           searchStore={searchStore}
           onAdd={() => setAddOpen(true)}
+          onFiltersChange={updateFilters}
+          onPending={() => setPendingOpen(true)}
         />
         <AccessDirectoryTable
+          filtersActive={activeFilterCount > 0}
           ownerRelayIds={ownerRelayIds}
           pendingGrantId={
             updateGrantMutation.isPending
               ? updateGrantMutation.variables?.data.id
               : undefined
           }
-          rows={rows}
+          rows={filteredRows}
           searchStore={searchStore}
           onRemove={(row) => {
             if (!row.grant) return
@@ -235,24 +279,24 @@ export function AccessPage({
         />
       </section>
 
-      <PendingInvitations
-        databases={databases}
-        invitations={overview.invitations}
-        instances={instances}
-        ownerRelayIds={ownerRelayIds}
-        pendingId={
-          revokeInvitationMutation.isPending
-            ? revokeInvitationMutation.variables?.data.id
-            : undefined
-        }
-        onRevoke={(id, relayId) => {
-          revokeInvitationMutation.mutate({ data: { id, relayId } })
-        }}
-      />
-
-      <PlatformAdministratorDirectory
-        administrators={overview.platformAdministrators}
-      />
+      {pendingOpen ? (
+        <PendingInvitationsDialog
+          open
+          databases={databases}
+          invitations={overview.invitations}
+          instances={instances}
+          ownerRelayIds={ownerRelayIds}
+          pendingId={
+            revokeInvitationMutation.isPending
+              ? revokeInvitationMutation.variables?.data.id
+              : undefined
+          }
+          onOpenChange={setPendingOpen}
+          onRevoke={(id, relayId) => {
+            revokeInvitationMutation.mutate({ data: { id, relayId } })
+          }}
+        />
+      ) : null}
 
       {addOpen ? (
         <AddUserDialog
@@ -288,39 +332,203 @@ export function AccessPage({
 }
 
 const AccessToolbar = React.memo(function AccessToolbar({
+  activeFilterCount,
+  filters,
+  invitationCount,
+  relays,
   searchStore,
   onAdd,
+  onFiltersChange,
+  onPending,
 }: {
+  activeFilterCount: number
+  filters: AccessFilters
+  invitationCount: number
+  relays: AccessOverview["relays"]
   searchStore: WorkspaceTableSearchStore
   onAdd: () => void
+  onFiltersChange: (change: Partial<AccessFilters>) => void
+  onPending: () => void
 }) {
   const inputRef = React.useRef<HTMLInputElement>(null)
   useWorkspaceTableSearchInput(inputRef, searchStore)
 
   return (
-    <div className="flex min-w-0 items-center gap-2 border-b bg-background/25 p-3">
-      <div className="relative min-w-0 flex-1 sm:max-w-md">
+    <div className="flex min-w-0 flex-wrap items-center gap-2 border-b bg-background/25 p-3">
+      <AccessSyncButton />
+
+      <div className="relative min-w-48 flex-1 sm:max-w-md">
         <Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input
           ref={inputRef}
           aria-label="Search user access"
           className="pl-9 text-base md:text-sm"
           defaultValue={searchStore.getServerSnapshot()}
-          placeholder="Search users, scopes, or roles"
+          placeholder="Search emails or scopes"
           type="search"
           onChange={(event) => searchStore.set(event.currentTarget.value)}
         />
       </div>
-      <Button type="button" className="ml-auto shrink-0" onClick={onAdd}>
-        <Plus />
-        <span className="hidden sm:inline">Add user</span>
-        <span className="sm:hidden">Add</span>
-      </Button>
+
+      <div className="flex min-w-0 items-center gap-2">
+        <AccessFilterSelect
+          ariaLabel="Filter access by role"
+          icon={<UserRound />}
+          value={filters.role}
+          onChange={(role) =>
+            onFiltersChange({ role: accessRoleFilterFromValue(role) })
+          }
+        >
+          <option value="">All roles</option>
+          {accessRoles.map((role) => (
+            <option key={role} value={role}>
+              {accessRoleDetails[role].label}
+            </option>
+          ))}
+        </AccessFilterSelect>
+
+        <AccessFilterSelect
+          ariaLabel="Filter access by scope"
+          icon={<ListFilter />}
+          value={filters.resourceType}
+          onChange={(resourceType) =>
+            onFiltersChange({
+              resourceType: accessResourceFilterFromValue(resourceType),
+            })
+          }
+        >
+          <option value="">All scopes</option>
+          <option value="relay">Relays</option>
+          <option value="instance">Servers</option>
+          <option value="database">Databases</option>
+        </AccessFilterSelect>
+
+        {relays.length > 1 ? (
+          <AccessFilterSelect
+            ariaLabel="Filter access by Relay"
+            icon={<Network />}
+            value={filters.relayId}
+            onChange={(relayId) => onFiltersChange({ relayId })}
+          >
+            <option value="">All Relays</option>
+            {relays.map((relay) => (
+              <option key={relay.id} value={relay.id}>
+                {relay.name}
+              </option>
+            ))}
+          </AccessFilterSelect>
+        ) : null}
+
+        {activeFilterCount > 0 ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => onFiltersChange(emptyAccessFilters)}
+          >
+            <X />
+            Clear {activeFilterCount}
+          </Button>
+        ) : null}
+      </div>
+
+      <div className="ml-auto flex shrink-0 items-center gap-2">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              aria-label={`Pending invitations, ${invitationCount}`}
+              onClick={onPending}
+            >
+              <Clock3 />
+              <span className="hidden sm:inline">Pending</span>
+              <Badge
+                variant="outline"
+                className="h-4 min-w-4 justify-center border-border/80 px-1 font-mono text-[8px]"
+              >
+                {invitationCount}
+              </Badge>
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Pending invitations</TooltipContent>
+        </Tooltip>
+        <Button type="button" className="shrink-0" onClick={onAdd}>
+          <Plus />
+          <span className="hidden sm:inline">Add user</span>
+          <span className="sm:hidden">Add</span>
+        </Button>
+      </div>
     </div>
   )
 })
 
+const AccessSyncButton = React.memo(function AccessSyncButton() {
+  const { fetchStatus, refetch } = useQuery({
+    ...accessOverviewQueryOptions(),
+    notifyOnChangeProps: ["fetchStatus"],
+  })
+  const syncing = fetchStatus === "fetching"
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          size="icon"
+          variant="outline"
+          aria-label="Sync access"
+          aria-busy={syncing}
+          disabled={syncing}
+          onClick={() => void refetch()}
+        >
+          <RefreshCw className={syncing ? "animate-spin" : ""} />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>
+        Sync access
+      </TooltipContent>
+    </Tooltip>
+  )
+})
+
+function AccessFilterSelect({
+  ariaLabel,
+  children,
+  icon,
+  onChange,
+  value,
+}: {
+  ariaLabel: string
+  children: React.ReactNode
+  icon: React.ReactNode
+  onChange: (value: string) => void
+  value: string
+}) {
+  return (
+    <label
+      className={`relative inline-flex h-8 min-w-0 items-center border bg-input/20 text-xs text-foreground/90 transition-colors hover:border-primary/35 hover:bg-accent/70 ${
+        value ? "border-primary/35 bg-primary/7" : "border-input/90"
+      }`}
+    >
+      <span className="pointer-events-none ml-2 text-muted-foreground [&_svg]:size-3.5">
+        {icon}
+      </span>
+      <select
+        aria-label={ariaLabel}
+        className="h-full min-w-0 appearance-none bg-transparent py-0 pr-7 pl-1.5 outline-none"
+        value={value}
+        onChange={(event) => onChange(event.currentTarget.value)}
+      >
+        {children}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-2 size-3 text-muted-foreground" />
+    </label>
+  )
+}
+
 function AccessDirectoryTable({
+  filtersActive,
   ownerRelayIds,
   pendingGrantId,
   rows,
@@ -328,6 +536,7 @@ function AccessDirectoryTable({
   onRemove,
   onRoleChange,
 }: {
+  filtersActive: boolean
   ownerRelayIds: ReadonlySet<string>
   pendingGrantId?: string
   rows: Array<AccessDirectoryRow>
@@ -353,17 +562,19 @@ function AccessDirectoryTable({
         <div>
           <Users className="mx-auto size-5 text-muted-foreground" />
           <p className="mt-3 text-sm font-semibold">
-            {searchActive ? "No matching access" : "No scoped users yet"}
+            {searchActive || filtersActive
+              ? "No matching access"
+              : "No scoped users yet"}
           </p>
           <p className="mt-1 text-[11px] text-muted-foreground">
-            {searchActive
-              ? "Try a user, server, Relay, or role."
-              : "Platform administrators still retain implicit access."}
+            {searchActive || filtersActive
+              ? "Try another email, scope, Relay, or role."
+              : "Add a user to grant access to a Relay, server, or database."}
           </p>
         </div>
       </div>
     ),
-    []
+    [filtersActive]
   )
 
   return (
@@ -821,183 +1032,156 @@ function RemoveAccessDialog({
   )
 }
 
-function PendingInvitations({
+function PendingInvitationsDialog({
   databases,
   invitations,
   instances,
+  open,
   ownerRelayIds,
   pendingId,
+  onOpenChange,
   onRevoke,
 }: {
   databases: ManagedDatabaseDirectory
   invitations: AccessOverview["invitations"]
   instances: Array<FleetRelayInstance>
+  open: boolean
   ownerRelayIds: ReadonlySet<string>
   pendingId?: string
+  onOpenChange: (open: boolean) => void
   onRevoke: (id: string, relayId: string) => void
 }) {
-  if (invitations.length === 0) return null
-
   return (
-    <section className="mt-4 overflow-hidden rounded-xl border bg-card/45">
-      <div className="flex items-center gap-3 border-b bg-background/25 px-4 py-3">
-        <Clock3 className="size-4 text-primary" />
-        <div>
-          <h2 className="text-xs font-semibold">Pending invitations</h2>
-          <p className="text-[9px] text-muted-foreground">
-            Accounts are created only after the recipient accepts.
-          </p>
-        </div>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[40rem] table-fixed border-collapse text-left">
-          <WorkspaceTableHead>
-            <WorkspaceTableHeading className="w-[31%]">
-              Email
-            </WorkspaceTableHeading>
-            <WorkspaceTableHeading className="w-[31%]">
-              Scope
-            </WorkspaceTableHeading>
-            <WorkspaceTableHeading className="w-28">Role</WorkspaceTableHeading>
-            <WorkspaceTableHeading className="w-28">
-              Expires
-            </WorkspaceTableHeading>
-            <WorkspaceTableHeading className="w-20 text-right">
-              Actions
-            </WorkspaceTableHeading>
-          </WorkspaceTableHead>
-          <tbody className="divide-y divide-border/70">
-            {invitations.map((invitation) => {
-              const instance = instances.find(
-                (item) =>
-                  item.id === invitation.instanceId &&
-                  item.relayId === invitation.relayId
-              )
-              const database = databases.find(
-                (item) =>
-                  item.id === invitation.databaseId &&
-                  item.relayId === invitation.relayId
-              )
-              const resourceName =
-                database?.name ?? instance?.name ?? invitation.relayName
-              return (
-                <tr key={invitation.id} className="hover:bg-accent/25">
-                  <WorkspaceTableCell>
-                    <p className="truncate text-xs font-medium">
-                      {invitation.email}
-                    </p>
-                  </WorkspaceTableCell>
-                  <WorkspaceTableCell>
-                    <p className="truncate text-[10px]">{resourceName}</p>
-                    <p className="font-mono text-[8px] text-muted-foreground uppercase">
-                      {database ? "Database" : instance ? "Server" : "Relay"}
-                    </p>
-                  </WorkspaceTableCell>
-                  <WorkspaceTableCell>
-                    <Badge
-                      variant="outline"
-                      className="font-mono text-[8px] capitalize"
-                    >
-                      {invitation.role}
-                    </Badge>
-                  </WorkspaceTableCell>
-                  <WorkspaceTableCell className="font-mono text-[9px] text-muted-foreground">
-                    <HydratedDate value={invitation.expiresAt} />
-                  </WorkspaceTableCell>
-                  <WorkspaceTableCell>
-                    <div className="flex justify-end">
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span>
-                            <Button
-                              type="button"
-                              size="icon-sm"
-                              variant="ghost"
-                              aria-label={`Revoke invitation for ${invitation.email}`}
-                              disabled={
-                                pendingId !== undefined ||
-                                (invitation.role === "owner" &&
-                                  !ownerRelayIds.has(invitation.relayId))
-                              }
-                              onClick={() =>
-                                onRevoke(invitation.id, invitation.relayId)
-                              }
-                            >
-                              {pendingId === invitation.id ? (
-                                <LoaderCircle className="animate-spin" />
-                              ) : (
-                                <Trash2 />
-                              )}
-                            </Button>
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent side="bottom">
-                          {invitation.role === "owner" &&
-                          !ownerRelayIds.has(invitation.relayId)
-                            ? "Only a Relay owner can revoke this invitation"
-                            : "Revoke invitation"}
-                        </TooltipContent>
-                      </Tooltip>
-                    </div>
-                  </WorkspaceTableCell>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  )
-}
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[calc(100vh-2rem)] overflow-hidden sm:max-w-4xl">
+        <DialogHeader>
+          <DialogTitle>Pending invitations</DialogTitle>
+          <DialogDescription>
+            Invitations expire after seven days. Accounts are created only after
+            the recipient accepts.
+          </DialogDescription>
+        </DialogHeader>
 
-function PlatformAdministratorDirectory({
-  administrators,
-}: {
-  administrators: AccessOverview["platformAdministrators"]
-}) {
-  if (administrators.length === 0) return null
-
-  return (
-    <section className="mt-4 overflow-hidden rounded-xl border border-primary/20 bg-card/45">
-      <div className="flex items-center gap-3 border-b border-primary/15 bg-primary/5 px-4 py-3">
-        <ShieldCheck className="size-4 text-primary" />
-        <div className="min-w-0 flex-1">
-          <h2 className="text-xs font-semibold">Platform administrators</h2>
-          <p className="text-[9px] text-muted-foreground">
-            Implicit fleet access · visible only to platform administrators
-          </p>
-        </div>
-        <Badge variant="outline" className="font-mono text-[8px]">
-          {administrators.length}
-        </Badge>
-      </div>
-      <div className="divide-y divide-border/70">
-        {administrators.map((administrator) => (
-          <div
-            key={administrator.id}
-            className="flex min-w-0 items-center gap-3 px-4 py-3"
-          >
-            <span className="grid size-8 shrink-0 place-items-center rounded-md border border-primary/20 bg-primary/8 text-primary">
-              <Crown className="size-3.5" />
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-semibold">
-                {administrator.name}
+        {invitations.length > 0 ? (
+          <div className="max-h-[min(32rem,60vh)] overflow-auto rounded-lg border">
+            <table className="w-full min-w-[40rem] table-fixed border-collapse text-left">
+              <WorkspaceTableHead>
+                <WorkspaceTableHeading className="w-[31%]">
+                  Email
+                </WorkspaceTableHeading>
+                <WorkspaceTableHeading className="w-[31%]">
+                  Scope
+                </WorkspaceTableHeading>
+                <WorkspaceTableHeading className="w-28">
+                  Role
+                </WorkspaceTableHeading>
+                <WorkspaceTableHeading className="w-28">
+                  Expires
+                </WorkspaceTableHeading>
+                <WorkspaceTableHeading className="w-20 text-right">
+                  Actions
+                </WorkspaceTableHeading>
+              </WorkspaceTableHead>
+              <tbody className="divide-y divide-border/70">
+                {invitations.map((invitation) => {
+                  const instance = instances.find(
+                    (item) =>
+                      item.id === invitation.instanceId &&
+                      item.relayId === invitation.relayId
+                  )
+                  const database = databases.find(
+                    (item) =>
+                      item.id === invitation.databaseId &&
+                      item.relayId === invitation.relayId
+                  )
+                  const resourceName =
+                    database?.name ?? instance?.name ?? invitation.relayName
+                  return (
+                    <tr key={invitation.id} className="hover:bg-accent/25">
+                      <WorkspaceTableCell>
+                        <p className="truncate text-xs font-medium">
+                          {invitation.email}
+                        </p>
+                      </WorkspaceTableCell>
+                      <WorkspaceTableCell>
+                        <p className="truncate text-[10px]">{resourceName}</p>
+                        <p className="font-mono text-[8px] text-muted-foreground uppercase">
+                          {database
+                            ? "Database"
+                            : instance
+                              ? "Server"
+                              : "Relay"}
+                        </p>
+                      </WorkspaceTableCell>
+                      <WorkspaceTableCell>
+                        <Badge
+                          variant="outline"
+                          className="font-mono text-[8px] capitalize"
+                        >
+                          {invitation.role}
+                        </Badge>
+                      </WorkspaceTableCell>
+                      <WorkspaceTableCell className="font-mono text-[9px] text-muted-foreground">
+                        <HydratedDate value={invitation.expiresAt} />
+                      </WorkspaceTableCell>
+                      <WorkspaceTableCell>
+                        <div className="flex justify-end">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span>
+                                <Button
+                                  type="button"
+                                  size="icon-sm"
+                                  variant="ghost"
+                                  aria-label={`Revoke invitation for ${invitation.email}`}
+                                  disabled={
+                                    pendingId !== undefined ||
+                                    (invitation.role === "owner" &&
+                                      !ownerRelayIds.has(invitation.relayId))
+                                  }
+                                  onClick={() =>
+                                    onRevoke(invitation.id, invitation.relayId)
+                                  }
+                                >
+                                  {pendingId === invitation.id ? (
+                                    <LoaderCircle className="animate-spin" />
+                                  ) : (
+                                    <Trash2 />
+                                  )}
+                                </Button>
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom">
+                              {invitation.role === "owner" &&
+                              !ownerRelayIds.has(invitation.relayId)
+                                ? "Only a Relay owner can revoke this invitation"
+                                : "Revoke invitation"}
+                            </TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </WorkspaceTableCell>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="grid min-h-48 place-items-center rounded-lg border border-dashed bg-muted/10 px-5 text-center">
+            <div>
+              <Clock3 className="mx-auto size-5 text-muted-foreground" />
+              <p className="mt-3 text-sm font-semibold">
+                No pending invitations
               </p>
-              <p className="truncate font-mono text-[8px] text-muted-foreground">
-                {administrator.email}
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                New invitations will appear here until they are accepted or
+                revoked.
               </p>
             </div>
-            <Badge
-              variant="outline"
-              className="border-primary/25 bg-primary/8 font-mono text-[8px] text-primary"
-            >
-              All access
-            </Badge>
           </div>
-        ))}
-      </div>
-    </section>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -1244,6 +1428,18 @@ function errorMessage(cause: unknown, fallback: string): string {
 
 function accessRoleFromValue(value: string): AccessRole {
   return isAccessRole(value) ? value : "viewer"
+}
+
+function accessRoleFilterFromValue(value: string): AccessFilters["role"] {
+  return isAccessRole(value) ? value : ""
+}
+
+function accessResourceFilterFromValue(
+  value: string
+): AccessFilters["resourceType"] {
+  return value === "database" || value === "instance" || value === "relay"
+    ? value
+    : ""
 }
 
 function rolesForRelay(

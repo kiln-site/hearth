@@ -222,12 +222,9 @@ export const getAccessOverview = createServerFn({ method: "GET" }).handler(
     if (manageableRelays.length === 0) {
       throw new Error("You do not have permission to manage Relay access")
     }
-    const [sections, platformAdministrators] = await Promise.all([
-      Promise.all(
-        manageableRelays.map((relay) => relayAccessOverview(user, relay))
-      ),
-      platformAdmin ? listPlatformAdministrators() : [],
-    ])
+    const sections = await Promise.all(
+      manageableRelays.map((relay) => relayAccessOverview(user, relay))
+    )
     return {
       grants: sections.flatMap((section) => section.grants),
       invitations: sections.flatMap((section) => section.invitations),
@@ -235,7 +232,6 @@ export const getAccessOverview = createServerFn({ method: "GET" }).handler(
       ownerRelayIds: sections.flatMap((section) =>
         section.canManageOwners ? [section.relay.id] : []
       ),
-      platformAdministrators,
       relays: sections.map((section) => section.relay),
     }
   }
