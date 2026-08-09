@@ -29,7 +29,7 @@ export function TwoFactorPage() {
     }
     const returnTo = sessionStorage.getItem("kiln:auth:return") || "/"
     sessionStorage.removeItem("kiln:auth:return")
-    window.location.assign(returnTo.startsWith("/") ? returnTo : "/")
+    window.location.assign(safeReturnPath(returnTo))
   }
 
   return (
@@ -120,10 +120,18 @@ export function TwoFactorPage() {
         <a
           href="/"
           className="mt-7 flex items-center justify-center gap-1.5 border-t pt-5 text-[10px] text-muted-foreground hover:text-foreground"
+          onClick={() => sessionStorage.removeItem("kiln:auth:return")}
         >
           <ArrowLeft className="size-3" /> Cancel and return to login
         </a>
       </section>
     </main>
   )
+}
+
+function safeReturnPath(returnTo: string): string {
+  if (!returnTo.startsWith("/")) return "/"
+  const destinationUrl = new URL(returnTo, window.location.origin)
+  if (destinationUrl.origin !== window.location.origin) return "/"
+  return `${destinationUrl.pathname}${destinationUrl.search}${destinationUrl.hash}`
 }

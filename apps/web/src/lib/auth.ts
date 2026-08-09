@@ -11,6 +11,7 @@ import type { RowDataPacket } from "mysql2/promise"
 import { Resend } from "resend"
 
 import { AuthCodeEmail } from "@/emails/auth-code-email"
+import { AuthLinkEmail } from "@/emails/auth-link-email"
 import { databasePool } from "@/lib/database"
 import { databaseTable, databaseTableName } from "@/lib/database-config"
 import {
@@ -38,7 +39,10 @@ export const auth = betterAuth({
   baseURL: authUrl.origin,
   secrets: betterAuthSecrets(),
   database: databasePool,
-  user: { modelName: databaseTableName("user") },
+  user: {
+    modelName: databaseTableName("user"),
+    changeEmail: { enabled: true },
+  },
   session: {
     modelName: databaseTableName("session"),
     expiresIn: 60 * 60 * 24 * 7,
@@ -69,6 +73,35 @@ export const auth = betterAuth({
     sendOnSignUp: true,
     autoSignInAfterVerification: false,
     expiresIn: 60 * 10,
+    async sendVerificationEmail({ user, url }) {
+      const delivery = emailDeliveryConfig()
+      if (!delivery) {
+        console.info(
+          `[Kiln auth] Email verification link for ${user.email.toLowerCase()}: ${url}`
+        )
+        return
+      }
+
+      const fingerprint = createHash("sha256")
+        .update(`${user.id}:${user.email.toLowerCase()}:${url}`)
+        .digest("hex")
+        .slice(0, 20)
+      const resend = new Resend(delivery.apiKey)
+      void resend.emails
+        .send(
+          {
+            from: delivery.from,
+            to: [user.email],
+            subject: "Confirm your Kiln email address",
+            react: AuthLinkEmail({ url }),
+          },
+          { idempotencyKey: `auth-link/email-verification/${fingerprint}` }
+        )
+        .then(({ error }) => {
+          if (error)
+            console.error("Could not send Kiln verification link", error)
+        })
+    },
   },
   rateLimit: {
     modelName: databaseTableName("rateLimit"),
