@@ -25,7 +25,7 @@ import {
 import { Input } from "@workspace/ui/components/input"
 import { showToast } from "@workspace/ui/components/sonner"
 
-import { recoverPromise } from "@/effect/promise"
+import { ensuringPromise, recoverPromise } from "@/effect/promise"
 import { authClient } from "@/lib/auth-client"
 import type { AuthenticatedUser } from "@/lib/auth-session"
 import { clearAppearanceCache } from "@/lib/appearance"
@@ -42,6 +42,32 @@ type ActiveSession = NonNullable<SessionListResult["data"]>[number]
 interface SetupState {
   backupCodes: Array<string>
   totpURI: string
+}
+
+interface TwoFactorFormState {
+  open: boolean
+  password: string
+  setup: SetupState | null
+  totpCode: string
+}
+
+type TwoFactorFormAction =
+  | { type: "patch"; value: Partial<TwoFactorFormState> }
+  | { type: "reset" }
+
+const initialTwoFactorFormState: TwoFactorFormState = {
+  open: false,
+  password: "",
+  setup: null,
+  totpCode: "",
+}
+
+function twoFactorFormReducer(
+  state: TwoFactorFormState,
+  action: TwoFactorFormAction
+): TwoFactorFormState {
+  if (action.type === "reset") return initialTwoFactorFormState
+  return { ...state, ...action.value }
 }
 
 export function AccountSettingsPage({ user }: { user: AuthenticatedUser }) {
@@ -71,12 +97,18 @@ function EmailAddressCard({ initialEmail }: { initialEmail: string }) {
   const session = authClient.useSession()
   const [open, setOpen] = React.useState(false)
   const [email, setEmail] = React.useState(initialEmail)
-  const [pending, setPending] = React.useState(false)
+  const [code, setCode] = React.useState("")
+  const [requestedEmail, setRequestedEmail] = React.useState<string | null>(
+    null
+  )
+  const [pending, setPending] = React.useState<"request" | "verify" | null>(
+    null
+  )
   const currentEmail = session.data?.user.email ?? initialEmail
 
   React.useEffect(() => setEmail(currentEmail), [currentEmail])
 
-  async function changeEmail(event: React.FormEvent<HTMLFormElement>) {
+  async function requestEmailChange(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const nextEmail = email.trim().toLowerCase()
     if (nextEmail === currentEmail.toLowerCase()) {
@@ -87,31 +119,69 @@ function EmailAddressCard({ initialEmail }: { initialEmail: string }) {
       return
     }
 
-    setPending(true)
+    setPending("request")
     const result = await recoverPromise(
-      () =>
-        authClient.changeEmail({
-          newEmail: nextEmail,
-          callbackURL: "/settings/account",
-        }),
-      (cause) => failedAuthResult(cause, "Could not change your email")
+      () => authClient.emailOtp.requestEmailChange({ newEmail: nextEmail }),
+      (cause) => failedAuthResult(cause, "Could not send a verification code")
     )
-    setPending(false)
+    setPending(null)
     if (result.error) {
       showToast({
-        message: authErrorMessage(result.error, "Could not change your email"),
+        message: authErrorMessage(
+          result.error,
+          "Could not send a verification code"
+        ),
         type: "error",
       })
       return
     }
 
+    setRequestedEmail(nextEmail)
     showToast({
-      message:
-        "Verification sent. Your current email remains active until the new address is confirmed.",
+      message: "Verification code sent.",
       type: "success",
     })
-    setOpen(false)
+  }
+
+  async function confirmEmailChange(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!requestedEmail) return
+    const otp = code.replace(/\s/gu, "")
+    if (!/^\d{6}$/u.test(otp)) {
+      showToast({ message: "Enter the six-digit code", type: "error" })
+      return
+    }
+
+    setPending("verify")
+    const result = await recoverPromise(
+      () => authClient.emailOtp.changeEmail({ newEmail: requestedEmail, otp }),
+      (cause) => failedAuthResult(cause, "Could not verify the email change")
+    )
+    setPending(null)
+    if (result.error) {
+      showToast({
+        message: authErrorMessage(
+          result.error,
+          "Could not verify the email change"
+        ),
+        type: "error",
+      })
+      return
+    }
+
+    showToast({ message: "Email address changed.", type: "success" })
+    changeOpen(false)
     await session.refetch()
+  }
+
+  function changeOpen(nextOpen: boolean) {
+    if (pending) return
+    setOpen(nextOpen)
+    if (!nextOpen) {
+      setEmail(currentEmail)
+      setCode("")
+      setRequestedEmail(null)
+    }
   }
 
   return (
@@ -129,42 +199,86 @@ function EmailAddressCard({ initialEmail }: { initialEmail: string }) {
         </Button>
       </div>
 
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={changeOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Change email address</DialogTitle>
             <DialogDescription>
-              We’ll verify the new address before replacing {currentEmail}.
+              {requestedEmail
+                ? `Enter the code sent to ${requestedEmail}.`
+                : `We’ll send a verification code before replacing ${currentEmail}.`}
             </DialogDescription>
           </DialogHeader>
-          <form className="grid gap-4" onSubmit={changeEmail}>
-            <Field label="New email address" htmlFor="account-email">
-              <Input
-                id="account-email"
-                type="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                autoComplete="email"
-                className="h-10 bg-background/70"
-                required
-                autoFocus
-              />
-            </Field>
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => setOpen(false)}
-                disabled={pending}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" disabled={pending || !email.trim()}>
-                {pending ? <LoaderCircle className="animate-spin" /> : null}
-                Send verification
-              </Button>
-            </DialogFooter>
-          </form>
+          {requestedEmail ? (
+            <form className="grid gap-4" onSubmit={confirmEmailChange}>
+              <Field label="Verification code" htmlFor="account-email-code">
+                <Input
+                  id="account-email-code"
+                  value={code}
+                  onChange={(event) => setCode(event.target.value)}
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  placeholder="000000"
+                  className="h-10 bg-background/70 font-mono tracking-[0.22em]"
+                  required
+                  autoFocus
+                />
+              </Field>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => {
+                    setCode("")
+                    setRequestedEmail(null)
+                  }}
+                  disabled={pending !== null}
+                >
+                  Back
+                </Button>
+                <Button type="submit" disabled={pending !== null}>
+                  {pending === "verify" ? (
+                    <LoaderCircle className="animate-spin" />
+                  ) : null}
+                  Verify email
+                </Button>
+              </DialogFooter>
+            </form>
+          ) : (
+            <form className="grid gap-4" onSubmit={requestEmailChange}>
+              <Field label="New email address" htmlFor="account-email">
+                <Input
+                  id="account-email"
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  autoComplete="email"
+                  className="h-10 bg-background/70"
+                  required
+                  autoFocus
+                />
+              </Field>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => changeOpen(false)}
+                  disabled={pending !== null}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={pending !== null || !email.trim()}
+                >
+                  {pending === "request" ? (
+                    <LoaderCircle className="animate-spin" />
+                  ) : null}
+                  Send code
+                </Button>
+              </DialogFooter>
+            </form>
+          )}
         </DialogContent>
       </Dialog>
     </AccountSection>
@@ -188,16 +302,19 @@ function PasswordCard() {
     }
 
     setPending(true)
-    const result = await recoverPromise(
+    const result = await ensuringPromise(
       () =>
-        authClient.changePassword({
-          currentPassword,
-          newPassword,
-          revokeOtherSessions: true,
-        }),
-      (cause) => failedAuthResult(cause, "Could not change your password")
+        recoverPromise(
+          () =>
+            authClient.changePassword({
+              currentPassword,
+              newPassword,
+              revokeOtherSessions: true,
+            }),
+          (cause) => failedAuthResult(cause, "Could not change your password")
+        ),
+      () => setPending(false)
     )
-    setPending(false)
     if (result.error) {
       showToast({
         message: authErrorMessage(
@@ -209,15 +326,22 @@ function PasswordCard() {
       return
     }
 
-    setCurrentPassword("")
-    setNewPassword("")
-    setConfirmation("")
     showToast({
       message: "Password changed. Other active sessions were signed out.",
       type: "success",
     })
-    setOpen(false)
+    changeOpen(false)
     await queryClient.invalidateQueries({ queryKey: activeSessionsQueryKey })
+  }
+
+  function changeOpen(nextOpen: boolean) {
+    if (pending) return
+    setOpen(nextOpen)
+    if (!nextOpen) {
+      setCurrentPassword("")
+      setNewPassword("")
+      setConfirmation("")
+    }
   }
 
   return (
@@ -233,7 +357,7 @@ function PasswordCard() {
         </Button>
       </div>
 
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={changeOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Change password</DialogTitle>
@@ -284,7 +408,7 @@ function PasswordCard() {
               <Button
                 type="button"
                 variant="ghost"
-                onClick={() => setOpen(false)}
+                onClick={() => changeOpen(false)}
                 disabled={pending}
               >
                 Cancel
@@ -304,11 +428,12 @@ function PasswordCard() {
 function TwoFactorCard() {
   const session = authClient.useSession()
   const queryClient = useQueryClient()
-  const [open, setOpen] = React.useState(false)
-  const [password, setPassword] = React.useState("")
-  const [setup, setSetup] = React.useState<SetupState | null>(null)
-  const [totpCode, setTotpCode] = React.useState("")
+  const [form, dispatchForm] = React.useReducer(
+    twoFactorFormReducer,
+    initialTwoFactorFormState
+  )
   const [pending, setPending] = React.useState<string | null>(null)
+  const { open, password, setup, totpCode } = form
   const twoFactorEnabled = Boolean(
     Reflect.get(session.data?.user ?? {}, "twoFactorEnabled")
   )
@@ -332,7 +457,7 @@ function TwoFactorCard() {
       showToast({ message: "Could not begin 2FA setup", type: "error" })
       return
     }
-    setSetup(result.data)
+    dispatchForm({ type: "patch", value: { setup: result.data } })
   }
 
   async function confirmTwoFactor(event: React.FormEvent<HTMLFormElement>) {
@@ -358,10 +483,7 @@ function TwoFactorCard() {
       })
       return
     }
-    setPassword("")
-    setTotpCode("")
-    setSetup(null)
-    setOpen(false)
+    dispatchForm({ type: "reset" })
     showToast({ message: "Authenticator app enabled.", type: "success" })
     await session.refetch()
     await queryClient.invalidateQueries({ queryKey: activeSessionsQueryKey })
@@ -382,9 +504,7 @@ function TwoFactorCard() {
       })
       return
     }
-    setPassword("")
-    setSetup(null)
-    setOpen(false)
+    dispatchForm({ type: "reset" })
     showToast({ message: "Authenticator app disabled.", type: "success" })
     await session.refetch()
     await queryClient.invalidateQueries({ queryKey: activeSessionsQueryKey })
@@ -408,12 +528,9 @@ function TwoFactorCard() {
 
   function changeOpen(nextOpen: boolean) {
     if (pending) return
-    setOpen(nextOpen)
-    if (!nextOpen) {
-      setPassword("")
-      setTotpCode("")
-      setSetup(null)
-    }
+    dispatchForm(
+      nextOpen ? { type: "patch", value: { open: true } } : { type: "reset" }
+    )
   }
 
   return (
@@ -426,7 +543,7 @@ function TwoFactorCard() {
           type="button"
           variant="outline"
           size="sm"
-          onClick={() => setOpen(true)}
+          onClick={() => changeOpen(true)}
         >
           {twoFactorEnabled ? "Manage" : "Set up"}
         </Button>
@@ -463,7 +580,12 @@ function TwoFactorCard() {
                     <Input
                       id="account-totp-code"
                       value={totpCode}
-                      onChange={(event) => setTotpCode(event.target.value)}
+                      onChange={(event) =>
+                        dispatchForm({
+                          type: "patch",
+                          value: { totpCode: event.target.value },
+                        })
+                      }
                       inputMode="numeric"
                       autoComplete="one-time-code"
                       placeholder="000000"
@@ -526,7 +648,12 @@ function TwoFactorCard() {
                   id="totp-password"
                   type="password"
                   value={password}
-                  onChange={(event) => setPassword(event.target.value)}
+                  onChange={(event) =>
+                    dispatchForm({
+                      type: "patch",
+                      value: { password: event.target.value },
+                    })
+                  }
                   autoComplete="current-password"
                   className="h-10 bg-background/70"
                   required
@@ -752,38 +879,41 @@ function SessionsCard({ enabled }: { enabled: boolean }) {
   })
   const currentToken = session.data?.session.token
 
-  async function revokeSession(activeSession: ActiveSession) {
-    const isCurrent = activeSession.token === currentToken
-    setPendingToken(activeSession.token)
-    const error = isCurrent
-      ? (
-          await recoverPromise(
-            () => authClient.signOut(),
-            (cause) => failedAuthResult(cause, "Could not sign out")
-          )
-        ).error
-      : (
-          await recoverPromise(
-            () => authClient.revokeSession({ token: activeSession.token }),
-            (cause) => failedAuthResult(cause, "Could not revoke the session")
-          )
-        ).error
-    setPendingToken(null)
-    if (error) {
-      showToast({
-        message: authErrorMessage(error, "Could not revoke the session"),
-        type: "error",
-      })
-      return
-    }
-    if (isCurrent) {
-      clearAppearanceCache()
-      window.location.assign("/")
-      return
-    }
-    showToast({ message: "Session revoked.", type: "success" })
-    await queryClient.invalidateQueries({ queryKey: activeSessionsQueryKey })
-  }
+  const revokeSession = React.useCallback(
+    async (activeSession: ActiveSession) => {
+      const isCurrent = activeSession.token === currentToken
+      setPendingToken(activeSession.token)
+      const error = isCurrent
+        ? (
+            await recoverPromise(
+              () => authClient.signOut(),
+              (cause) => failedAuthResult(cause, "Could not sign out")
+            )
+          ).error
+        : (
+            await recoverPromise(
+              () => authClient.revokeSession({ token: activeSession.token }),
+              (cause) => failedAuthResult(cause, "Could not revoke the session")
+            )
+          ).error
+      setPendingToken(null)
+      if (error) {
+        showToast({
+          message: authErrorMessage(error, "Could not revoke the session"),
+          type: "error",
+        })
+        return
+      }
+      if (isCurrent) {
+        clearAppearanceCache()
+        window.location.assign("/")
+        return
+      }
+      showToast({ message: "Session revoked.", type: "success" })
+      await queryClient.invalidateQueries({ queryKey: activeSessionsQueryKey })
+    },
+    [currentToken, queryClient]
+  )
 
   async function logoutEverywhere() {
     setLoggingOut(true)
