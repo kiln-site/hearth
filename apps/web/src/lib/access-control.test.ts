@@ -4,6 +4,7 @@ import type { ResultSetHeader } from "mysql2/promise"
 
 import { Database } from "@/effect/database"
 import {
+  accessGrantRoleChangeError,
   deduplicateEffectiveInstanceGrants,
   deleteInstanceAccessEffect,
   isBlockedInstanceOwnerRoleChange,
@@ -135,6 +136,38 @@ describe("instance access cleanup", () => {
         grantUserId: "owner-one",
         nextRole: "admin",
         ownerId: "owner-one",
+      })
+    )
+  })
+
+  it("applies owner protections when Add User targets an existing account", () => {
+    assert.strictEqual(
+      accessGrantRoleChangeError({
+        canManageOwners: false,
+        currentRole: "owner",
+        nextRole: "operator",
+        ownerId: null,
+        userId: "relay-owner",
+      })?.message,
+      "Only a Relay owner or platform admin can change owner access"
+    )
+    assert.strictEqual(
+      accessGrantRoleChangeError({
+        canManageOwners: true,
+        currentRole: null,
+        nextRole: "viewer",
+        ownerId: "instance-owner",
+        userId: "instance-owner",
+      })?.message,
+      "Transfer ownership before changing the server owner's role"
+    )
+    assert.isNull(
+      accessGrantRoleChangeError({
+        canManageOwners: false,
+        currentRole: "operator",
+        nextRole: "viewer",
+        ownerId: null,
+        userId: "member-one",
       })
     )
   })

@@ -12,9 +12,10 @@ import { AccessInvitationEmail } from "@/emails/access-invitation-email"
 import { Database, type DatabaseTransaction } from "@/effect/database"
 import { runAppEffect } from "@/effect/runtime"
 import {
+  accessGrantRoleChangeError,
   deduplicateEffectiveInstanceGrants,
+  grantExistingUserAccessEffect,
   hasRelayPermission,
-  isBlockedInstanceOwnerRoleChange,
   isCurrentInstanceOwnerGrant,
   isProtectedInstanceOwnerGrant,
   isPlatformAdmin,
@@ -464,7 +465,9 @@ export const grantOrInviteAccess = createServerFn({ method: "POST" })
       databaseId: data.databaseId ?? undefined,
       instanceId: data.instanceId ?? undefined,
     })
-    if (data.role === "owner" && !(await canManageOwners(user, relay.id))) {
+    const requestedOwnerAccess =
+      data.role === "owner" ? await canManageOwners(user, relay.id) : null
+    if (requestedOwnerAccess === false) {
       throw new Error(
         "Only a Relay owner or platform admin can grant the owner role"
       )
@@ -481,47 +484,23 @@ export const grantOrInviteAccess = createServerFn({ method: "POST" })
     const existingUser = existingUsers[0]
     if (existingUser) {
       const scope = accessScope(data)
+      if (scope.type === "instance") {
+        await instanceOwnerId(relay, scope.id)
+      }
+      const ownerAccess =
+        requestedOwnerAccess ?? (await canManageOwners(user, relay.id))
       await runAppEffect(
         "access.grantExistingUser",
-        Effect.gen(function* () {
-          const database = yield* Database
-          return yield* database.transaction(
-            "access.grantExistingUser",
-            (transaction) =>
-              Effect.gen(function* () {
-                yield* transaction.execute(
-                  `UPDATE ${databaseTable("invitation")}
-                      SET revoked_at = CURRENT_TIMESTAMP(3)
-                    WHERE email = ? AND relay_id = ?
-                      AND ((instance_id IS NULL AND ? IS NULL) OR instance_id = ?)
-                      AND ((database_id IS NULL AND ? IS NULL) OR database_id = ?)
-                      AND accepted_at IS NULL AND revoked_at IS NULL`,
-                  [
-                    data.email,
-                    relay.id,
-                    data.instanceId,
-                    data.instanceId,
-                    data.databaseId,
-                    data.databaseId,
-                  ]
-                )
-                yield* transaction.execute(
-                  `INSERT INTO ${databaseTable("access_grant")}
-                     (id, user_id, relay_id, resource_type, resource_id, role, granted_by)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
-                   ON DUPLICATE KEY UPDATE role = VALUES(role), granted_by = VALUES(granted_by)`,
-                  [
-                    randomUUID(),
-                    existingUser.id,
-                    relay.id,
-                    scope.type,
-                    scope.id,
-                    data.role,
-                    user.id,
-                  ]
-                )
-              })
-          )
+        grantExistingUserAccessEffect({
+          canManageOwners: ownerAccess,
+          email: data.email,
+          grantId: randomUUID(),
+          grantedBy: user.id,
+          relayId: relay.id,
+          resourceId: scope.id,
+          resourceType: scope.type,
+          role: data.role,
+          userId: existingUser.id,
         })
       )
       const notificationStatus = await runAppEffect(
@@ -750,31 +729,15 @@ export const updateAccessGrant = createServerFn({ method: "POST" })
         relayId: relay.id,
         use: ({ grant, ownerId, transaction }) =>
           Effect.gen(function* () {
-            if (
-              (grant.role === "owner" || data.role === "owner") &&
-              !ownerAccess
-            ) {
-              return yield* Effect.fail(
-                new Error(
-                  "Only a Relay owner or platform admin can change owner access"
-                )
-              )
-            }
-            if (
-              grant.resource_type === "instance" &&
-              isBlockedInstanceOwnerRoleChange({
-                grantRole: grant.role,
-                grantUserId: grant.user_id,
-                nextRole: data.role,
-                ownerId,
-              })
-            ) {
-              return yield* Effect.fail(
-                new Error(
-                  "Transfer ownership before changing the server owner's role"
-                )
-              )
-            }
+            const roleChangeError = accessGrantRoleChangeError({
+              canManageOwners: ownerAccess,
+              currentRole: grant.role,
+              nextRole: data.role,
+              ownerId:
+                grant.resource_type === "instance" ? ownerId : null,
+              userId: grant.user_id,
+            })
+            if (roleChangeError) return yield* Effect.fail(roleChangeError)
             yield* transaction.execute(
               `UPDATE ${databaseTable("access_grant")} SET role = ? WHERE id = ? AND relay_id = ?`,
               [data.role, data.id, relay.id]

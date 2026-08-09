@@ -25,6 +25,15 @@ interface GrantRow extends RowDataPacket {
   role: string
 }
 
+interface InstanceOwnerRow extends RowDataPacket {
+  owner_id: string | null
+}
+
+interface ScopedGrantRoleRow extends RowDataPacket {
+  role: string
+  user_id: string
+}
+
 export interface AccessGrant {
   id: string
   relayId: string
@@ -77,6 +86,125 @@ export function isBlockedInstanceOwnerRoleChange(input: {
     isCurrentInstanceOwnerGrant(input)
   )
 }
+
+export function accessGrantRoleChangeError(input: {
+  canManageOwners: boolean
+  currentRole: string | null
+  nextRole: string
+  ownerId: string | null
+  userId: string
+}): Error | null {
+  if (
+    (input.currentRole === "owner" || input.nextRole === "owner") &&
+    !input.canManageOwners
+  ) {
+    return new Error(
+      "Only a Relay owner or platform admin can change owner access"
+    )
+  }
+  if (
+    isBlockedInstanceOwnerRoleChange({
+      grantRole: input.currentRole,
+      grantUserId: input.userId,
+      nextRole: input.nextRole,
+      ownerId: input.ownerId,
+    })
+  ) {
+    return new Error(
+      "Transfer ownership before changing the server owner's role"
+    )
+  }
+  return null
+}
+
+export const grantExistingUserAccessEffect = Effect.fn(
+  "access.grantExistingUser"
+)(function* (input: {
+  canManageOwners: boolean
+  email: string
+  grantId: string
+  grantedBy: string
+  relayId: string
+  resourceId: string
+  resourceType: "database" | "instance" | "relay"
+  role: AccessRole
+  userId: string
+}) {
+  const database = yield* Database
+  return yield* database.transaction(
+    "access.grantExistingUser",
+    (transaction) =>
+      Effect.gen(function* () {
+        const ownerRows =
+          input.resourceType === "instance"
+            ? yield* transaction.queryRows<InstanceOwnerRow>(
+                `SELECT owner_id FROM ${databaseTable("instance")}
+                  WHERE relay_id = ? AND instance_id = ? LIMIT 1 FOR UPDATE`,
+                [input.relayId, input.resourceId]
+              )
+            : []
+        const grantRows =
+          yield* transaction.queryRows<ScopedGrantRoleRow>(
+            `SELECT user_id, role
+               FROM ${databaseTable("access_grant")}
+              WHERE user_id = ? AND relay_id = ?
+                AND resource_type = ? AND resource_id = ?
+              LIMIT 1 FOR UPDATE`,
+            [
+              input.userId,
+              input.relayId,
+              input.resourceType,
+              input.resourceId,
+            ]
+          )
+        const existingGrant = grantRows.at(0)
+        const roleChangeError = accessGrantRoleChangeError({
+          canManageOwners: input.canManageOwners,
+          currentRole: existingGrant?.role ?? null,
+          nextRole: input.role,
+          ownerId: ownerRows.at(0)?.owner_id ?? null,
+          userId: input.userId,
+        })
+        if (roleChangeError) return yield* Effect.fail(roleChangeError)
+
+        const instanceId =
+          input.resourceType === "instance" ? input.resourceId : null
+        const databaseId =
+          input.resourceType === "database" ? input.resourceId : null
+        yield* transaction.execute(
+          `UPDATE ${databaseTable("invitation")}
+              SET revoked_at = CURRENT_TIMESTAMP(3)
+            WHERE email = ? AND relay_id = ?
+              AND ((instance_id IS NULL AND ? IS NULL) OR instance_id = ?)
+              AND ((database_id IS NULL AND ? IS NULL) OR database_id = ?)
+              AND accepted_at IS NULL AND revoked_at IS NULL`,
+          [
+            input.email,
+            input.relayId,
+            instanceId,
+            instanceId,
+            databaseId,
+            databaseId,
+          ]
+        )
+        yield* transaction.execute(
+          `INSERT INTO ${databaseTable("access_grant")}
+             (id, user_id, relay_id, resource_type, resource_id, role, granted_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE role = VALUES(role), granted_by = VALUES(granted_by)`,
+          [
+            input.grantId,
+            input.userId,
+            input.relayId,
+            input.resourceType,
+            input.resourceId,
+            input.role,
+            input.grantedBy,
+          ]
+        )
+      })
+  )
+})
 
 export async function listUserGrants(
   userId: string,
