@@ -713,7 +713,7 @@ function AccessUserRow({
   relayAccess?: boolean
   userId: string | null
 }) {
-  const removalProtected = owner || protectedOwnerGrant
+  const removalProtected = !relayAccess && (owner || protectedOwnerGrant)
   const canManageDirectGrant = canManage && !relayAccess
 
   return (
