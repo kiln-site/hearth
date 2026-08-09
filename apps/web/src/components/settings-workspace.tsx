@@ -489,10 +489,14 @@ function InstanceUsersCard({
     setTransferTarget(null)
     transferMutation.reset()
   }
-  const directlyListedUserIds = new Set([
-    ...(usersQuery.data?.owner?.id ? [usersQuery.data.owner.id] : []),
-    ...(usersQuery.data?.users.map((user) => user.userId) ?? []),
-  ])
+  const directlyListedUserIds = React.useMemo(
+    () =>
+      new Set([
+        ...(usersQuery.data?.owner?.id ? [usersQuery.data.owner.id] : []),
+        ...(usersQuery.data?.users.map((user) => user.userId) ?? []),
+      ]),
+    [usersQuery.data?.owner?.id, usersQuery.data?.users]
+  )
 
   return (
     <InfoCard className="flex h-[26rem] flex-col lg:h-full lg:min-h-[32rem]">

@@ -90,7 +90,7 @@ export function AccessGrantedEmail({
 }
 
 AccessGrantedEmail.PreviewProps = {
-  actionUrl: "https://hearth.kiln.site/access",
+  actionUrl: "https://hearth.kiln.site/",
   grantedBy: "Kiln operator",
   resourceName: "Paper 1.21",
   role: "operator",

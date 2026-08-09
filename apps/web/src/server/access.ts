@@ -64,11 +64,13 @@ const updateGrantSchema = relayResourceIdSchema.extend({
 
 type AccessAssignment = z.infer<typeof accessAssignmentSchema>
 type AccessScope = "database" | "instance" | "relay"
+type AccessNotificationStatus = "disabled" | "failed" | "sent"
 
 interface DirectAccessResult {
   email: string
   inviteUrl: null
   kind: "granted"
+  notificationStatus: AccessNotificationStatus
 }
 
 interface InvitationAccessResult {
@@ -371,16 +373,22 @@ async function relayAccessOverview(
       )
     ),
   ]
-  const ownerEntries = await Promise.all(
-    instanceIds.map(async (instanceId) => ({
-      instanceId,
-      ownerId: await instanceOwnerId(relay, instanceId),
-    }))
-  )
   const instanceOwnerIds = new Map<string, string | null>()
   for (const owner of ownerRows[0]) {
     instanceOwnerIds.set(owner.instance_id, owner.user_id)
   }
+  const unresolvedInstanceIds: Array<string> = []
+  for (const instanceId of instanceIds) {
+    if (!instanceOwnerIds.has(instanceId)) {
+      unresolvedInstanceIds.push(instanceId)
+    }
+  }
+  const ownerEntries = await Promise.all(
+    unresolvedInstanceIds.map(async (instanceId) => ({
+      instanceId,
+      ownerId: await instanceOwnerId(relay, instanceId),
+    }))
+  )
   for (const entry of ownerEntries) {
     instanceOwnerIds.set(entry.instanceId, entry.ownerId)
   }
@@ -512,21 +520,37 @@ export const grantOrInviteAccess = createServerFn({ method: "POST" })
                     user.id,
                   ]
                 )
-                yield* sendAccessGrantedNotification({
-                  email: existingUser.email,
-                  grantedBy: user.name,
-                  resourceName: data.resourceName,
-                  role: data.role,
-                  scope: scope.type,
-                })
               })
           )
         })
+      )
+      const notificationStatus = await runAppEffect(
+        "access.notifyExistingUser",
+        sendAccessGrantedNotification({
+          email: existingUser.email,
+          grantedBy: user.name,
+          idempotencySeed: `${existingUser.id}:${relay.id}:${scope.type}:${scope.id}:${data.role}`,
+          resourceName: data.resourceName,
+          role: data.role,
+          scope: scope.type,
+        }).pipe(
+          Effect.match({
+            onFailure: (cause): AccessNotificationStatus => {
+              console.error(
+                `[Kiln access] Could not notify ${existingUser.email} about access to ${data.resourceName}`,
+                cause
+              )
+              return "failed"
+            },
+            onSuccess: (status): AccessNotificationStatus => status,
+          })
+        )
       )
       return {
         email: existingUser.email,
         inviteUrl: null,
         kind: "granted",
+        notificationStatus,
       } satisfies DirectAccessResult
     }
 
@@ -1039,26 +1063,26 @@ function accessScope(data: AccessAssignment): {
 function sendAccessGrantedNotification(input: {
   email: string
   grantedBy: string
+  idempotencySeed: string
   resourceName: string
   role: (typeof accessRoles)[number]
   scope: AccessScope
-}): Effect.Effect<void, Error> {
+}): Effect.Effect<Exclude<AccessNotificationStatus, "failed">, Error> {
   const delivery = emailDeliveryConfig()
   if (!delivery) {
     return Effect.sync(() => {
       console.info(
         `[Kiln access] ${input.email} received ${input.role} access to ${input.resourceName}`
       )
+      return "disabled"
     })
   }
 
   return Effect.tryPromise({
-    try: async () => {
+    try: async (): Promise<"sent"> => {
       const resend = new Resend(delivery.apiKey)
       const notificationId = createHash("sha256")
-        .update(
-          `${input.email}:${input.scope}:${input.resourceName}:${input.role}:${Date.now()}`
-        )
+        .update(input.idempotencySeed)
         .digest("hex")
         .slice(0, 24)
       const { error } = await resend.emails.send(
@@ -1067,7 +1091,7 @@ function sendAccessGrantedNotification(input: {
           to: [input.email],
           subject: `${input.grantedBy} added you to ${input.resourceName} in Kiln`,
           react: AccessGrantedEmail({
-            actionUrl: new URL("/access", publicUrl()).toString(),
+            actionUrl: new URL("/", publicUrl()).toString(),
             grantedBy: input.grantedBy,
             resourceName: input.resourceName,
             role: input.role,
@@ -1079,6 +1103,7 @@ function sendAccessGrantedNotification(input: {
       if (error) {
         throw new Error(error.message || "Could not send access notification")
       }
+      return "sent"
     },
     catch: (cause) =>
       cause instanceof Error

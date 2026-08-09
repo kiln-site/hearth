@@ -1,7 +1,6 @@
 import * as React from "react"
 import {
   useMutation,
-  useQuery,
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query"
@@ -183,11 +182,14 @@ export function AccessPage({
       setFilters((current) => ({ ...current, ...change })),
     []
   )
+  const openAddDialog = React.useCallback(() => setAddOpen(true), [])
+  const openPendingDialog = React.useCallback(() => setPendingOpen(true), [])
 
   const updateGrantMutation = useMutation({
     mutationFn: updateAccessGrant,
     onSuccess: () => invalidateAccessQueries(queryClient),
   })
+  const updateGrant = updateGrantMutation.mutateAsync
   const removeGrantMutation = useMutation({
     mutationFn: removeAccessGrant,
     onSuccess: async () => {
@@ -219,7 +221,7 @@ export function AccessPage({
       await Effect.runPromise(
         Effect.tryPromise({
           try: () =>
-            updateGrantMutation.mutateAsync({
+            updateGrant({
               data: { id: grant.id, relayId: grant.relayId, role },
             }),
           catch: (cause) => cause,
@@ -235,7 +237,22 @@ export function AccessPage({
         )
       )
     },
-    [updateGrantMutation]
+    [updateGrant]
+  )
+  const selectRemoveTarget = React.useCallback((row: AccessDirectoryRow) => {
+    if (!row.grant) return
+    setRemoveTarget({
+      email: row.email,
+      grantId: row.grant.id,
+      relayId: row.relayId,
+      resourceName: row.resourceName,
+    })
+  }, [])
+  const changeRowRole = React.useCallback(
+    (row: AccessDirectoryRow, role: AccessRole) => {
+      if (row.grant) void changeRole(row.grant, role)
+    },
+    [changeRole]
   )
 
   return (
@@ -250,9 +267,9 @@ export function AccessPage({
           invitationCount={overview.invitations.length}
           relays={overview.relays}
           searchStore={searchStore}
-          onAdd={() => setAddOpen(true)}
+          onAdd={openAddDialog}
           onFiltersChange={updateFilters}
-          onPending={() => setPendingOpen(true)}
+          onPending={openPendingDialog}
         />
         <AccessDirectoryTable
           filtersActive={activeFilterCount > 0}
@@ -264,18 +281,8 @@ export function AccessPage({
           }
           rows={filteredRows}
           searchStore={searchStore}
-          onRemove={(row) => {
-            if (!row.grant) return
-            setRemoveTarget({
-              email: row.email,
-              grantId: row.grant.id,
-              relayId: row.relayId,
-              resourceName: row.resourceName,
-            })
-          }}
-          onRoleChange={(row, role) => {
-            if (row.grant) void changeRole(row.grant, role)
-          }}
+          onRemove={selectRemoveTarget}
+          onRoleChange={changeRowRole}
         />
       </section>
 
@@ -464,11 +471,20 @@ const AccessToolbar = React.memo(function AccessToolbar({
 })
 
 const AccessSyncButton = React.memo(function AccessSyncButton() {
-  const { fetchStatus, refetch } = useQuery({
-    ...accessOverviewQueryOptions(),
-    notifyOnChangeProps: ["fetchStatus"],
+  const queryClient = useQueryClient()
+  const syncMutation = useMutation({
+    mutationFn: () =>
+      queryClient.refetchQueries(
+        { exact: true, queryKey: queryKeys.access.overview },
+        { throwOnError: true }
+      ),
+    onError: (cause) =>
+      showToast({
+        message: errorMessage(cause, "Could not sync access"),
+        type: "error",
+      }),
   })
-  const syncing = fetchStatus === "fetching"
+  const syncing = syncMutation.isPending
 
   return (
     <Tooltip>
@@ -480,7 +496,7 @@ const AccessSyncButton = React.memo(function AccessSyncButton() {
           aria-label="Sync access"
           aria-busy={syncing}
           disabled={syncing}
-          onClick={() => void refetch()}
+          onClick={() => syncMutation.mutate()}
         >
           <RefreshCw className={syncing ? "animate-spin" : ""} />
         </Button>
@@ -527,7 +543,7 @@ function AccessFilterSelect({
   )
 }
 
-function AccessDirectoryTable({
+const AccessDirectoryTable = React.memo(function AccessDirectoryTable({
   filtersActive,
   ownerRelayIds,
   pendingGrantId,
@@ -588,7 +604,7 @@ function AccessDirectoryTable({
       searchStore={searchStore}
     />
   )
-}
+})
 
 const AccessDirectoryTableHead = React.memo(
   function AccessDirectoryTableHead() {
@@ -858,7 +874,8 @@ function AddUserDialog({
           <DialogTitle>Add user access</DialogTitle>
           <DialogDescription>
             Existing accounts receive access immediately. New emails receive a
-            seven-day invitation. Both paths send an email.
+            seven-day invitation. When email delivery is configured, both paths
+            send an email.
           </DialogDescription>
         </DialogHeader>
         <form className="space-y-4" onSubmit={(event) => void submit(event)}>
@@ -1051,11 +1068,38 @@ function PendingInvitationsDialog({
   onOpenChange: (open: boolean) => void
   onRevoke: (id: string, relayId: string) => void
 }) {
+  const titleRef = React.useRef<HTMLHeadingElement>(null)
+  const instanceNames = React.useMemo(
+    () =>
+      new Map(
+        instances.map((instance) => [
+          accessResourceKey(instance.relayId, instance.id),
+          instance.name,
+        ])
+      ),
+    [instances]
+  )
+  const databaseNames = React.useMemo(
+    () =>
+      new Map(
+        databases.map((database) => [
+          accessResourceKey(database.relayId, database.id),
+          database.name,
+        ])
+      ),
+    [databases]
+  )
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[calc(100vh-2rem)] overflow-hidden sm:max-w-4xl">
+      <DialogContent
+        initialFocus={titleRef}
+        className="max-h-[calc(100vh-2rem)] overflow-hidden sm:max-w-4xl"
+      >
         <DialogHeader>
-          <DialogTitle>Pending invitations</DialogTitle>
+          <DialogTitle ref={titleRef} tabIndex={-1}>
+            Pending invitations
+          </DialogTitle>
           <DialogDescription>
             Invitations expire after seven days. Accounts are created only after
             the recipient accepts.
@@ -1084,18 +1128,24 @@ function PendingInvitationsDialog({
               </WorkspaceTableHead>
               <tbody className="divide-y divide-border/70">
                 {invitations.map((invitation) => {
-                  const instance = instances.find(
-                    (item) =>
-                      item.id === invitation.instanceId &&
-                      item.relayId === invitation.relayId
-                  )
-                  const database = databases.find(
-                    (item) =>
-                      item.id === invitation.databaseId &&
-                      item.relayId === invitation.relayId
-                  )
+                  const instanceName = invitation.instanceId
+                    ? instanceNames.get(
+                        accessResourceKey(
+                          invitation.relayId,
+                          invitation.instanceId
+                        )
+                      )
+                    : undefined
+                  const databaseName = invitation.databaseId
+                    ? databaseNames.get(
+                        accessResourceKey(
+                          invitation.relayId,
+                          invitation.databaseId
+                        )
+                      )
+                    : undefined
                   const resourceName =
-                    database?.name ?? instance?.name ?? invitation.relayName
+                    databaseName ?? instanceName ?? invitation.relayName
                   return (
                     <tr key={invitation.id} className="hover:bg-accent/25">
                       <WorkspaceTableCell>
@@ -1106,9 +1156,9 @@ function PendingInvitationsDialog({
                       <WorkspaceTableCell>
                         <p className="truncate text-[10px]">{resourceName}</p>
                         <p className="font-mono text-[8px] text-muted-foreground uppercase">
-                          {database
+                          {databaseName
                             ? "Database"
-                            : instance
+                            : instanceName
                               ? "Server"
                               : "Relay"}
                         </p>
@@ -1231,6 +1281,22 @@ function accessTargets(
   instances: Array<FleetRelayInstance>,
   databases: ManagedDatabaseDirectory
 ): Array<AccessTarget> {
+  const instancesByRelay = new Map<string, Array<FleetRelayInstance>>()
+  for (const instance of instances) {
+    const relayInstances = instancesByRelay.get(instance.relayId) ?? []
+    relayInstances.push(instance)
+    instancesByRelay.set(instance.relayId, relayInstances)
+  }
+  const databasesByRelay = new Map<
+    string,
+    Array<ManagedDatabaseDirectory[number]>
+  >()
+  for (const database of databases) {
+    const relayDatabases = databasesByRelay.get(database.relayId) ?? []
+    relayDatabases.push(database)
+    databasesByRelay.set(database.relayId, relayDatabases)
+  }
+
   return overview.relays.flatMap((relay) => [
     {
       databaseId: null,
@@ -1243,39 +1309,33 @@ function accessTargets(
       relayName: relay.name,
       resourceName: relay.name,
     },
-    ...instances.flatMap((instance) =>
-      instance.relayId === relay.id
-        ? [
-            {
-              databaseId: null,
-              description: `${relay.name} · ${instance.id}`,
-              id: instance.id,
-              instanceId: instance.id,
-              kind: "server",
-              name: instance.name,
-              relayId: relay.id,
-              relayName: relay.name,
-              resourceName: instance.name,
-            } satisfies AccessTarget,
-          ]
-        : []
+    ...(instancesByRelay.get(relay.id) ?? []).map(
+      (instance) =>
+        ({
+          databaseId: null,
+          description: `${relay.name} · ${instance.id}`,
+          id: instance.id,
+          instanceId: instance.id,
+          kind: "server",
+          name: instance.name,
+          relayId: relay.id,
+          relayName: relay.name,
+          resourceName: instance.name,
+        }) satisfies AccessTarget
     ),
-    ...databases.flatMap((database) =>
-      database.relayId === relay.id
-        ? [
-            {
-              databaseId: database.id,
-              description: `${relay.name} · ${database.id}`,
-              id: database.id,
-              instanceId: null,
-              kind: "database",
-              name: database.name,
-              relayId: relay.id,
-              relayName: relay.name,
-              resourceName: database.name,
-            } satisfies AccessTarget,
-          ]
-        : []
+    ...(databasesByRelay.get(relay.id) ?? []).map(
+      (database) =>
+        ({
+          databaseId: database.id,
+          description: `${relay.name} · ${database.id}`,
+          id: database.id,
+          instanceId: null,
+          kind: "database",
+          name: database.name,
+          relayId: relay.id,
+          relayName: relay.name,
+          resourceName: database.name,
+        }) satisfies AccessTarget
     ),
   ])
 }
@@ -1285,6 +1345,18 @@ function accessDirectoryRows(
   instances: Array<FleetRelayInstance>,
   databases: ManagedDatabaseDirectory
 ): Array<AccessDirectoryRow> {
+  const instanceNames = new Map(
+    instances.map((instance) => [
+      accessResourceKey(instance.relayId, instance.id),
+      instance.name,
+    ])
+  )
+  const databaseNames = new Map(
+    databases.map((database) => [
+      accessResourceKey(database.relayId, database.id),
+      database.name,
+    ])
+  )
   const directOwnerKeys = new Set(
     overview.grants.flatMap((grant) =>
       grant.resourceType === "instance"
@@ -1293,12 +1365,12 @@ function accessDirectoryRows(
     )
   )
   const grantRows = overview.grants.map((grant) =>
-    accessGrantDirectoryRow(grant, instances, databases)
+    accessGrantDirectoryRow(grant, instanceNames, databaseNames)
   )
   const ownerRows = overview.owners.flatMap((owner) =>
     directOwnerKeys.has(`${owner.relayId}:${owner.instanceId}:${owner.userId}`)
       ? []
-      : [accessOwnerDirectoryRow(owner, instances)]
+      : [accessOwnerDirectoryRow(owner, instanceNames)]
   )
   return [...grantRows, ...ownerRows].sort((left, right) =>
     `${left.email}\u0000${left.resourceName}`.localeCompare(
@@ -1309,15 +1381,10 @@ function accessDirectoryRows(
 
 function accessGrantDirectoryRow(
   grant: AccessGrant,
-  instances: Array<FleetRelayInstance>,
-  databases: ManagedDatabaseDirectory
+  instanceNames: ReadonlyMap<string, string>,
+  databaseNames: ReadonlyMap<string, string>
 ): AccessDirectoryRow {
-  const instance = instances.find(
-    (item) => item.id === grant.resourceId && item.relayId === grant.relayId
-  )
-  const database = databases.find(
-    (item) => item.id === grant.resourceId && item.relayId === grant.relayId
-  )
+  const resourceKey = accessResourceKey(grant.relayId, grant.resourceId)
   return {
     createdAt: grant.createdAt,
     email: grant.email,
@@ -1332,7 +1399,9 @@ function accessGrantDirectoryRow(
     resourceName:
       grant.resourceType === "relay"
         ? grant.relayName
-        : (database?.name ?? instance?.name ?? grant.resourceId),
+        : (databaseNames.get(resourceKey) ??
+          instanceNames.get(resourceKey) ??
+          grant.resourceId),
     resourceType: grant.resourceType,
     role: grant.role,
     userId: grant.userId,
@@ -1341,11 +1410,8 @@ function accessGrantDirectoryRow(
 
 function accessOwnerDirectoryRow(
   owner: AccessOwner,
-  instances: Array<FleetRelayInstance>
+  instanceNames: ReadonlyMap<string, string>
 ): AccessDirectoryRow {
-  const instance = instances.find(
-    (item) => item.id === owner.instanceId && item.relayId === owner.relayId
-  )
   return {
     createdAt: owner.createdAt,
     email: owner.email,
@@ -1357,11 +1423,17 @@ function accessOwnerDirectoryRow(
     relayId: owner.relayId,
     relayName: owner.relayName,
     resourceId: owner.instanceId,
-    resourceName: instance?.name ?? owner.instanceId,
+    resourceName:
+      instanceNames.get(accessResourceKey(owner.relayId, owner.instanceId)) ??
+      owner.instanceId,
     resourceType: "instance",
     role: "owner",
     userId: owner.userId,
   }
+}
+
+function accessResourceKey(relayId: string, resourceId: string): string {
+  return `${relayId}:${resourceId}`
 }
 
 function accessDirectoryRowKey(row: AccessDirectoryRow): string {
@@ -1376,8 +1448,13 @@ function showAccessAssignmentToast(
   result: Awaited<ReturnType<typeof grantOrInviteAccess>>
 ): void {
   if (result.kind === "granted") {
+    const notificationDescription = {
+      disabled: "Email delivery is disabled; no notification was sent.",
+      failed: "Access was granted, but the notification email could not be sent.",
+      sent: "A notification email was sent.",
+    } satisfies Record<typeof result.notificationStatus, string>
     showToast({
-      description: "A notification email was sent.",
+      description: notificationDescription[result.notificationStatus],
       message: `${result.email} now has access`,
       type: "success",
     })
