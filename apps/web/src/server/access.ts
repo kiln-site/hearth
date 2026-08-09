@@ -7,6 +7,7 @@ import type { RowDataPacket } from "mysql2/promise"
 import { Resend } from "resend"
 import { z } from "zod"
 
+import { AccessGrantedEmail } from "@/emails/access-granted-email"
 import { AccessInvitationEmail } from "@/emails/access-invitation-email"
 import { Database, type DatabaseTransaction } from "@/effect/database"
 import { runAppEffect } from "@/effect/runtime"
@@ -41,7 +42,7 @@ const instanceGrantSchema = instanceScopeSchema.extend({ id: z.uuid() })
 const transferInstanceOwnershipSchema = instanceScopeSchema.extend({
   userId: z.string().min(1).max(36),
 })
-const invitationSchema = z
+const accessAssignmentSchema = z
   .object({
     databaseId: z
       .string()
@@ -59,6 +60,22 @@ const invitationSchema = z
 const updateGrantSchema = relayResourceIdSchema.extend({
   role: z.enum(accessRoles),
 })
+
+type AccessAssignment = z.infer<typeof accessAssignmentSchema>
+type AccessScope = "database" | "instance" | "relay"
+
+interface DirectAccessResult {
+  email: string
+  inviteUrl: null
+  kind: "granted"
+}
+
+interface InvitationAccessResult {
+  expiresAt: string
+  id: string
+  inviteUrl: string | null
+  kind: "invitation"
+}
 
 interface InvitationRow extends RowDataPacket {
   accepted_at: Date | null
@@ -78,6 +95,7 @@ interface AccessOverviewRow extends RowDataPacket {
   email: string
   id: string
   name: string
+  platform_role: string | null
   resource_id: string
   resource_type: "database" | "instance" | "relay"
   role: (typeof accessRoles)[number]
@@ -102,6 +120,7 @@ interface InstanceGrantRow extends RowDataPacket {
   created_at: Date
   email: string
   id: string
+  platform_role: string | null
   role: string
   user_id: string
 }
@@ -109,6 +128,30 @@ interface InstanceGrantRow extends RowDataPacket {
 interface InstanceUserRow extends RowDataPacket {
   email: string
   id: string
+  name: string
+  role: string | null
+}
+
+interface PlatformAdministratorRow extends RowDataPacket {
+  email: string
+  id: string
+  name: string
+}
+
+interface ExistingAccessUserRow extends RowDataPacket {
+  email: string
+  id: string
+  name: string
+  role: string | null
+}
+
+interface InstanceOwnerDirectoryRow extends RowDataPacket {
+  created_at: Date
+  email: string
+  instance_id: string
+  name: string
+  platform_role: string | null
+  user_id: string
 }
 
 interface InstanceOwnerRow extends RowDataPacket {
@@ -179,15 +222,20 @@ export const getAccessOverview = createServerFn({ method: "GET" }).handler(
     if (manageableRelays.length === 0) {
       throw new Error("You do not have permission to manage Relay access")
     }
-    const sections = await Promise.all(
-      manageableRelays.map((relay) => relayAccessOverview(user, relay))
-    )
+    const [sections, platformAdministrators] = await Promise.all([
+      Promise.all(
+        manageableRelays.map((relay) => relayAccessOverview(user, relay))
+      ),
+      platformAdmin ? listPlatformAdministrators() : [],
+    ])
     return {
       grants: sections.flatMap((section) => section.grants),
       invitations: sections.flatMap((section) => section.invitations),
+      owners: sections.flatMap((section) => section.owners),
       ownerRelayIds: sections.flatMap((section) =>
         section.canManageOwners ? [section.relay.id] : []
       ),
+      platformAdministrators,
       relays: sections.map((section) => section.relay),
     }
   }
@@ -228,10 +276,11 @@ export const getInstanceUsers = createServerFn({ method: "GET" })
           roleHasPermission(grant.role, "access.manage")
       )
 
-    const [grantRows, owner] = await Promise.all([
+    const [grantRows, owner, platformAdministrators] = await Promise.all([
       databasePool.query<Array<InstanceGrantRow>>(
         `SELECT grant_row.id, grant_row.user_id, grant_row.role,
-                grant_row.created_at, auth_user.email
+                grant_row.created_at, auth_user.email,
+                auth_user.role AS platform_role
            FROM ${databaseTable("access_grant")} AS grant_row
            JOIN ${databaseTable("user")} AS auth_user
              ON auth_user.id = grant_row.user_id
@@ -242,6 +291,7 @@ export const getInstanceUsers = createServerFn({ method: "GET" })
         [relay.id, data.instanceId]
       ),
       ownerId ? instanceOwnerUser(ownerId, user) : null,
+      platformAdmin ? listPlatformAdministrators() : [],
     ])
     const grants = grantRows[0].flatMap((grant) =>
       isAccessRole(grant.role)
@@ -250,6 +300,7 @@ export const getInstanceUsers = createServerFn({ method: "GET" })
               createdAt: grant.created_at.toISOString(),
               email: grant.email,
               id: grant.id,
+              platformAdministrator: grant.platform_role === "admin",
               role: grant.role,
               userId: grant.user_id,
             },
@@ -261,6 +312,7 @@ export const getInstanceUsers = createServerFn({ method: "GET" })
       canOpenAccessPage,
       canTransferOwnership: platformAdmin || owner?.id === user.id,
       owner,
+      platformAdministrators,
       users: grants.filter((grant) => grant.userId !== owner?.id),
     }
   })
@@ -269,11 +321,12 @@ async function relayAccessOverview(
   user: Awaited<ReturnType<typeof requireAuthenticatedUser>>,
   relay: PersistedRelay
 ) {
-  const [grants, invitations, ownerAccess] = await Promise.all([
+  const [grants, invitations, ownerRows, ownerAccess] = await Promise.all([
     databasePool.query<Array<AccessOverviewRow>>(
       `SELECT grant_row.id, grant_row.user_id, grant_row.resource_type,
               grant_row.resource_id, grant_row.role, grant_row.created_at,
-              auth_user.name, auth_user.email
+              auth_user.name, auth_user.email,
+              auth_user.role AS platform_role
          FROM ${databaseTable("access_grant")} AS grant_row
          JOIN ${databaseTable("user")} AS auth_user ON auth_user.id = grant_row.user_id
         WHERE grant_row.relay_id = ?
@@ -288,6 +341,18 @@ async function relayAccessOverview(
           AND revoked_at IS NULL
           AND expires_at > CURRENT_TIMESTAMP(3)
         ORDER BY created_at DESC`,
+      [relay.id]
+    ),
+    databasePool.query<Array<InstanceOwnerDirectoryRow>>(
+      `SELECT instance_row.instance_id, instance_row.owner_id AS user_id,
+              instance_row.created_at, auth_user.name, auth_user.email,
+              auth_user.role AS platform_role
+         FROM ${databaseTable("instance")} AS instance_row
+         JOIN ${databaseTable("user")} AS auth_user
+           ON auth_user.id = instance_row.owner_id
+        WHERE instance_row.relay_id = ?
+          AND instance_row.owner_id IS NOT NULL
+        ORDER BY auth_user.name ASC, instance_row.created_at ASC`,
       [relay.id]
     ),
     canManageOwners(user, relay.id),
@@ -305,9 +370,12 @@ async function relayAccessOverview(
       ownerId: await instanceOwnerId(relay, instanceId),
     }))
   )
-  const instanceOwners = new Map<string, string | null>()
+  const instanceOwnerIds = new Map<string, string | null>()
+  for (const owner of ownerRows[0]) {
+    instanceOwnerIds.set(owner.instance_id, owner.user_id)
+  }
   for (const entry of ownerEntries) {
-    instanceOwners.set(entry.instanceId, entry.ownerId)
+    instanceOwnerIds.set(entry.instanceId, entry.ownerId)
   }
 
   return {
@@ -315,13 +383,14 @@ async function relayAccessOverview(
     grants: grants[0].map((grant) => {
       const ownerId =
         grant.resource_type === "instance"
-          ? (instanceOwners.get(grant.resource_id) ?? null)
+          ? (instanceOwnerIds.get(grant.resource_id) ?? null)
           : null
       return {
         createdAt: grant.created_at.toISOString(),
         email: grant.email,
         id: grant.id,
         name: grant.name,
+        platformAdministrator: grant.platform_role === "admin",
         instanceOwner:
           grant.resource_type === "instance" &&
           isCurrentInstanceOwnerGrant({
@@ -354,12 +423,22 @@ async function relayAccessOverview(
       relayName: relay.name,
       role: invitation.role,
     })),
+    owners: ownerRows[0].map((owner) => ({
+      createdAt: owner.created_at.toISOString(),
+      email: owner.email,
+      instanceId: owner.instance_id,
+      name: owner.name,
+      platformAdministrator: owner.platform_role === "admin",
+      relayId: relay.id,
+      relayName: relay.name,
+      userId: owner.user_id,
+    })),
     relay: { id: relay.id, name: relay.name },
   }
 }
 
-export const createAccessInvitation = createServerFn({ method: "POST" })
-  .validator(invitationSchema)
+export const grantOrInviteAccess = createServerFn({ method: "POST" })
+  .validator(accessAssignmentSchema)
   .handler(async ({ data }) => {
     const user = await requireAuthenticatedUser()
     const relay = await requiredRelay(data.relayId)
@@ -374,6 +453,74 @@ export const createAccessInvitation = createServerFn({ method: "POST" })
       throw new Error(
         "Only a Relay owner or platform admin can grant the owner role"
       )
+    }
+
+    const [existingUsers] = await databasePool.query<
+      Array<ExistingAccessUserRow>
+    >(
+      `SELECT id, name, email, role
+         FROM ${databaseTable("user")}
+        WHERE email = ? LIMIT 1`,
+      [data.email]
+    )
+    const existingUser = existingUsers[0]
+    if (existingUser) {
+      const scope = accessScope(data)
+      await runAppEffect(
+        "access.grantExistingUser",
+        Effect.gen(function* () {
+          const database = yield* Database
+          return yield* database.transaction(
+            "access.grantExistingUser",
+            (transaction) =>
+              Effect.gen(function* () {
+                yield* transaction.execute(
+                  `UPDATE ${databaseTable("invitation")}
+                      SET revoked_at = CURRENT_TIMESTAMP(3)
+                    WHERE email = ? AND relay_id = ?
+                      AND ((instance_id IS NULL AND ? IS NULL) OR instance_id = ?)
+                      AND ((database_id IS NULL AND ? IS NULL) OR database_id = ?)
+                      AND accepted_at IS NULL AND revoked_at IS NULL`,
+                  [
+                    data.email,
+                    relay.id,
+                    data.instanceId,
+                    data.instanceId,
+                    data.databaseId,
+                    data.databaseId,
+                  ]
+                )
+                yield* transaction.execute(
+                  `INSERT INTO ${databaseTable("access_grant")}
+                     (id, user_id, relay_id, resource_type, resource_id, role, granted_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON DUPLICATE KEY UPDATE role = VALUES(role), granted_by = VALUES(granted_by)`,
+                  [
+                    randomUUID(),
+                    existingUser.id,
+                    relay.id,
+                    scope.type,
+                    scope.id,
+                    data.role,
+                    user.id,
+                  ]
+                )
+                yield* sendAccessGrantedNotification({
+                  email: existingUser.email,
+                  grantedBy: user.name,
+                  resourceName: data.resourceName,
+                  role: data.role,
+                  scope: scope.type,
+                })
+              })
+          )
+        })
+      )
+      return {
+        email: existingUser.email,
+        inviteUrl: null,
+        kind: "granted",
+      } satisfies DirectAccessResult
     }
 
     const token = randomBytes(32).toString("base64url")
@@ -450,7 +597,8 @@ export const createAccessInvitation = createServerFn({ method: "POST" })
       expiresAt: expiresAt.toISOString(),
       id,
       inviteUrl: delivery ? null : inviteUrl.toString(),
-    }
+      kind: "invitation",
+    } satisfies InvitationAccessResult
   })
 
 export const getInvitationPreview = createServerFn({ method: "GET" })
@@ -868,6 +1016,84 @@ function publicUrl(): string {
   return kilnPublicUrl().origin
 }
 
+function accessScope(data: AccessAssignment): {
+  id: string
+  type: AccessScope
+} {
+  if (data.databaseId) {
+    return { id: data.databaseId, type: "database" }
+  }
+  if (data.instanceId) {
+    return { id: data.instanceId, type: "instance" }
+  }
+  return { id: data.relayId, type: "relay" }
+}
+
+function sendAccessGrantedNotification(input: {
+  email: string
+  grantedBy: string
+  resourceName: string
+  role: (typeof accessRoles)[number]
+  scope: AccessScope
+}): Effect.Effect<void, Error> {
+  const delivery = emailDeliveryConfig()
+  if (!delivery) {
+    return Effect.sync(() => {
+      console.info(
+        `[Kiln access] ${input.email} received ${input.role} access to ${input.resourceName}`
+      )
+    })
+  }
+
+  return Effect.tryPromise({
+    try: async () => {
+      const resend = new Resend(delivery.apiKey)
+      const notificationId = createHash("sha256")
+        .update(
+          `${input.email}:${input.scope}:${input.resourceName}:${input.role}:${Date.now()}`
+        )
+        .digest("hex")
+        .slice(0, 24)
+      const { error } = await resend.emails.send(
+        {
+          from: delivery.from,
+          to: [input.email],
+          subject: `${input.grantedBy} added you to ${input.resourceName} in Kiln`,
+          react: AccessGrantedEmail({
+            actionUrl: new URL("/access", publicUrl()).toString(),
+            grantedBy: input.grantedBy,
+            resourceName: input.resourceName,
+            role: input.role,
+            scope: input.scope,
+          }),
+        },
+        { idempotencyKey: `access-granted/${notificationId}` }
+      )
+      if (error) {
+        throw new Error(error.message || "Could not send access notification")
+      }
+    },
+    catch: (cause) =>
+      cause instanceof Error
+        ? cause
+        : new Error("Could not send access notification"),
+  })
+}
+
+async function listPlatformAdministrators() {
+  const [rows] = await databasePool.query<Array<PlatformAdministratorRow>>(
+    `SELECT id, name, email
+       FROM ${databaseTable("user")}
+      WHERE role = 'admin'
+      ORDER BY name ASC, email ASC`
+  )
+  return rows.map((administrator) => ({
+    email: administrator.email,
+    id: administrator.id,
+    name: administrator.name,
+  }))
+}
+
 async function canManageOwners(
   user: Awaited<ReturnType<typeof requireAuthenticatedUser>>,
   relayId: string
@@ -1029,14 +1255,30 @@ async function instanceOwnerUser(
   currentUser: Awaited<ReturnType<typeof requireAuthenticatedUser>>
 ) {
   if (ownerId === currentUser.id) {
-    return { email: currentUser.email, id: currentUser.id }
+    return {
+      email: currentUser.email,
+      id: currentUser.id,
+      name: currentUser.name,
+      platformAdministrator: isPlatformAdmin(currentUser),
+    }
   }
   const [rows] = await databasePool.query<Array<InstanceUserRow>>(
-    `SELECT id, email FROM ${databaseTable("user")} WHERE id = ? LIMIT 1`,
+    `SELECT id, name, email, role
+       FROM ${databaseTable("user")} WHERE id = ? LIMIT 1`,
     [ownerId]
   )
   const owner = rows[0]
   return owner
-    ? { email: owner.email, id: owner.id }
-    : { email: "Former user", id: ownerId }
+    ? {
+        email: owner.email,
+        id: owner.id,
+        name: owner.name,
+        platformAdministrator: owner.role === "admin",
+      }
+    : {
+        email: "Former user",
+        id: ownerId,
+        name: "Former user",
+        platformAdministrator: false,
+      }
 }

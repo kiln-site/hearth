@@ -28,6 +28,8 @@ Before editing files for a substantial task:
   `SENTRY_TRACES_SAMPLE_RATE` is set to 100% in local development. Review the
   `sentry-cli` skill when debugging.
 - Avoid patching framework/library internals unless explicitly given permission.
+- Use Sonner for transient feedback and shared tooltips for icon-only controls;
+  do not add feedback UI that shifts the page layout.
 - For user-visible or runtime work, use T3 Code's collaborative Preview against
   the OrbStack URL printed by `pnpm dev:docker`; never use a local IP for
   development or validation.

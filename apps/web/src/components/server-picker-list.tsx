@@ -1,12 +1,21 @@
 import * as React from "react"
-import { Check, LoaderCircle, Search, Server } from "lucide-react"
+import {
+  Check,
+  Database,
+  LoaderCircle,
+  Network,
+  Search,
+  Server,
+} from "lucide-react"
 
 import { Input } from "@workspace/ui/components/input"
 import { cn } from "@workspace/ui/lib/utils"
 
 export interface ServerPickerOption {
+  description?: string
   disabled?: boolean
   id: string
+  kind?: "database" | "relay" | "server"
   name: string
   relayId: string
   relayName: string
@@ -20,12 +29,15 @@ interface ServerPickerAllOption {
 }
 
 export const serverPickerOptionKey = (server: ServerPickerOption) =>
-  `${server.relayId}:${server.id}`
+  server.kind
+    ? `${server.kind}:${server.relayId}:${server.id}`
+    : `${server.relayId}:${server.id}`
 
 export const ServerPickerList = React.memo(function ServerPickerList({
   allOption,
   ariaLabel = "Accessible servers",
   emptyMessage = "No accessible servers found.",
+  multiple,
   onSelect,
   pendingKey,
   searchPlaceholder = "Search by name, Relay, or ID",
@@ -35,6 +47,7 @@ export const ServerPickerList = React.memo(function ServerPickerList({
   allOption?: ServerPickerAllOption
   ariaLabel?: string
   emptyMessage?: string
+  multiple?: boolean
   onSelect: (server: ServerPickerOption) => void
   pendingKey?: string
   searchPlaceholder?: string
@@ -71,7 +84,7 @@ export const ServerPickerList = React.memo(function ServerPickerList({
       <div
         role="listbox"
         aria-label={ariaLabel}
-        aria-multiselectable={allOption ? undefined : true}
+        aria-multiselectable={(multiple ?? !allOption) ? true : undefined}
         className="no-scrollbar max-h-72 space-y-0.5 overflow-y-auto overscroll-contain"
       >
         {allOption && normalizedQuery.length === 0 ? (
@@ -88,8 +101,11 @@ export const ServerPickerList = React.memo(function ServerPickerList({
           return (
             <ServerPickerRow
               key={key}
-              description={`${server.relayName} · ${server.id}`}
+              description={
+                server.description ?? `${server.relayName} · ${server.id}`
+              }
               disabled={server.disabled || pendingKey !== undefined}
+              kind={server.kind}
               name={server.name}
               pending={pendingKey === key}
               selected={selectedKeys.has(key)}
@@ -111,6 +127,7 @@ export const ServerPickerList = React.memo(function ServerPickerList({
 const ServerPickerRow = React.memo(function ServerPickerRow({
   description,
   disabled = false,
+  kind = "server",
   name,
   onSelect,
   pending = false,
@@ -118,6 +135,7 @@ const ServerPickerRow = React.memo(function ServerPickerRow({
 }: {
   description: string
   disabled?: boolean
+  kind?: "database" | "relay" | "server"
   name: string
   onSelect: () => void
   pending?: boolean
@@ -137,7 +155,13 @@ const ServerPickerRow = React.memo(function ServerPickerRow({
       onClick={onSelect}
     >
       <span className="grid size-8 shrink-0 place-items-center rounded-md border border-border/70 bg-background/70 text-muted-foreground">
-        <Server className="size-4" />
+        {kind === "relay" ? (
+          <Network className="size-4" />
+        ) : kind === "database" ? (
+          <Database className="size-4" />
+        ) : (
+          <Server className="size-4" />
+        )}
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm font-semibold tracking-tight">
