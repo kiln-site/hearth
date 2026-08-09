@@ -4,6 +4,7 @@ import type { ResultSetHeader } from "mysql2/promise"
 
 import { Database } from "@/effect/database"
 import {
+  deduplicateEffectiveInstanceGrants,
   deleteInstanceAccessEffect,
   isBlockedInstanceOwnerRoleChange,
   isCurrentInstanceOwnerGrant,
@@ -22,6 +23,42 @@ const emptyResult: ResultSetHeader = {
 }
 
 describe("instance access cleanup", () => {
+  it("shows each user once and prefers their Relay-wide grant", () => {
+    const grants: Array<{
+      id: string
+      resourceType: "instance" | "relay"
+      userId: string
+    }> = [
+      {
+        id: "direct-one",
+        resourceType: "instance",
+        userId: "user-one",
+      },
+      {
+        id: "direct-two",
+        resourceType: "instance",
+        userId: "user-two",
+      },
+      {
+        id: "relay-one",
+        resourceType: "relay",
+        userId: "user-one",
+      },
+    ]
+    assert.deepEqual(deduplicateEffectiveInstanceGrants(grants), [
+      {
+        id: "relay-one",
+        resourceType: "relay",
+        userId: "user-one",
+      },
+      {
+        id: "direct-two",
+        resourceType: "instance",
+        userId: "user-two",
+      },
+    ])
+  })
+
   it("protects the current owner and any remaining owner-role grant", () => {
     assert.isTrue(
       isCurrentInstanceOwnerGrant({

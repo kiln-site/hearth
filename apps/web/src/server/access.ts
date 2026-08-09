@@ -11,6 +11,7 @@ import { AccessInvitationEmail } from "@/emails/access-invitation-email"
 import { Database, type DatabaseTransaction } from "@/effect/database"
 import { runAppEffect } from "@/effect/runtime"
 import {
+  deduplicateEffectiveInstanceGrants,
   hasRelayPermission,
   isBlockedInstanceOwnerRoleChange,
   isCurrentInstanceOwnerGrant,
@@ -102,6 +103,7 @@ interface InstanceGrantRow extends RowDataPacket {
   created_at: Date
   email: string
   id: string
+  resource_type: "instance" | "relay"
   role: string
   user_id: string
 }
@@ -231,30 +233,39 @@ export const getInstanceUsers = createServerFn({ method: "GET" })
     const [grantRows, owner] = await Promise.all([
       databasePool.query<Array<InstanceGrantRow>>(
         `SELECT grant_row.id, grant_row.user_id, grant_row.role,
-                grant_row.created_at, auth_user.email
+                grant_row.resource_type, grant_row.created_at, auth_user.email
            FROM ${databaseTable("access_grant")} AS grant_row
            JOIN ${databaseTable("user")} AS auth_user
              ON auth_user.id = grant_row.user_id
           WHERE grant_row.relay_id = ?
-            AND grant_row.resource_type = 'instance'
-            AND grant_row.resource_id = ?
+            AND (
+              grant_row.resource_type = 'relay'
+              OR (
+                grant_row.resource_type = 'instance'
+                AND grant_row.resource_id = ?
+              )
+            )
+            AND COALESCE(auth_user.role, 'user') <> 'admin'
           ORDER BY grant_row.created_at ASC`,
         [relay.id, data.instanceId]
       ),
       ownerId ? instanceOwnerUser(ownerId, user) : null,
     ])
-    const grants = grantRows[0].flatMap((grant) =>
-      isAccessRole(grant.role)
-        ? [
-            {
-              createdAt: grant.created_at.toISOString(),
-              email: grant.email,
-              id: grant.id,
-              role: grant.role,
-              userId: grant.user_id,
-            },
-          ]
-        : []
+    const grants = deduplicateEffectiveInstanceGrants(
+      grantRows[0].flatMap((grant) =>
+        isAccessRole(grant.role)
+          ? [
+              {
+                createdAt: grant.created_at.toISOString(),
+                email: grant.email,
+                id: grant.id,
+                resourceType: grant.resource_type,
+                role: grant.role,
+                userId: grant.user_id,
+              },
+            ]
+          : []
+      )
     )
     return {
       canManage,
