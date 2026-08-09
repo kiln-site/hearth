@@ -43,6 +43,7 @@ function InfoRoute() {
       node={data.node}
       canDelete={permissions.deleteServer}
       canRename={permissions.settings}
+      canShare={permissions.shareLogs}
       relayConnected={relayConnected}
       onDeleted={returnToServers}
     />

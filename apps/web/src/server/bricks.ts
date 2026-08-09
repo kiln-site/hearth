@@ -133,7 +133,11 @@ export const getInstanceRecipe = createServerFn({ method: "GET" })
     )
     if (!instance) throw new Error("Instance not found")
     const recipe = await loadInstanceRecipe(relay, instance)
-    return { ...recipe, brick: recipePreview(recipe.brick) }
+    return {
+      content: JSON.stringify(recipePreview(recipe.brick), null, 2),
+      name: recipe.brick.metadata.name,
+      sourceUrl: externalRecipeUrl(recipe.brickSource),
+    }
   })
 
 export const getInstanceStartup = createServerFn({ method: "GET" })
@@ -271,6 +275,11 @@ function recipePreview(brick: z.infer<typeof brickSchema>) {
       ])
     ),
   }
+}
+
+function externalRecipeUrl(source: string) {
+  const protocol = new URL(source).protocol
+  return protocol === "http:" || protocol === "https:" ? source : null
 }
 
 export const loadBrickRecipe = createServerFn({ method: "POST" })

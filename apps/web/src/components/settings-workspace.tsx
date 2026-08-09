@@ -44,8 +44,10 @@ import {
 } from "@workspace/ui/components/tooltip"
 import { cn } from "@workspace/ui/lib/utils"
 
+import { ReadOnlyCodeViewer } from "@/components/read-only-code-viewer"
 import { ServerDeleteDialog } from "@/components/server-delete-dialog"
 import { hostPortAddress } from "@/lib/domain-address"
+import { warmSyntaxCodeEditorModule } from "@/lib/syntax-editor-module-preload"
 import {
   instanceRecipeQueryOptions,
   instanceUsersQueryOptions,
@@ -62,13 +64,14 @@ import {
   transferInstanceOwnership,
 } from "@/server/access"
 import type { getInstanceUsers } from "@/server/access"
-import { updateInstanceName } from "@/server/relay"
+import { updateInstanceName, uploadToMclogs } from "@/server/relay"
 
 type InstanceUsers = Awaited<ReturnType<typeof getInstanceUsers>>
 
 export function SettingsWorkspace({
   instance,
   node,
+  canShare,
   canDelete,
   canRename,
   onDeleted,
@@ -76,6 +79,7 @@ export function SettingsWorkspace({
 }: {
   instance: InstanceSettingsInstance
   node: RelayNodeSummary
+  canShare: boolean
   canDelete: boolean
   canRename: boolean
   onDeleted: () => Promise<void> | void
@@ -147,7 +151,7 @@ export function SettingsWorkspace({
               />
             </InfoCard>
 
-            <BrickInfoCard instance={instance} />
+            <BrickInfoCard canShare={canShare} instance={instance} />
           </div>
 
           <InstanceUsersCard instance={instance} />
@@ -301,16 +305,33 @@ function CopyMetaRow({
   )
 }
 
-function BrickInfoCard({ instance }: { instance: InstanceSettingsInstance }) {
+function BrickInfoCard({
+  canShare,
+  instance,
+}: {
+  canShare: boolean
+  instance: InstanceSettingsInstance
+}) {
   const [recipeOpen, setRecipeOpen] = React.useState(false)
   const recipeQuery = useQuery({
     ...instanceRecipeQueryOptions(instance.relayId, instance.id),
     enabled: recipeOpen,
   })
-  const recipePreview = React.useMemo(
-    () =>
-      recipeQuery.data ? JSON.stringify(recipeQuery.data.brick, null, 2) : "",
-    [recipeQuery.data]
+  const shareRecipe = React.useCallback(
+    async (content: string) => {
+      const result = await uploadToMclogs({
+        data: {
+          content,
+          implementation: instance.implementation,
+          instanceId: instance.id,
+          path: "brick-recipe.json",
+          relayId: instance.relayId,
+          version: instance.version,
+        },
+      })
+      return result.url
+    },
+    [instance.id, instance.implementation, instance.relayId, instance.version]
   )
 
   return (
@@ -341,7 +362,10 @@ function BrickInfoCard({ instance }: { instance: InstanceSettingsInstance }) {
               type="button"
               size="sm"
               variant="ghost"
-              onClick={() => setRecipeOpen(true)}
+              onClick={() => {
+                warmSyntaxCodeEditorModule()
+                setRecipeOpen(true)
+              }}
             >
               <FileCode2 />
               Recipe
@@ -366,33 +390,32 @@ function BrickInfoCard({ instance }: { instance: InstanceSettingsInstance }) {
       </InfoCard>
 
       <Dialog open={recipeOpen} onOpenChange={setRecipeOpen}>
-        <DialogContent className="max-w-3xl overflow-hidden">
-          <DialogHeader>
+        <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-4xl">
+          <DialogHeader className="sr-only">
             <DialogTitle>
-              {recipeQuery.data?.brick.metadata.name ?? "Brick recipe"}
+              {recipeQuery.data?.name ?? "Brick recipe"}
             </DialogTitle>
-            <DialogDescription className="font-mono text-[10px] break-all">
-              {recipeQuery.data?.brickSource ??
-                instance.brickSource ??
-                instance.brickFormat ??
-                "Loading recipe source…"}
+            <DialogDescription>
+              Preview this server&apos;s recipe.
             </DialogDescription>
           </DialogHeader>
           {recipeQuery.isPending ? (
-            <div className="grid min-h-64 place-items-center rounded-lg border bg-muted/10 text-muted-foreground">
+            <div className="grid h-[min(72dvh,42rem)] min-h-80 place-items-center bg-card text-muted-foreground">
               <LoaderCircle className="size-4 animate-spin" />
             </div>
           ) : recipeQuery.isError ? (
-            <div className="rounded-lg border border-destructive/25 bg-destructive/5 px-4 py-6 text-xs text-destructive">
+            <div className="grid h-[min(72dvh,42rem)] min-h-80 place-items-center bg-card px-6 text-center text-xs text-destructive">
               {recipeQuery.error.message || "Could not load the Brick recipe"}
             </div>
-          ) : (
-            <div className="max-h-[65vh] overflow-auto rounded-lg border bg-muted/15">
-              <pre className="min-w-max p-4 font-mono text-[11px] leading-5 text-foreground/85">
-                <code>{recipePreview}</code>
-              </pre>
-            </div>
-          )}
+          ) : recipeQuery.data ? (
+            <ReadOnlyCodeViewer
+              content={recipeQuery.data.content}
+              languagePath="brick-recipe.json"
+              onShare={canShare ? shareRecipe : undefined}
+              sourceUrl={recipeQuery.data.sourceUrl}
+              title={recipeQuery.data.name}
+            />
+          ) : null}
         </DialogContent>
       </Dialog>
     </>
