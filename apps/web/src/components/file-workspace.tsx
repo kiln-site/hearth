@@ -94,9 +94,14 @@ import {
   createFileSelectionStore,
   deletedPathContainsSelection,
   fileEditorFontSizes,
-  fileUploadRelativePath,
 } from "@/components/files/file-workspace-stores"
 import { FileDownloadDialog } from "@/components/files/file-download-dialog"
+import {
+  droppedUploadFiles,
+  maxFolderUploadFiles,
+  selectedUploadFiles,
+} from "@/components/files/file-upload-selection"
+import type { UploadFile } from "@/components/files/file-upload-selection"
 import type {
   EditorSearchStore,
   EditorSessionStore,
@@ -135,6 +140,7 @@ const SyntaxCodeEditor = React.lazy(async () => {
 })
 
 const activeFileRevisionPollDelayMs = 30_000
+const folderInputAttributes = { webkitdirectory: "" }
 
 function formatName(path: string) {
   return path.split("/").filter(Boolean).at(-1) ?? path
@@ -172,9 +178,37 @@ function hasDraggedFiles(event: React.DragEvent): boolean {
 }
 
 type UploadFiles = (
-  files: ReadonlyArray<File>,
+  files: ReadonlyArray<UploadFile>,
   directory: string
 ) => Promise<void>
+
+async function uploadDroppedFiles(
+  dataTransfer: DataTransfer,
+  directory: string,
+  onUploadFiles: UploadFiles
+): Promise<void> {
+  try {
+    const files = await droppedUploadFiles(dataTransfer)
+    if (!files.length) {
+      showToast({
+        type: "error",
+        message: "Folder contains no files",
+        description: "Empty folders are not uploaded.",
+      })
+      return
+    }
+    await onUploadFiles(files, directory)
+  } catch (cause) {
+    showToast({
+      type: "error",
+      message: "Could not read dropped folder",
+      description:
+        cause instanceof Error
+          ? cause.message
+          : "The browser could not enumerate these files.",
+    })
+  }
+}
 
 function UploadProgressDescription({
   completed,
@@ -215,6 +249,14 @@ function useFileUploadAction({
   const uploadFiles = React.useCallback<UploadFiles>(
     async (files, directory) => {
       if (!files.length || !canWrite) return
+      if (files.length > maxFolderUploadFiles) {
+        showToast({
+          type: "error",
+          message: "Too many files selected",
+          description: `Upload at most ${maxFolderUploadFiles.toLocaleString()} files at a time.`,
+        })
+        return
+      }
       setUploading(true)
       let completed = 0
       let uploaded = 0
@@ -237,13 +279,13 @@ function useFileUploadAction({
       await Effect.runPromise(
         Effect.forEach(
           files,
-          (file) =>
+          (upload) =>
             Effect.tryPromise({
               try: () =>
                 uploadRelayFile({
-                  file,
+                  file: upload.file,
                   instanceId: instance.id,
-                  path: joinFilePath(directory, fileUploadRelativePath(file)),
+                  path: joinFilePath(directory, upload.path),
                   relayId: instance.relayId,
                 }),
               catch: (cause) => cause,
@@ -352,8 +394,7 @@ function useFileDropTarget({
       event.preventDefault()
       dragDepth.current = 0
       setActive(false)
-      const files = Array.from(event.dataTransfer.files)
-      if (files.length) void onUploadFiles(files, directory)
+      void uploadDroppedFiles(event.dataTransfer, directory, onUploadFiles)
     },
   }
 }
@@ -2704,6 +2745,7 @@ function FileTreePanel({
     userSelect: "",
   })
   const uploadInputRef = React.useRef<HTMLInputElement>(null)
+  const folderUploadInputRef = React.useRef<HTMLInputElement>(null)
   const dragDepth = React.useRef(0)
   const activeDropElement = React.useRef<HTMLElement | null>(null)
   const activeDropSegment = React.useRef<HTMLElement | null>(null)
@@ -2715,7 +2757,7 @@ function FileTreePanel({
 
   const handleFilesSelected = React.useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
-      const files = [...(event.target.files ?? [])]
+      const files = selectedUploadFiles(event.target.files ?? [])
       event.target.value = ""
       if (files.length && canWrite) void onUploadFiles(files, "")
     },
@@ -2843,10 +2885,9 @@ function FileTreePanel({
     if (!canWrite || !hasDraggedFiles(event)) return
     event.preventDefault()
     const directory = dropDirectory.current
-    const files = Array.from(event.dataTransfer.files)
     dragDepth.current = 0
     clearTreeDropTarget()
-    if (files.length) void onUploadFiles(files, directory)
+    void uploadDroppedFiles(event.dataTransfer, directory, onUploadFiles)
   }
 
   function workspaceWidth() {
@@ -3152,32 +3193,35 @@ function FileTreePanel({
               </p>
               <FileActionPreview icon={<FolderPlus />} label="New directory" />
               <FileActionPreview icon={<FilePlus />} label="New file" />
-              <button
-                type="button"
+              <FileUploadPickerAction
                 disabled={!canWrite || uploading || refreshDisabled}
-                className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-popover-accent/75 hover:text-foreground focus-visible:bg-popover-accent focus-visible:text-foreground focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40"
                 onClick={() => uploadInputRef.current?.click()}
-              >
-                <span className="grid size-7 shrink-0 place-items-center border border-border/70 bg-card [&>svg]:size-3.5">
-                  {uploading ? (
-                    <LoaderCircle className="animate-spin" />
-                  ) : (
-                    <Upload />
-                  )}
-                </span>
-                <span className="min-w-0 flex-1 text-foreground">
-                  {uploading ? "Uploading…" : "Upload files"}
-                </span>
-                <span className="font-mono text-[8px] tracking-wider text-primary uppercase">
-                  Direct
-                </span>
-              </button>
+                icon={<Upload />}
+                label="Upload files"
+                uploading={uploading}
+              />
+              <FileUploadPickerAction
+                disabled={!canWrite || uploading || refreshDisabled}
+                onClick={() => folderUploadInputRef.current?.click()}
+                icon={<FolderPlus />}
+                label="Upload folder"
+                uploading={uploading}
+              />
               <input
                 ref={uploadInputRef}
                 type="file"
                 multiple
                 className="hidden"
                 aria-label="Choose files to upload"
+                onChange={(event) => void handleFilesSelected(event)}
+              />
+              <input
+                {...folderInputAttributes}
+                ref={folderUploadInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                aria-label="Choose folder to upload"
                 onChange={(event) => void handleFilesSelected(event)}
               />
               <FileActionPreview icon={<Network />} label="Connect with SFTP" />
@@ -3527,6 +3571,39 @@ function FileActionPreview({
       <span className="min-w-0 flex-1 text-foreground/75">{label}</span>
       <span className="font-mono text-[8px] tracking-wider text-muted-foreground/60 uppercase">
         Soon
+      </span>
+    </button>
+  )
+}
+
+function FileUploadPickerAction({
+  disabled,
+  icon,
+  label,
+  onClick,
+  uploading,
+}: {
+  disabled: boolean
+  icon: React.ReactNode
+  label: string
+  onClick: () => void
+  uploading: boolean
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-popover-accent/75 hover:text-foreground focus-visible:bg-popover-accent focus-visible:text-foreground focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40"
+      onClick={onClick}
+    >
+      <span className="grid size-7 shrink-0 place-items-center border border-border/70 bg-card [&>svg]:size-3.5">
+        {uploading ? <LoaderCircle className="animate-spin" /> : icon}
+      </span>
+      <span className="min-w-0 flex-1 text-foreground">
+        {uploading ? "Uploading…" : label}
+      </span>
+      <span className="font-mono text-[8px] tracking-wider text-primary uppercase">
+        Direct
       </span>
     </button>
   )
@@ -4173,6 +4250,7 @@ function DirectoryView({
   )
   const sectionRef = React.useRef<HTMLElement>(null)
   const uploadInputRef = React.useRef<HTMLInputElement>(null)
+  const folderUploadInputRef = React.useRef<HTMLInputElement>(null)
   const dropTarget = useFileDropTarget({
     directory: path,
     enabled: canWrite,
@@ -4198,6 +4276,12 @@ function DirectoryView({
     })
   }
 
+  function handleUploadInput(event: React.ChangeEvent<HTMLInputElement>) {
+    const files = selectedUploadFiles(event.target.files ?? [])
+    event.target.value = ""
+    if (files.length) void onUploadFiles(files, path)
+  }
+
   const parent = directoryPath(path.replace(/\/+$/u, ""))
 
   return (
@@ -4217,31 +4301,52 @@ function DirectoryView({
                 {selectedPaths.length} selected
               </span>
             ) : null}
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={!canWrite || uploading}
-              onClick={() => uploadInputRef.current?.click()}
-            >
-              {uploading ? (
-                <LoaderCircle className="animate-spin" />
-              ) : (
-                <Upload />
-              )}
-              <span className="hidden sm:inline">Upload</span>
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={!canWrite || uploading}
+                >
+                  {uploading ? (
+                    <LoaderCircle className="animate-spin" />
+                  ) : (
+                    <Upload />
+                  )}
+                  <span className="hidden sm:inline">Upload</span>
+                  <ChevronDown className="hidden size-3 sm:block" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuItem
+                  onSelect={() => uploadInputRef.current?.click()}
+                >
+                  <FilePlus /> Upload files
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => folderUploadInputRef.current?.click()}
+                >
+                  <FolderPlus /> Upload folder
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <input
               ref={uploadInputRef}
               type="file"
               multiple
               className="hidden"
               aria-label={`Upload files to /data/${path}`}
-              onChange={(event) => {
-                const files = Array.from(event.target.files ?? [])
-                event.target.value = ""
-                if (files.length) void onUploadFiles(files, path)
-              }}
+              onChange={handleUploadInput}
+            />
+            <input
+              {...folderInputAttributes}
+              ref={folderUploadInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              aria-label={`Upload folder to /data/${path}`}
+              onChange={handleUploadInput}
             />
             <FileActionsDropdown controller={actions} paths={selectedPaths} />
           </div>

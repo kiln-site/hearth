@@ -1,6 +1,7 @@
 import {
   cp,
   lstat,
+  mkdir,
   open,
   opendir,
   readFile,
@@ -370,105 +371,23 @@ export class FilesystemDriver {
       yield* requireLinuxDescriptorAnchoring()
       yield* validateRelativePath(requestedPath)
       const root = yield* this.#instanceRoot(instance)
-      const candidate = resolve(root, requestedPath)
-      yield* ensureContained(root, candidate)
-      const parent = yield* filesystemOperation("upload.resolveParent", () =>
-        realpath(dirname(candidate))
-      )
-      yield* ensureContained(root, parent)
-
-      return yield* Effect.acquireUseRelease(
-        filesystemOperation("upload.openParent", () =>
-          open(
-            parent,
-            fsConstants.O_RDONLY |
-              fsConstants.O_DIRECTORY |
-              fsConstants.O_NOFOLLOW
+      const segments = requestedPath
+        .split("/")
+        .filter((segment) => segment && segment !== ".")
+      const name = segments.at(-1)
+      if (!name) {
+        return yield* filesystemFailure(
+          "invalid_path",
+          "upload",
+          "Invalid relative path"
+        )
+      }
+      return yield* Effect.scoped(
+        openUploadParent(root, segments.slice(0, -1)).pipe(
+          Effect.flatMap((parentHandle) =>
+            uploadIntoParent(root, parentHandle, name, requestedPath, source)
           )
-        ),
-        (parentHandle) =>
-          Effect.gen(function* () {
-            const anchoredParent = fileDescriptorPath(parentHandle)
-            const resolvedParent = yield* filesystemOperation(
-              "upload.resolveParentDescriptor",
-              () => realpath(anchoredParent)
-            )
-            yield* ensureContained(root, resolvedParent)
-            const target = resolve(anchoredParent, basename(candidate))
-            const existing = yield* optionalFileMetadata(target)
-            if (existing && !existing.isFile()) {
-              return yield* filesystemFailure(
-                "not_a_file",
-                "upload",
-                "Path is not a file"
-              )
-            }
-            const mode = existing ? existing.mode & 0o777 : 0o644
-            const temporary = resolve(
-              anchoredParent,
-              `.kiln-upload-${randomUUID()}`
-            )
-            let size = 0
-            const digest = createHash("sha256")
-
-            yield* Effect.acquireUseRelease(
-              filesystemOperation("upload.openTemporary", () =>
-                open(temporary, "wx", mode)
-              ),
-              (file) =>
-                Effect.gen(function* () {
-                  yield* Stream.fromAsyncIterable(source, (cause) =>
-                    makeFilesystemError(
-                      "read_failed",
-                      "upload.read",
-                      errorMessage(cause),
-                      cause
-                    )
-                  ).pipe(
-                    Stream.runForEach((chunk) =>
-                      Effect.gen(function* () {
-                        size += chunk.byteLength
-                        if (size > MAX_TRANSFER_BYTES) {
-                          return yield* filesystemFailure(
-                            "file_too_large",
-                            "upload",
-                            "Upload exceeds the 20 GiB transfer limit"
-                          )
-                        }
-                        digest.update(chunk)
-                        yield* writeFully(file, chunk, null)
-                      })
-                    )
-                  )
-                  yield* filesystemOperation("upload.sync", () =>
-                    file.sync()
-                  ).pipe(Effect.uninterruptible)
-                  const currentParent = yield* filesystemOperation(
-                    "upload.verifyParent",
-                    () => realpath(anchoredParent)
-                  )
-                  yield* ensureContained(root, currentParent)
-                  yield* filesystemOperation("upload.replace", () =>
-                    rename(temporary, target)
-                  ).pipe(Effect.uninterruptible)
-                }),
-              (file) =>
-                closeHandleEffect(file, "upload.closeTemporary").pipe(
-                  Effect.andThen(cleanupPathEffect(temporary))
-                )
-            )
-
-            const metadata = yield* filesystemOperation("upload.stat", () =>
-              stat(target)
-            )
-            return {
-              modifiedAt: metadata.mtime.toISOString(),
-              path: requestedPath,
-              sha256: digest.digest("hex"),
-              size,
-            }
-          }),
-        (parentHandle) => closeHandleEffect(parentHandle, "upload.closeParent")
+        )
       )
     }).pipe(Effect.withSpan("relay.files.upload"))
   }
@@ -591,6 +510,147 @@ export class FilesystemDriver {
 function fileDescriptorPath(file: FileHandle): string {
   return `/proc/self/fd/${file.fd}`
 }
+
+const openUploadParent = Effect.fn("relay.files.openUploadParent")(function* (
+  root: string,
+  segments: ReadonlyArray<string>
+) {
+  let parentHandle = yield* Effect.acquireRelease(
+    filesystemOperation("upload.openRoot", () =>
+      open(
+        root,
+        fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW
+      )
+    ),
+    (handle) => closeHandleEffect(handle, "upload.closeRoot")
+  )
+
+  for (const segment of segments) {
+    const child = resolve(fileDescriptorPath(parentHandle), segment)
+    const existing = yield* optionalFileMetadata(child)
+    if (!existing) {
+      yield* filesystemOperation("upload.createParent", async () => {
+        try {
+          await mkdir(child, { mode: 0o755 })
+        } catch (cause) {
+          if (!isAlreadyExists(cause)) throw cause
+        }
+      })
+    }
+    const metadata = yield* filesystemOperation("upload.statParent", () =>
+      lstat(child)
+    )
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      return yield* filesystemFailure(
+        "not_a_directory",
+        "upload",
+        "An upload parent path is not a directory"
+      )
+    }
+    const childHandle = yield* Effect.acquireRelease(
+      filesystemOperation("upload.openParent", () =>
+        open(
+          child,
+          fsConstants.O_RDONLY |
+            fsConstants.O_DIRECTORY |
+            fsConstants.O_NOFOLLOW
+        )
+      ),
+      (handle) => closeHandleEffect(handle, "upload.closeParent")
+    )
+    const resolvedChild = yield* filesystemOperation(
+      "upload.resolveParentDescriptor",
+      () => realpath(fileDescriptorPath(childHandle))
+    )
+    yield* ensureContained(root, resolvedChild)
+    parentHandle = childHandle
+  }
+
+  return parentHandle
+})
+
+const uploadIntoParent = Effect.fn("relay.files.uploadIntoParent")(function* (
+  root: string,
+  parentHandle: FileHandle,
+  name: string,
+  requestedPath: string,
+  source: AsyncIterable<Uint8Array>
+) {
+  const anchoredParent = fileDescriptorPath(parentHandle)
+  const resolvedParent = yield* filesystemOperation(
+    "upload.resolveParentDescriptor",
+    () => realpath(anchoredParent)
+  )
+  yield* ensureContained(root, resolvedParent)
+  const target = resolve(anchoredParent, name)
+  const existing = yield* optionalFileMetadata(target)
+  if (existing && !existing.isFile()) {
+    return yield* filesystemFailure(
+      "not_a_file",
+      "upload",
+      "Path is not a file"
+    )
+  }
+  const mode = existing ? existing.mode & 0o777 : 0o644
+  const temporary = resolve(anchoredParent, `.kiln-upload-${randomUUID()}`)
+  let size = 0
+  const digest = createHash("sha256")
+
+  yield* Effect.acquireUseRelease(
+    filesystemOperation("upload.openTemporary", () =>
+      open(temporary, "wx", mode)
+    ),
+    (file) =>
+      Effect.gen(function* () {
+        yield* Stream.fromAsyncIterable(source, (cause) =>
+          makeFilesystemError(
+            "read_failed",
+            "upload.read",
+            errorMessage(cause),
+            cause
+          )
+        ).pipe(
+          Stream.runForEach((chunk) =>
+            Effect.gen(function* () {
+              size += chunk.byteLength
+              if (size > MAX_TRANSFER_BYTES) {
+                return yield* filesystemFailure(
+                  "file_too_large",
+                  "upload",
+                  "Upload exceeds the 20 GiB transfer limit"
+                )
+              }
+              digest.update(chunk)
+              yield* writeFully(file, chunk, null)
+            })
+          )
+        )
+        yield* filesystemOperation("upload.sync", () => file.sync()).pipe(
+          Effect.uninterruptible
+        )
+        const currentParent = yield* filesystemOperation(
+          "upload.verifyParent",
+          () => realpath(anchoredParent)
+        )
+        yield* ensureContained(root, currentParent)
+        yield* filesystemOperation("upload.replace", () =>
+          rename(temporary, target)
+        ).pipe(Effect.uninterruptible)
+      }),
+    (file) =>
+      closeHandleEffect(file, "upload.closeTemporary").pipe(
+        Effect.andThen(cleanupPathEffect(temporary))
+      )
+  )
+
+  const metadata = yield* filesystemOperation("upload.stat", () => stat(target))
+  return {
+    modifiedAt: metadata.mtime.toISOString(),
+    path: requestedPath,
+    sha256: digest.digest("hex"),
+    size,
+  }
+})
 
 function requireLinuxDescriptorAnchoring() {
   return process.platform === "linux"
@@ -978,6 +1038,15 @@ function isMissingFile(cause: unknown): boolean {
     typeof cause === "object" &&
     "code" in cause &&
     cause.code === "ENOENT"
+  )
+}
+
+function isAlreadyExists(cause: unknown): boolean {
+  return Boolean(
+    cause &&
+    typeof cause === "object" &&
+    "code" in cause &&
+    cause.code === "EEXIST"
   )
 }
 

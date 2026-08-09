@@ -14,21 +14,6 @@ export function deletedPathContainsSelection(
     : selectedPath === deletedPath
 }
 
-export function fileUploadRelativePath(file: {
-  name: string
-  webkitRelativePath: string
-}): string {
-  const relativePath = file.webkitRelativePath.replaceAll("\\", "/")
-  if (
-    !relativePath ||
-    relativePath.startsWith("/") ||
-    relativePath.split("/").some((segment) => segment === "..")
-  ) {
-    return file.name
-  }
-  return relativePath
-}
-
 export interface EditorSearchStore {
   getSnapshot: () => string
   setQuery: (query: string) => void

@@ -1,0 +1,127 @@
+import { describe, expect, it } from "vite-plus/test"
+
+import {
+  collectDroppedEntries,
+  fileUploadRelativePath,
+} from "@/components/files/file-upload-selection"
+
+class TestFileSystem implements FileSystem {
+  readonly name = "test"
+  readonly root: FileSystemDirectoryEntry
+
+  constructor() {
+    this.root = new TestDirectoryEntry("", [], this)
+  }
+}
+
+abstract class TestEntry implements FileSystemEntry {
+  readonly fullPath: string
+  abstract readonly isDirectory: boolean
+  abstract readonly isFile: boolean
+
+  constructor(
+    readonly name: string,
+    readonly filesystem: FileSystem
+  ) {
+    this.fullPath = `/${name}`
+  }
+
+  getParent(successCallback?: FileSystemEntryCallback): void {
+    successCallback?.(this.filesystem.root)
+  }
+}
+
+class TestFileEntry extends TestEntry implements FileSystemFileEntry {
+  readonly isDirectory = false
+  readonly isFile = true
+
+  constructor(
+    readonly value: File,
+    filesystem: FileSystem
+  ) {
+    super(value.name, filesystem)
+  }
+
+  file(successCallback: FileCallback): void {
+    successCallback(this.value)
+  }
+}
+
+class TestDirectoryEntry extends TestEntry implements FileSystemDirectoryEntry {
+  readonly isDirectory = true
+  readonly isFile = false
+
+  constructor(
+    name: string,
+    private readonly batches: ReadonlyArray<ReadonlyArray<FileSystemEntry>>,
+    filesystem: FileSystem
+  ) {
+    super(name, filesystem)
+  }
+
+  createReader(): FileSystemDirectoryReader {
+    let batchIndex = 0
+    return {
+      readEntries: (successCallback) => {
+        const batch = Array.from(this.batches[batchIndex] ?? [])
+        batchIndex += 1
+        successCallback(batch)
+      },
+    }
+  }
+
+  getDirectory(): void {}
+
+  getFile(): void {}
+}
+
+describe("file upload selection", () => {
+  it("preserves safe paths supplied by directory inputs", () => {
+    expect(
+      fileUploadRelativePath({
+        name: "config.yml",
+        webkitRelativePath: "pack/config/config.yml",
+      })
+    ).toBe("pack/config/config.yml")
+    expect(
+      fileUploadRelativePath({
+        name: "config.yml",
+        webkitRelativePath: "pack/overrides/config.yml",
+      })
+    ).toBe("pack/overrides/config.yml")
+    expect(
+      fileUploadRelativePath({
+        name: "config.yml",
+        webkitRelativePath: "../config.yml",
+      })
+    ).toBe("config.yml")
+  })
+
+  it("recursively enumerates every directory reader batch", async () => {
+    const filesystem = new TestFileSystem()
+    const server = new TestFileEntry(
+      new File(["port=25565"], "server.yml"),
+      filesystem
+    )
+    const messages = new TestFileEntry(
+      new File(["welcome"], "messages.yml"),
+      filesystem
+    )
+    const config = new TestDirectoryEntry(
+      "config",
+      [[server], [messages]],
+      filesystem
+    )
+    const pack = new TestDirectoryEntry("pack", [[config]], filesystem)
+
+    const uploads = await collectDroppedEntries([pack])
+
+    expect(uploads.map(({ path }) => path)).toEqual([
+      "pack/config/server.yml",
+      "pack/config/messages.yml",
+    ])
+    await expect(
+      Promise.all(uploads.map(({ file }) => file.text()))
+    ).resolves.toEqual(["port=25565", "welcome"])
+  })
+})

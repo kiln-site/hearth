@@ -89,6 +89,43 @@ describeLinux("Relay direct file transfers", () => {
     )
   )
 
+  it.effect("creates missing parents for concurrent nested uploads", () =>
+    withSetup(({ driver, instance }) =>
+      Effect.gen(function* () {
+        yield* Effect.all(
+          [
+            driver.upload(
+              instance,
+              "packs/example/config/server.yml",
+              chunks("server")
+            ),
+            driver.upload(
+              instance,
+              "packs/example/config/messages.yml",
+              chunks("messages")
+            ),
+          ],
+          { concurrency: "unbounded" }
+        )
+
+        const [server, messages] = yield* Effect.all([
+          driver.withDownload(
+            instance,
+            "packs/example/config/server.yml",
+            (download) => fromPromise(() => download.file.readFile("utf8"))
+          ),
+          driver.withDownload(
+            instance,
+            "packs/example/config/messages.yml",
+            (download) => fromPromise(() => download.file.readFile("utf8"))
+          ),
+        ])
+        assert.strictEqual(server, "server")
+        assert.strictEqual(messages, "messages")
+      })
+    )
+  )
+
   it.effect(
     "collects archive downloads without writing into the instance",
     () =>
@@ -162,6 +199,26 @@ describeLinux("Relay direct file transfers", () => {
           .pipe(Effect.flip)
         assert.instanceOf(mutationFailure, RelayFilesystemError)
         assert.strictEqual(mutationFailure.code, "unsupported_file")
+      })
+    )
+  )
+
+  it.effect("refuses symlinks in newly requested upload parents", () =>
+    withSetup(({ directory, driver, instance, root }) =>
+      Effect.gen(function* () {
+        const outside = resolve(directory, "outside")
+        yield* fromPromise(() => mkdir(outside))
+        yield* fromPromise(() =>
+          symlink(outside, resolve(root, "world", "linked"))
+        )
+
+        const failure = yield* driver
+          .upload(instance, "world/linked/nested.txt", chunks("blocked"))
+          .pipe(Effect.flip)
+        assert.instanceOf(failure, RelayFilesystemError)
+        assert.strictEqual(failure.code, "not_a_directory")
+        const outsideEntries = yield* fromPromise(() => readdir(outside))
+        assert.isEmpty(outsideEntries)
       })
     )
   )
