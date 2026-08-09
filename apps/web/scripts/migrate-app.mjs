@@ -21,11 +21,24 @@ const connection = await mysql.createConnection({
 try {
   await connection.query(sql)
   await ensureFileActivitySchema(connection)
+  await ensureInstanceOwnershipSchema(connection)
   await ensureTailscaleNetworkSchema(connection)
   await ensureDatabaseAccessSchema(connection)
   console.log("Kiln application tables are up to date")
 } finally {
   await connection.end()
+}
+
+async function ensureInstanceOwnershipSchema(database) {
+  const [ownerIdColumns] = await database.query(
+    `SHOW COLUMNS FROM ${databaseTable("instance")} LIKE 'owner_id'`
+  )
+  if (ownerIdColumns.length === 0) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("instance")}
+       ADD COLUMN owner_id VARCHAR(36) NULL AFTER display_name`
+    )
+  }
 }
 
 async function ensureDatabaseAccessSchema(database) {

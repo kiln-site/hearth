@@ -9,6 +9,7 @@ import {
   Check,
   Copy,
   Cpu,
+  Crown,
   Fingerprint,
   Globe2,
   HardDrive,
@@ -40,6 +41,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
+import { cn } from "@workspace/ui/lib/utils"
 
 import { ServerDeleteDialog } from "@/components/server-delete-dialog"
 import { hostPortAddress } from "@/lib/domain-address"
@@ -53,7 +55,10 @@ import type {
   InstanceSettingsInstance,
   RelayNodeSummary,
 } from "@/lib/relay-selectors"
-import { removeInstanceAccessGrant } from "@/server/access"
+import {
+  removeInstanceAccessGrant,
+  transferInstanceOwnership,
+} from "@/server/access"
 import type { getInstanceUsers } from "@/server/access"
 import { updateInstanceName } from "@/server/relay"
 
@@ -84,119 +89,125 @@ export function SettingsWorkspace({
   return (
     <section className="min-h-0 flex-1 overflow-y-auto bg-card">
       <div className="mx-auto max-w-5xl px-5 py-6 sm:px-8 sm:py-8">
-        <div className="flex justify-end">
-          <Button asChild size="sm" variant="outline">
-            <Link to="/activity" search={{ server: instance.id }}>
-              <Activity />
-              Activity
-            </Link>
-          </Button>
+        <div className="grid items-stretch gap-4 lg:grid-cols-2">
+          <div className="flex min-w-0 flex-col gap-4">
+            <InfoCard>
+              <InfoCardHeader
+                icon={<Fingerprint />}
+                title="Identity"
+                action={
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "font-mono text-[9px]",
+                      instance.game.toLowerCase() === "minecraft" &&
+                        "border-emerald-500/35 bg-emerald-500/12 text-emerald-300"
+                    )}
+                  >
+                    {instance.game}
+                  </Badge>
+                }
+              />
+              <InstanceNameForm
+                instance={instance}
+                canRename={canRename && relayConnected}
+              />
+              <MetaRow
+                icon={Fingerprint}
+                label="Server full ID"
+                value={instance.id}
+                mono
+                wrap
+              />
+            </InfoCard>
+
+            <InfoCard>
+              <InfoCardHeader
+                icon={<Globe2 />}
+                title="Connection info"
+                action={
+                  <Button asChild size="sm" variant="ghost">
+                    <Link
+                      to="/server/$serverId/network"
+                      params={{ serverId: instance.routeId }}
+                    >
+                      Network
+                      <ArrowRight />
+                    </Link>
+                  </Button>
+                }
+              />
+              <CopyMetaRow label="Raw connection URL" value={rawAddress} />
+              <CopyMetaRow
+                label="Configured URL"
+                value={configuredAddress ?? "Not configured"}
+                copyable={configuredAddress !== null}
+              />
+            </InfoCard>
+
+            <InfoCard>
+              <InfoCardHeader
+                icon={<Box />}
+                title="Brick info"
+                action={
+                  <Button asChild size="sm" variant="ghost">
+                    <Link
+                      to="/server/$serverId/startup"
+                      params={{ serverId: instance.routeId }}
+                    >
+                      Startup
+                      <ArrowRight />
+                    </Link>
+                  </Button>
+                }
+              />
+              <MetaRow
+                icon={Box}
+                label="Brick"
+                value={instance.brickId ?? instance.implementation}
+                mono
+              />
+              <MetaRow
+                icon={Tags}
+                label="Game version"
+                value={`${instance.game} · ${instance.version}`}
+              />
+              <MetaRow
+                icon={Cpu}
+                label="Runtime"
+                value={instance.javaVersion}
+                mono
+              />
+              <MetaRow
+                icon={HardDrive}
+                label="Recipe"
+                value={
+                  instance.brickSource ?? instance.brickFormat ?? "Built in"
+                }
+                mono
+              />
+            </InfoCard>
+          </div>
+
+          <InstanceUsersCard instance={instance} />
         </div>
 
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <InfoCard>
-            <InfoCardHeader
-              icon={<Fingerprint />}
-              title="Identity"
-              action={
-                <Badge variant="outline" className="font-mono text-[9px]">
-                  {instance.game}
-                </Badge>
-              }
-            />
-            <InstanceNameForm
-              instance={instance}
-              canRename={canRename && relayConnected}
-            />
-            <MetaRow
-              icon={Fingerprint}
-              label="Server full ID"
-              value={instance.id}
-              mono
-              wrap
-            />
-          </InfoCard>
-
-          <InfoCard>
-            <InfoCardHeader
-              icon={<Globe2 />}
-              title="Connection info"
-              action={
-                <Button asChild size="sm" variant="ghost">
-                  <Link
-                    to="/server/$serverId/network"
-                    params={{ serverId: instance.routeId }}
-                  >
-                    Network
-                    <ArrowRight />
-                  </Link>
-                </Button>
-              }
-            />
-            <CopyMetaRow label="Raw connection URL" value={rawAddress} />
-            <CopyMetaRow
-              label="Configured URL"
-              value={configuredAddress ?? "Not configured"}
-              copyable={configuredAddress !== null}
-            />
-          </InfoCard>
-
-          <InfoCard>
-            <InfoCardHeader
-              icon={<Box />}
-              title="Brick info"
-              action={
-                <Button asChild size="sm" variant="ghost">
-                  <Link
-                    to="/server/$serverId/startup"
-                    params={{ serverId: instance.routeId }}
-                  >
-                    Startup
-                    <ArrowRight />
-                  </Link>
-                </Button>
-              }
-            />
-            <MetaRow
-              icon={Box}
-              label="Brick"
-              value={instance.brickId ?? instance.implementation}
-              mono
-            />
-            <MetaRow
-              icon={Tags}
-              label="Game version"
-              value={`${instance.game} · ${instance.version}`}
-            />
-            <MetaRow
-              icon={Cpu}
-              label="Runtime"
-              value={instance.javaVersion}
-              mono
-            />
-            <MetaRow
-              icon={HardDrive}
-              label="Recipe"
-              value={instance.brickSource ?? instance.brickFormat ?? "Built in"}
-              mono
-            />
-          </InfoCard>
-
-          <InfoCard>
-            <InfoCardHeader
-              icon={<Network />}
-              title="Relay placement"
-              action={
+        <InfoCard className="mt-4">
+          <InfoCardHeader
+            icon={<Network />}
+            title="Relay placement"
+            action={
+              <span
+                className={`flex items-center gap-1.5 font-mono text-[9px] ${relayConnected ? "text-emerald-400" : "text-amber-300"}`}
+              >
                 <span
-                  className={`flex items-center gap-1.5 font-mono text-[9px] ${relayConnected ? "text-emerald-400" : "text-amber-300"}`}
-                >
-                  <span
-                    className={`size-1.5 rounded-full ${relayConnected ? "bg-emerald-400" : "bg-amber-300"}`}
-                  />
-                  {relayConnected ? "CONNECTED" : "LAST KNOWN"}
-                </span>
-              }
-            />
+                  className={`size-1.5 rounded-full ${relayConnected ? "bg-emerald-400" : "bg-amber-300"}`}
+                />
+                {relayConnected ? "CONNECTED" : "LAST KNOWN"}
+              </span>
+            }
+          />
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4">
             <MetaRow
               icon={HardDrive}
               label="Node"
@@ -220,12 +231,8 @@ export function SettingsWorkspace({
               value={instance.directory}
               mono
             />
-          </InfoCard>
-        </div>
-
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <InstanceUsersCard instance={instance} />
-        </div>
+          </div>
+        </InfoCard>
 
         {canDelete ? (
           <ServerDangerZone
@@ -239,9 +246,20 @@ export function SettingsWorkspace({
   )
 }
 
-function InfoCard({ children }: { children: React.ReactNode }) {
+function InfoCard({
+  children,
+  className,
+}: {
+  children: React.ReactNode
+  className?: string
+}) {
   return (
-    <div className="overflow-hidden rounded-xl border bg-background/45">
+    <div
+      className={cn(
+        "min-w-0 overflow-hidden rounded-xl border bg-background/45",
+        className
+      )}
+    >
       {children}
     </div>
   )
@@ -337,6 +355,9 @@ function InstanceUsersCard({
   const [removeTarget, setRemoveTarget] = React.useState<
     InstanceUsers["users"][number] | null
   >(null)
+  const [transferTarget, setTransferTarget] = React.useState<
+    InstanceUsers["users"][number] | null
+  >(null)
   const removeMutation = useMutation({
     mutationFn: removeInstanceAccessGrant,
     onSuccess: async () => {
@@ -355,6 +376,25 @@ function InstanceUsersCard({
       ])
     },
   })
+  const transferMutation = useMutation({
+    mutationFn: transferInstanceOwnership,
+    onSuccess: async () => {
+      setTransferTarget(null)
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.access.instanceUsers(
+            instance.relayId,
+            instance.id
+          ),
+        }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.access.overview }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.access.capabilities,
+        }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.relay.snapshot }),
+      ])
+    },
+  })
 
   const closeRemoveDialog = (open: boolean) => {
     if (open || removeMutation.isPending) return
@@ -362,8 +402,14 @@ function InstanceUsersCard({
     removeMutation.reset()
   }
 
+  const closeTransferDialog = (open: boolean) => {
+    if (open || transferMutation.isPending) return
+    setTransferTarget(null)
+    transferMutation.reset()
+  }
+
   return (
-    <InfoCard>
+    <InfoCard className="flex h-[26rem] flex-col lg:h-full lg:min-h-[32rem]">
       <InfoCardHeader
         icon={<Users />}
         title="Users"
@@ -385,51 +431,47 @@ function InstanceUsersCard({
       />
 
       {usersQuery.isPending ? (
-        <div className="grid min-h-28 place-items-center text-muted-foreground">
+        <div className="grid min-h-0 flex-1 place-items-center text-muted-foreground">
           <LoaderCircle className="size-4 animate-spin" />
         </div>
       ) : usersQuery.isError ? (
-        <div className="px-4 py-6 text-xs text-destructive">
+        <div className="min-h-0 flex-1 px-4 py-6 text-xs text-destructive">
           User access could not be loaded.
         </div>
       ) : (
-        <table className="w-full table-fixed text-left">
-          <thead>
-            <tr className="border-b text-[9px] tracking-wider text-muted-foreground uppercase">
-              <th className="px-4 py-2 font-medium">Email</th>
-              <th className="w-32 px-4 py-2 text-right font-medium">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            <AccessUserRow
-              email={usersQuery.data.creator?.email ?? "Unknown creator"}
-              userId={usersQuery.data.creator?.id ?? null}
-              instanceId={instance.id}
-              creator
-            />
-            {usersQuery.data.users.map((user) => (
-              <AccessUserRow
-                key={user.id}
-                email={user.email}
-                userId={user.userId}
-                instanceId={instance.id}
-                canManage={usersQuery.data.canManage}
-                onPermissions={() => setPermissionsUser(user.email)}
-                onRemove={() => setRemoveTarget(user)}
-              />
-            ))}
-            {usersQuery.data.users.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={2}
-                  className="px-4 py-4 text-[10px] text-muted-foreground"
-                >
-                  No additional users have access to this server.
-                </td>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <table className="w-full table-fixed text-left">
+            <thead className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
+              <tr className="border-b text-[9px] tracking-wider text-muted-foreground uppercase">
+                <th className="px-4 py-2 font-medium">Email</th>
+                <th className="w-40 px-4 py-2 text-right font-medium">
+                  Actions
+                </th>
               </tr>
-            ) : null}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              <AccessUserRow
+                email={usersQuery.data.owner?.email ?? "Unknown owner"}
+                userId={usersQuery.data.owner?.id ?? null}
+                instanceId={instance.id}
+                owner
+              />
+              {usersQuery.data.users.map((user) => (
+                <AccessUserRow
+                  key={user.id}
+                  email={user.email}
+                  userId={user.userId}
+                  instanceId={instance.id}
+                  canManage={usersQuery.data.canManage}
+                  canTransferOwnership={usersQuery.data.canTransferOwnership}
+                  onPermissions={() => setPermissionsUser(user.email)}
+                  onRemove={() => setRemoveTarget(user)}
+                  onTransferOwnership={() => setTransferTarget(user)}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <Dialog
@@ -502,25 +544,79 @@ function InstanceUsersCard({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={transferTarget !== null} onOpenChange={closeTransferDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Transfer server ownership?</DialogTitle>
+            <DialogDescription>
+              {transferTarget?.email ?? "This user"} will become the owner of{" "}
+              {instance.name} and receive full server access.
+            </DialogDescription>
+          </DialogHeader>
+          {transferMutation.error ? (
+            <p className="text-xs text-destructive">
+              {transferMutation.error instanceof Error
+                ? transferMutation.error.message
+                : "Could not transfer server ownership"}
+            </p>
+          ) : null}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={transferMutation.isPending}
+              onClick={() => closeTransferDialog(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={!transferTarget || transferMutation.isPending}
+              onClick={() => {
+                if (!transferTarget) return
+                transferMutation.mutate({
+                  data: {
+                    instanceId: instance.id,
+                    relayId: instance.relayId,
+                    userId: transferTarget.userId,
+                  },
+                })
+              }}
+            >
+              {transferMutation.isPending ? (
+                <LoaderCircle className="animate-spin" />
+              ) : (
+                <Crown />
+              )}
+              Transfer ownership
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </InfoCard>
   )
 }
 
 function AccessUserRow({
   canManage = false,
-  creator = false,
+  canTransferOwnership = false,
   email,
   instanceId,
+  owner = false,
   onPermissions,
   onRemove,
+  onTransferOwnership,
   userId,
 }: {
   canManage?: boolean
-  creator?: boolean
+  canTransferOwnership?: boolean
   email: string
   instanceId: string
+  owner?: boolean
   onPermissions?: () => void
   onRemove?: () => void
+  onTransferOwnership?: () => void
   userId: string | null
 }) {
   return (
@@ -531,9 +627,12 @@ function AccessUserRow({
           <span className="truncate text-xs" title={email}>
             {email}
           </span>
-          {creator ? (
-            <Badge variant="outline" className="font-mono text-[8px]">
-              Creator
+          {owner ? (
+            <Badge
+              variant="outline"
+              className="border-amber-400/35 bg-amber-400/12 font-mono text-[8px] text-amber-300"
+            >
+              Owner
             </Badge>
           ) : null}
         </div>
@@ -556,8 +655,48 @@ function AccessUserRow({
               <TooltipContent side="bottom">View activity</TooltipContent>
             </Tooltip>
           ) : null}
-          {!creator && canManage ? (
+          {owner ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    type="button"
+                    size="icon-sm"
+                    variant="ghost"
+                    className="text-muted-foreground/35"
+                    aria-label={`${email} cannot be removed while they own the server`}
+                    disabled
+                  >
+                    <Trash2 />
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                Transfer ownership before removing
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
+          {!owner && canManage ? (
             <>
+              {canTransferOwnership ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      size="icon-sm"
+                      variant="ghost"
+                      className="text-muted-foreground hover:text-amber-300"
+                      aria-label={`Transfer ownership to ${email}`}
+                      onClick={onTransferOwnership}
+                    >
+                      <Crown />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    Transfer ownership
+                  </TooltipContent>
+                </Tooltip>
+              ) : null}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -610,9 +749,9 @@ function ServerDangerZone({
 
   return (
     <>
-      <div className="mt-8 overflow-hidden rounded-xl border border-destructive/25 bg-destructive/4">
-        <div className="flex items-start gap-3 border-b border-destructive/15 px-4 py-3.5">
-          <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg border border-destructive/20 bg-destructive/10 text-destructive">
+      <div className="mt-4 flex flex-col gap-3 rounded-xl border border-destructive/25 bg-destructive/4 px-4 py-3.5 sm:flex-row sm:items-center">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <span className="grid size-8 shrink-0 place-items-center rounded-lg border border-destructive/20 bg-destructive/10 text-destructive">
             <TriangleAlert className="size-4" />
           </span>
           <div className="min-w-0">
@@ -620,28 +759,26 @@ function ServerDangerZone({
               Danger zone
             </p>
             <h3 className="mt-1 text-sm font-semibold">Delete this server</h3>
-            <p className="mt-1 max-w-2xl text-[10px] leading-4 text-muted-foreground">
-              {relayConnected
-                ? "Permanently remove this server and everything stored in its data directory."
-                : "Reconnect this server's Relay before deleting the server."}
+            <p className="mt-1 font-mono text-[9px] break-all text-muted-foreground">
+              {instance.id}
             </p>
           </div>
         </div>
-        <div className="flex flex-col gap-3 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
-          <p className="font-mono text-[9px] text-muted-foreground">
-            {instance.id}
-          </p>
-          <Button
-            type="button"
-            variant="destructive"
-            className="sm:shrink-0"
-            disabled={!relayConnected}
-            onClick={() => setOpen(true)}
-          >
-            <Trash2 />
-            Delete server
-          </Button>
-        </div>
+        <Button
+          type="button"
+          variant="destructive"
+          className="shrink-0"
+          disabled={!relayConnected}
+          title={
+            relayConnected
+              ? undefined
+              : "Reconnect this server's Relay before deleting"
+          }
+          onClick={() => setOpen(true)}
+        >
+          <Trash2 />
+          Delete server
+        </Button>
       </div>
       {open ? (
         <ServerDeleteDialog
