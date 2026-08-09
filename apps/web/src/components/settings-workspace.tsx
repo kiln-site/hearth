@@ -555,6 +555,7 @@ function InstanceUsersCard({
                   onPermissions={() => setPermissionsUser(user.email)}
                   onRemove={() => setRemoveTarget(user)}
                   onTransferOwnership={() => setTransferTarget(user)}
+                  protectedOwnerGrant={user.role === "owner"}
                 />
               ))}
             </tbody>
@@ -695,6 +696,7 @@ function AccessUserRow({
   onPermissions,
   onRemove,
   onTransferOwnership,
+  protectedOwnerGrant = false,
   userId,
 }: {
   canManage?: boolean
@@ -705,8 +707,11 @@ function AccessUserRow({
   onPermissions?: () => void
   onRemove?: () => void
   onTransferOwnership?: () => void
+  protectedOwnerGrant?: boolean
   userId: string | null
 }) {
+  const removalProtected = owner || protectedOwnerGrant
+
   return (
     <tr className="border-b last:border-b-0">
       <td className="px-4 py-3">
@@ -759,7 +764,7 @@ function AccessUserRow({
               <TooltipContent side="bottom">Modify permissions</TooltipContent>
             </Tooltip>
           ) : null}
-          {owner ? (
+          {removalProtected ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <span>
@@ -768,7 +773,11 @@ function AccessUserRow({
                     size="icon-sm"
                     variant="ghost"
                     className="text-muted-foreground/35"
-                    aria-label={`${email} cannot be removed while they own the server`}
+                    aria-label={
+                      owner
+                        ? `${email} cannot be removed while they own the server`
+                        : `${email} cannot be removed while their grant has the owner role`
+                    }
                     disabled
                   >
                     <Trash2 />
@@ -776,11 +785,13 @@ function AccessUserRow({
                 </span>
               </TooltipTrigger>
               <TooltipContent side="bottom">
-                Transfer ownership before removing
+                {owner
+                  ? "Transfer ownership before removing"
+                  : "Change the owner role before removing"}
               </TooltipContent>
             </Tooltip>
           ) : null}
-          {!owner && canManage ? (
+          {!removalProtected && canManage ? (
             <>
               {canTransferOwnership ? (
                 <Tooltip>

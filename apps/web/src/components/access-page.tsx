@@ -488,6 +488,20 @@ function AccessGrantList({
             )
             const ownerActionAllowed =
               grant.role !== "owner" || ownerRelayIds.has(grant.relayId)
+            const canRepairInstanceOwnerRole =
+              grant.instanceOwner &&
+              grant.role !== "owner" &&
+              ownerRelayIds.has(grant.relayId)
+            const grantRoles: ReadonlyArray<AccessRole> = grant.instanceOwner
+              ? canRepairInstanceOwnerRole
+                ? [grant.role, "owner"]
+                : [grant.role]
+              : assignableRoles
+            const roleChangeAllowed =
+              ownerActionAllowed &&
+              (!grant.instanceOwner || canRepairInstanceOwnerRole)
+            const removeAllowed =
+              ownerActionAllowed && !grant.protectedInstanceOwnerGrant
             return (
               <div
                 key={grant.id}
@@ -518,7 +532,12 @@ function AccessGrantList({
                 <select
                   aria-label={`Role for ${grant.email}`}
                   value={grant.role}
-                  disabled={pending !== null || !ownerActionAllowed}
+                  disabled={pending !== null || !roleChangeAllowed}
+                  title={
+                    grant.instanceOwner && !canRepairInstanceOwnerRole
+                      ? "Transfer ownership before changing this role"
+                      : undefined
+                  }
                   className="h-8 rounded-md border border-input bg-background px-2 text-[11px] outline-none focus:border-ring"
                   onChange={(event) =>
                     void onRoleChange(
@@ -528,7 +547,7 @@ function AccessGrantList({
                     )
                   }
                 >
-                  {assignableRoles.map((role) => (
+                  {grantRoles.map((role) => (
                     <option key={role} value={role}>
                       {accessRoleDetails[role].label}
                     </option>
@@ -538,8 +557,17 @@ function AccessGrantList({
                   type="button"
                   size="icon-sm"
                   variant="ghost"
-                  aria-label={`Remove ${grant.email}`}
-                  disabled={pending !== null || !ownerActionAllowed}
+                  aria-label={
+                    grant.protectedInstanceOwnerGrant
+                      ? `${grant.email} cannot be removed while they own the server`
+                      : `Remove ${grant.email}`
+                  }
+                  disabled={pending !== null || !removeAllowed}
+                  title={
+                    grant.protectedInstanceOwnerGrant
+                      ? "Transfer ownership before removing"
+                      : undefined
+                  }
                   onClick={() => void onRemove(grant.id, grant.relayId)}
                 >
                   {pending === `grant:${grant.id}` ? (

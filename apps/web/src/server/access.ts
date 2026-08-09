@@ -8,10 +8,12 @@ import { Resend } from "resend"
 import { z } from "zod"
 
 import { AccessInvitationEmail } from "@/emails/access-invitation-email"
-import { Database } from "@/effect/database"
+import { Database, type DatabaseTransaction } from "@/effect/database"
 import { runAppEffect } from "@/effect/runtime"
 import {
   hasRelayPermission,
+  isBlockedInstanceOwnerRoleChange,
+  isCurrentInstanceOwnerGrant,
   isProtectedInstanceOwnerGrant,
   isPlatformAdmin,
   listUserGrants,
@@ -75,6 +77,7 @@ interface AccessOverviewRow extends RowDataPacket {
   created_at: Date
   email: string
   id: string
+  instance_owner_id: string | null
   name: string
   resource_id: string
   resource_type: "database" | "instance" | "relay"
@@ -119,6 +122,11 @@ interface InstanceOwnerGrantRow extends RowDataPacket {
 
 interface InstanceScopedGrantRow extends InstanceOwnerGrantRow {
   role: string
+}
+
+interface AccessGrantMutationRow extends InstanceScopedGrantRow {
+  resource_id: string
+  resource_type: "database" | "instance" | "relay"
 }
 
 export const getAccessCapabilities = createServerFn({ method: "GET" }).handler(
@@ -266,9 +274,14 @@ async function relayAccessOverview(
     databasePool.query<Array<AccessOverviewRow>>(
       `SELECT grant_row.id, grant_row.user_id, grant_row.resource_type,
               grant_row.resource_id, grant_row.role, grant_row.created_at,
-              auth_user.name, auth_user.email
+              auth_user.name, auth_user.email,
+              instance_row.owner_id AS instance_owner_id
          FROM ${databaseTable("access_grant")} AS grant_row
          JOIN ${databaseTable("user")} AS auth_user ON auth_user.id = grant_row.user_id
+         LEFT JOIN ${databaseTable("instance")} AS instance_row
+           ON grant_row.resource_type = 'instance'
+          AND instance_row.relay_id = grant_row.relay_id
+          AND instance_row.instance_id = grant_row.resource_id
         WHERE grant_row.relay_id = ?
         ORDER BY auth_user.name ASC, grant_row.created_at ASC`,
       [relay.id]
@@ -293,6 +306,19 @@ async function relayAccessOverview(
       email: grant.email,
       id: grant.id,
       name: grant.name,
+      instanceOwner:
+        grant.resource_type === "instance" &&
+        isCurrentInstanceOwnerGrant({
+          grantUserId: grant.user_id,
+          ownerId: grant.instance_owner_id,
+        }),
+      protectedInstanceOwnerGrant:
+        grant.resource_type === "instance" &&
+        isProtectedInstanceOwnerGrant({
+          grantRole: grant.role,
+          grantUserId: grant.user_id,
+          ownerId: grant.instance_owner_id,
+        }),
       relayId: relay.id,
       relayName: relay.name,
       resourceId: grant.resource_id,
@@ -514,20 +540,52 @@ export const updateAccessGrant = createServerFn({ method: "POST" })
       relayId: relay.id,
       permission: "access.manage",
     })
-    const currentRole = await grantRole(data.id, relay.id)
-    if (
-      (currentRole === "owner" || data.role === "owner") &&
-      !(await canManageOwners(user, relay.id))
-    ) {
-      throw new Error(
-        "Only a Relay owner or platform admin can change owner access"
-      )
-    }
-    await databasePool.execute(
-      `UPDATE ${databaseTable("access_grant")} SET role = ? WHERE id = ? AND relay_id = ?`,
-      [data.role, data.id, relay.id]
+    const initialGrant = await accessGrantMutationTarget(data.id, relay.id)
+    if (!initialGrant) return { updated: true }
+    const ownerAccess = await canManageOwners(user, relay.id)
+    return runAppEffect(
+      "access.updateGrant",
+      withLockedAccessGrant({
+        grantId: data.id,
+        initialGrant,
+        missingResult: { updated: true },
+        operation: "access.updateGrant",
+        relayId: relay.id,
+        use: ({ grant, ownerId, transaction }) =>
+          Effect.gen(function* () {
+            if (
+              (grant.role === "owner" || data.role === "owner") &&
+              !ownerAccess
+            ) {
+              return yield* Effect.fail(
+                new Error(
+                  "Only a Relay owner or platform admin can change owner access"
+                )
+              )
+            }
+            if (
+              grant.resource_type === "instance" &&
+              isBlockedInstanceOwnerRoleChange({
+                grantRole: grant.role,
+                grantUserId: grant.user_id,
+                nextRole: data.role,
+                ownerId,
+              })
+            ) {
+              return yield* Effect.fail(
+                new Error(
+                  "Transfer ownership before changing the server owner's role"
+                )
+              )
+            }
+            yield* transaction.execute(
+              `UPDATE ${databaseTable("access_grant")} SET role = ? WHERE id = ? AND relay_id = ?`,
+              [data.role, data.id, relay.id]
+            )
+            return { updated: true }
+          }),
+      })
     )
-    return { updated: true }
   })
 
 export const removeAccessGrant = createServerFn({ method: "POST" })
@@ -540,19 +598,48 @@ export const removeAccessGrant = createServerFn({ method: "POST" })
       relayId: relay.id,
       permission: "access.manage",
     })
-    if (
-      (await grantRole(data.id, relay.id)) === "owner" &&
-      !(await canManageOwners(user, relay.id))
-    ) {
-      throw new Error(
-        "Only a Relay owner or platform admin can remove owner access"
-      )
-    }
-    await databasePool.execute(
-      `DELETE FROM ${databaseTable("access_grant")} WHERE id = ? AND relay_id = ?`,
-      [data.id, relay.id]
+    const initialGrant = await accessGrantMutationTarget(data.id, relay.id)
+    if (!initialGrant) return { removed: true }
+    const ownerAccess = await canManageOwners(user, relay.id)
+    return runAppEffect(
+      "access.removeGrant",
+      withLockedAccessGrant({
+        grantId: data.id,
+        initialGrant,
+        missingResult: { removed: true },
+        operation: "access.removeGrant",
+        relayId: relay.id,
+        use: ({ grant, ownerId, transaction }) =>
+          Effect.gen(function* () {
+            if (
+              grant.resource_type === "instance" &&
+              isProtectedInstanceOwnerGrant({
+                grantRole: grant.role,
+                grantUserId: grant.user_id,
+                ownerId,
+              })
+            ) {
+              return yield* Effect.fail(
+                new Error(
+                  "Transfer ownership before removing the server owner's access"
+                )
+              )
+            }
+            if (grant.role === "owner" && !ownerAccess) {
+              return yield* Effect.fail(
+                new Error(
+                  "Only a Relay owner or platform admin can remove owner access"
+                )
+              )
+            }
+            yield* transaction.execute(
+              `DELETE FROM ${databaseTable("access_grant")} WHERE id = ? AND relay_id = ?`,
+              [data.id, relay.id]
+            )
+            return { removed: true }
+          }),
+      })
     )
-    return { removed: true }
   })
 
 export const removeInstanceAccessGrant = createServerFn({ method: "POST" })
@@ -772,14 +859,67 @@ async function canManageOwners(
   )
 }
 
-async function grantRole(id: string, relayId: string): Promise<string | null> {
-  const [rows] = await databasePool.query<
-    Array<{ role: string } & RowDataPacket>
-  >(
-    `SELECT role FROM ${databaseTable("access_grant")} WHERE id = ? AND relay_id = ? LIMIT 1`,
+async function accessGrantMutationTarget(
+  id: string,
+  relayId: string
+): Promise<AccessGrantMutationRow | null> {
+  const [rows] = await databasePool.query<Array<AccessGrantMutationRow>>(
+    `SELECT user_id, role, resource_type, resource_id
+       FROM ${databaseTable("access_grant")}
+      WHERE id = ? AND relay_id = ? LIMIT 1`,
     [id, relayId]
   )
-  return rows[0]?.role ?? null
+  return rows[0] ?? null
+}
+
+function withLockedAccessGrant<TResult, TError, TRequirements>(input: {
+  grantId: string
+  initialGrant: AccessGrantMutationRow
+  missingResult: TResult
+  operation: string
+  relayId: string
+  use: (locked: {
+    grant: AccessGrantMutationRow
+    ownerId: string | null
+    transaction: DatabaseTransaction
+  }) => Effect.Effect<TResult, TError, TRequirements>
+}) {
+  return Effect.gen(function* () {
+    const database = yield* Database
+    return yield* database.transaction(input.operation, (transaction) =>
+      Effect.gen(function* () {
+        const ownerRows =
+          input.initialGrant.resource_type === "instance"
+            ? yield* transaction.queryRows<InstanceOwnerRow>(
+                `SELECT owner_id FROM ${databaseTable("instance")}
+                  WHERE relay_id = ? AND instance_id = ? LIMIT 1 FOR UPDATE`,
+                [input.relayId, input.initialGrant.resource_id]
+              )
+            : []
+        const grantRows = yield* transaction.queryRows<AccessGrantMutationRow>(
+          `SELECT user_id, role, resource_type, resource_id
+               FROM ${databaseTable("access_grant")}
+              WHERE id = ? AND relay_id = ? LIMIT 1 FOR UPDATE`,
+          [input.grantId, input.relayId]
+        )
+        const grant = grantRows.at(0)
+        if (!grant) return input.missingResult
+        if (
+          grant.resource_type !== input.initialGrant.resource_type ||
+          grant.resource_id !== input.initialGrant.resource_id
+        ) {
+          return yield* Effect.fail(
+            new Error("Access grant changed while it was being modified")
+          )
+        }
+        return yield* input.use({
+          grant,
+          ownerId: ownerRows.at(0)?.owner_id ?? null,
+          transaction,
+        })
+      })
+    )
+  })
 }
 
 async function instanceOwnerId(

@@ -33,14 +33,31 @@ export interface AccessGrant {
   role: AccessRole
 }
 
+export function isCurrentInstanceOwnerGrant(input: {
+  grantUserId: string | null
+  ownerId: string | null
+}): boolean {
+  return input.ownerId !== null && input.ownerId === input.grantUserId
+}
+
 export function isProtectedInstanceOwnerGrant(input: {
   grantRole: string | null
   grantUserId: string | null
   ownerId: string | null
 }): boolean {
+  return input.grantRole === "owner" || isCurrentInstanceOwnerGrant(input)
+}
+
+export function isBlockedInstanceOwnerRoleChange(input: {
+  grantRole: string | null
+  grantUserId: string | null
+  nextRole: string
+  ownerId: string | null
+}): boolean {
   return (
-    input.grantRole === "owner" ||
-    (input.ownerId !== null && input.ownerId === input.grantUserId)
+    input.nextRole !== input.grantRole &&
+    input.nextRole !== "owner" &&
+    isCurrentInstanceOwnerGrant(input)
   )
 }
 
