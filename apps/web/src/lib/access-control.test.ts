@@ -23,7 +23,7 @@ const emptyResult: ResultSetHeader = {
 }
 
 describe("instance access cleanup", () => {
-  it("shows each user once and prefers their Relay-wide grant", () => {
+  it("shows each user once and prefers a direct instance grant", () => {
     const grants: Array<{
       id: string
       resourceType: "instance" | "relay"
@@ -35,26 +35,41 @@ describe("instance access cleanup", () => {
         userId: "user-one",
       },
       {
-        id: "direct-two",
-        resourceType: "instance",
+        id: "relay-two",
+        resourceType: "relay",
         userId: "user-two",
       },
       {
         id: "relay-one",
         resourceType: "relay",
         userId: "user-one",
+      },
+      {
+        id: "direct-two",
+        resourceType: "instance",
+        userId: "user-two",
+      },
+      {
+        id: "relay-three",
+        resourceType: "relay",
+        userId: "user-three",
       },
     ]
     assert.deepEqual(deduplicateEffectiveInstanceGrants(grants), [
       {
-        id: "relay-one",
-        resourceType: "relay",
+        id: "direct-one",
+        resourceType: "instance",
         userId: "user-one",
       },
       {
         id: "direct-two",
         resourceType: "instance",
         userId: "user-two",
+      },
+      {
+        id: "relay-three",
+        resourceType: "relay",
+        userId: "user-three",
       },
     ])
   })

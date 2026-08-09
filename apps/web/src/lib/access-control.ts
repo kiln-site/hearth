@@ -42,8 +42,8 @@ export function deduplicateEffectiveInstanceGrants<
   const grantsByUserId = new Map<string, TGrant>()
   for (const grant of grants) {
     const existingGrant = grantsByUserId.get(grant.userId)
-    if (existingGrant?.resourceType === "relay") continue
-    if (!existingGrant || grant.resourceType === "relay") {
+    if (existingGrant?.resourceType === "instance") continue
+    if (!existingGrant || grant.resourceType === "instance") {
       grantsByUserId.set(grant.userId, grant)
     }
   }
