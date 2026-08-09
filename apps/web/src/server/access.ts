@@ -77,7 +77,6 @@ interface AccessOverviewRow extends RowDataPacket {
   created_at: Date
   email: string
   id: string
-  instance_owner_id: string | null
   name: string
   resource_id: string
   resource_type: "database" | "instance" | "relay"
@@ -274,14 +273,9 @@ async function relayAccessOverview(
     databasePool.query<Array<AccessOverviewRow>>(
       `SELECT grant_row.id, grant_row.user_id, grant_row.resource_type,
               grant_row.resource_id, grant_row.role, grant_row.created_at,
-              auth_user.name, auth_user.email,
-              instance_row.owner_id AS instance_owner_id
+              auth_user.name, auth_user.email
          FROM ${databaseTable("access_grant")} AS grant_row
          JOIN ${databaseTable("user")} AS auth_user ON auth_user.id = grant_row.user_id
-         LEFT JOIN ${databaseTable("instance")} AS instance_row
-           ON grant_row.resource_type = 'instance'
-          AND instance_row.relay_id = grant_row.relay_id
-          AND instance_row.instance_id = grant_row.resource_id
         WHERE grant_row.relay_id = ?
         ORDER BY auth_user.name ASC, grant_row.created_at ASC`,
       [relay.id]
@@ -298,34 +292,57 @@ async function relayAccessOverview(
     ),
     canManageOwners(user, relay.id),
   ])
+  const instanceIds = [
+    ...new Set(
+      grants[0].flatMap((grant) =>
+        grant.resource_type === "instance" ? [grant.resource_id] : []
+      )
+    ),
+  ]
+  const ownerEntries = await Promise.all(
+    instanceIds.map(async (instanceId) => ({
+      instanceId,
+      ownerId: await instanceOwnerId(relay, instanceId),
+    }))
+  )
+  const instanceOwners = new Map<string, string | null>()
+  for (const entry of ownerEntries) {
+    instanceOwners.set(entry.instanceId, entry.ownerId)
+  }
 
   return {
     canManageOwners: ownerAccess,
-    grants: grants[0].map((grant) => ({
-      createdAt: grant.created_at.toISOString(),
-      email: grant.email,
-      id: grant.id,
-      name: grant.name,
-      instanceOwner:
-        grant.resource_type === "instance" &&
-        isCurrentInstanceOwnerGrant({
-          grantUserId: grant.user_id,
-          ownerId: grant.instance_owner_id,
-        }),
-      protectedInstanceOwnerGrant:
-        grant.resource_type === "instance" &&
-        isProtectedInstanceOwnerGrant({
-          grantRole: grant.role,
-          grantUserId: grant.user_id,
-          ownerId: grant.instance_owner_id,
-        }),
-      relayId: relay.id,
-      relayName: relay.name,
-      resourceId: grant.resource_id,
-      resourceType: grant.resource_type,
-      role: grant.role,
-      userId: grant.user_id,
-    })),
+    grants: grants[0].map((grant) => {
+      const ownerId =
+        grant.resource_type === "instance"
+          ? (instanceOwners.get(grant.resource_id) ?? null)
+          : null
+      return {
+        createdAt: grant.created_at.toISOString(),
+        email: grant.email,
+        id: grant.id,
+        name: grant.name,
+        instanceOwner:
+          grant.resource_type === "instance" &&
+          isCurrentInstanceOwnerGrant({
+            grantUserId: grant.user_id,
+            ownerId,
+          }),
+        protectedInstanceOwnerGrant:
+          grant.resource_type === "instance" &&
+          isProtectedInstanceOwnerGrant({
+            grantRole: grant.role,
+            grantUserId: grant.user_id,
+            ownerId,
+          }),
+        relayId: relay.id,
+        relayName: relay.name,
+        resourceId: grant.resource_id,
+        resourceType: grant.resource_type,
+        role: grant.role,
+        userId: grant.user_id,
+      }
+    }),
     invitations: invitations[0].map((invitation) => ({
       createdAt: invitation.created_at.toISOString(),
       email: invitation.email,
@@ -542,6 +559,7 @@ export const updateAccessGrant = createServerFn({ method: "POST" })
     })
     const initialGrant = await accessGrantMutationTarget(data.id, relay.id)
     if (!initialGrant) return { updated: true }
+    await ensureInstanceGrantOwner(relay, initialGrant)
     const ownerAccess = await canManageOwners(user, relay.id)
     return runAppEffect(
       "access.updateGrant",
@@ -600,6 +618,7 @@ export const removeAccessGrant = createServerFn({ method: "POST" })
     })
     const initialGrant = await accessGrantMutationTarget(data.id, relay.id)
     if (!initialGrant) return { removed: true }
+    await ensureInstanceGrantOwner(relay, initialGrant)
     const ownerAccess = await canManageOwners(user, relay.id)
     return runAppEffect(
       "access.removeGrant",
@@ -870,6 +889,15 @@ async function accessGrantMutationTarget(
     [id, relayId]
   )
   return rows[0] ?? null
+}
+
+async function ensureInstanceGrantOwner(
+  relay: PersistedRelay,
+  grant: AccessGrantMutationRow
+): Promise<void> {
+  if (grant.resource_type === "instance") {
+    await instanceOwnerId(relay, grant.resource_id)
+  }
 }
 
 function withLockedAccessGrant<TResult, TError, TRequirements>(input: {
