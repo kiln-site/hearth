@@ -31,6 +31,23 @@ export function defaultBrickVariables(
   )
 }
 
+export function hydrateBrickVariables(
+  brick: Brick,
+  stored: Readonly<Record<string, BrickVariableValue>> | null | undefined
+): Record<string, BrickVariableValue> {
+  const variables = {
+    ...defaultBrickVariables(brick),
+    ...stored,
+  }
+  return stored && Object.hasOwn(stored, "java_version")
+    ? variables
+    : withRecommendedMinecraftJava(
+        brick.metadata.id,
+        brick.variables,
+        variables
+      )
+}
+
 export function withRecommendedMinecraftJava(
   brickId: string,
   definitions: Brick["variables"],

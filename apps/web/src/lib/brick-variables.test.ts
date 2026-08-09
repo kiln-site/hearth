@@ -6,6 +6,7 @@ import {
 
 import {
   defaultBrickVariables,
+  hydrateBrickVariables,
   unavailableMinecraftJavaVersion,
   withRecommendedMinecraftJava,
 } from "./brick-variables.js"
@@ -77,6 +78,21 @@ describe("Minecraft Java defaults", () => {
         java_version: "21",
       })
     ).toEqual({ version: "26.2", java_version: "25" })
+  })
+
+  it("hydrates missing legacy Startup variables without replacing overrides", () => {
+    expect(
+      hydrateBrickVariables(
+        { ...paper, source: "paper.yml" },
+        { version: "26.2" }
+      )
+    ).toEqual({ version: "26.2", java_version: "25" })
+    expect(
+      hydrateBrickVariables(
+        { ...paper, source: "paper.yml" },
+        { java_version: "21", version: "26.2" }
+      )
+    ).toEqual({ version: "26.2", java_version: "21" })
   })
 
   it("reports required Java Embers that are not published", () => {

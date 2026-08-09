@@ -16,6 +16,7 @@ import {
 import { z } from "zod"
 
 import { isPlatformAdmin, requireRelayPermission } from "@/lib/access-control"
+import { hydrateBrickVariables } from "@/lib/brick-variables"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import { listPersistedRelays } from "@/lib/relay-registry"
 import { runAppEffect } from "@/effect/runtime"
@@ -149,13 +150,7 @@ export const getInstanceStartup = createServerFn({ method: "GET" })
         `/v1/bricks/recipe?source=${encodeURIComponent(brickSource)}`
       )
     )
-    const variables =
-      instance.variables ??
-      Object.fromEntries(
-        Object.entries(brick.variables).flatMap(([name, definition]) =>
-          definition.default === undefined ? [] : [[name, definition.default]]
-        )
-      )
+    const variables = hydrateBrickVariables(brick, instance.variables)
     const otherInstances = snapshot.instances.filter(
       (candidate) => candidate.id !== instance.id
     )
