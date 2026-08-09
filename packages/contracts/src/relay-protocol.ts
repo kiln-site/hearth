@@ -55,6 +55,7 @@ export const relayControlOperations = [
   "instance.files.list",
   "instance.files.read",
   "instance.files.write",
+  "instance.files.mutate",
   "instance.console.history",
   "instance.console.write",
   "instance.console.complete",

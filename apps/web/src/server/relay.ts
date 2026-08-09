@@ -3,6 +3,7 @@ import { Effect } from "effect"
 import {
   relayFileActivitySchema,
   relayFileContentSchema,
+  relayFileMutationInputSchema,
   relayFileTreeSchema,
   relayConsoleCommandResultSchema,
   relayConsoleCommandSchema,
@@ -110,6 +111,11 @@ const filePinInputSchema = fileInputSchema.extend({ pinned: z.boolean() })
 
 const saveFileInputSchema = fileInputSchema.extend(
   relaySaveFileInputSchema.shape
+)
+
+const fileMutationInputSchema = z.intersection(
+  instanceInputSchema,
+  relayFileMutationInputSchema
 )
 
 const actionInputSchema = instanceInputSchema.extend(
@@ -522,6 +528,35 @@ export const saveRelayFile = createServerFn({ method: "POST" })
       recordFileEdited(relay.id, instanceId, path)
     )
     return file
+  })
+
+export const mutateRelayFiles = createServerFn({ method: "POST" })
+  .validator(fileMutationInputSchema)
+  .handler(async ({ data }) => {
+    const { relay, user } = await instanceRelayAccess(data.relayId)
+    await requireRelayPermission({
+      user,
+      relayId: relay.id,
+      permission: "instance.files.write",
+      instanceId: data.instanceId,
+    })
+    const input = relayFileMutationInputSchema.parse(data)
+    const response = await relayFetch(
+      relay,
+      `/v1/instances/${encodeURIComponent(data.instanceId)}/file-mutations`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+      undefined,
+      user.id
+    )
+    const tree = relayFileTreeSchema.parse(await response.json())
+    await runAppEffect(
+      "relay.tree.invalidate",
+      invalidateRelayCache(relayCachePolicy.tree(relay.id, data.instanceId))
+    )
+    return tree
   })
 
 export const getRelayFileActivity = createServerFn({ method: "GET" })

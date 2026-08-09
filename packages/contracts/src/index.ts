@@ -1031,7 +1031,9 @@ export const relaySnapshotSchema = z.object({
 
 export const relayFileTreeSchema = z.object({
   instanceId: z.string(),
+  modifiedAt: z.record(z.string(), z.number().nonnegative()),
   paths: z.array(z.string()),
+  sizes: z.record(z.string(), z.number().int().nonnegative()),
   total: z.number().int().nonnegative(),
   truncated: z.boolean(),
 })
@@ -1051,6 +1053,39 @@ export const relaySaveFileInputSchema = z.object({
   content: z.string().max(2 * 1024 * 1024),
   expectedModifiedAt: z.string().datetime().optional(),
 })
+
+const relayFileMutationPathSchema = z
+  .string()
+  .min(1)
+  .max(2_048)
+  .refine(
+    (path) =>
+      !path.includes("\0") &&
+      !path.startsWith("/") &&
+      !path.split(/[\\/]/u).includes(".."),
+    "Invalid relative file path"
+  )
+
+export const relayFileMutationInputSchema = z.discriminatedUnion("operation", [
+  z.object({
+    operation: z.literal("rename"),
+    path: relayFileMutationPathSchema,
+    destination: relayFileMutationPathSchema,
+  }),
+  z.object({
+    operation: z.literal("delete"),
+    paths: z.array(relayFileMutationPathSchema).min(1).max(500),
+  }),
+  z.object({
+    operation: z.literal("duplicate"),
+    paths: z.array(relayFileMutationPathSchema).min(1).max(500),
+  }),
+  z.object({
+    operation: z.literal("archive"),
+    paths: z.array(relayFileMutationPathSchema).min(1).max(500),
+    destination: relayFileMutationPathSchema,
+  }),
+])
 
 export const relayFileActivityEntrySchema = z.object({
   instanceId: z.string(),
@@ -1324,6 +1359,9 @@ export type RelaySnapshot = z.infer<typeof relaySnapshotSchema>
 export type RelayFileTree = z.infer<typeof relayFileTreeSchema>
 export type RelayFileContent = z.infer<typeof relayFileContentSchema>
 export type RelaySaveFileInput = z.infer<typeof relaySaveFileInputSchema>
+export type RelayFileMutationInput = z.infer<
+  typeof relayFileMutationInputSchema
+>
 export type RelayFileActivityEntry = z.infer<
   typeof relayFileActivityEntrySchema
 >

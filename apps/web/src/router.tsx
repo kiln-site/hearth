@@ -16,6 +16,7 @@ export function getRouter() {
     context: { queryClient },
 
     scrollRestoration: true,
+    trailingSlash: "preserve",
     defaultPreload: "intent",
     defaultPreloadStaleTime: 0,
     defaultStructuralSharing: true,

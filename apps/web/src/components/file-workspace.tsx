@@ -7,10 +7,14 @@ import type {
   RelayFileActivity,
   RelayFileActivityEntry,
   RelayFileContent,
+  RelayFileMutationInput,
   RelayFileTree,
 } from "@workspace/contracts"
 import {
   ALargeSmall,
+  Archive,
+  ArrowDownUp,
+  ArrowUp,
   Check,
   ChevronDown,
   ChevronUp,
@@ -19,7 +23,9 @@ import {
   Download,
   EllipsisVertical,
   FileCode2,
+  FileIcon,
   FilePlus,
+  Folder,
   FolderTree,
   FolderPlus,
   GitCompareArrows,
@@ -37,6 +43,7 @@ import {
   Save,
   Search,
   Share2,
+  Trash2,
   TriangleAlert,
   Upload,
   WrapText,
@@ -45,7 +52,23 @@ import {
 
 import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
+import { Progress } from "@workspace/ui/components/progress"
 import { useIsMobile } from "@workspace/ui/hooks/use-mobile"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@workspace/ui/components/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@workspace/ui/components/dropdown-menu"
 import {
   Popover,
   PopoverAnchor,
@@ -53,7 +76,7 @@ import {
   PopoverTrigger,
 } from "@workspace/ui/components/popover"
 import { floatingSurfaceClassName } from "@workspace/ui/lib/surface-styles"
-import { showToast } from "@workspace/ui/components/sonner"
+import { dismissToast, showToast } from "@workspace/ui/components/sonner"
 import {
   Tooltip,
   TooltipContent,
@@ -80,7 +103,7 @@ import type {
 } from "@/components/files/file-workspace-stores"
 import { redactSensitiveText } from "@/lib/redaction"
 import { fileLanguageForPath } from "@/lib/file-language"
-import { uploadRelayFile } from "@/lib/relay-file-transfer"
+import { downloadRelayFile, uploadRelayFile } from "@/lib/relay-file-transfer"
 import {
   loadSyntaxCodeEditorModule,
   warmSyntaxCodeEditorModule,
@@ -95,6 +118,7 @@ import {
 } from "@/lib/query-options"
 import {
   getRelayTree,
+  mutateRelayFiles,
   saveRelayFile,
   updateRelayFilePin,
   uploadToMclogs,
@@ -109,6 +133,229 @@ const activeFileRevisionPollDelayMs = 30_000
 
 function formatName(path: string) {
   return path.split("/").filter(Boolean).at(-1) ?? path
+}
+
+function directoryPath(path: string): string {
+  const normalized = path.replace(/^\/+|\/+$/gu, "")
+  const segments = normalized.split("/").filter(Boolean)
+  segments.pop()
+  return segments.length ? `${segments.join("/")}/` : ""
+}
+
+function normalizeDirectoryPath(path: string): string {
+  const normalized = path.replace(/^\/+|\/+$/gu, "")
+  return normalized ? `${normalized}/` : ""
+}
+
+function joinFilePath(directory: string, name: string): string {
+  return `${normalizeDirectoryPath(directory)}${name}`
+}
+
+function hasDraggedFiles(event: React.DragEvent): boolean {
+  return Array.from(event.dataTransfer.types).includes("Files")
+}
+
+type UploadFiles = (
+  files: ReadonlyArray<File>,
+  directory: string
+) => Promise<void>
+
+function UploadProgressDescription({
+  completed,
+  total,
+  directory,
+}: {
+  completed: number
+  total: number
+  directory: string
+}) {
+  const progress = total ? Math.round((completed / total) * 100) : 0
+  return (
+    <div className="mt-1.5 space-y-2">
+      <div className="flex items-center justify-between gap-4 font-mono text-[10px] text-muted-foreground">
+        <span className="truncate">
+          /data/{normalizeDirectoryPath(directory)}
+        </span>
+        <span className="shrink-0">
+          {completed}/{total}
+        </span>
+      </div>
+      <Progress value={progress} aria-label={`Upload ${progress}% complete`} />
+    </div>
+  )
+}
+
+function useFileUploadAction({
+  canWrite,
+  instance,
+  onRefresh,
+}: {
+  canWrite: boolean
+  instance: InstanceWorkspaceInstance
+  onRefresh: () => void
+}): { uploadFiles: UploadFiles; uploading: boolean } {
+  const [uploading, setUploading] = React.useState(false)
+
+  const uploadFiles = React.useCallback<UploadFiles>(
+    async (files, directory) => {
+      if (!files.length || !canWrite) return
+      setUploading(true)
+      let completed = 0
+      let uploaded = 0
+      const toastId = showToast({
+        type: "loading",
+        message:
+          files.length === 1
+            ? "Uploading file"
+            : `Uploading ${files.length} files`,
+        description: (
+          <UploadProgressDescription
+            completed={completed}
+            total={files.length}
+            directory={directory}
+          />
+        ),
+        duration: Number.POSITIVE_INFINITY,
+      })
+
+      await Effect.runPromise(
+        Effect.forEach(
+          files,
+          (file) =>
+            Effect.tryPromise({
+              try: () =>
+                uploadRelayFile({
+                  file,
+                  instanceId: instance.id,
+                  path: joinFilePath(directory, file.name),
+                  relayId: instance.relayId,
+                }),
+              catch: (cause) => cause,
+            }).pipe(
+              Effect.match({
+                onFailure: (cause) => ({ cause, uploaded: false as const }),
+                onSuccess: () => ({ cause: null, uploaded: true as const }),
+              }),
+              Effect.tap((result) =>
+                Effect.sync(() => {
+                  completed += 1
+                  if (result.uploaded) uploaded += 1
+                  showToast({
+                    id: toastId,
+                    type: "loading",
+                    message:
+                      files.length === 1
+                        ? "Uploading file"
+                        : `Uploading ${files.length} files`,
+                    description: (
+                      <UploadProgressDescription
+                        completed={completed}
+                        total={files.length}
+                        directory={directory}
+                      />
+                    ),
+                    duration: Number.POSITIVE_INFINITY,
+                  })
+                })
+              )
+            ),
+          { concurrency: 3 }
+        ).pipe(
+          Effect.tap((results) =>
+            Effect.sync(() => {
+              dismissToast(toastId)
+              const failed = results.find((result) => !result.uploaded)
+              showToast({
+                type: failed ? "error" : "success",
+                message: failed
+                  ? uploaded
+                    ? `${uploaded} of ${files.length} files uploaded`
+                    : "Upload failed"
+                  : uploaded === 1
+                    ? "File uploaded"
+                    : `${uploaded} files uploaded`,
+                description: failed
+                  ? failed.cause instanceof Error
+                    ? failed.cause.message
+                    : "The Relay could not complete every upload."
+                  : `Added to /data/${normalizeDirectoryPath(directory)}`,
+              })
+              if (uploaded) onRefresh()
+            })
+          ),
+          Effect.ensuring(Effect.sync(() => setUploading(false)))
+        )
+      )
+    },
+    [canWrite, instance.id, instance.relayId, onRefresh]
+  )
+
+  return { uploadFiles, uploading }
+}
+
+function useFileDropTarget({
+  directory,
+  enabled,
+  onUploadFiles,
+  ref,
+}: {
+  directory: string
+  enabled: boolean
+  onUploadFiles: UploadFiles
+  ref: React.RefObject<HTMLElement | null>
+}) {
+  const dragDepth = React.useRef(0)
+
+  const setActive = React.useCallback(
+    (active: boolean) => {
+      if (ref.current) ref.current.dataset.fileDropActive = String(active)
+    },
+    [ref]
+  )
+
+  return {
+    onDragEnter(event: React.DragEvent) {
+      if (!enabled || !hasDraggedFiles(event)) return
+      event.preventDefault()
+      dragDepth.current += 1
+      setActive(true)
+    },
+    onDragOver(event: React.DragEvent) {
+      if (!enabled || !hasDraggedFiles(event)) return
+      event.preventDefault()
+      event.dataTransfer.dropEffect = "copy"
+      setActive(true)
+    },
+    onDragLeave(event: React.DragEvent) {
+      if (!enabled || !hasDraggedFiles(event)) return
+      dragDepth.current = Math.max(0, dragDepth.current - 1)
+      if (dragDepth.current === 0) setActive(false)
+    },
+    onDrop(event: React.DragEvent) {
+      if (!enabled || !hasDraggedFiles(event)) return
+      event.preventDefault()
+      dragDepth.current = 0
+      setActive(false)
+      const files = Array.from(event.dataTransfer.files)
+      if (files.length) void onUploadFiles(files, directory)
+    },
+  }
+}
+
+function FileDropOverlay({ directory }: { directory: string }) {
+  return (
+    <div className="pointer-events-none absolute inset-2 z-50 hidden place-items-center border border-primary/55 bg-card/88 shadow-[inset_0_0_0_1px_color-mix(in_oklch,var(--primary),transparent_75%)] backdrop-blur-sm group-data-[file-drop-active=true]/drop:grid">
+      <div className="text-center">
+        <div className="mx-auto grid size-10 place-items-center border border-primary/35 bg-primary/10 text-primary">
+          <Upload className="size-5" />
+        </div>
+        <p className="mt-3 text-sm font-semibold">Drop files to upload</p>
+        <p className="mt-1 font-mono text-[10px] text-muted-foreground">
+          /data/{normalizeDirectoryPath(directory)}
+        </p>
+      </div>
+    </div>
+  )
 }
 
 const fileEditorHeaderClassName =
@@ -158,6 +405,11 @@ const fileTreeLayoutCss = `
   [data-icon-name="file-tree-icon-chevron"] {
     width: 14px;
     height: 14px;
+  }
+
+  [data-external-file-drop-target="true"] {
+    background: color-mix(in oklch, var(--primary) 24%, transparent) !important;
+    box-shadow: inset 2px 0 0 var(--primary), inset 0 0 0 1px color-mix(in oklch, var(--primary) 42%, transparent);
   }
 `
 function clampFileTreeWidth(width: number, workspaceWidth: number) {
@@ -318,14 +570,20 @@ function FileToolbarIdentity({
   path,
   pathIsCopyable = true,
   readOnly = false,
+  directory = false,
 }: {
   path: string
   pathIsCopyable?: boolean
   readOnly?: boolean
+  directory?: boolean
 }) {
   return (
     <div className="flex min-w-0 flex-1 items-center gap-2.5 md:gap-3">
-      <FileCode2 className="size-5 shrink-0 text-primary" />
+      {directory ? (
+        <Folder className="size-5 shrink-0 text-primary" />
+      ) : (
+        <FileCode2 className="size-5 shrink-0 text-primary" />
+      )}
       <div className="min-w-0 flex-1">
         <div className="mb-1 flex min-w-0 items-center gap-2.5">
           <p className="min-w-0 truncate text-sm font-semibold">
@@ -367,6 +625,7 @@ function Editor({
   preferencesStore,
   treeCollapsed,
   onTreeExpand,
+  onUploadFiles,
 }: {
   file: RelayFileContent
   displayPath: string
@@ -378,6 +637,7 @@ function Editor({
   preferencesStore: FileEditorPreferencesStore
   treeCollapsed: boolean
   onTreeExpand: () => void
+  onUploadFiles: UploadFiles
 }) {
   const [sessionStore] = React.useState(() =>
     createEditorSessionStore(file.content, file.modifiedAt)
@@ -388,6 +648,12 @@ function Editor({
   const sectionRef = React.useRef<HTMLElement>(null)
   const saveFile = useFileSaveAction(file, instance, sessionStore)
   const loading = queryLoading
+  const dropTarget = useFileDropTarget({
+    directory: directoryPath(file.path),
+    enabled: canWrite,
+    onUploadFiles,
+    ref: sectionRef,
+  })
 
   React.useLayoutEffect(() => {
     const section = sectionRef.current
@@ -416,8 +682,10 @@ function Editor({
   return (
     <section
       ref={sectionRef}
-      className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-card"
+      className="group/drop relative flex min-h-0 min-w-0 flex-1 flex-col bg-card"
+      {...dropTarget}
     >
+      <FileDropOverlay directory={directoryPath(file.path)} />
       <EditorDiskRevisionSync
         content={file.content}
         modifiedAt={file.modifiedAt}
@@ -1900,6 +2168,374 @@ function EditorTooltip({
   )
 }
 
+type FileWorkspaceAction =
+  | "archive"
+  | "delete"
+  | "download"
+  | "duplicate"
+  | "rename"
+
+type FileActionDialogState =
+  | { kind: "archive"; paths: ReadonlyArray<string> }
+  | { kind: "delete"; paths: ReadonlyArray<string> }
+  | { kind: "rename"; path: string }
+  | null
+
+interface FileActionsController {
+  busy: boolean
+  canWrite: boolean
+  request: (action: FileWorkspaceAction, paths: ReadonlyArray<string>) => void
+}
+
+function useFileActions({
+  canWrite,
+  instance,
+  onPathChange,
+  selectionStore,
+}: {
+  canWrite: boolean
+  instance: InstanceWorkspaceInstance
+  onPathChange: (path: string) => void
+  selectionStore: FileSelectionStore
+}) {
+  const queryClient = useQueryClient()
+  const [dialog, setDialog] = React.useState<FileActionDialogState>(null)
+  const [downloadPath, setDownloadPath] = React.useState<string | null>(null)
+  const mutation = useMutation({
+    mutationFn: (input: RelayFileMutationInput) =>
+      mutateRelayFiles({
+        data: { ...input, instanceId: instance.id, relayId: instance.relayId },
+      }),
+    onSuccess: (tree) => {
+      queryClient.setQueryData(
+        queryKeys.relay.tree(instance.relayId, instance.id),
+        tree
+      )
+    },
+  })
+
+  const runMutation = React.useCallback(
+    (input: RelayFileMutationInput, successMessage: string) => {
+      const toastId = showToast({
+        type: "loading",
+        message: "Updating files",
+        duration: Number.POSITIVE_INFINITY,
+      })
+      return Effect.runPromise(
+        Effect.tryPromise({
+          try: () => mutation.mutateAsync(input),
+          catch: (cause) => cause,
+        }).pipe(
+          Effect.match({
+            onFailure: (cause) => {
+              dismissToast(toastId)
+              showToast({
+                type: "error",
+                message: "File action failed",
+                description:
+                  cause instanceof Error
+                    ? cause.message
+                    : "The Relay could not update these files.",
+              })
+              return null
+            },
+            onSuccess: (tree) => {
+              dismissToast(toastId)
+              showToast({ type: "success", message: successMessage })
+              return tree
+            },
+          })
+        )
+      )
+    },
+    [mutation]
+  )
+
+  const archive = React.useCallback(
+    async (
+      paths: ReadonlyArray<string>,
+      requestedName: string,
+      download: boolean
+    ) => {
+      const name = requestedName.trim().endsWith(".zip")
+        ? requestedName.trim()
+        : `${requestedName.trim()}.zip`
+      if (!name || name.includes("/") || name.includes("\\")) {
+        showToast({
+          type: "error",
+          message: "Enter a valid archive name",
+          description: "Archive names cannot contain slashes.",
+        })
+        return false
+      }
+      const destination = joinFilePath(directoryPath(paths[0] ?? ""), name)
+      const result = await runMutation(
+        { operation: "archive", paths: [...paths], destination },
+        download ? "Download archive prepared" : "Archive created"
+      )
+      if (!result) return false
+      if (download) {
+        await downloadRelayFile({
+          compression: "none",
+          instanceId: instance.id,
+          name,
+          path: destination,
+          relayId: instance.relayId,
+        })
+      }
+      return true
+    },
+    [instance.id, instance.relayId, runMutation]
+  )
+
+  const request = React.useCallback(
+    (action: FileWorkspaceAction, paths: ReadonlyArray<string>) => {
+      if (!paths.length) return
+      if (action === "download") {
+        if (paths.length === 1 && !paths[0]?.endsWith("/")) {
+          setDownloadPath(paths[0] ?? null)
+          return
+        }
+        const first = paths[0] ?? "files"
+        const defaultName =
+          paths.length === 1 ? formatName(first) : "selected-files"
+        void archive(paths, defaultName, true)
+        return
+      }
+      if (!canWrite) return
+      if (action === "rename" && paths.length === 1) {
+        setDialog({ kind: "rename", path: paths[0] ?? "" })
+        return
+      }
+      if (action === "archive") {
+        setDialog({ kind: "archive", paths })
+        return
+      }
+      if (action === "delete") {
+        setDialog({ kind: "delete", paths })
+        return
+      }
+      if (action === "duplicate") {
+        void runMutation(
+          { operation: "duplicate", paths: [...paths] },
+          paths.length === 1
+            ? "Item duplicated"
+            : `${paths.length} items duplicated`
+        )
+      }
+    },
+    [archive, canWrite, runMutation]
+  )
+
+  async function submitDialog(value?: string) {
+    if (!dialog) return
+    if (dialog.kind === "delete") {
+      const result = await runMutation(
+        { operation: "delete", paths: [...dialog.paths] },
+        dialog.paths.length === 1
+          ? "Item deleted"
+          : `${dialog.paths.length} items deleted`
+      )
+      if (result) {
+        const selectedPath = selectionStore.getSnapshot()
+        if (dialog.paths.some((path) => selectedPath.startsWith(path))) {
+          onPathChange(directoryPath(dialog.paths[0] ?? ""))
+        }
+        setDialog(null)
+      }
+      return
+    }
+    if (dialog.kind === "rename") {
+      const name = value?.trim() ?? ""
+      if (!name || name.includes("/") || name.includes("\\")) return
+      const wasDirectory = dialog.path.endsWith("/")
+      const destination = joinFilePath(directoryPath(dialog.path), name)
+      const result = await runMutation(
+        { operation: "rename", path: dialog.path, destination },
+        "Item renamed"
+      )
+      if (result) {
+        if (selectionStore.getSnapshot() === dialog.path) {
+          onPathChange(wasDirectory ? `${destination}/` : destination)
+        }
+        setDialog(null)
+      }
+      return
+    }
+    const created = await archive(
+      dialog.paths,
+      value?.trim() || "archive",
+      false
+    )
+    if (created) setDialog(null)
+  }
+
+  return {
+    controller: {
+      busy: mutation.isPending,
+      canWrite,
+      request,
+    } satisfies FileActionsController,
+    dialog,
+    downloadPath,
+    setDialog,
+    setDownloadPath,
+    submitDialog,
+  }
+}
+
+function FileActionDialogHost({
+  dialog,
+  busy,
+  onOpenChange,
+  onSubmit,
+}: {
+  dialog: FileActionDialogState
+  busy: boolean
+  onOpenChange: (open: boolean) => void
+  onSubmit: (value?: string) => Promise<void>
+}) {
+  const initialValue =
+    dialog?.kind === "rename"
+      ? formatName(dialog.path)
+      : dialog?.kind === "archive"
+        ? dialog.paths.length === 1
+          ? `${formatName(dialog.paths[0] ?? "archive")}.zip`
+          : "selected-files.zip"
+        : ""
+  const [value, setValue] = React.useState(initialValue)
+  if (!dialog) return null
+  const title =
+    dialog.kind === "rename"
+      ? "Rename item"
+      : dialog.kind === "archive"
+        ? "Create archive"
+        : `Delete ${dialog.paths.length === 1 ? "item" : `${dialog.paths.length} items`}?`
+
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>
+            {dialog.kind === "delete"
+              ? "This permanently removes the selected files from the server."
+              : dialog.kind === "archive"
+                ? "The ZIP archive will be created in the current directory."
+                : `Choose a new name for ${formatName(dialog.path)}.`}
+          </DialogDescription>
+        </DialogHeader>
+        {dialog.kind !== "delete" ? (
+          <Input
+            autoFocus
+            value={value}
+            aria-label={dialog.kind === "rename" ? "New name" : "Archive name"}
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && value.trim()) {
+                event.preventDefault()
+                void onSubmit(value)
+              }
+            }}
+          />
+        ) : null}
+        <DialogFooter>
+          <Button
+            variant="outline"
+            disabled={busy}
+            onClick={() => onOpenChange(false)}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant={dialog.kind === "delete" ? "destructive" : "default"}
+            disabled={busy || (dialog.kind !== "delete" && !value.trim())}
+            onClick={() => void onSubmit(value)}
+          >
+            {busy ? <LoaderCircle className="animate-spin" /> : null}
+            {dialog.kind === "delete"
+              ? "Delete"
+              : dialog.kind === "archive"
+                ? "Create archive"
+                : "Rename"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function FileActionsDropdown({
+  controller,
+  paths,
+}: {
+  controller: FileActionsController
+  paths: ReadonlyArray<string>
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label="File actions"
+          disabled={!paths.length || controller.busy}
+        >
+          <EllipsisVertical className="size-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-44">
+        <DropdownMenuItem
+          disabled={!controller.canWrite || paths.length !== 1}
+          onSelect={() => controller.request("rename", paths)}
+        >
+          <ALargeSmall /> Rename
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onSelect={() => controller.request("download", paths)}
+        >
+          <Download /> Download
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={!controller.canWrite}
+          onSelect={() => controller.request("archive", paths)}
+        >
+          <Archive /> Archive
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={!controller.canWrite}
+          onSelect={() => controller.request("duplicate", paths)}
+        >
+          <Copy /> Duplicate
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          variant="destructive"
+          disabled={!controller.canWrite}
+          onSelect={() => controller.request("delete", paths)}
+        >
+          <Trash2 /> Delete
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function resolveTreeDropDirectory(event: React.DragEvent): string {
+  for (const target of event.nativeEvent.composedPath()) {
+    if (!(target instanceof HTMLElement)) continue
+    const flattened = target.dataset.itemFlattenedSubitem
+    if (flattened) return normalizeDirectoryPath(flattened)
+    const path = target.dataset.itemPath
+    if (!path) continue
+    return target.dataset.itemType === "folder"
+      ? normalizeDirectoryPath(path)
+      : directoryPath(path)
+  }
+  return ""
+}
+
 function FileTreePanel({
   instance,
   tree,
@@ -1917,6 +2553,9 @@ function FileTreePanel({
   onCollapsedChange,
   initialWidth,
   canWrite,
+  onUploadFiles,
+  uploading,
+  actions,
 }: {
   instance: InstanceWorkspaceInstance
   tree: RelayFileTree
@@ -1934,6 +2573,9 @@ function FileTreePanel({
   onCollapsedChange: (collapsed: boolean) => void
   initialWidth: number | null
   canWrite: boolean
+  onUploadFiles: UploadFiles
+  uploading: boolean
+  actions: FileActionsController
 }) {
   const selectedPath = selectionStore.getSnapshot()
   const initialPath =
@@ -1950,11 +2592,7 @@ function FileTreePanel({
     onSelectionChange: (paths) => {
       const selected = paths.at(-1)
       const handlers = selectionHandlers.current
-      if (
-        !selected ||
-        selected.endsWith("/") ||
-        selected === selectionStore.getSnapshot()
-      ) {
+      if (!selected || selected === selectionStore.getSnapshot()) {
         return
       }
       handlers.onPathChange(selected)
@@ -1986,77 +2624,79 @@ function FileTreePanel({
     userSelect: "",
   })
   const uploadInputRef = React.useRef<HTMLInputElement>(null)
-  const [uploading, setUploading] = React.useState(false)
-  const [downloadPath, setDownloadPath] = React.useState<string | null>(null)
-  const changeDownloadOpen = React.useCallback((open: boolean) => {
-    if (!open) setDownloadPath(null)
-  }, [])
+  const dragDepth = React.useRef(0)
+  const activeDropElement = React.useRef<HTMLElement | null>(null)
+  const dropDirectory = React.useRef("")
+  const dropPathLabelRef = React.useRef<HTMLSpanElement>(null)
 
   const handleFilesSelected = React.useCallback(
-    async (event: React.ChangeEvent<HTMLInputElement>) => {
+    (event: React.ChangeEvent<HTMLInputElement>) => {
       const files = [...(event.target.files ?? [])]
       event.target.value = ""
-      if (!files.length || !canWrite) return
-      setUploading(true)
-      let uploaded = 0
-      await Effect.runPromise(
-        Effect.forEach(
-          files,
-          (file) =>
-            Effect.uninterruptible(
-              Effect.tryPromise({
-                try: () =>
-                  uploadRelayFile({
-                    file,
-                    instanceId: instance.id,
-                    path: file.name,
-                    relayId: instance.relayId,
-                  }),
-                catch: (cause) => cause,
-              }).pipe(
-                Effect.tap(() =>
-                  Effect.sync(() => {
-                    uploaded += 1
-                  })
-                )
-              )
-            ),
-          { concurrency: 3, discard: true }
-        ).pipe(
-          Effect.tap(() =>
-            Effect.sync(() => {
-              showToast({
-                type: "success",
-                message:
-                  uploaded === 1
-                    ? "File uploaded"
-                    : `${uploaded} files uploaded`,
-                description: "Transferred directly to the Relay instance root.",
-              })
-              onRefresh()
-            })
-          ),
-          Effect.catch((cause) =>
-            Effect.sync(() => {
-              showToast({
-                type: "error",
-                message: uploaded
-                  ? "Some files could not be uploaded"
-                  : "Upload failed",
-                description:
-                  cause instanceof Error
-                    ? cause.message
-                    : "The Relay could not complete the upload.",
-              })
-              if (uploaded) onRefresh()
-            })
-          ),
-          Effect.ensuring(Effect.sync(() => setUploading(false)))
-        )
-      )
+      if (files.length && canWrite) void onUploadFiles(files, "")
     },
-    [canWrite, instance.id, instance.relayId, onRefresh]
+    [canWrite, onUploadFiles]
   )
+
+  function clearTreeDropTarget() {
+    activeDropElement.current?.removeAttribute("data-external-file-drop-target")
+    activeDropElement.current = null
+    dropDirectory.current = ""
+    if (panelRef.current) panelRef.current.dataset.fileDropActive = "false"
+  }
+
+  function showTreeDropTarget(event: React.DragEvent) {
+    const directory = resolveTreeDropDirectory(event)
+    dropDirectory.current = directory
+    activeDropElement.current?.removeAttribute("data-external-file-drop-target")
+    activeDropElement.current = null
+    const treeHost = panelRef.current?.querySelector("file-tree")
+    const candidates = treeHost?.shadowRoot?.querySelectorAll<HTMLElement>(
+      "[data-item-path], [data-item-flattened-subitem]"
+    )
+    for (const candidate of candidates ?? []) {
+      const candidatePath =
+        candidate.dataset.itemFlattenedSubitem ?? candidate.dataset.itemPath
+      if (normalizeDirectoryPath(candidatePath ?? "") !== directory) continue
+      candidate.setAttribute("data-external-file-drop-target", "true")
+      activeDropElement.current = candidate
+      break
+    }
+    if (panelRef.current) panelRef.current.dataset.fileDropActive = "true"
+    if (dropPathLabelRef.current) {
+      dropPathLabelRef.current.textContent = `/data/${directory}`
+    }
+  }
+
+  function handleTreeDragEnter(event: React.DragEvent) {
+    if (!canWrite || !hasDraggedFiles(event)) return
+    event.preventDefault()
+    dragDepth.current += 1
+    showTreeDropTarget(event)
+  }
+
+  function handleTreeDragOver(event: React.DragEvent) {
+    if (!canWrite || !hasDraggedFiles(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = "copy"
+    showTreeDropTarget(event)
+  }
+
+  function handleTreeDragLeave(event: React.DragEvent) {
+    if (!canWrite || !hasDraggedFiles(event)) return
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) clearTreeDropTarget()
+  }
+
+  function handleTreeDrop(event: React.DragEvent) {
+    if (!canWrite || !hasDraggedFiles(event)) return
+    event.preventDefault()
+    const directory = dropDirectory.current
+    const files = Array.from(event.dataTransfer.files)
+    dragDepth.current = 0
+    clearTreeDropTarget()
+    if (files.length) void onUploadFiles(files, directory)
+  }
 
   function workspaceWidth() {
     return (
@@ -2262,7 +2902,11 @@ function FileTreePanel({
       data-mobile-file-drawer
       data-state={mobileOpen ? "open" : "closed"}
       data-collapsed={collapsed}
-      className={`absolute inset-x-0 bottom-0 z-30 flex w-full shrink-0 flex-col overflow-hidden border-t border-border/80 bg-card shadow-[0_-18px_45px_rgba(0,0,0,0.35)] transition-[height] duration-200 ease-out md:relative md:inset-auto md:z-auto md:h-auto md:min-h-0 md:border-t-0 md:shadow-none ${animateCollapsedChange ? "md:transition-[width,min-width,max-width] md:duration-200 md:ease-linear" : "md:transition-none"} ${collapsed ? "md:!w-0 md:!max-w-0 md:!min-w-0 md:overflow-hidden" : "md:w-[var(--file-tree-width)] md:max-w-[45%] md:min-w-56 md:overflow-visible md:[--file-tree-width:17.5rem] xl:max-w-[30rem] xl:[--file-tree-width:19rem]"} ${mobileOpen ? "h-full" : "h-11"}`}
+      className={`group/tree-drop absolute inset-x-0 bottom-0 z-30 flex w-full shrink-0 flex-col overflow-hidden border-t border-border/80 bg-card shadow-[0_-18px_45px_rgba(0,0,0,0.35)] transition-[height] duration-200 ease-out md:relative md:inset-auto md:z-auto md:h-auto md:min-h-0 md:border-t-0 md:shadow-none ${animateCollapsedChange ? "md:transition-[width,min-width,max-width] md:duration-200 md:ease-linear" : "md:transition-none"} ${collapsed ? "md:!w-0 md:!max-w-0 md:!min-w-0 md:overflow-hidden" : "md:w-[var(--file-tree-width)] md:max-w-[45%] md:min-w-56 md:overflow-visible md:[--file-tree-width:17.5rem] xl:max-w-[30rem] xl:[--file-tree-width:19rem]"} ${mobileOpen ? "h-full" : "h-11"}`}
+      onDragEnter={handleTreeDragEnter}
+      onDragOver={handleTreeDragOver}
+      onDragLeave={handleTreeDragLeave}
+      onDrop={handleTreeDrop}
       onTransitionEnd={(event) => {
         if (event.currentTarget !== event.target) return
         if (
@@ -2466,50 +3110,101 @@ function FileTreePanel({
               height: "100%",
             } as React.CSSProperties
           }
-          renderContextMenu={(item) => (
+          renderContextMenu={(item, context) => (
             <div
-              className={`${floatingSurfaceClassName} absolute top-full right-0 z-[100] min-w-36 border border-border/90 p-1 text-xs`}
+              role="menu"
+              aria-label={`Actions for ${item.name}`}
+              className={`${floatingSurfaceClassName} absolute top-full right-0 z-[100] min-w-44 rounded-lg p-1 text-xs ring-1 ring-accent-border/22`}
             >
               <button
                 type="button"
-                className="flex w-full px-2 py-1.5 hover:bg-popover-accent"
+                role="menuitem"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none"
+                onClick={() => {
+                  context.close()
+                  onPathChange(item.path)
+                  onFileSelected()
+                }}
               >
-                Open {item.path}
+                {item.kind === "directory" ? <Folder /> : <FileIcon />}
+                Open
               </button>
               <button
                 type="button"
-                className="flex w-full px-2 py-1.5 hover:bg-popover-accent"
+                role="menuitem"
+                disabled={!actions.canWrite}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
+                onClick={() => {
+                  context.close({ restoreFocus: false })
+                  actions.request("rename", [item.path])
+                }}
               >
-                Rename
+                <ALargeSmall /> Rename
               </button>
               <button
                 type="button"
-                disabled={item.path.endsWith("/")}
-                className="flex w-full items-center gap-2 px-2 py-1.5 hover:bg-popover-accent disabled:pointer-events-none disabled:opacity-40"
-                onClick={() => setDownloadPath(item.path)}
+                role="menuitem"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none [&>svg]:size-3.5"
+                onClick={() => {
+                  context.close({ restoreFocus: false })
+                  actions.request("download", [item.path])
+                }}
               >
-                <Download className="size-3.5" />
+                <Download />
                 Download
               </button>
               <button
                 type="button"
-                className="flex w-full px-2 py-1.5 text-destructive hover:bg-destructive/10"
+                role="menuitem"
+                disabled={!actions.canWrite}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
+                onClick={() => {
+                  context.close({ restoreFocus: false })
+                  actions.request("archive", [item.path])
+                }}
               >
-                Delete
+                <Archive /> Archive
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!actions.canWrite}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
+                onClick={() => {
+                  context.close()
+                  actions.request("duplicate", [item.path])
+                }}
+              >
+                <Copy /> Duplicate
+              </button>
+              <div className="-mx-1 my-1 h-px bg-border" />
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!actions.canWrite}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-destructive transition-colors hover:bg-destructive/10 focus-visible:bg-destructive/10 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
+                onClick={() => {
+                  context.close({ restoreFocus: false })
+                  actions.request("delete", [item.path])
+                }}
+              >
+                <Trash2 /> Delete
               </button>
             </div>
           )}
         />
       </div>
 
-      {downloadPath ? (
-        <FileDownloadDialog
-          instance={instance}
-          open
-          path={downloadPath}
-          onOpenChange={changeDownloadOpen}
-        />
-      ) : null}
+      <div className="pointer-events-none absolute right-2 bottom-12 left-2 z-50 hidden items-center gap-2 border border-primary/35 bg-popover/95 px-3 py-2 text-xs shadow-xl backdrop-blur-sm group-data-[file-drop-active=true]/tree-drop:flex md:bottom-2">
+        <Upload className="size-4 shrink-0 text-primary" />
+        <span className="min-w-0 flex-1 truncate">Upload to</span>
+        <span
+          ref={dropPathLabelRef}
+          className="max-w-[65%] truncate font-mono text-[10px] text-primary"
+        >
+          /data/
+        </span>
+      </div>
 
       <span
         aria-hidden="true"
@@ -2759,6 +3454,9 @@ function FilesHome({
   treeCollapsed,
   onTreeExpand,
   onOpen,
+  canWrite,
+  onUploadFiles,
+  actions,
 }: {
   instance: InstanceWorkspaceInstance
   tree: RelayFileTree | null
@@ -2767,15 +3465,25 @@ function FilesHome({
   treeCollapsed: boolean
   onTreeExpand: () => void
   onOpen: (path: string) => void
+  canWrite: boolean
+  onUploadFiles: UploadFiles
+  actions: FileActionsController
 }) {
+  const sectionRef = React.useRef<HTMLElement>(null)
+  const dropTarget = useFileDropTarget({
+    directory: "",
+    enabled: canWrite,
+    onUploadFiles,
+    ref: sectionRef,
+  })
   const activityQuery = useQuery(
     relayFileActivityQueryOptions(instance.relayId, instance.id)
   )
   const activity = React.useMemo(() => {
     if (!tree || !activityQuery.data) return []
     const availablePaths = new Set(tree.paths)
-    return activityQuery.data.files.filter((entry) =>
-      availablePaths.has(entry.path)
+    return activityQuery.data.files.filter(
+      (entry) => availablePaths.has(entry.path) && !entry.path.endsWith("/")
     )
   }, [activityQuery.data, tree])
   const loading = fileTreeLoading || activityQuery.isFetching
@@ -2783,11 +3491,15 @@ function FilesHome({
     fileTreeError ??
     queryErrorMessage(activityQuery.error, "Could not load recent files")
   const pinned = activity.filter((entry) => entry.pinned)
-  const recent = activity.filter((entry) => !entry.pinned)
-  const empty = pinned.length === 0 && recent.length === 0
+  const recent = activity.filter((entry) => !entry.pinned).slice(0, 3)
 
   return (
-    <section className="flex min-h-[360px] min-w-0 flex-1 flex-col bg-card">
+    <section
+      ref={sectionRef}
+      className="group/drop relative flex min-h-[360px] min-w-0 flex-1 flex-col bg-card"
+      {...dropTarget}
+    >
+      <FileDropOverlay directory="" />
       <div className={fileEditorHeaderClassName}>
         {treeCollapsed ? <FileTreeRevealButton onClick={onTreeExpand} /> : null}
         <div className={fileEditorHeaderContentClassName}>
@@ -2799,7 +3511,7 @@ function FilesHome({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-8">
-        <div className="mx-auto w-full max-w-3xl">
+        <div className="mx-auto w-full max-w-5xl">
           {loading ? (
             <div className="grid min-h-44 place-items-center border border-border/70 bg-muted/5">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -2812,23 +3524,6 @@ function FilesHome({
           {!loading && error ? (
             <div className="border border-destructive/30 bg-destructive/5 px-4 py-3 text-xs text-destructive">
               {error}
-            </div>
-          ) : null}
-
-          {!loading && !error && empty ? (
-            <div className="grid min-h-52 place-items-center border border-dashed border-border/80 bg-muted/5 px-6 text-center">
-              <div className="max-w-sm">
-                <div className="mx-auto grid size-10 place-items-center border border-border/70 bg-card text-muted-foreground">
-                  <Clock3 className="size-[18px]" />
-                </div>
-                <p className="mt-4 text-sm font-semibold">
-                  No recent files yet
-                </p>
-                <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-                  Open a file from the tree and it will appear here for everyone
-                  with access to this server.
-                </p>
-              </div>
             </div>
           ) : null}
 
@@ -2870,6 +3565,10 @@ function FilesHome({
                 ))}
               </div>
             </div>
+          ) : null}
+
+          {tree ? (
+            <RootDirectoryList actions={actions} onOpen={onOpen} tree={tree} />
           ) : null}
         </div>
       </div>
@@ -2982,7 +3681,511 @@ function UnavailablePreview({
   )
 }
 
+interface DirectoryEntry {
+  kind: "directory" | "file"
+  modifiedAt: number
+  name: string
+  path: string
+  size: number
+}
+
+type DirectorySortKey = "modifiedAt" | "name" | "size"
+type DirectorySortDirection = "ascending" | "descending"
+
+const fileModifiedAtFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
+})
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1_024) return `${bytes} B`
+  const units = ["KiB", "MiB", "GiB", "TiB"] as const
+  let value = bytes / 1_024
+  let unit: (typeof units)[number] = units[0]
+  for (const candidate of units.slice(1)) {
+    if (value < 1_024) break
+    value /= 1_024
+    unit = candidate
+  }
+  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${unit}`
+}
+
+function formatFileModifiedAt(modifiedAt: number): string {
+  return modifiedAt > 0 ? fileModifiedAtFormatter.format(modifiedAt) : "—"
+}
+
+function directoryEntries(
+  tree: RelayFileTree,
+  directory: string
+): Array<DirectoryEntry> {
+  const normalizedDirectory = normalizeDirectoryPath(directory)
+  const entries = new Map<string, DirectoryEntry>()
+  for (const path of tree.paths) {
+    if (!path.startsWith(normalizedDirectory) || path === normalizedDirectory)
+      continue
+    const remainder = path.slice(normalizedDirectory.length)
+    const segment = remainder.split("/")[0]
+    if (!segment) continue
+    const nested = remainder.includes("/")
+    const entryPath = `${normalizedDirectory}${segment}${nested ? "/" : ""}`
+    entries.set(entryPath, {
+      kind: nested ? "directory" : "file",
+      modifiedAt: tree.modifiedAt?.[entryPath] ?? 0,
+      name: segment,
+      path: entryPath,
+      size: tree.sizes[entryPath] ?? 0,
+    })
+  }
+  return [...entries.values()].sort((left, right) => {
+    if (left.kind !== right.kind) return left.kind === "directory" ? -1 : 1
+    return left.name.localeCompare(right.name)
+  })
+}
+
+function useSortedDirectoryEntries(entries: Array<DirectoryEntry>) {
+  const [sortKey, setSortKey] = React.useState<DirectorySortKey>("name")
+  const [sortDirection, setSortDirection] =
+    React.useState<DirectorySortDirection>("ascending")
+  const sortedEntries = React.useMemo(() => {
+    const direction = sortDirection === "ascending" ? 1 : -1
+    return [...entries].sort((left, right) => {
+      if (left.kind !== right.kind) return left.kind === "directory" ? -1 : 1
+      const comparison =
+        sortKey === "name"
+          ? left.name.localeCompare(right.name, undefined, {
+              numeric: true,
+              sensitivity: "base",
+            })
+          : left[sortKey] - right[sortKey]
+      return comparison === 0
+        ? left.name.localeCompare(right.name, undefined, { numeric: true })
+        : comparison * direction
+    })
+  }, [entries, sortDirection, sortKey])
+
+  const toggleSort = React.useCallback(
+    (nextKey: DirectorySortKey) => {
+      if (nextKey === sortKey) {
+        setSortDirection((current) =>
+          current === "ascending" ? "descending" : "ascending"
+        )
+        return
+      }
+      setSortKey(nextKey)
+      setSortDirection(nextKey === "name" ? "ascending" : "descending")
+    },
+    [sortKey]
+  )
+
+  return { sortDirection, sortedEntries, sortKey, toggleSort }
+}
+
+function DirectorySortButton({
+  direction,
+  label,
+  onClick,
+  selected,
+}: {
+  direction: DirectorySortDirection
+  label: string
+  onClick: () => void
+  selected: boolean
+}) {
+  return (
+    <button
+      type="button"
+      className="flex h-full min-w-0 items-center gap-1 text-left hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/60 focus-visible:outline-none focus-visible:ring-inset"
+      aria-label={`Sort by ${label}${selected ? `, currently ${direction}` : ""}`}
+      onClick={onClick}
+    >
+      <span className="truncate">{label}</span>
+      {selected ? (
+        direction === "ascending" ? (
+          <ChevronUp className="size-3" />
+        ) : (
+          <ChevronDown className="size-3" />
+        )
+      ) : (
+        <ArrowDownUp className="size-3 opacity-45" />
+      )}
+    </button>
+  )
+}
+
+function RootDirectoryList({
+  actions,
+  onOpen,
+  tree,
+}: {
+  actions: FileActionsController
+  onOpen: (path: string) => void
+  tree: RelayFileTree
+}) {
+  const entries = React.useMemo(() => directoryEntries(tree, ""), [tree])
+  const { sortDirection, sortedEntries, sortKey, toggleSort } =
+    useSortedDirectoryEntries(entries)
+  const [selected, setSelected] = React.useState<ReadonlySet<string>>(
+    () => new Set()
+  )
+  const selectedPaths = React.useMemo(
+    () =>
+      entries.flatMap((entry) =>
+        selected.has(entry.path) ? [entry.path] : []
+      ),
+    [entries, selected]
+  )
+  const allSelected =
+    entries.length > 0 && selectedPaths.length === entries.length
+
+  function toggle(path: string) {
+    setSelected((current) => {
+      const next = new Set(current)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }
+
+  return (
+    <div className="mt-8">
+      <div className="mb-2 flex min-h-8 items-center gap-2 px-1">
+        <Folder className="size-3.5 text-primary" />
+        <h2 className="font-mono text-[10px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+          Root · /data
+        </h2>
+        {selectedPaths.length ? (
+          <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+            {selectedPaths.length} selected
+          </span>
+        ) : (
+          <span className="ml-auto" />
+        )}
+        <FileActionsDropdown controller={actions} paths={selectedPaths} />
+      </div>
+      <div className="overflow-hidden border border-border/75 bg-muted/[0.025]">
+        <div className="grid h-9 grid-cols-[2.25rem_minmax(12rem,1fr)_7rem_11rem_2.5rem] items-center border-b border-border/75 bg-muted/10 px-2 font-mono text-[9px] font-semibold tracking-[0.1em] text-muted-foreground uppercase">
+          <label className="grid size-7 place-items-center">
+            <input
+              type="checkbox"
+              className="size-3.5 accent-primary"
+              aria-label="Select all root files"
+              checked={allSelected}
+              onChange={() =>
+                setSelected(
+                  allSelected
+                    ? new Set()
+                    : new Set(entries.map((entry) => entry.path))
+                )
+              }
+            />
+          </label>
+          <DirectorySortButton
+            label="Name"
+            selected={sortKey === "name"}
+            direction={sortDirection}
+            onClick={() => toggleSort("name")}
+          />
+          <DirectorySortButton
+            label="Size"
+            selected={sortKey === "size"}
+            direction={sortDirection}
+            onClick={() => toggleSort("size")}
+          />
+          <DirectorySortButton
+            label="Last modified"
+            selected={sortKey === "modifiedAt"}
+            direction={sortDirection}
+            onClick={() => toggleSort("modifiedAt")}
+          />
+          <span />
+        </div>
+        {sortedEntries.map((entry) => (
+          <div
+            key={entry.path}
+            className="grid min-h-11 grid-cols-[2.25rem_minmax(12rem,1fr)_7rem_11rem_2.5rem] items-center border-b border-border/55 px-2 last:border-b-0 hover:bg-accent/30 has-checked:bg-primary/[0.07]"
+          >
+            <label className="grid size-7 place-items-center">
+              <input
+                type="checkbox"
+                className="size-3.5 accent-primary"
+                aria-label={`Select ${entry.name}`}
+                checked={selected.has(entry.path)}
+                onChange={() => toggle(entry.path)}
+              />
+            </label>
+            <button
+              type="button"
+              className="flex min-w-0 items-center gap-2.5 self-stretch text-left text-sm font-medium focus-visible:ring-1 focus-visible:ring-ring/60 focus-visible:outline-none focus-visible:ring-inset"
+              onClick={() => onOpen(entry.path)}
+            >
+              {entry.kind === "directory" ? (
+                <Folder className="size-4 shrink-0 text-primary/80" />
+              ) : (
+                <FileIcon className="size-4 shrink-0 text-muted-foreground" />
+              )}
+              <span className="truncate">{entry.name}</span>
+            </button>
+            <span className="font-mono text-[10px] text-muted-foreground">
+              {formatFileSize(entry.size)}
+            </span>
+            <time
+              className="truncate pr-2 font-mono text-[10px] text-muted-foreground"
+              dateTime={
+                entry.modifiedAt > 0
+                  ? new Date(entry.modifiedAt).toISOString()
+                  : undefined
+              }
+              suppressHydrationWarning
+            >
+              {formatFileModifiedAt(entry.modifiedAt)}
+            </time>
+            <FileActionsDropdown controller={actions} paths={[entry.path]} />
+          </div>
+        ))}
+        {!entries.length ? (
+          <div className="grid min-h-32 place-items-center px-6 text-center text-xs text-muted-foreground">
+            The server root is empty. Drop files anywhere on this page to
+            upload.
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+function DirectoryView({
+  actions,
+  canWrite,
+  onOpen,
+  onTreeExpand,
+  onUploadFiles,
+  path,
+  tree,
+  treeCollapsed,
+  uploading,
+}: {
+  actions: FileActionsController
+  canWrite: boolean
+  onOpen: (path: string) => void
+  onTreeExpand: () => void
+  onUploadFiles: UploadFiles
+  path: string
+  tree: RelayFileTree
+  treeCollapsed: boolean
+  uploading: boolean
+}) {
+  const entries = React.useMemo(
+    () => directoryEntries(tree, path),
+    [path, tree]
+  )
+  const { sortDirection, sortedEntries, sortKey, toggleSort } =
+    useSortedDirectoryEntries(entries)
+  const [selected, setSelected] = React.useState<ReadonlySet<string>>(
+    () => new Set()
+  )
+  const sectionRef = React.useRef<HTMLElement>(null)
+  const uploadInputRef = React.useRef<HTMLInputElement>(null)
+  const dropTarget = useFileDropTarget({
+    directory: path,
+    enabled: canWrite,
+    onUploadFiles,
+    ref: sectionRef,
+  })
+  const selectedPaths = React.useMemo(
+    () =>
+      entries.flatMap((entry) =>
+        selected.has(entry.path) ? [entry.path] : []
+      ),
+    [entries, selected]
+  )
+  const allSelected =
+    entries.length > 0 && selectedPaths.length === entries.length
+
+  function toggle(pathToToggle: string) {
+    setSelected((current) => {
+      const next = new Set(current)
+      if (next.has(pathToToggle)) next.delete(pathToToggle)
+      else next.add(pathToToggle)
+      return next
+    })
+  }
+
+  const parent = directoryPath(path.replace(/\/+$/u, ""))
+
+  return (
+    <section
+      ref={sectionRef}
+      className="group/drop relative flex min-h-[360px] min-w-0 flex-1 flex-col bg-card"
+      {...dropTarget}
+    >
+      <FileDropOverlay directory={path} />
+      <div className={fileEditorHeaderClassName}>
+        {treeCollapsed ? <FileTreeRevealButton onClick={onTreeExpand} /> : null}
+        <div className={fileEditorHeaderContentClassName}>
+          <StableFileToolbarIdentity path={path} directory />
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            {selectedPaths.length ? (
+              <span className="mr-1 hidden font-mono text-[10px] text-muted-foreground sm:inline">
+                {selectedPaths.length} selected
+              </span>
+            ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={!canWrite || uploading}
+              onClick={() => uploadInputRef.current?.click()}
+            >
+              {uploading ? (
+                <LoaderCircle className="animate-spin" />
+              ) : (
+                <Upload />
+              )}
+              <span className="hidden sm:inline">Upload</span>
+            </Button>
+            <input
+              ref={uploadInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              aria-label={`Upload files to /data/${path}`}
+              onChange={(event) => {
+                const files = Array.from(event.target.files ?? [])
+                event.target.value = ""
+                if (files.length) void onUploadFiles(files, path)
+              }}
+            />
+            <FileActionsDropdown controller={actions} paths={selectedPaths} />
+          </div>
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto px-3 py-4 sm:px-5 lg:px-7">
+        <div className="mx-auto w-full max-w-5xl overflow-hidden border border-border/75 bg-muted/[0.025]">
+          <div className="grid h-9 grid-cols-[2.25rem_minmax(12rem,1fr)_7rem_11rem_2.5rem] items-center border-b border-border/75 bg-muted/10 px-2 font-mono text-[9px] font-semibold tracking-[0.1em] text-muted-foreground uppercase">
+            <label className="grid size-7 place-items-center">
+              <input
+                type="checkbox"
+                className="size-3.5 accent-primary"
+                aria-label="Select all files"
+                checked={allSelected}
+                onChange={() =>
+                  setSelected(
+                    allSelected
+                      ? new Set()
+                      : new Set(entries.map((entry) => entry.path))
+                  )
+                }
+              />
+            </label>
+            <DirectorySortButton
+              label="Name"
+              selected={sortKey === "name"}
+              direction={sortDirection}
+              onClick={() => toggleSort("name")}
+            />
+            <DirectorySortButton
+              label="Size"
+              selected={sortKey === "size"}
+              direction={sortDirection}
+              onClick={() => toggleSort("size")}
+            />
+            <DirectorySortButton
+              label="Last modified"
+              selected={sortKey === "modifiedAt"}
+              direction={sortDirection}
+              onClick={() => toggleSort("modifiedAt")}
+            />
+            <span />
+          </div>
+
+          <button
+            type="button"
+            aria-label={`Go up to /data/${parent}`}
+            className="group/row grid min-h-11 w-full grid-cols-[2.25rem_minmax(12rem,1fr)_7rem_11rem_2.5rem] items-center border-b border-border/55 px-2 text-left transition-colors hover:bg-accent/30 focus-visible:bg-accent/40 focus-visible:outline-none"
+            onClick={() => onOpen(parent)}
+          >
+            <span className="grid size-7 place-items-center text-muted-foreground">
+              <ArrowUp className="size-4" />
+            </span>
+            <span className="flex min-w-0 items-center gap-2.5 text-sm font-medium">
+              <Folder className="size-4 shrink-0 text-primary/80" />
+              <span className="truncate">...</span>
+            </span>
+            <span className="font-mono text-[10px] text-muted-foreground">
+              —
+            </span>
+            <span className="font-mono text-[10px] text-muted-foreground">
+              —
+            </span>
+            <span />
+          </button>
+
+          {sortedEntries.map((entry) => (
+            <div
+              key={entry.path}
+              className="group/row grid min-h-11 grid-cols-[2.25rem_minmax(12rem,1fr)_7rem_11rem_2.5rem] items-center border-b border-border/55 px-2 last:border-b-0 hover:bg-accent/30 has-checked:bg-primary/[0.07]"
+            >
+              <label className="grid size-7 place-items-center">
+                <input
+                  type="checkbox"
+                  className="size-3.5 accent-primary"
+                  aria-label={`Select ${entry.name}`}
+                  checked={selected.has(entry.path)}
+                  onChange={() => toggle(entry.path)}
+                />
+              </label>
+              <button
+                type="button"
+                className="flex min-w-0 items-center gap-2.5 self-stretch text-left text-sm font-medium focus-visible:ring-1 focus-visible:ring-ring/60 focus-visible:outline-none focus-visible:ring-inset"
+                onClick={() => onOpen(entry.path)}
+              >
+                {entry.kind === "directory" ? (
+                  <Folder className="size-4 shrink-0 text-primary/80" />
+                ) : (
+                  <FileIcon className="size-4 shrink-0 text-muted-foreground" />
+                )}
+                <span className="truncate">{entry.name}</span>
+              </button>
+              <span className="font-mono text-[10px] text-muted-foreground">
+                {formatFileSize(entry.size)}
+              </span>
+              <time
+                className="truncate pr-2 font-mono text-[10px] text-muted-foreground"
+                dateTime={
+                  entry.modifiedAt > 0
+                    ? new Date(entry.modifiedAt).toISOString()
+                    : undefined
+                }
+                suppressHydrationWarning
+              >
+                {formatFileModifiedAt(entry.modifiedAt)}
+              </time>
+              <FileActionsDropdown controller={actions} paths={[entry.path]} />
+            </div>
+          ))}
+
+          {!entries.length ? (
+            <div className="grid min-h-40 place-items-center px-6 text-center">
+              <div>
+                <Folder className="mx-auto size-6 text-muted-foreground/60" />
+                <p className="mt-3 text-sm font-medium">
+                  This directory is empty
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Drop files here or use Upload to add them.
+                </p>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  )
+}
+
 const StableEditor = React.memo(Editor)
+const StableDirectoryView = React.memo(DirectoryView)
 const StableFileTreePanel = React.memo(FileTreePanel)
 
 interface FileWorkspaceProps {
@@ -3031,12 +4234,21 @@ export function FileWorkspace(props: FileWorkspaceProps) {
       selectionStore.navigate(path, window.location.href, nextUrl)
       if (!props.active) return
 
-      void router.navigate({
-        to: "/server/$serverId/files/$",
-        params: { serverId: props.serverId, _splat: path },
-        replace: true,
-        resetScroll: false,
-      })
+      void router
+        .navigate({
+          to: "/server/$serverId/files/$",
+          params: { serverId: props.serverId, _splat: path },
+          replace: true,
+          resetScroll: false,
+        })
+        .then(() => {
+          if (!path.endsWith("/") || window.location.pathname.endsWith("/")) {
+            return
+          }
+          const canonical = new URL(window.location.href)
+          canonical.pathname = `${canonical.pathname}/`
+          window.history.replaceState(window.history.state, "", canonical)
+        })
     },
     [props.active, props.serverId, router, selectionStore]
   )
@@ -3168,6 +4380,17 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
   const handleRefresh = React.useCallback(() => {
     refreshTree()
   }, [refreshTree])
+  const uploads = useFileUploadAction({
+    canWrite: canWrite && relayConnected,
+    instance,
+    onRefresh: handleRefresh,
+  })
+  const fileActions = useFileActions({
+    canWrite: canWrite && relayConnected,
+    instance,
+    onPathChange,
+    selectionStore,
+  })
 
   return (
     <div
@@ -3194,7 +4417,10 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
           }
           onCollapsedChange={handleTreeCollapsedChange}
           initialWidth={initialTreeWidth}
-          canWrite={canWrite}
+          canWrite={canWrite && relayConnected}
+          onUploadFiles={uploads.uploadFiles}
+          uploading={uploads.uploading}
+          actions={fileActions.controller}
         />
       ) : (
         <FileTreeLoadingPanel
@@ -3222,13 +4448,42 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
           tree={tree}
           treeCollapsed={displayedTreeCollapsed}
           relayConnected={relayConnected}
+          onUploadFiles={uploads.uploadFiles}
+          uploading={uploads.uploading}
+          actions={fileActions.controller}
         />
       </div>
+      <FileActionDialogHost
+        key={
+          fileActions.dialog?.kind === "rename"
+            ? `rename:${fileActions.dialog.path}`
+            : fileActions.dialog
+              ? `${fileActions.dialog.kind}:${fileActions.dialog.paths.join("|")}`
+              : "closed"
+        }
+        dialog={fileActions.dialog}
+        busy={fileActions.controller.busy}
+        onOpenChange={(open) => {
+          if (!open) fileActions.setDialog(null)
+        }}
+        onSubmit={fileActions.submitDialog}
+      />
+      {fileActions.downloadPath ? (
+        <FileDownloadDialog
+          instance={instance}
+          open
+          path={fileActions.downloadPath}
+          onOpenChange={(open) => {
+            if (!open) fileActions.setDownloadPath(null)
+          }}
+        />
+      ) : null}
     </div>
   )
 })
 
 interface FileViewerProps {
+  actions: FileActionsController
   canShare: boolean
   canWrite: boolean
   fileTreeError: string | null
@@ -3241,9 +4496,12 @@ interface FileViewerProps {
   tree: RelayFileTree | null
   treeCollapsed: boolean
   relayConnected: boolean
+  onUploadFiles: UploadFiles
+  uploading: boolean
 }
 
 function FileViewer({
+  actions,
   canShare,
   canWrite,
   fileTreeError,
@@ -3256,6 +4514,8 @@ function FileViewer({
   tree,
   treeCollapsed,
   relayConnected,
+  onUploadFiles,
+  uploading,
 }: FileViewerProps) {
   const queryClient = useQueryClient()
   const selectedPath = React.useSyncExternalStore(
@@ -3264,9 +4524,23 @@ function FileViewer({
     selectionStore.getSnapshot
   )
   const isHome = !selectedPath
+  const selectedDirectoryPath = normalizeDirectoryPath(selectedPath)
+  const selectedPathIsDirectory = Boolean(
+    selectedPath && tree?.paths.includes(selectedDirectoryPath)
+  )
   const selectedPathIsReadable = Boolean(
     tree?.paths.includes(selectedPath) && !selectedPath.endsWith("/")
   )
+  React.useEffect(() => {
+    if (selectedPathIsDirectory && selectedPath !== selectedDirectoryPath) {
+      onPathChange(selectedDirectoryPath)
+    }
+  }, [
+    onPathChange,
+    selectedDirectoryPath,
+    selectedPath,
+    selectedPathIsDirectory,
+  ])
   React.useEffect(() => {
     if (selectedPath) warmSyntaxCodeEditorModule()
   }, [selectedPath])
@@ -3282,9 +4556,7 @@ function FileViewer({
   const loadingFile =
     fileTreeLoading || (selectedPathIsReadable && fileQuery.isPending)
   const routeError =
-    tree &&
-    selectedPath &&
-    (!tree.paths.includes(selectedPath) || selectedPath.endsWith("/"))
+    tree && selectedPath && !selectedPathIsReadable && !selectedPathIsDirectory
       ? `Could not find /data/${selectedPath}`
       : null
   const error =
@@ -3297,7 +4569,12 @@ function FileViewer({
       : null) ??
     queryErrorMessage(fileQuery.error, "Could not read file")
   const selectedFileUnavailable =
-    Boolean(tree && selectedPath && !selectedPathIsReadable) ||
+    Boolean(
+      tree &&
+      selectedPath &&
+      !selectedPathIsReadable &&
+      !selectedPathIsDirectory
+    ) ||
     (selectedPathIsReadable && !file && (!relayConnected || fileQuery.isError))
   const activitySyncKey = React.useRef<string | null>(null)
 
@@ -3322,7 +4599,9 @@ function FileViewer({
     if (loadingFile) return
     selectionStore.completeNavigation(
       selectedPath,
-      file && !selectedFileUnavailable ? "loaded" : "unavailable"
+      selectedPathIsDirectory || (file && !selectedFileUnavailable)
+        ? "loaded"
+        : "unavailable"
     )
   }, [
     file,
@@ -3330,6 +4609,7 @@ function FileViewer({
     loadingFile,
     selectedFileUnavailable,
     selectedPath,
+    selectedPathIsDirectory,
     selectionStore,
   ])
 
@@ -3343,6 +4623,26 @@ function FileViewer({
         treeCollapsed={treeCollapsed}
         onTreeExpand={onTreeExpand}
         onOpen={onPathChange}
+        canWrite={canWrite}
+        onUploadFiles={onUploadFiles}
+        actions={actions}
+      />
+    )
+  }
+
+  if (tree && selectedPathIsDirectory) {
+    return (
+      <StableDirectoryView
+        key={selectedDirectoryPath}
+        actions={actions}
+        canWrite={canWrite}
+        onOpen={onPathChange}
+        onTreeExpand={onTreeExpand}
+        onUploadFiles={onUploadFiles}
+        path={selectedDirectoryPath}
+        tree={tree}
+        treeCollapsed={treeCollapsed}
+        uploading={uploading}
       />
     )
   }
@@ -3361,6 +4661,7 @@ function FileViewer({
         preferencesStore={preferencesStore}
         treeCollapsed={treeCollapsed}
         onTreeExpand={onTreeExpand}
+        onUploadFiles={onUploadFiles}
       />
     )
   }

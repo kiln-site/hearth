@@ -26,6 +26,7 @@ import {
   relayInstanceWebRouteInputsSchema,
   relayNetworkingSchema,
   relayProxySettingsSchema,
+  relayFileMutationInputSchema,
   relaySaveFileInputSchema,
   relayTailscaleInstallSchema,
   relayTailscaleSettingsSchema,
@@ -1206,6 +1207,13 @@ async function executeControlRequest(
           "relay.files.write",
           filesystem.write(instance, requiredString(payload, "path"), input)
         )
+      )
+    }
+    case "instance.files.mutate": {
+      const instance = await requiredInstance(payload)
+      const input = relayFileMutationInputSchema.parse(payload)
+      return serializeInstanceMutation(instance.id, () =>
+        runRelayEffect("relay.files.mutate", filesystem.mutate(instance, input))
       )
     }
     case "instance.console.history":
