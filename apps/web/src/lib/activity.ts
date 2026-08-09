@@ -34,6 +34,19 @@ export function auditInstanceId(audit: RelayAuditRecord): string | null {
     : null
 }
 
+export function auditInstanceCreatorId(
+  audit: RelayAuditRecord,
+  instanceId: string
+): string | null {
+  if (
+    audit.details.operation !== "instance.create" ||
+    auditInstanceId(audit) !== instanceId
+  ) {
+    return null
+  }
+  return auditUserId(audit)
+}
+
 export function scopeAllowsAudit(
   scope: ActivityScope,
   audit: RelayAuditRecord

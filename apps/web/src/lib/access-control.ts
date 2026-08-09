@@ -33,6 +33,17 @@ export interface AccessGrant {
   role: AccessRole
 }
 
+export function isProtectedInstanceOwnerGrant(input: {
+  grantRole: string | null
+  grantUserId: string | null
+  ownerId: string | null
+}): boolean {
+  return (
+    input.grantRole === "owner" ||
+    (input.ownerId !== null && input.ownerId === input.grantUserId)
+  )
+}
+
 export async function listUserGrants(
   userId: string,
   relayId?: string

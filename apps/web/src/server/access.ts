@@ -12,15 +12,12 @@ import { Database } from "@/effect/database"
 import { runAppEffect } from "@/effect/runtime"
 import {
   hasRelayPermission,
+  isProtectedInstanceOwnerGrant,
   isPlatformAdmin,
   listUserGrants,
   requireRelayPermission,
 } from "@/lib/access-control"
-import {
-  activityPermissionForAudit,
-  auditInstanceId,
-  auditUserId,
-} from "@/lib/activity"
+import { auditInstanceCreatorId } from "@/lib/activity"
 import { databasePool } from "@/lib/database"
 import { databaseTable } from "@/lib/database-config"
 import { emailDeliveryConfig, kilnPublicUrl } from "@/lib/environment"
@@ -118,6 +115,10 @@ interface InstanceOwnerRow extends RowDataPacket {
 
 interface InstanceOwnerGrantRow extends RowDataPacket {
   user_id: string
+}
+
+interface InstanceScopedGrantRow extends InstanceOwnerGrantRow {
+  role: string
 }
 
 export const getAccessCapabilities = createServerFn({ method: "GET" }).handler(
@@ -568,13 +569,52 @@ export const removeInstanceAccessGrant = createServerFn({ method: "POST" })
         instanceId: data.instanceId,
       })
     }
-    await databasePool.execute(
-      `DELETE FROM ${databaseTable("access_grant")}
-        WHERE id = ? AND relay_id = ?
-          AND resource_type = 'instance' AND resource_id = ?`,
-      [data.id, relay.id, data.instanceId]
+    return runAppEffect(
+      "access.instance.removeGrant",
+      Effect.gen(function* () {
+        const database = yield* Database
+        return yield* database.transaction(
+          "access.instance.removeGrant",
+          (transaction) =>
+            Effect.gen(function* () {
+              const ownerRows = yield* transaction.queryRows<InstanceOwnerRow>(
+                `SELECT owner_id FROM ${databaseTable("instance")}
+                    WHERE relay_id = ? AND instance_id = ? LIMIT 1 FOR UPDATE`,
+                [relay.id, data.instanceId]
+              )
+              const grantRows =
+                yield* transaction.queryRows<InstanceScopedGrantRow>(
+                  `SELECT user_id, role FROM ${databaseTable("access_grant")}
+                    WHERE id = ? AND relay_id = ?
+                      AND resource_type = 'instance' AND resource_id = ?
+                    LIMIT 1 FOR UPDATE`,
+                  [data.id, relay.id, data.instanceId]
+                )
+              const grant = grantRows.at(0)
+              if (
+                isProtectedInstanceOwnerGrant({
+                  grantRole: grant?.role ?? null,
+                  grantUserId: grant?.user_id ?? null,
+                  ownerId: ownerRows.at(0)?.owner_id ?? null,
+                })
+              ) {
+                return yield* Effect.fail(
+                  new Error(
+                    "Transfer ownership before removing the server owner's access"
+                  )
+                )
+              }
+              yield* transaction.execute(
+                `DELETE FROM ${databaseTable("access_grant")}
+                  WHERE id = ? AND relay_id = ?
+                    AND resource_type = 'instance' AND resource_id = ?`,
+                [data.id, relay.id, data.instanceId]
+              )
+              return { removed: true }
+            })
+        )
+      })
     )
-    return { removed: true }
   })
 
 export const transferInstanceOwnership = createServerFn({ method: "POST" })
@@ -755,8 +795,8 @@ async function instanceOwnerId(
   if (persistedOwnerId) return persistedOwnerId
 
   const initialOwnerId =
-    (await instanceInitialOwnerId(relay, instanceId)) ??
-    (await instanceOwnerGrantId(relay.id, instanceId))
+    (await instanceOwnerGrantId(relay.id, instanceId)) ??
+    (await instanceInitialOwnerId(relay, instanceId))
   if (!initialOwnerId) return null
 
   await databasePool.execute(
@@ -790,13 +830,10 @@ async function instanceInitialOwnerId(
         )
         for (let index = records.length - 1; index >= 0; index -= 1) {
           const record = records[index]
-          if (
-            record &&
-            auditInstanceId(record) === instanceId &&
-            activityPermissionForAudit(record) === "instance.create"
-          ) {
-            return auditUserId(record)
-          }
+          const creatorId = record
+            ? auditInstanceCreatorId(record, instanceId)
+            : null
+          if (creatorId) return creatorId
         }
         return null
       },
