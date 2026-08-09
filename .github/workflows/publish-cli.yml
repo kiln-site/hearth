@@ -92,7 +92,7 @@ jobs:
       - name: Build npm package
         env:
           KILN_VERSION: ${{ steps.release.outputs.version }}
-        run: pnpm --filter kiln-cli build:npm
+        run: vp run -F kiln-cli build:npm
 
       - name: Verify package contents
         run: npm pack --dry-run ./apps/cli/dist/npm
