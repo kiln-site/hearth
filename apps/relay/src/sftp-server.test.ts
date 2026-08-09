@@ -5,7 +5,11 @@ import ssh2 from "ssh2"
 import { describe, expect, it, onTestFinished } from "vite-plus/test"
 
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
-import { attachSftpServer, generateSftpHostKey } from "./sftp-server.js"
+import {
+  attachSftpServer,
+  generateSftpHostKey,
+  resolveSftpAuthentication,
+} from "./sftp-server.js"
 
 const describeLinux = process.platform === "linux" ? describe : describe.skip
 const malformedLeadingZeroHostKey =
@@ -38,6 +42,19 @@ describe("Relay SFTP host key", () => {
 
     expect(attempts).toBe(2)
     expect(generated).toEqual(validHostKey)
+  })
+})
+
+describe("Relay SFTP authentication", () => {
+  it("reserves credential-free authorization for the development password", () => {
+    expect(resolveSftpAuthentication("", false)).toBeNull()
+    expect(resolveSftpAuthentication("", true)).toBeNull()
+    expect(resolveSftpAuthentication("kiln_cli_secret", false)).toEqual({
+      credential: "kiln_cli_secret",
+    })
+    expect(resolveSftpAuthentication("dev123", true)).toEqual({
+      credential: undefined,
+    })
   })
 })
 
@@ -86,6 +103,34 @@ describeLinux("Relay SFTP server", () => {
       })
     } finally {
       client.end()
+      await server.close()
+    }
+  })
+
+  it("rejects empty production passwords without contacting Hearth", async () => {
+    const dataDirectory = await temporaryDirectory()
+    await mkdir(resolve(dataDirectory, "instances"), { recursive: true })
+    const requests: Array<unknown> = []
+    const server = await attachSftpServer({
+      clientActions: allowFileAccess,
+      config: {
+        ...testConfig(dataDirectory),
+        sftpDevAuthentication: false,
+      },
+      control: {
+        requestClients: async (_operation, payload) => {
+          requests.push(payload)
+          return []
+        },
+      },
+      docker: { findInstance: async () => null },
+    })
+    try {
+      await expect(connect(server.port, "")).rejects.toThrow(
+        "All configured authentication methods failed"
+      )
+      expect(requests).toEqual([])
+    } finally {
       await server.close()
     }
   })

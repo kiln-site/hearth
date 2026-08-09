@@ -12,7 +12,7 @@ import {
   relayInstanceSchema,
   relaySnapshotSchema,
 } from "@workspace/contracts"
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
 import { z } from "zod"
 
 import { cliRelaySubject, requireCliWrite } from "@/effect/cli-access"
@@ -28,30 +28,67 @@ import {
   type PersistedRelay,
 } from "@/lib/relay-registry"
 
+const CLI_RELAY_LONG_OPERATION_TIMEOUT_MS = 180_000
+
+export const collectAvailableCliRelaySnapshotsEffect = Effect.fn(
+  "cli.api.servers.collectAvailableRelays"
+)(function* <TSnapshot>(
+  requests: ReadonlyArray<{
+    relayId: string
+    snapshot: Effect.Effect<TSnapshot, CliAccessError>
+  }>
+) {
+  const snapshots = yield* Effect.forEach(
+    requests,
+    ({ relayId, snapshot }) =>
+      snapshot.pipe(
+        Effect.map(Option.some),
+        Effect.catchTag("CliAccessError", (error) =>
+          Effect.logWarning(
+            "Skipping unavailable Relay while listing CLI servers",
+            error
+          ).pipe(
+            Effect.annotateLogs({
+              "kiln.error_code": error.code,
+              "kiln.relay_id": relayId,
+            }),
+            Effect.as(Option.none<TSnapshot>())
+          )
+        )
+      ),
+    { concurrency: 4 }
+  )
+  return snapshots.filter(Option.isSome).map((snapshot) => snapshot.value)
+})
+
 export const listCliServersEffect = Effect.fn("cli.api.servers.list")(
   function* (principal: CliPrincipal) {
     const relays = (yield* listPersistedRelaysEffect()).filter(
       (relay) => relay.enabled
     )
-    const snapshots = yield* Effect.forEach(
-      relays,
-      (relay) =>
-        relayRpcEffect(relay, "relay.snapshot", {}, principal).pipe(
+    const availableSnapshots = yield* collectAvailableCliRelaySnapshotsEffect(
+      relays.map((relay) => ({
+        relayId: relay.id,
+        snapshot: relayRpcEffect(relay, "relay.snapshot", {}, principal).pipe(
           Effect.flatMap((value) => parseRelaySnapshot(value)),
-          Effect.flatMap((snapshot) =>
-            allowedInstanceIdsEffect(
-              principal.user,
-              relay.id,
-              snapshot.instances.map((instance) => instance.id)
-            ).pipe(
-              Effect.map((allowed) => ({
-                instances: snapshot.instances.filter((instance) =>
-                  allowed.has(instance.id)
-                ),
-                relay,
-              }))
-            )
-          )
+          Effect.map((snapshot) => ({ relay, snapshot }))
+        ),
+      }))
+    )
+    const snapshots = yield* Effect.forEach(
+      availableSnapshots,
+      ({ relay, snapshot }) =>
+        allowedInstanceIdsEffect(
+          principal.user,
+          relay.id,
+          snapshot.instances.map((instance) => instance.id)
+        ).pipe(
+          Effect.map((allowed) => ({
+            instances: snapshot.instances.filter((instance) =>
+              allowed.has(instance.id)
+            ),
+            relay,
+          }))
         ),
       { concurrency: 4 }
     )
@@ -83,7 +120,7 @@ export const performCliPowerActionEffect = Effect.fn("cli.api.power")(
       "instance.action",
       { action: input.action, instanceId: input.instanceId },
       principal,
-      180_000
+      CLI_RELAY_LONG_OPERATION_TIMEOUT_MS
     )
     return {
       instance: relayInstanceSchema.parse(result),
@@ -132,6 +169,15 @@ export const getCliConsoleHistoryEffect = Effect.fn("cli.api.console.history")(
     return relayConsoleSchema.parse(result)
   }
 )
+
+export const authorizeCliConsoleStreamEffect = Effect.fn(
+  "cli.api.console.stream.authorize"
+)(function* (
+  principal: CliPrincipal,
+  input: { instanceId: string; relayId: string }
+) {
+  yield* authorizeTarget(principal, input, "instance.console.read")
+})
 
 export const getCliFileTreeEffect = Effect.fn("cli.api.files.list")(function* (
   principal: CliPrincipal,
@@ -188,7 +234,8 @@ export const writeCliFileEffect = Effect.fn("cli.api.files.write")(function* (
       instanceId: input.instanceId,
       path: input.path,
     },
-    principal
+    principal,
+    CLI_RELAY_LONG_OPERATION_TIMEOUT_MS
   )
   return relayFileContentSchema.parse(result)
 })
@@ -221,40 +268,38 @@ export const getCliSftpConnectionEffect = Effect.fn("cli.api.sftp")(function* (
   })
 })
 
-function authorizeTarget(
+const authorizeTarget = Effect.fn("cli.api.target.authorize")(function* (
   principal: CliPrincipal,
   input: { instanceId: string; relayId: string },
   permission: AccessPermission
 ) {
-  return Effect.gen(function* () {
-    const relays = yield* listPersistedRelaysEffect()
-    const relay = relays.find(
-      (candidate) => candidate.enabled && candidate.id === input.relayId
-    )
-    if (!relay) {
-      return yield* CliAccessError.make({
-        code: "not_found",
-        message: "The requested Relay was not found.",
+  const relays = yield* listPersistedRelaysEffect()
+  const relay = relays.find(
+    (candidate) => candidate.enabled && candidate.id === input.relayId
+  )
+  if (!relay) {
+    return yield* CliAccessError.make({
+      code: "not_found",
+      message: "The requested Relay was not found.",
+      retryable: false,
+    })
+  }
+  yield* requireRelayPermissionEffect({
+    instanceId: input.instanceId,
+    permission,
+    relayId: relay.id,
+    user: principal.user,
+  }).pipe(
+    Effect.catchTag("PermissionDeniedError", (cause) =>
+      CliAccessError.make({
+        code: "forbidden",
+        message: cause.message,
         retryable: false,
       })
-    }
-    yield* requireRelayPermissionEffect({
-      instanceId: input.instanceId,
-      permission,
-      relayId: relay.id,
-      user: principal.user,
-    }).pipe(
-      Effect.catchTag("PermissionDeniedError", (cause) =>
-        CliAccessError.make({
-          code: "forbidden",
-          message: cause.message,
-          retryable: false,
-        })
-      )
     )
-    return relay
-  })
-}
+  )
+  return relay
+})
 
 function relayRpcEffect(
   relay: PersistedRelay,

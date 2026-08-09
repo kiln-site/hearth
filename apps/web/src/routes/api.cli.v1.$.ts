@@ -15,6 +15,7 @@ import {
   type CliPrincipal,
 } from "@/effect/cli-access"
 import {
+  authorizeCliConsoleStreamEffect,
   getCliConsoleHistoryEffect,
   getCliFileTreeEffect,
   getCliSftpConnectionEffect,
@@ -282,7 +283,7 @@ async function streamConsole(
 ): Promise<Response> {
   const authorization = await runCliEffect(
     "cli.http.logs.authorize",
-    getCliConsoleHistoryEffect(principal, input)
+    authorizeCliConsoleStreamEffect(principal, input)
   )
   if (!authorization.ok) return authorization
 

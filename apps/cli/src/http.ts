@@ -5,11 +5,17 @@ import type { z } from "zod"
 import type { KilnSession } from "./config.js"
 import { commandError } from "./errors.js"
 
+export const CLI_LONG_OPERATION_TIMEOUT_MS = 190_000
+
+export interface CliRequestInit extends RequestInit {
+  timeoutMs?: number | null
+}
+
 export const apiJsonEffect = Effect.fn("cli.http.json")(function* <TValue>(
   session: KilnSession,
   path: string,
   schema: z.ZodType<TValue>,
-  init?: RequestInit
+  init?: CliRequestInit
 ) {
   const response = yield* apiResponseEffect(session, path, init)
   const body = yield* decodeResponseJson(response)
@@ -27,27 +33,23 @@ export const apiJsonEffect = Effect.fn("cli.http.json")(function* <TValue>(
 export const apiResponseEffect = Effect.fn("cli.http.request")(function* (
   session: KilnSession,
   path: string,
-  init?: RequestInit
+  init?: CliRequestInit
 ) {
-  return yield* requestEffect(
-    `${session.url}${path}`,
-    {
-      ...init,
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${session.token}`,
-        "Content-Type": "application/json",
-        "User-Agent": "kiln-cli/0.0.1",
-        ...init?.headers,
-      },
+  return yield* requestEffect(`${session.url}${path}`, {
+    ...init,
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${session.token}`,
+      "Content-Type": "application/json",
+      "User-Agent": "kiln-cli/0.0.1",
+      ...init?.headers,
     },
-    init?.signal ? undefined : 30_000
-  )
+  })
 })
 
 export const publicJsonEffect = Effect.fn("cli.http.publicJson")(function* <
   TValue,
->(url: string, path: string, schema: z.ZodType<TValue>, init?: RequestInit) {
+>(url: string, path: string, schema: z.ZodType<TValue>, init?: CliRequestInit) {
   const response = yield* requestEffect(`${url}${path}`, {
     ...init,
     headers: {
@@ -69,12 +71,15 @@ export const publicJsonEffect = Effect.fn("cli.http.publicJson")(function* <
   })
 })
 
-function requestEffect(url: string, init: RequestInit, timeoutMs = 30_000) {
+function requestEffect(url: string, init: CliRequestInit) {
+  const { timeoutMs = 30_000, ...requestInit } = init
   return Effect.tryPromise({
     try: () =>
       fetch(url, {
-        ...init,
-        signal: init.signal ?? AbortSignal.timeout(timeoutMs),
+        ...requestInit,
+        signal:
+          requestInit.signal ??
+          (timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs)),
       }),
     catch: (cause) =>
       commandError({

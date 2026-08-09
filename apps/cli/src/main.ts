@@ -28,7 +28,13 @@ import {
   type KilnSession,
 } from "./config.js"
 import { CliCommandError, commandError } from "./errors.js"
-import { apiJsonEffect, apiResponseEffect, publicJsonEffect } from "./http.js"
+import {
+  apiJsonEffect,
+  apiResponseEffect,
+  CLI_LONG_OPERATION_TIMEOUT_MS,
+  publicJsonEffect,
+} from "./http.js"
+import type { CliRequestInit } from "./http.js"
 import {
   reportErrorEffect,
   writeEvent,
@@ -151,7 +157,11 @@ const runCommandEffect = Effect.fn("cli.command")(function* (
       session,
       "/api/cli/v1/power",
       powerResponseSchema,
-      jsonRequest("POST", { ...target, action: parsedAction.data })
+      jsonRequest(
+        "POST",
+        { ...target, action: parsedAction.data },
+        CLI_LONG_OPERATION_TIMEOUT_MS
+      )
     )
     writeResult(result, args.output)
     return
@@ -300,7 +310,7 @@ const logsEffect = Effect.fn("cli.logs")(function* (
   const response = yield* apiResponseEffect(
     session,
     `/api/cli/v1/logs?${query}`,
-    { headers: { Accept: "application/x-ndjson" }, signal: undefined }
+    { headers: { Accept: "application/x-ndjson" }, timeoutMs: null }
   )
   if (!response.body) {
     return yield* commandError({
@@ -394,7 +404,11 @@ const filesEffect = Effect.fn("cli.files")(function* (
       session,
       "/api/cli/v1/files/content",
       relayFileContentSchema,
-      jsonRequest("PUT", { ...target, content, path })
+      jsonRequest(
+        "PUT",
+        { ...target, content, path },
+        CLI_LONG_OPERATION_TIMEOUT_MS
+      )
     )
     writeResult(result, args.output)
     return
@@ -474,8 +488,12 @@ function targetQuery(target: { instanceId: string; relayId: string }) {
   return new URLSearchParams(target)
 }
 
-function jsonRequest(method: string, body: unknown): RequestInit {
-  return { body: JSON.stringify(body), method }
+function jsonRequest(
+  method: string,
+  body: unknown,
+  timeoutMs?: number
+): CliRequestInit {
+  return { body: JSON.stringify(body), method, timeoutMs }
 }
 
 const readStdinEffect = Effect.fn("cli.stdin.read")(function* () {

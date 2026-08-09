@@ -127,10 +127,15 @@ export async function attachSftpServer(options: {
           context.reject(["password"])
           return
         }
-        const developmentCredential =
-          options.config.sftpDevAuthentication &&
-          safeEqual(context.password, DEVELOPMENT_PASSWORD)
-        const credential = developmentCredential ? undefined : context.password
+        const authentication = resolveSftpAuthentication(
+          context.password,
+          options.config.sftpDevAuthentication
+        )
+        if (!authentication) {
+          context.reject(["password"])
+          return
+        }
+        const { credential } = authentication
         forkConnection(
           sftpOperation(() =>
             authorizeUsername(
@@ -397,7 +402,10 @@ function authorizeUsername(
     sftpOperation(() =>
       control.requestClients(
         "sftp.authorization.resolve",
-        { username, ...(credential ? { credential } : {}) },
+        {
+          username,
+          ...(credential === undefined ? {} : { credential }),
+        },
         5_000
       )
     ).pipe(
@@ -1158,6 +1166,16 @@ function safeEqual(input: string, expected: string): boolean {
   inputBuffer.copy(comparable, 0, 0, expectedBuffer.length)
   const contentsMatch = timingSafeEqual(comparable, expectedBuffer)
   return inputBuffer.length === expectedBuffer.length && contentsMatch
+}
+
+export function resolveSftpAuthentication(
+  password: string,
+  developmentAuthentication: boolean
+): { credential: string | undefined } | null {
+  if (developmentAuthentication && safeEqual(password, DEVELOPMENT_PASSWORD)) {
+    return { credential: undefined }
+  }
+  return password.length === 0 ? null : { credential: password }
 }
 
 function record(value: unknown): Readonly<Record<string, unknown>> | null {
