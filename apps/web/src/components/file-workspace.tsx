@@ -187,27 +187,40 @@ async function uploadDroppedFiles(
   directory: string,
   onUploadFiles: UploadFiles
 ): Promise<void> {
-  try {
-    const files = await droppedUploadFiles(dataTransfer)
-    if (!files.length) {
-      showToast({
-        type: "error",
-        message: "Folder contains no files",
-        description: "Empty folders are not uploaded.",
-      })
-      return
-    }
-    await onUploadFiles(files, directory)
-  } catch (cause) {
-    showToast({
-      type: "error",
-      message: "Could not read dropped folder",
-      description:
-        cause instanceof Error
-          ? cause.message
-          : "The browser could not enumerate these files.",
-    })
-  }
+  await Effect.runPromise(
+    Effect.tryPromise({
+      try: () => droppedUploadFiles(dataTransfer),
+      catch: (cause) => cause,
+    }).pipe(
+      Effect.flatMap((files) => {
+        if (!files.length) {
+          return Effect.sync(() => {
+            showToast({
+              type: "error",
+              message: "Folder contains no files",
+              description: "Empty folders are not uploaded.",
+            })
+          })
+        }
+        return Effect.tryPromise({
+          try: () => onUploadFiles(files, directory),
+          catch: (cause) => cause,
+        })
+      }),
+      Effect.catch((cause) =>
+        Effect.sync(() => {
+          showToast({
+            type: "error",
+            message: "Could not read dropped folder",
+            description:
+              cause instanceof Error
+                ? cause.message
+                : "The browser could not enumerate these files.",
+          })
+        })
+      )
+    )
+  )
 }
 
 function UploadProgressDescription({
@@ -2377,30 +2390,39 @@ function useFileActions({
         duration: Number.POSITIVE_INFINITY,
       })
       setDownloadPending(true)
-      try {
-        await downloadRelayArchive({
-          instanceId: instance.id,
-          name: requestedName.endsWith(".zip")
-            ? requestedName
-            : `${requestedName}.zip`,
-          paths,
-          relayId: instance.relayId,
-        })
-        dismissToast(toastId)
-        showToast({ type: "success", message: "Download started" })
-      } catch (cause) {
-        dismissToast(toastId)
-        showToast({
-          type: "error",
-          message: "Download failed",
-          description:
-            cause instanceof Error
-              ? cause.message
-              : "The Relay could not prepare this download.",
-        })
-      } finally {
-        setDownloadPending(false)
-      }
+      await Effect.runPromise(
+        Effect.tryPromise({
+          try: () =>
+            downloadRelayArchive({
+              instanceId: instance.id,
+              name: requestedName.endsWith(".zip")
+                ? requestedName
+                : `${requestedName}.zip`,
+              paths,
+              relayId: instance.relayId,
+            }),
+          catch: (cause) => cause,
+        }).pipe(
+          Effect.match({
+            onFailure: (cause) => {
+              dismissToast(toastId)
+              showToast({
+                type: "error",
+                message: "Download failed",
+                description:
+                  cause instanceof Error
+                    ? cause.message
+                    : "The Relay could not prepare this download.",
+              })
+            },
+            onSuccess: () => {
+              dismissToast(toastId)
+              showToast({ type: "success", message: "Download started" })
+            },
+          }),
+          Effect.ensuring(Effect.sync(() => setDownloadPending(false)))
+        )
+      )
     },
     [instance.id, instance.relayId]
   )

@@ -529,13 +529,14 @@ const openUploadParent = Effect.fn("relay.files.openUploadParent")(function* (
     const child = resolve(fileDescriptorPath(parentHandle), segment)
     const existing = yield* optionalFileMetadata(child)
     if (!existing) {
-      yield* filesystemOperation("upload.createParent", async () => {
-        try {
-          await mkdir(child, { mode: 0o755 })
-        } catch (cause) {
-          if (!isAlreadyExists(cause)) throw cause
-        }
-      })
+      yield* filesystemOperation("upload.createParent", () =>
+        mkdir(child, { mode: 0o755 })
+      ).pipe(
+        Effect.catchIf(
+          (cause) => isAlreadyExists(cause.cause),
+          () => Effect.void
+        )
+      )
     }
     const metadata = yield* filesystemOperation("upload.statParent", () =>
       lstat(child)
