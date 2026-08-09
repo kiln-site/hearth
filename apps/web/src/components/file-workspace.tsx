@@ -3730,8 +3730,33 @@ function formatFileModifiedAt(modifiedAt: number): string {
   )
 }
 
-function formatFileModifiedAtTitle(modifiedAt: number): string | undefined {
-  return modifiedAt > 0 ? fileModifiedAtFormatter.format(modifiedAt) : undefined
+function FileModifiedAtTime({ modifiedAt }: { modifiedAt: number }) {
+  if (modifiedAt <= 0) {
+    return (
+      <span className="truncate pr-2 font-mono text-[10px] text-muted-foreground">
+        —
+      </span>
+    )
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <time
+          className="cursor-help truncate pr-2 font-mono text-[10px] text-muted-foreground"
+          dateTime={new Date(modifiedAt).toISOString()}
+          suppressHydrationWarning
+        >
+          {formatFileModifiedAt(modifiedAt)}
+        </time>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6}>
+        <span suppressHydrationWarning>
+          {fileModifiedAtFormatter.format(modifiedAt)}
+        </span>
+      </TooltipContent>
+    </Tooltip>
+  )
 }
 
 function directoryEntries(
@@ -3948,18 +3973,7 @@ function RootDirectoryList({
             <span className="font-mono text-[10px] text-muted-foreground">
               {formatFileSize(entry.size)}
             </span>
-            <time
-              className="truncate pr-2 font-mono text-[10px] text-muted-foreground"
-              dateTime={
-                entry.modifiedAt > 0
-                  ? new Date(entry.modifiedAt).toISOString()
-                  : undefined
-              }
-              title={formatFileModifiedAtTitle(entry.modifiedAt)}
-              suppressHydrationWarning
-            >
-              {formatFileModifiedAt(entry.modifiedAt)}
-            </time>
+            <FileModifiedAtTime modifiedAt={entry.modifiedAt} />
             <FileActionsDropdown controller={actions} paths={[entry.path]} />
           </div>
         ))}
@@ -4171,18 +4185,7 @@ function DirectoryView({
               <span className="font-mono text-[10px] text-muted-foreground">
                 {formatFileSize(entry.size)}
               </span>
-              <time
-                className="truncate pr-2 font-mono text-[10px] text-muted-foreground"
-                dateTime={
-                  entry.modifiedAt > 0
-                    ? new Date(entry.modifiedAt).toISOString()
-                    : undefined
-                }
-                title={formatFileModifiedAtTitle(entry.modifiedAt)}
-                suppressHydrationWarning
-              >
-                {formatFileModifiedAt(entry.modifiedAt)}
-              </time>
+              <FileModifiedAtTime modifiedAt={entry.modifiedAt} />
               <FileActionsDropdown controller={actions} paths={[entry.path]} />
             </div>
           ))}
