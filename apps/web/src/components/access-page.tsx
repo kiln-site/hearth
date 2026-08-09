@@ -97,7 +97,6 @@ interface AccessDirectoryRow {
   instanceId: string | null
   instanceOwner: boolean
   key: string
-  name: string
   platformAdministrator: boolean
   relayId: string
   relayName: string
@@ -465,21 +464,16 @@ const AccessDirectoryTableRow = React.memo(function AccessDirectoryTableRow({
           <span className="grid size-7 shrink-0 place-items-center rounded-md border border-border/70 bg-background/35 text-muted-foreground">
             <UserRound className="size-3.5" />
           </span>
-          <div className="min-w-0">
-            <div className="flex min-w-0 items-center gap-1.5">
-              <p className="truncate text-xs font-semibold">{row.name}</p>
-              {row.platformAdministrator ? (
-                <Badge
-                  variant="outline"
-                  className="hidden border-primary/30 bg-primary/8 font-mono text-[7px] text-primary sm:inline-flex"
-                >
-                  Platform admin
-                </Badge>
-              ) : null}
-            </div>
-            <p className="truncate font-mono text-[8px] text-muted-foreground">
-              {row.email}
-            </p>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <p className="truncate text-xs font-medium">{row.email}</p>
+            {row.platformAdministrator ? (
+              <Badge
+                variant="outline"
+                className="hidden border-primary/30 bg-primary/8 font-mono text-[7px] text-primary sm:inline-flex"
+              >
+                Platform admin
+              </Badge>
+            ) : null}
           </div>
         </div>
       </WorkspaceTableCell>
@@ -1123,8 +1117,8 @@ function accessDirectoryRows(
       : [accessOwnerDirectoryRow(owner, instances)]
   )
   return [...grantRows, ...ownerRows].sort((left, right) =>
-    `${left.name}\u0000${left.resourceName}`.localeCompare(
-      `${right.name}\u0000${right.resourceName}`
+    `${left.email}\u0000${left.resourceName}`.localeCompare(
+      `${right.email}\u0000${right.resourceName}`
     )
   )
 }
@@ -1147,7 +1141,6 @@ function accessGrantDirectoryRow(
     instanceId: grant.resourceType === "instance" ? grant.resourceId : null,
     instanceOwner: grant.instanceOwner,
     key: `grant:${grant.id}`,
-    name: grant.name,
     platformAdministrator: grant.platformAdministrator,
     relayId: grant.relayId,
     relayName: grant.relayName,
@@ -1176,7 +1169,6 @@ function accessOwnerDirectoryRow(
     instanceId: owner.instanceId,
     instanceOwner: true,
     key: `owner:${owner.relayId}:${owner.instanceId}:${owner.userId}`,
-    name: owner.name,
     platformAdministrator: owner.platformAdministrator,
     relayId: owner.relayId,
     relayName: owner.relayName,
@@ -1193,7 +1185,7 @@ function accessDirectoryRowKey(row: AccessDirectoryRow): string {
 }
 
 function accessDirectorySearchText(row: AccessDirectoryRow): string {
-  return `${row.name} ${row.email} ${row.resourceName} ${row.resourceId} ${row.resourceType} ${row.relayName} ${row.relayId} ${row.role}`
+  return `${row.email} ${row.resourceName} ${row.resourceId} ${row.resourceType} ${row.relayName} ${row.relayId} ${row.role}`
 }
 
 function showAccessAssignmentToast(
