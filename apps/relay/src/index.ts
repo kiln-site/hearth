@@ -1089,7 +1089,7 @@ async function executeControlRequest(
             instanceId,
             input
           )
-          return refreshRelayInstance(instance)
+          return relayInstanceWithStoredName(instance)
         },
         existing
       )
@@ -1193,7 +1193,7 @@ async function executeControlRequest(
                 startup.state.deletePendingPrimaryPort(instance.id)
               )
             }
-            return refreshRelayInstance(updated)
+            return relayInstanceWithStoredName(updated)
           },
           retainedInstance
         )
@@ -1324,7 +1324,7 @@ async function executeControlRequest(
                 startup.state.deletePendingPrimaryPort(instance.id)
               )
             }
-            return refreshRelayInstance(updated)
+            return relayInstanceWithStoredName(updated)
           },
           retainedInstance
         )
@@ -1544,11 +1544,9 @@ async function relayInstanceWithStoredName(instance: RelayInstance) {
 }
 
 async function refreshRelayInstance(instance: RelayInstance) {
-  const snapshot = await snapshotHub.refresh()
-  return (
-    snapshot.instances.find((candidate) => candidate.id === instance.id) ??
-    relayInstanceWithStoredName(instance)
-  )
+  const updated = await relayInstanceWithStoredName(instance)
+  await snapshotHub.refresh()
+  return updated
 }
 
 function applyStoredPendingPrimaryPorts(
@@ -1588,7 +1586,15 @@ function serializeInstanceMutation<T>(
         if (activeEntry.retainedInstance === retainedInstance) {
           delete activeEntry.retainedInstance
         }
-      })
+      }).pipe(
+        Effect.andThen(
+          retainedInstance
+            ? cleanupOperation("instance mutation snapshot", () =>
+                snapshotHub.refresh()
+              )
+            : Effect.void
+        )
+      )
     )
   )
   return Effect.runPromise(

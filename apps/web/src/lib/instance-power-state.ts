@@ -13,6 +13,12 @@ export interface PendingPowerAction {
 
 const pendingPowerActions = new Map<string, PendingPowerAction>()
 
+export function isPowerControlLocked(
+  observedState: RelayObservedState
+): boolean {
+  return observedState === "provisioning"
+}
+
 export function beginPendingPowerAction(
   relayId: string,
   instanceId: string,

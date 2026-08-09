@@ -34,7 +34,7 @@ export class RelaySnapshotHub {
 
   refresh(): Promise<RelaySnapshot> {
     const waitForSampling = this.#sampling
-      ? Fiber.join(this.#sampling)
+      ? Fiber.await(this.#sampling)
       : Effect.void
     return Effect.runPromise(
       waitForSampling.pipe(
@@ -44,7 +44,7 @@ export class RelaySnapshotHub {
             this.#last = null
           })
         ),
-        Effect.andThen(this.#sampleEffect()),
+        Effect.andThen(Effect.suspend(() => this.#sampleEffect())),
         Effect.map(({ snapshot }) => snapshot)
       )
     )

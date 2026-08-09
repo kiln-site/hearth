@@ -56,6 +56,7 @@ import { roleHasPermission } from "@/lib/permissions"
 import {
   beginPendingPowerAction,
   finishPendingPowerAction,
+  isPowerControlLocked,
   reconcilePendingPowerInstance,
   type ServerAction,
 } from "@/lib/instance-power-state"
@@ -542,16 +543,18 @@ function ServerPowerControls({
   const isRunning = instance.observedState === "running"
   const isStarting = instance.observedState === "starting"
   const isStopping = instance.observedState === "stopping"
+  const isProvisioning = isPowerControlLocked(instance.observedState)
   const powerIsOn = isRunning || isStarting
   const powerIsTransitioning =
     action === "start" ||
     action === "stop" ||
     action === "restart" ||
-    isStopping
-  const startUnavailable =
-    !relayConnected || powerIsOn || isStopping || action !== null
-  const stopUnavailable =
-    !relayConnected || !powerIsOn || isStopping || action !== null
+    isStopping ||
+    isProvisioning
+  const controlsUnavailable =
+    !relayConnected || action !== null || isProvisioning
+  const startUnavailable = controlsUnavailable || powerIsOn || isStopping
+  const stopUnavailable = controlsUnavailable || !powerIsOn || isStopping
 
   function runAction(nextAction: ServerAction) {
     setServerActionsOpen(false)
@@ -569,7 +572,7 @@ function ServerPowerControls({
             ? "hidden h-9 w-[6.5rem] justify-center gap-1.5 !border-red-500/65 !bg-red-600 px-3 text-xs !text-white shadow-none hover:!border-red-400 hover:!bg-red-500 disabled:!border-red-500/35 disabled:!bg-red-600/45 disabled:!text-white/70 md:inline-flex"
             : "hidden h-9 w-[6.5rem] justify-center gap-1.5 !border-blue-500/65 !bg-blue-600 px-3 text-xs !text-white shadow-none hover:!border-blue-400 hover:!bg-blue-500 md:inline-flex"
         }
-        disabled={!relayConnected || action !== null || isStopping}
+        disabled={controlsUnavailable || isStopping}
         onClick={() => runAction(powerIsOn ? "stop" : "start")}
       >
         {powerIsTransitioning ? (
@@ -583,9 +586,11 @@ function ServerPowerControls({
           ? "Starting"
           : action === "stop" || action === "restart" || isStopping
             ? "Stopping"
-            : powerIsOn
-              ? "Stop"
-              : "Start"}
+            : isProvisioning
+              ? "Provisioning"
+              : powerIsOn
+                ? "Stop"
+                : "Start"}
       </Button>
       <Popover
         open={serverActionsOpen}
@@ -602,7 +607,7 @@ function ServerPowerControls({
                 size="icon-lg"
                 className="bg-card shadow-none"
                 aria-label="Server actions"
-                disabled={!relayConnected || action !== null}
+                disabled={controlsUnavailable}
               >
                 <EllipsisVertical />
               </Button>
@@ -640,6 +645,7 @@ function ServerPowerControls({
                   variant="outline"
                   size="sm"
                   className="!border-red-500/65 !bg-red-600 !text-white hover:!border-red-400 hover:!bg-red-500"
+                  disabled={controlsUnavailable}
                   onClick={() => runAction("kill")}
                 >
                   <OctagonX />
@@ -670,14 +676,14 @@ function ServerPowerControls({
               />
               <PowerActionButton
                 description="Gracefully stop and start"
-                disabled={!relayConnected || !isRunning}
+                disabled={controlsUnavailable || !isRunning}
                 icon={<RotateCw className="size-3.5" />}
                 label="Restart"
                 onClick={() => runAction("restart")}
               />
               <PowerActionButton
                 description="Terminate immediately"
-                disabled={!relayConnected || !powerIsOn || isStopping}
+                disabled={controlsUnavailable || !powerIsOn || isStopping}
                 icon={<OctagonX className="size-3.5" />}
                 label="Kill"
                 tone="kill"
@@ -735,7 +741,13 @@ function InstancePowerControls({
 
   const handleAction = React.useCallback(
     async (nextAction: ServerAction) => {
-      if (!relayConnected) return
+      if (
+        !relayConnected ||
+        !observedState ||
+        isPowerControlLocked(observedState)
+      ) {
+        return
+      }
       const previousSnapshot = queryClient.getQueryData<RelayFleetSnapshot>(
         queryKeys.relay.snapshot
       )
@@ -803,6 +815,7 @@ function InstancePowerControls({
       instance.relayId,
       mutateRelayAction,
       onError,
+      observedState,
       queryClient,
       relayConnected,
     ]

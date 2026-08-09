@@ -5,11 +5,18 @@ import {
   beginPendingPowerAction,
   finishPendingPowerAction,
   initialPendingPowerAction,
+  isPowerControlLocked,
   reconcilePendingPowerInstance,
   reconcilePendingPowerState,
 } from "./instance-power-state"
 
 describe("pending instance power state", () => {
+  it("locks power actions while an instance is provisioning", () => {
+    expect(isPowerControlLocked("provisioning")).toBe(true)
+    expect(isPowerControlLocked("stopped")).toBe(false)
+    expect(isPowerControlLocked("running")).toBe(false)
+  })
+
   it("advances the registered action from its response before a stale stream", () => {
     const relayId = "relay"
     const running = relayInstanceSchema.parse({
@@ -137,12 +144,7 @@ describe("pending instance power state", () => {
       observedState: "running",
       status: "Running",
     })
-    beginPendingPowerAction(
-      relayId,
-      previous.id,
-      "restart",
-      previous.startedAt
-    )
+    beginPendingPowerAction(relayId, previous.id, "restart", previous.startedAt)
 
     try {
       expect(
