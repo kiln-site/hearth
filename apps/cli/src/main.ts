@@ -15,6 +15,7 @@ import {
   relayFileTreeSchema,
   relayConsoleCommandResultSchema,
   relayConsoleSchema,
+  relayConsoleStreamEventSchema,
 } from "@workspace/contracts"
 import { Effect, Result } from "effect"
 import { z } from "zod"
@@ -36,17 +37,17 @@ import {
 } from "./http.js"
 import type { CliRequestInit } from "./http.js"
 import {
+  formatBytes,
   reportErrorEffect,
-  writeEvent,
-  writeResult,
-  type OutputMode,
+  writeLine,
+  writeTable,
+  writeText,
 } from "./output.js"
 import { downloadSftpFileEffect, uploadSftpFileEffect } from "./sftp.js"
 import release from "../../../release.json" with { type: "json" }
 
 const VERSION = process.env.KILN_VERSION?.trim() || release.releaseLine
 
-const genericObjectSchema = z.record(z.string(), z.unknown())
 const powerResponseSchema = z.object({
   instance: z
     .object({ id: z.string(), name: z.string(), state: z.string() })
@@ -60,10 +61,6 @@ const whoamiSchema = z.object({
   }),
   user: z.object({ email: z.email(), id: z.string(), name: z.string() }),
 })
-
-const fallbackOutput: OutputMode = process.argv.includes("human")
-  ? "human"
-  : "json"
 
 const program = Effect.try({
   try: () => parseArguments(process.argv.slice(2)),
@@ -86,8 +83,7 @@ const program = Effect.try({
             cause,
             code: "unexpected_error",
             message: "The CLI stopped unexpectedly.",
-          }),
-      fallbackOutput
+          })
     )
   ),
   Effect.withSpan("kiln.cli")
@@ -97,11 +93,11 @@ const runCommandEffect = Effect.fn("cli.command")(function* (
   args: CliArguments
 ) {
   if (args.version) {
-    writeResult({ name: "kiln", version: VERSION }, args.output)
+    writeLine(`kiln ${VERSION}`)
     return
   }
   if (args.help || args.command.length === 0 || args.command[0] === "help") {
-    writeHelp(args.output)
+    writeHelp()
     return
   }
 
@@ -122,16 +118,11 @@ const runCommandEffect = Effect.fn("cli.command")(function* (
       "/api/cli/v1/whoami",
       whoamiSchema
     )
-    writeResult(result, args.output)
-    return
-  }
-  if (group === "capabilities") {
-    const result = yield* apiJsonEffect(
-      session,
-      "/api/cli/v1/capabilities",
-      genericObjectSchema
-    )
-    writeResult(result, args.output)
+    writeLine(`Name: ${result.user.name}`)
+    writeLine(`Email: ${result.user.email}`)
+    writeLine(`Access: ${result.credential.mode.replace("_", " ")}`)
+    writeLine(`Profile: ${session.profile}`)
+    writeLine(`Hearth: ${session.url}`)
     return
   }
   if (group === "servers" && action === "list") {
@@ -140,7 +131,19 @@ const runCommandEffect = Effect.fn("cli.command")(function* (
       "/api/cli/v1/servers",
       cliServersResponseSchema
     )
-    writeResult(result, args.output)
+    if (result.servers.length === 0) {
+      writeLine("No servers found.")
+    } else {
+      writeTable(
+        ["NAME", "STATE", "RELAY", "ID"],
+        result.servers.map((server) => [
+          server.name,
+          server.state,
+          server.relayName,
+          server.id,
+        ])
+      )
+    }
     return
   }
   if (group === "server" && action === "power") {
@@ -164,7 +167,7 @@ const runCommandEffect = Effect.fn("cli.command")(function* (
         CLI_LONG_OPERATION_TIMEOUT_MS
       )
     )
-    writeResult(result, args.output)
+    writeLine(`${result.instance.name} is ${result.instance.state}.`)
     return
   }
   if (group === "server" && action === "console") {
@@ -174,13 +177,13 @@ const runCommandEffect = Effect.fn("cli.command")(function* (
       ? commandParts.join(" ")
       : (yield* readStdinEffect()).trim()
     if (!command) return yield* invalidUsage("A console command is required.")
-    const result = yield* apiJsonEffect(
+    yield* apiJsonEffect(
       session,
       "/api/cli/v1/console",
       relayConsoleCommandResultSchema,
       jsonRequest("POST", { ...target, command })
     )
-    writeResult(result, args.output)
+    writeLine("Command sent.")
     return
   }
   if (group === "server" && action === "logs") {
@@ -189,7 +192,7 @@ const runCommandEffect = Effect.fn("cli.command")(function* (
     return
   }
   if (group === "files") {
-    yield* filesEffect(args, session, action, rest)
+    yield* filesEffect(session, action, rest)
     return
   }
   return yield* invalidUsage(`Unknown command: ${args.command.join(" ")}`)
@@ -219,15 +222,9 @@ const loginEffect = Effect.fn("cli.login")(function* (
     cliDeviceCodeResponseSchema,
     jsonRequest("POST", { name })
   )
-  writeEvent(
-    {
-      type: "authorization_required",
-      expiresAt: device.expiresAt,
-      userCode: device.userCode,
-      verificationUri: device.verificationUriComplete,
-    },
-    args.output
-  )
+  writeLine("Complete sign-in in your browser.")
+  writeLine(`URL: ${device.verificationUriComplete}`)
+  writeLine(`Code: ${device.userCode}`)
   if (!args.noOpen && process.stdin.isTTY && process.stdout.isTTY) {
     yield* openBrowserEffect(device.verificationUriComplete).pipe(
       Effect.catch(() => Effect.void)
@@ -239,15 +236,7 @@ const loginEffect = Effect.fn("cli.login")(function* (
     token: token.accessToken,
     url,
   })
-  writeEvent(
-    {
-      type: "authenticated",
-      credential: token.credential,
-      profile,
-      url,
-    },
-    args.output
-  )
+  writeLine(`Logged in to ${url} with profile "${profile}".`)
 })
 
 const pollForTokenEffect = Effect.fn("cli.login.poll")(function* (
@@ -286,7 +275,11 @@ const logoutEffect = Effect.fn("cli.logout")(function* (args: CliArguments) {
     ).pipe(Effect.catch(() => Effect.void))
   }
   const result = yield* removeSessionEffect(args.profile)
-  writeResult(result, args.output)
+  writeLine(
+    result.removed
+      ? `Logged out of profile "${result.profile}".`
+      : `Profile "${result.profile}" was not logged in.`
+  )
 })
 
 const logsEffect = Effect.fn("cli.logs")(function* (
@@ -303,9 +296,7 @@ const logsEffect = Effect.fn("cli.logs")(function* (
       `/api/cli/v1/logs?${query}`,
       relayConsoleSchema
     )
-    if (args.output === "human") {
-      for (const line of result.lines) process.stdout.write(`${line.text}\n`)
-    } else writeResult(result, args.output)
+    for (const line of result.lines) writeLine(line.text)
     return
   }
   const response = yield* apiResponseEffect(
@@ -338,24 +329,17 @@ const logsEffect = Effect.fn("cli.logs")(function* (
     buffered = records.pop() ?? ""
     for (const record of records) {
       if (!record) continue
-      if (args.output === "human") {
-        const parsed = z
-          .object({
-            type: z.string(),
-            line: z.object({ text: z.string() }).optional(),
-          })
-          .safeParse(JSON.parse(record))
-        if (parsed.success && parsed.data.line) {
-          process.stdout.write(`${parsed.data.line.text}\n`)
-        }
-      } else process.stdout.write(`${record}\n`)
+      const event = yield* parseConsoleEventEffect(record)
+      if (event.type === "line") writeLine(event.line.text)
+      else if (event.type === "history" || event.type === "reset") {
+        for (const line of event.lines) writeLine(line.text)
+      }
     }
     if (chunk.done) break
   }
 })
 
 const filesEffect = Effect.fn("cli.files")(function* (
-  args: CliArguments,
   session: KilnSession,
   action: string | undefined,
   rest: Array<string>
@@ -369,7 +353,23 @@ const filesEffect = Effect.fn("cli.files")(function* (
       `/api/cli/v1/files/tree?${query}`,
       relayFileTreeSchema
     )
-    writeResult(result, args.output)
+    if (result.paths.length === 0) {
+      writeLine("No files found.")
+    } else {
+      writeTable(
+        ["PATH", "SIZE"],
+        result.paths.map((path) => [
+          path,
+          result.sizes[path] === undefined
+            ? "-"
+            : formatBytes(result.sizes[path]),
+        ])
+      )
+      if (result.truncated) {
+        writeLine()
+        writeLine(`Showing ${result.paths.length} of ${result.total} entries.`)
+      }
+    }
     return
   }
   if (action === "read") {
@@ -381,8 +381,7 @@ const filesEffect = Effect.fn("cli.files")(function* (
       `/api/cli/v1/files/content?${query}`,
       relayFileContentSchema
     )
-    if (args.raw) process.stdout.write(result.content)
-    else writeResult(result, args.output)
+    writeText(result.content)
     return
   }
   if (action === "write") {
@@ -411,7 +410,7 @@ const filesEffect = Effect.fn("cli.files")(function* (
         CLI_LONG_OPERATION_TIMEOUT_MS
       )
     )
-    writeResult(result, args.output)
+    writeLine(`Wrote ${result.path} (${formatBytes(result.decodedSize)}).`)
     return
   }
   if (action === "download" || action === "upload") {
@@ -424,7 +423,9 @@ const filesEffect = Effect.fn("cli.files")(function* (
         remotePath,
         session,
       })
-      writeResult(result, args.output)
+      writeLine(
+        `Downloaded ${result.remotePath} to ${result.localPath} (${formatBytes(result.bytes)}).`
+      )
       return
     }
     const localPath = rest[1]
@@ -436,7 +437,9 @@ const filesEffect = Effect.fn("cli.files")(function* (
       remotePath: rest[2] || basename(localPath),
       session,
     })
-    writeResult(result, args.output)
+    writeLine(
+      `Uploaded ${result.localPath} to ${result.remotePath} (${formatBytes(result.bytes)}).`
+    )
     return
   }
   return yield* invalidUsage(
@@ -528,6 +531,21 @@ const readStdinEffect = Effect.fn("cli.stdin.read")(function* () {
   })
 })
 
+const parseConsoleEventEffect = Effect.fn("cli.logs.parseEvent")(function* (
+  record: string
+) {
+  const event = yield* Effect.try({
+    try: () => relayConsoleStreamEventSchema.parse(JSON.parse(record)),
+    catch: (cause) =>
+      commandError({
+        cause,
+        code: "invalid_response",
+        message: "Hearth returned an invalid log stream event.",
+      }),
+  })
+  return event
+})
+
 function openBrowserEffect(url: string) {
   return Effect.try({
     try: () => {
@@ -562,52 +580,49 @@ function invalidUsage(message: string) {
   })
 }
 
-function writeHelp(output: OutputMode): void {
-  const help = {
-    agentFirst: true,
-    commands: [
-      "kiln login [url] [--name name] [--no-open]",
-      "kiln logout",
-      "kiln whoami",
-      "kiln capabilities",
-      "kiln servers list",
-      "kiln server power <server> <start|stop|restart|kill>",
-      "kiln server logs <server> [--follow] [--limit n]",
-      "kiln server console <server> [command]",
-      "kiln files list <server> [path]",
-      "kiln files read <server> <remote> [--raw]",
-      "kiln files write <server> <remote> [local|-]",
-      "kiln files download <server> <remote> [local]",
-      "kiln files upload <server> <local> [remote]",
-    ],
-    environment: ["KILN_URL", "KILN_TOKEN", "KILN_CONFIG", "KILN_OUTPUT"],
-    output: {
-      default: "json",
-      follow: "ndjson",
-      human: "--output human",
-    },
-  }
-  if (output === "json") writeResult(help, output)
-  else {
-    process.stdout.write(
-      `Kiln CLI ${VERSION}\n\n${help.commands.join("\n")}\n\nJSON is the default output. Use --output human for readable output.\n`
-    )
-  }
+function writeHelp(): void {
+  writeText(`Kiln CLI ${VERSION}
+
+Manage Kiln and self-hosted Hearth servers.
+
+Usage:
+  kiln <command> [options]
+
+Commands:
+  login [url]                              Sign in to Kiln or Hearth
+  logout                                  Sign out of the active profile
+  whoami                                  Show the current account
+  servers list                            List available servers
+  server power <server> <action>          Start, stop, restart, or kill a server
+  server logs <server>                    Show server logs
+  server console <server> [command]       Send a console command
+  files list <server> [path]              List files
+  files read <server> <remote>            Print a file
+  files write <server> <remote> [local|-] Write a file
+  files download <server> <remote> [local] Download a file
+  files upload <server> <local> [remote]  Upload a file
+
+Options:
+  -f, --follow        Follow server logs
+  -h, --help          Show help
+      --limit <n>     Limit log history (1-10000)
+      --name <name>   Name this CLI credential
+      --no-open       Do not open a browser during login
+      --profile <id>  Use a named profile
+      --token <token> Use a token without saving it
+      --url <url>     Use a specific Kiln or Hearth URL
+  -v, --version       Show the CLI version
+
+Environment:
+  KILN_URL, KILN_TOKEN, KILN_CONFIG
+`)
 }
 
 Effect.runFork(
   program.pipe(
     Effect.catchCause(() =>
       Effect.sync(() => {
-        process.stderr.write(
-          `${JSON.stringify({
-            error: {
-              code: "unexpected_error",
-              message: "The CLI stopped unexpectedly.",
-              retryable: false,
-            },
-          })}\n`
-        )
+        process.stderr.write("Error: The CLI stopped unexpectedly.\n")
         process.exitCode = 1
       })
     )

@@ -117,7 +117,7 @@ function publishedManifest() {
     name: "kiln-cli",
     version,
     description:
-      "Agent-first command-line access to Kiln and self-hosted Hearth instances.",
+      "Command-line access to Kiln and self-hosted Hearth instances.",
     type: "module",
     bin: { kiln: "kiln.mjs" },
     engines: { node: ">=20" },
@@ -129,7 +129,7 @@ function publishedManifest() {
     homepage: "https://kiln.site",
     bugs: "https://github.com/kiln-site/hearth/issues",
     license: "SEE LICENSE IN LICENSE",
-    keywords: ["kiln", "hearth", "server", "agent", "cli"],
+    keywords: ["kiln", "hearth", "server", "cli"],
     publishConfig: { access: "public" },
   }
 }

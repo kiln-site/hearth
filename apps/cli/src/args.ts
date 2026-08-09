@@ -1,7 +1,6 @@
 import { z } from "zod"
 
 import { commandError } from "./errors.js"
-import type { OutputMode } from "./output.js"
 
 export interface CliArguments {
   command: Array<string>
@@ -10,9 +9,7 @@ export interface CliArguments {
   limit: number
   name?: string
   noOpen: boolean
-  output: OutputMode
   profile?: string
-  raw: boolean
   token?: string
   url?: string
   version: boolean
@@ -25,9 +22,7 @@ export function parseArguments(argv: Array<string>): CliArguments {
   let limit = 2_000
   let name: string | undefined
   let noOpen = false
-  let output = outputMode(process.env.KILN_OUTPUT)
   let profile: string | undefined
-  let raw = false
   let token: string | undefined
   let url: string | undefined
   let version = false
@@ -52,8 +47,6 @@ export function parseArguments(argv: Array<string>): CliArguments {
     if (flag === "--follow" || flag === "-f") follow = true
     else if (flag === "--help" || flag === "-h") help = true
     else if (flag === "--no-open") noOpen = true
-    else if (flag === "--raw") raw = true
-    else if (flag === "--json") output = "json"
     else if (flag === "--version" || flag === "-v") version = true
     else if (flag === "--limit") {
       const parsed = z.coerce
@@ -71,7 +64,6 @@ export function parseArguments(argv: Array<string>): CliArguments {
       }
       limit = parsed.data
     } else if (flag === "--name") name = value()
-    else if (flag === "--output") output = requiredOutputMode(value())
     else if (flag === "--profile") profile = value()
     else if (flag === "--token") token = value()
     else if (flag === "--url") url = value()
@@ -90,24 +82,9 @@ export function parseArguments(argv: Array<string>): CliArguments {
     limit,
     ...(name ? { name } : {}),
     noOpen,
-    output,
     ...(profile ? { profile } : {}),
-    raw,
     ...(token ? { token } : {}),
     ...(url ? { url } : {}),
     version,
   }
-}
-
-function outputMode(value: string | undefined): OutputMode {
-  return value === "human" ? "human" : "json"
-}
-
-function requiredOutputMode(value: string): OutputMode {
-  if (value === "human" || value === "json") return value
-  throw commandError({
-    code: "invalid_arguments",
-    exitCode: 2,
-    message: "--output must be json or human.",
-  })
 }

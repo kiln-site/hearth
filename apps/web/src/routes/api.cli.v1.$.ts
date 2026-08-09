@@ -55,25 +55,6 @@ export const Route = createFileRoute("/api/cli/v1/$")({
             },
           })
         }
-        if (endpoint === "capabilities") {
-          return cliJsonResponse({
-            apiVersion: "v1",
-            commands: [
-              "servers.list",
-              "server.power",
-              "server.logs",
-              "server.console",
-              "files.list",
-              "files.read",
-              "files.write",
-              "files.download",
-              "files.upload",
-            ],
-            mode: principal.mode,
-            output: "json",
-            streaming: "ndjson",
-          })
-        }
         if (endpoint === "servers") {
           return runCliEffect(
             "cli.http.servers",

@@ -3,17 +3,15 @@ import { describe, expect, it } from "vite-plus/test"
 import { parseArguments } from "./args.js"
 
 describe("CLI arguments", () => {
-  it("defaults to deterministic JSON output", () => {
+  it("parses a command with ordinary defaults", () => {
     expect(parseArguments(["servers", "list"])).toMatchObject({
       command: ["servers", "list"],
       follow: false,
       limit: 2_000,
-      output: "json",
-      raw: false,
     })
   })
 
-  it("supports agent-oriented flags in any position", () => {
+  it("supports command flags in any position", () => {
     expect(
       parseArguments([
         "--profile=automation",
@@ -28,7 +26,6 @@ describe("CLI arguments", () => {
       command: ["server", "logs", "relay:instance"],
       follow: true,
       limit: 500,
-      output: "json",
       profile: "automation",
     })
   })
@@ -37,6 +34,18 @@ describe("CLI arguments", () => {
     expect(() => parseArguments(["--unknown"])).toThrow("Unknown option")
     expect(() => parseArguments(["--limit", "10001"])).toThrow(
       "--limit must be"
+    )
+  })
+
+  it("rejects removed output mode flags", () => {
+    expect(() => parseArguments(["servers", "list", "--json"])).toThrow(
+      "Unknown option: --json"
+    )
+    expect(() => parseArguments(["--output", "human"])).toThrow(
+      "Unknown option: --output"
+    )
+    expect(() => parseArguments(["files", "read", "server", "--raw"])).toThrow(
+      "Unknown option: --raw"
     )
   })
 })
