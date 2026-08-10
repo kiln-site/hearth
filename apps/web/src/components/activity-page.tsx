@@ -68,8 +68,30 @@ export interface ActivityFilters {
 }
 
 interface ActivityPageProps {
-  filters: ActivityFilters
+  filterStore: ActivityFiltersStore
   onFiltersChange: (change: Partial<ActivityFilters>) => void
+}
+
+export type ActivityFiltersStore = ReturnType<typeof createActivityFiltersStore>
+
+export function createActivityFiltersStore(initialFilters: ActivityFilters) {
+  let filters = initialFilters
+  const listeners = new Set<() => void>()
+
+  return {
+    getSnapshot: () => filters,
+    setFilters: (nextFilters: ActivityFilters) => {
+      if (filters === nextFilters) return
+      filters = nextFilters
+      for (const listener of listeners) listener()
+    },
+    subscribe: (listener: () => void) => {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
+  }
 }
 
 const typeDetails: Record<
@@ -123,9 +145,28 @@ const minimumActivitySyncFeedbackMs = 500
 const activityTableBottomPadding = 12
 
 export const ActivityPage = React.memo(function ActivityPage({
-  filters,
+  filterStore,
   onFiltersChange,
 }: ActivityPageProps) {
+  return (
+    <div className="mx-auto flex h-full min-h-[34rem] w-full max-w-[90rem] flex-col px-3 pt-3 pb-3 sm:px-5 sm:pt-5 sm:pb-5">
+      <ActivityPageContent
+        filterStore={filterStore}
+        onFiltersChange={onFiltersChange}
+      />
+    </div>
+  )
+})
+
+const ActivityPageContent = React.memo(function ActivityPageContent({
+  filterStore,
+  onFiltersChange,
+}: ActivityPageProps) {
+  const filters = React.useSyncExternalStore(
+    filterStore.subscribe,
+    filterStore.getSnapshot,
+    filterStore.getSnapshot
+  )
   const { data } = useSuspenseQuery(
     activityQueryOptions(filters.from, filters.to)
   )
@@ -147,7 +188,7 @@ export const ActivityPage = React.memo(function ActivityPage({
   ].filter(Boolean).length
 
   return (
-    <div className="mx-auto flex h-full min-h-[34rem] w-full max-w-[90rem] flex-col px-3 pt-3 pb-3 sm:px-5 sm:pt-5 sm:pb-5">
+    <>
       <ActivityServerFilter
         data={data}
         filters={filters}
@@ -158,6 +199,7 @@ export const ActivityPage = React.memo(function ActivityPage({
         <ActivityFiltersToolbar
           actors={actors}
           data={data}
+          filterStore={filterStore}
           filters={filters}
           activeFilterCount={activeFilterCount}
           onFiltersChange={onFiltersChange}
@@ -166,27 +208,31 @@ export const ActivityPage = React.memo(function ActivityPage({
         <ActivityStatus data={data} />
         <ActivityResults entries={entries} filtered={activeFilterCount > 0} />
       </section>
-    </div>
+    </>
   )
 })
+
+interface ActivityFiltersToolbarProps {
+  activeFilterCount: number
+  actors: Array<ActivityEntry["actor"]>
+  data: ActivityData
+  filterStore: ActivityFiltersStore
+  filters: ActivityFilters
+  onFiltersChange: (change: Partial<ActivityFilters>) => void
+}
 
 const ActivityFiltersToolbar = React.memo(function ActivityFiltersToolbar({
   activeFilterCount,
   actors,
   data,
+  filterStore,
   filters,
   onFiltersChange,
-}: {
-  activeFilterCount: number
-  actors: Array<ActivityEntry["actor"]>
-  data: ActivityData
-  filters: ActivityFilters
-  onFiltersChange: (change: Partial<ActivityFilters>) => void
-}) {
+}: ActivityFiltersToolbarProps) {
   return (
     <div className="border-b bg-background/15 p-3">
       <div className="flex flex-wrap items-center gap-2">
-        <ActivitySyncButton from={filters.from} to={filters.to} />
+        <ActivitySyncButtonController filterStore={filterStore} />
         <ActivitySearch
           key={filters.q ?? ""}
           initialValue={filters.q ?? ""}
@@ -269,10 +315,9 @@ const ActivityFiltersToolbar = React.memo(function ActivityFiltersToolbar({
           </ActivitySelect>
         ) : null}
 
-        <ActivityDateRange
-          from={filters.from}
-          to={filters.to}
-          onChange={(range) => onFiltersChange(range)}
+        <ActivityDateRangeController
+          filterStore={filterStore}
+          onChange={onFiltersChange}
         />
 
         {activeFilterCount > 0 ? (
@@ -300,17 +345,19 @@ const ActivityFiltersToolbar = React.memo(function ActivityFiltersToolbar({
       </div>
     </div>
   )
-})
+}, areActivityFiltersToolbarPropsEqual)
+
+interface ActivityServerFilterProps {
+  data: ActivityData
+  filters: ActivityFilters
+  onFiltersChange: (change: Partial<ActivityFilters>) => void
+}
 
 const ActivityServerFilter = React.memo(function ActivityServerFilter({
   data,
   filters,
   onFiltersChange,
-}: {
-  data: ActivityData
-  filters: ActivityFilters
-  onFiltersChange: (change: Partial<ActivityFilters>) => void
-}) {
+}: ActivityServerFilterProps) {
   const relayNameById = React.useMemo(
     () => new Map(data.relays.map((relay) => [relay.id, relay.name])),
     [data.relays]
@@ -405,7 +452,31 @@ const ActivityServerFilter = React.memo(function ActivityServerFilter({
       </Popover>
     </div>
   )
-})
+}, areActivityServerFilterPropsEqual)
+
+const ActivitySyncButtonController = React.memo(
+  function ActivitySyncButtonController({
+    filterStore,
+  }: {
+    filterStore: ActivityFiltersStore
+  }) {
+    const { from, to } = useActivityDateFilters(filterStore)
+    return <ActivitySyncButton from={from} to={to} />
+  }
+)
+
+const ActivityDateRangeController = React.memo(
+  function ActivityDateRangeController({
+    filterStore,
+    onChange,
+  }: {
+    filterStore: ActivityFiltersStore
+    onChange: (change: Partial<ActivityFilters>) => void
+  }) {
+    const { from, to } = useActivityDateFilters(filterStore)
+    return <ActivityDateRange from={from} to={to} onChange={onChange} />
+  }
+)
 
 const ActivitySyncButton = React.memo(function ActivitySyncButton({
   from,
@@ -577,37 +648,24 @@ const ActivityDateRange = React.memo(function ActivityDateRange({
   onChange: (range: Pick<ActivityFilters, "from" | "to">) => void
 }) {
   const [open, setOpen] = React.useState(false)
-  const [range, setRange] = React.useState<ActivityDateRangeValue>(() =>
-    selectedDateRange(from, to)
-  )
-  const [activeBoundary, setActiveBoundary] =
-    React.useState<ActivityDateBoundary>("from")
   const maximumDate = React.useMemo(() => {
     const date = new Date()
     date.setHours(23, 59, 59, 999)
     return date
   }, [])
-  const maximumWeekStart = React.useMemo(
-    () => startOfLocalWeek(startOfLocalMonth(maximumDate)),
-    [maximumDate]
-  )
-  const [visibleWeekStart, setVisibleWeekStart] = React.useState(() =>
-    dateRangeDisplayWeek(selectedDateRange(from, to), maximumDate)
+  const [store] = React.useState(() =>
+    createActivityDatePickerStore(
+      selectedDateRange(from, to),
+      maximumDate,
+      onChange
+    )
   )
   const calendarElement = React.useRef<HTMLDivElement>(null)
   const weekWheel = React.useRef<{ delta: number; resetTimer?: number }>({
     delta: 0,
   })
 
-  const shiftWeeks = React.useCallback(
-    (offset: number) => {
-      setVisibleWeekStart((current) => {
-        const next = addLocalDays(current, offset * 7)
-        return next > maximumWeekStart ? maximumWeekStart : next
-      })
-    },
-    [maximumWeekStart]
-  )
+  React.useLayoutEffect(() => store.setOnChange(onChange), [onChange, store])
 
   const handleCalendarWheel = React.useCallback(
     (event: WheelEvent) => {
@@ -626,10 +684,10 @@ const ActivityDateRange = React.memo(function ActivityDateRange({
       wheel.delta += event.deltaY * multiplier
       if (Math.abs(wheel.delta) < 8) return
 
-      shiftWeeks(wheel.delta > 0 ? 1 : -1)
+      store.shiftWeeks(wheel.delta > 0 ? 1 : -1)
       wheel.delta = 0
     },
-    [shiftWeeks]
+    [store]
   )
 
   const setCalendarRef = React.useCallback(
@@ -641,22 +699,6 @@ const ActivityDateRange = React.memo(function ActivityDateRange({
       })
     },
     [handleCalendarWheel]
-  )
-
-  const shiftMonths = React.useCallback(
-    (offset: number) => {
-      setVisibleWeekStart((current) => {
-        const visibleDays = localCalendarDays(current, 42)
-        const month = mostVisibleMonth(visibleDays)
-        const nextMonth = new Date(
-          month.getFullYear(),
-          month.getMonth() + offset
-        )
-        const next = startOfLocalWeek(nextMonth)
-        return next > maximumWeekStart ? maximumWeekStart : next
-      })
-    },
-    [maximumWeekStart]
   )
 
   React.useEffect(() => {
@@ -671,73 +713,12 @@ const ActivityDateRange = React.memo(function ActivityDateRange({
   const updateOpen = React.useCallback(
     (nextOpen: boolean) => {
       if (nextOpen) {
-        const nextRange = selectedDateRange(from, to)
-        setRange(nextRange)
-        setActiveBoundary("from")
-        setVisibleWeekStart(dateRangeDisplayWeek(nextRange, maximumDate))
+        store.open(selectedDateRange(from, to))
       }
       setOpen(nextOpen)
     },
-    [from, maximumDate, to]
+    [from, store, to]
   )
-
-  const commitRange = React.useCallback(
-    (nextRange: ActivityDateRangeValue) => {
-      setRange(nextRange)
-      if (nextRange?.from && nextRange.to) {
-        onChange(activityLocalRangeToUtc(nextRange.from, nextRange.to))
-      }
-    },
-    [onChange]
-  )
-
-  const selectDay = React.useCallback(
-    (date: Date) => {
-      if (activeBoundary === "from") {
-        if (!range?.to) {
-          setRange({ from: date })
-          setActiveBoundary("to")
-          return
-        }
-        if (isLocalDayAfter(date, range.to)) {
-          commitRange({ from: range.to, to: date })
-          setActiveBoundary("to")
-          return
-        }
-        commitRange({ from: date, to: range.to })
-        return
-      }
-
-      if (!range?.from) {
-        setRange({ from: undefined, to: date })
-        setActiveBoundary("from")
-        return
-      }
-      if (isLocalDayBefore(date, range.from)) {
-        commitRange({ from: date, to: range.from })
-        setActiveBoundary("from")
-        return
-      }
-      commitRange({ from: range.from, to: date })
-    },
-    [activeBoundary, commitRange, range]
-  )
-
-  const selectRecentRange = React.useCallback(
-    (days: number) => {
-      const nextRange = recentRange(days)
-      commitRange(nextRange)
-      setVisibleWeekStart(dateRangeDisplayWeek(nextRange, maximumDate))
-    },
-    [commitRange, maximumDate]
-  )
-
-  const reset = React.useCallback(() => {
-    setRange(undefined)
-    setActiveBoundary("from")
-    setVisibleWeekStart(dateRangeDisplayWeek(undefined, maximumDate))
-    onChange({ from: undefined, to: undefined })
-  }, [maximumDate, onChange])
 
   return (
     <Popover open={open} onOpenChange={updateOpen}>
@@ -759,78 +740,99 @@ const ActivityDateRange = React.memo(function ActivityDateRange({
         sideOffset={6}
         className="w-[17rem] max-w-[calc(100vw-1.5rem)] overflow-hidden p-0"
       >
+        <ActivityDatePickerContent
+          calendarRef={setCalendarRef}
+          maximumDate={maximumDate}
+          store={store}
+        />
+      </PopoverContent>
+    </Popover>
+  )
+})
+
+type ActivityDatePickerStore = ReturnType<typeof createActivityDatePickerStore>
+
+const activityDaySelectedStart = 1
+const activityDaySelectedEnd = 2
+const activityDaySelectedMiddle = 4
+const activityDateBoundaries: ReadonlyArray<ActivityDateBoundary> = [
+  "from",
+  "to",
+]
+
+const ActivityDatePickerContent = React.memo(
+  function ActivityDatePickerContent({
+    calendarRef,
+    maximumDate,
+    store,
+  }: {
+    calendarRef: React.RefCallback<HTMLDivElement>
+    maximumDate: Date
+    store: ActivityDatePickerStore
+  }) {
+    return (
+      <>
         <div className="grid grid-cols-2 border-b bg-background/20">
-          <ActivityDateBoundaryButton
-            boundary="from"
-            active={activeBoundary === "from"}
-            date={range?.from}
-            onSelect={setActiveBoundary}
-          />
-          <ActivityDateBoundaryButton
-            boundary="to"
-            active={activeBoundary === "to"}
-            date={range?.to}
-            onSelect={setActiveBoundary}
-          />
+          <ActivityDateBoundaryButton boundary="from" store={store} />
+          <ActivityDateBoundaryButton boundary="to" store={store} />
         </div>
 
         <ActivityWeekCalendar
-          calendarRef={setCalendarRef}
+          calendarRef={calendarRef}
           maximumDate={maximumDate}
-          range={range}
-          visibleWeekStart={visibleWeekStart}
-          onSelectDay={selectDay}
-          onShiftMonths={shiftMonths}
+          store={store}
         />
 
         <div className="flex items-center gap-1.5 border-t bg-background/30 p-2">
           {[7, 30, 90].map((days) => (
-            <Button
-              key={days}
-              type="button"
-              variant="outline"
-              size="xs"
-              aria-pressed={dateRangeMatchesRecent(range, days)}
-              className="font-mono text-[9px] tracking-[0.04em] aria-pressed:border-primary/30 aria-pressed:bg-primary/10 aria-pressed:text-primary"
-              onClick={() => selectRecentRange(days)}
-            >
-              {days} days
-            </Button>
+            <ActivityDatePresetButton days={days} key={days} store={store} />
           ))}
           <Button
             type="button"
             variant="ghost"
             size="xs"
             className="ml-auto text-muted-foreground"
-            onClick={reset}
+            onClick={store.reset}
           >
             Reset
           </Button>
         </div>
-      </PopoverContent>
-    </Popover>
-  )
-})
+      </>
+    )
+  }
+)
 
 const ActivityDateBoundaryButton = React.memo(
   function ActivityDateBoundaryButton({
-    active,
     boundary,
-    date,
-    onSelect,
+    store,
   }: {
-    active: boolean
     boundary: ActivityDateBoundary
-    date?: Date
-    onSelect: (boundary: ActivityDateBoundary) => void
+    store: ActivityDatePickerStore
   }) {
+    const subscribe = React.useCallback(
+      (listener: () => void) => store.subscribeBoundary(boundary, listener),
+      [boundary, store]
+    )
+    const getSnapshot = React.useCallback(
+      () => store.getBoundarySnapshot(boundary),
+      [boundary, store]
+    )
+    const snapshot = React.useSyncExternalStore(
+      subscribe,
+      getSnapshot,
+      getSnapshot
+    )
+    const active = snapshot.startsWith("1:")
+    const date = store.getBoundaryDate(boundary)
     const label = boundary === "from" ? "Start" : "End"
+
     return (
       <button
         type="button"
         aria-pressed={active}
         className="relative min-w-0 border-l border-border/65 px-3 py-2.5 text-left first:border-l-0 hover:bg-accent/35"
-        onClick={() => onSelect(boundary)}
+        onClick={() => store.setBoundary(boundary)}
       >
         <span className="block font-mono text-[8px] tracking-[0.08em] text-muted-foreground uppercase">
           {label}
@@ -850,28 +852,66 @@ const ActivityDateBoundaryButton = React.memo(
   }
 )
 
+const ActivityDatePresetButton = React.memo(function ActivityDatePresetButton({
+  days,
+  store,
+}: {
+  days: number
+  store: ActivityDatePickerStore
+}) {
+  const subscribe = React.useCallback(
+    (listener: () => void) => store.subscribePreset(days, listener),
+    [days, store]
+  )
+  const getSnapshot = React.useCallback(
+    () => store.getPresetSnapshot(days),
+    [days, store]
+  )
+  const pressed = React.useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    getSnapshot
+  )
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="xs"
+      aria-pressed={pressed}
+      className="font-mono text-[9px] tracking-[0.04em] aria-pressed:border-primary/30 aria-pressed:bg-primary/10 aria-pressed:text-primary"
+      onClick={() => store.selectRecentRange(days)}
+    >
+      {days} days
+    </Button>
+  )
+})
+
 const ActivityWeekCalendar = React.memo(function ActivityWeekCalendar({
   calendarRef,
   maximumDate,
-  range,
-  visibleWeekStart,
-  onSelectDay,
-  onShiftMonths,
+  store,
 }: {
   calendarRef: React.RefCallback<HTMLDivElement>
   maximumDate: Date
-  range: ActivityDateRangeValue
-  visibleWeekStart: Date
-  onSelectDay: (date: Date) => void
-  onShiftMonths: (offset: number) => void
+  store: ActivityDatePickerStore
 }) {
+  const visibleWeekStartValue = React.useSyncExternalStore(
+    store.subscribeVisibleWeek,
+    store.getVisibleWeekStartSnapshot,
+    store.getVisibleWeekStartSnapshot
+  )
+  const visibleWeekStart = React.useMemo(
+    () => new Date(visibleWeekStartValue),
+    [visibleWeekStartValue]
+  )
   const days = React.useMemo(
     () => localCalendarDays(visibleWeekStart, 42),
     [visibleWeekStart]
   )
   const displayMonth = React.useMemo(() => mostVisibleMonth(days), [days])
-  const maximumWeekStart = React.useMemo(
-    () => startOfLocalWeek(startOfLocalMonth(maximumDate)),
+  const maximumWeekStartValue = React.useMemo(
+    () => startOfLocalWeek(startOfLocalMonth(maximumDate)).getTime(),
     [maximumDate]
   )
   const today = React.useMemo(() => new Date(), [])
@@ -889,7 +929,7 @@ const ActivityWeekCalendar = React.memo(function ActivityWeekCalendar({
           variant="ghost"
           size="icon-xs"
           aria-label="Show previous month"
-          onClick={() => onShiftMonths(-1)}
+          onClick={() => store.shiftMonths(-1)}
         >
           <ChevronLeft />
         </Button>
@@ -905,8 +945,8 @@ const ActivityWeekCalendar = React.memo(function ActivityWeekCalendar({
           variant="ghost"
           size="icon-xs"
           aria-label="Show next month"
-          disabled={visibleWeekStart >= maximumWeekStart}
-          onClick={() => onShiftMonths(1)}
+          disabled={visibleWeekStartValue >= maximumWeekStartValue}
+          onClick={() => store.shiftMonths(1)}
         >
           <ChevronRight />
         </Button>
@@ -931,46 +971,80 @@ const ActivityWeekCalendar = React.memo(function ActivityWeekCalendar({
         aria-label={activityCalendarMonth.format(displayMonth)}
         className="grid grid-cols-7 gap-y-0.5 overflow-hidden sm:gap-y-1"
       >
-        {days.map((date) => {
-          const disabled = isLocalDayAfter(date, maximumDate)
-          const selectedStart = isSameLocalDay(date, range?.from)
-          const selectedEnd = isSameLocalDay(date, range?.to)
-          const selectedMiddle = isLocalDayWithinRange(date, range)
-          const outside =
-            date.getMonth() !== displayMonth.getMonth() ||
-            date.getFullYear() !== displayMonth.getFullYear()
-          const isToday = isSameLocalDay(date, today)
-          return (
-            <button
-              key={date.getTime()}
-              type="button"
-              role="gridcell"
-              aria-label={activityCalendarDay.format(date)}
-              aria-selected={selectedStart || selectedEnd || selectedMiddle}
-              disabled={disabled}
-              className={cn(
-                "relative isolate grid h-7 min-w-0 place-items-center border border-transparent font-mono text-[10px] font-medium transition-colors outline-none focus-visible:z-10 focus-visible:border-ring/75 focus-visible:ring-2 focus-visible:ring-ring/40 sm:h-8",
-                "hover:bg-accent/70 hover:text-foreground",
-                outside && "text-muted-foreground/35",
-                isToday && "border-primary/45",
-                selectedMiddle && "bg-primary/10 text-foreground",
-                (selectedStart || selectedEnd) &&
-                  "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground",
-                disabled &&
-                  "pointer-events-none text-muted-foreground/20 opacity-50"
-              )}
-              onClick={() => onSelectDay(date)}
-            >
-              {date.getDate()}
-            </button>
-          )
-        })}
+        {days.map((date) => (
+          <ActivityCalendarDay
+            date={date}
+            disabled={isLocalDayAfter(date, maximumDate)}
+            isToday={isSameLocalDay(date, today)}
+            key={date.getTime()}
+            outside={!isSameLocalMonth(date, displayMonth)}
+            store={store}
+          />
+        ))}
       </div>
     </div>
   )
 })
 
-function ActivityStatus({ data }: { data: ActivityData }) {
+const ActivityCalendarDay = React.memo(function ActivityCalendarDay({
+  date,
+  disabled,
+  isToday,
+  outside,
+  store,
+}: {
+  date: Date
+  disabled: boolean
+  isToday: boolean
+  outside: boolean
+  store: ActivityDatePickerStore
+}) {
+  const subscribe = React.useCallback(
+    (listener: () => void) => store.subscribeDay(date, listener),
+    [date, store]
+  )
+  const getSnapshot = React.useCallback(
+    () => store.getDaySnapshot(date),
+    [date, store]
+  )
+  const selection = React.useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    getSnapshot
+  )
+  const selectedEndpoint =
+    (selection & (activityDaySelectedStart | activityDaySelectedEnd)) !== 0
+  const selectedMiddle = (selection & activityDaySelectedMiddle) !== 0
+
+  return (
+    <button
+      type="button"
+      role="gridcell"
+      aria-label={activityCalendarDay.format(date)}
+      aria-selected={selection !== 0}
+      disabled={disabled}
+      className={cn(
+        "relative isolate grid h-7 min-w-0 place-items-center border border-transparent font-mono text-[10px] font-medium transition-colors outline-none focus-visible:z-10 focus-visible:border-ring/75 focus-visible:ring-2 focus-visible:ring-ring/40 sm:h-8",
+        "hover:bg-accent/70 hover:text-foreground",
+        outside && "text-muted-foreground/35",
+        isToday && "border-primary/45",
+        selectedMiddle && "bg-primary/10 text-foreground",
+        selectedEndpoint &&
+          "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground",
+        disabled && "pointer-events-none text-muted-foreground/20 opacity-50"
+      )}
+      onClick={() => store.selectDay(date)}
+    >
+      {date.getDate()}
+    </button>
+  )
+})
+
+const ActivityStatus = React.memo(function ActivityStatus({
+  data,
+}: {
+  data: ActivityData
+}) {
   const unavailable = data.relays.filter((relay) => relay.unavailable)
   if (unavailable.length === 0 && data.truncatedRelayIds.length === 0) {
     return null
@@ -988,7 +1062,7 @@ function ActivityStatus({ data }: { data: ActivityData }) {
         : ""}
     </div>
   )
-}
+}, areActivityStatusPropsEqual)
 
 function ActivityResults({
   entries,
@@ -1070,17 +1144,19 @@ function ActivityResults({
   )
 }
 
+interface ActivityRowProps {
+  entry: ActivityEntry
+  index: number
+  measureElement: (node: Element | null) => void
+  start: number
+}
+
 const ActivityRow = React.memo(function ActivityRow({
   entry,
   index,
   measureElement,
   start,
-}: {
-  entry: ActivityEntry
-  index: number
-  measureElement: (node: Element | null) => void
-  start: number
-}) {
+}: ActivityRowProps) {
   const details = typeDetails[entry.type]
   const Icon = details.icon
   const date = new Date(entry.occurredAt)
@@ -1150,7 +1226,7 @@ const ActivityRow = React.memo(function ActivityRow({
       </div>
     </article>
   )
-})
+}, areActivityRowPropsEqual)
 
 function ActivityWhereLink({
   compact = false,
@@ -1201,6 +1277,155 @@ function activityActors(data: ActivityData): Array<ActivityEntry["actor"]> {
       data.entries.map((entry) => [entry.actor.id, entry.actor])
     ).values(),
   ].sort((left, right) => left.name.localeCompare(right.name))
+}
+
+function useActivityDateFilters(filterStore: ActivityFiltersStore): {
+  from?: string
+  to?: string
+} {
+  const getSnapshot = React.useCallback(() => {
+    const filters = filterStore.getSnapshot()
+    return `${filters.from ?? ""}\u0000${filters.to ?? ""}`
+  }, [filterStore])
+  React.useSyncExternalStore(filterStore.subscribe, getSnapshot, getSnapshot)
+  const { from, to } = filterStore.getSnapshot()
+  return { from, to }
+}
+
+function areActivityFiltersToolbarPropsEqual(
+  previous: ActivityFiltersToolbarProps,
+  next: ActivityFiltersToolbarProps
+): boolean {
+  return (
+    previous.activeFilterCount === next.activeFilterCount &&
+    previous.filterStore === next.filterStore &&
+    previous.onFiltersChange === next.onFiltersChange &&
+    previous.filters.q === next.filters.q &&
+    previous.filters.relay === next.filters.relay &&
+    previous.filters.server === next.filters.server &&
+    previous.filters.source === next.filters.source &&
+    previous.filters.type === next.filters.type &&
+    previous.filters.user === next.filters.user &&
+    activityActorArraysEqual(previous.actors, next.actors) &&
+    activityRelayArraysEqual(previous.data.relays, next.data.relays) &&
+    activityServerArraysEqual(previous.data.servers, next.data.servers)
+  )
+}
+
+function areActivityServerFilterPropsEqual(
+  previous: ActivityServerFilterProps,
+  next: ActivityServerFilterProps
+): boolean {
+  return (
+    previous.onFiltersChange === next.onFiltersChange &&
+    previous.filters.relay === next.filters.relay &&
+    previous.filters.server === next.filters.server &&
+    activityRelayArraysEqual(previous.data.relays, next.data.relays) &&
+    activityServerArraysEqual(previous.data.servers, next.data.servers)
+  )
+}
+
+function areActivityStatusPropsEqual(
+  previous: { data: ActivityData },
+  next: { data: ActivityData }
+): boolean {
+  return (
+    activityRelayArraysEqual(previous.data.relays, next.data.relays) &&
+    stringArraysEqual(
+      previous.data.truncatedRelayIds,
+      next.data.truncatedRelayIds
+    )
+  )
+}
+
+function areActivityRowPropsEqual(
+  previous: ActivityRowProps,
+  next: ActivityRowProps
+): boolean {
+  const previousEntry = previous.entry
+  const nextEntry = next.entry
+  return (
+    previous.index === next.index &&
+    previous.start === next.start &&
+    previousEntry.id === nextEntry.id &&
+    previousEntry.label === nextEntry.label &&
+    previousEntry.occurredAt === nextEntry.occurredAt &&
+    previousEntry.permission === nextEntry.permission &&
+    previousEntry.rawEvent === nextEntry.rawEvent &&
+    previousEntry.source === nextEntry.source &&
+    previousEntry.type === nextEntry.type &&
+    previousEntry.actor.id === nextEntry.actor.id &&
+    previousEntry.actor.name === nextEntry.actor.name &&
+    previousEntry.actor.email === nextEntry.actor.email &&
+    previousEntry.relay.id === nextEntry.relay.id &&
+    previousEntry.relay.name === nextEntry.relay.name &&
+    previousEntry.server?.id === nextEntry.server?.id &&
+    previousEntry.server?.name === nextEntry.server?.name
+  )
+}
+
+function activityActorArraysEqual(
+  previous: Array<ActivityEntry["actor"]>,
+  next: Array<ActivityEntry["actor"]>
+): boolean {
+  return arraysEqual(
+    previous,
+    next,
+    (left, right) =>
+      left.id === right.id &&
+      left.name === right.name &&
+      left.email === right.email
+  )
+}
+
+function activityRelayArraysEqual(
+  previous: ActivityData["relays"],
+  next: ActivityData["relays"]
+): boolean {
+  return arraysEqual(
+    previous,
+    next,
+    (left, right) =>
+      left.id === right.id &&
+      left.name === right.name &&
+      left.unavailable === right.unavailable
+  )
+}
+
+function activityServerArraysEqual(
+  previous: ActivityData["servers"],
+  next: ActivityData["servers"]
+): boolean {
+  return arraysEqual(
+    previous,
+    next,
+    (left, right) =>
+      left.id === right.id &&
+      left.name === right.name &&
+      left.relayId === right.relayId
+  )
+}
+
+function stringArraysEqual(
+  previous: Array<string>,
+  next: Array<string>
+): boolean {
+  return arraysEqual(previous, next, (left, right) => left === right)
+}
+
+function arraysEqual<Value>(
+  previous: Array<Value>,
+  next: Array<Value>,
+  equal: (left: Value, right: Value) => boolean
+): boolean {
+  return (
+    previous === next ||
+    (previous.length === next.length &&
+      previous.every((value, index) => {
+        const nextValue = next[index]
+        return nextValue !== undefined && equal(value, nextValue)
+      }))
+  )
 }
 
 function filterActivity(
@@ -1294,6 +1519,243 @@ function mostVisibleMonth(days: Array<Date>): Date {
   return visible.month
 }
 
+function createActivityDatePickerStore(
+  initialRange: ActivityDateRangeValue,
+  maximumDate: Date,
+  initialOnChange: (range: Pick<ActivityFilters, "from" | "to">) => void
+) {
+  const maximumWeekStart = startOfLocalWeek(startOfLocalMonth(maximumDate))
+  let state: {
+    activeBoundary: ActivityDateBoundary
+    range: ActivityDateRangeValue
+    visibleWeekStart: Date
+  } = {
+    activeBoundary: "from",
+    range: initialRange,
+    visibleWeekStart: dateRangeDisplayWeek(initialRange, maximumDate),
+  }
+  let onChange = initialOnChange
+  const boundaryListeners: Record<ActivityDateBoundary, Set<() => void>> = {
+    from: new Set(),
+    to: new Set(),
+  }
+  const dayListeners = new Map<number, Set<() => void>>()
+  const presetListeners = new Map<number, Set<() => void>>()
+  const visibleWeekListeners = new Set<() => void>()
+
+  const subscribeToSet = (listeners: Set<() => void>, listener: () => void) => {
+    listeners.add(listener)
+    return () => {
+      listeners.delete(listener)
+    }
+  }
+
+  const subscribeToMap = <Key,>(
+    listenersByKey: Map<Key, Set<() => void>>,
+    key: Key,
+    listener: () => void
+  ) => {
+    const listeners = listenersByKey.get(key) ?? new Set<() => void>()
+    listeners.add(listener)
+    listenersByKey.set(key, listeners)
+    return () => {
+      listeners.delete(listener)
+      if (listeners.size === 0) listenersByKey.delete(key)
+    }
+  }
+
+  const boundaryDate = (
+    pickerState: typeof state,
+    boundary: ActivityDateBoundary
+  ) => (boundary === "from" ? pickerState.range?.from : pickerState.range?.to)
+
+  const boundarySnapshot = (
+    pickerState: typeof state,
+    boundary: ActivityDateBoundary
+  ) => {
+    const date = boundaryDate(pickerState, boundary)
+    return `${pickerState.activeBoundary === boundary ? 1 : 0}:${
+      date ? localDayValue(date) : ""
+    }`
+  }
+
+  const daySnapshot = (range: ActivityDateRangeValue, dayValue: number) => {
+    let snapshot = 0
+    if (range?.from && localDayValue(range.from) === dayValue) {
+      snapshot |= activityDaySelectedStart
+    }
+    if (range?.to && localDayValue(range.to) === dayValue) {
+      snapshot |= activityDaySelectedEnd
+    }
+    if (
+      range?.from &&
+      range.to &&
+      dayValue > localDayValue(range.from) &&
+      dayValue < localDayValue(range.to)
+    ) {
+      snapshot |= activityDaySelectedMiddle
+    }
+    return snapshot
+  }
+
+  const publish = (next: typeof state) => {
+    const previous = state
+    state = next
+
+    for (const boundary of activityDateBoundaries) {
+      if (
+        boundarySnapshot(previous, boundary) !==
+        boundarySnapshot(next, boundary)
+      ) {
+        for (const listener of boundaryListeners[boundary]) listener()
+      }
+    }
+
+    if (previous.range !== next.range) {
+      for (const [dayValue, listeners] of dayListeners) {
+        if (
+          daySnapshot(previous.range, dayValue) !==
+          daySnapshot(next.range, dayValue)
+        ) {
+          for (const listener of listeners) listener()
+        }
+      }
+      for (const [days, listeners] of presetListeners) {
+        if (
+          dateRangeMatchesRecent(previous.range, days) !==
+          dateRangeMatchesRecent(next.range, days)
+        ) {
+          for (const listener of listeners) listener()
+        }
+      }
+    }
+
+    if (
+      previous.visibleWeekStart.getTime() !== next.visibleWeekStart.getTime()
+    ) {
+      for (const listener of visibleWeekListeners) listener()
+    }
+  }
+
+  const commitRange = (range: ActivityDateRangeValue) => {
+    if (range?.from && range.to) {
+      onChange(activityLocalRangeToUtc(range.from, range.to))
+    }
+  }
+
+  const open = (range: ActivityDateRangeValue) => {
+    publish({
+      activeBoundary: "from",
+      range,
+      visibleWeekStart: dateRangeDisplayWeek(range, maximumDate),
+    })
+  }
+
+  const setBoundary = (boundary: ActivityDateBoundary) => {
+    if (state.activeBoundary === boundary) return
+    publish({ ...state, activeBoundary: boundary })
+  }
+
+  const selectDay = (date: Date) => {
+    const { activeBoundary, range } = state
+    let nextBoundary = activeBoundary
+    let nextRange: ActivityDateRangeValue
+
+    if (activeBoundary === "from") {
+      if (!range?.to) {
+        nextRange = { from: date }
+        nextBoundary = "to"
+      } else if (isLocalDayAfter(date, range.to)) {
+        nextRange = { from: range.to, to: date }
+        nextBoundary = "to"
+      } else {
+        nextRange = { from: date, to: range.to }
+      }
+    } else if (!range?.from) {
+      nextRange = { from: undefined, to: date }
+      nextBoundary = "from"
+    } else if (isLocalDayBefore(date, range.from)) {
+      nextRange = { from: date, to: range.from }
+      nextBoundary = "from"
+    } else {
+      nextRange = { from: range.from, to: date }
+    }
+
+    publish({ ...state, activeBoundary: nextBoundary, range: nextRange })
+    commitRange(nextRange)
+  }
+
+  const selectRecentRange = (days: number) => {
+    const range = recentRange(days)
+    publish({
+      ...state,
+      range,
+      visibleWeekStart: dateRangeDisplayWeek(range, maximumDate),
+    })
+    commitRange(range)
+  }
+
+  const reset = () => {
+    publish({
+      activeBoundary: "from",
+      range: undefined,
+      visibleWeekStart: dateRangeDisplayWeek(undefined, maximumDate),
+    })
+    onChange({ from: undefined, to: undefined })
+  }
+
+  const shiftWeeks = (offset: number) => {
+    const next = addLocalDays(state.visibleWeekStart, offset * 7)
+    publish({
+      ...state,
+      visibleWeekStart: next > maximumWeekStart ? maximumWeekStart : next,
+    })
+  }
+
+  const shiftMonths = (offset: number) => {
+    const visibleDays = localCalendarDays(state.visibleWeekStart, 42)
+    const month = mostVisibleMonth(visibleDays)
+    const nextMonth = new Date(month.getFullYear(), month.getMonth() + offset)
+    const next = startOfLocalWeek(nextMonth)
+    publish({
+      ...state,
+      visibleWeekStart: next > maximumWeekStart ? maximumWeekStart : next,
+    })
+  }
+
+  return {
+    getBoundaryDate: (boundary: ActivityDateBoundary) =>
+      boundaryDate(state, boundary),
+    getBoundarySnapshot: (boundary: ActivityDateBoundary) =>
+      boundarySnapshot(state, boundary),
+    getDaySnapshot: (date: Date) =>
+      daySnapshot(state.range, localDayValue(date)),
+    getPresetSnapshot: (days: number) =>
+      dateRangeMatchesRecent(state.range, days),
+    getVisibleWeekStartSnapshot: () => state.visibleWeekStart.getTime(),
+    open,
+    reset,
+    selectDay,
+    selectRecentRange,
+    setBoundary,
+    setOnChange: (
+      nextOnChange: (range: Pick<ActivityFilters, "from" | "to">) => void
+    ) => {
+      onChange = nextOnChange
+    },
+    shiftMonths,
+    shiftWeeks,
+    subscribeBoundary: (boundary: ActivityDateBoundary, listener: () => void) =>
+      subscribeToSet(boundaryListeners[boundary], listener),
+    subscribeDay: (date: Date, listener: () => void) =>
+      subscribeToMap(dayListeners, localDayValue(date), listener),
+    subscribePreset: (days: number, listener: () => void) =>
+      subscribeToMap(presetListeners, days, listener),
+    subscribeVisibleWeek: (listener: () => void) =>
+      subscribeToSet(visibleWeekListeners, listener),
+  }
+}
+
 function dateRangeMatchesRecent(
   range: { from: Date | undefined; to?: Date } | undefined,
   days: number
@@ -1332,15 +1794,6 @@ function isLocalDayAfter(left: Date, right: Date): boolean {
 
 function isLocalDayBefore(left: Date, right: Date): boolean {
   return localDayValue(left) < localDayValue(right)
-}
-
-function isLocalDayWithinRange(
-  date: Date,
-  range: ActivityDateRangeValue
-): boolean {
-  if (!range?.from || !range.to) return false
-  const value = localDayValue(date)
-  return value > localDayValue(range.from) && value < localDayValue(range.to)
 }
 
 function formatShortDate(date: Date): string {

@@ -1,7 +1,11 @@
+import * as React from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import { z } from "zod"
 
-import { ActivityPage } from "@/components/activity-page"
+import {
+  ActivityPage,
+  createActivityFiltersStore,
+} from "@/components/activity-page"
 import type { ActivityFilters } from "@/components/activity-page"
 import {
   activityInstantSchema,
@@ -44,11 +48,23 @@ export const Route = createFileRoute("/_app/activity")({
 function ActivityRoute() {
   const filters = Route.useSearch()
   const navigate = Route.useNavigate()
-  const updateFilters = (change: Partial<ActivityFilters>) => {
-    void navigate({
-      replace: true,
-      search: (previous) => ({ ...previous, ...change }),
-    })
-  }
-  return <ActivityPage filters={filters} onFiltersChange={updateFilters} />
+  const [filterStore] = React.useState(() =>
+    createActivityFiltersStore(filters)
+  )
+  React.useLayoutEffect(
+    () => filterStore.setFilters(filters),
+    [filterStore, filters]
+  )
+  const updateFilters = React.useCallback(
+    (change: Partial<ActivityFilters>) => {
+      void navigate({
+        replace: true,
+        search: (previous) => ({ ...previous, ...change }),
+      })
+    },
+    [navigate]
+  )
+  return (
+    <ActivityPage filterStore={filterStore} onFiltersChange={updateFilters} />
+  )
 }
