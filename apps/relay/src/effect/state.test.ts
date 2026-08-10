@@ -381,6 +381,7 @@ describe("Relay state", () => {
           ...first,
           backupId: "00000000-0000-4000-8000-000000000002",
           destination: {
+            allowPrivateNetwork: false,
             headers: {},
             kind: "s3" as const,
             objectKey: "backups/second.zip",
