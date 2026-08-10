@@ -139,6 +139,15 @@ export interface BackupCatalogRecord {
   warnings: Array<string>
 }
 
+export interface InstanceBackupPolicy {
+  adminQuantityLimit: number | null
+  adminSizeLimitBytes: number | null
+  exclude: Array<string>
+  quantityLimit: number | null
+  sizeLimitBytes: number | null
+  storageId: string | null
+}
+
 export interface BackupCreateDispatch extends Omit<
   BackupCreateTaskInput,
   "destination"
@@ -857,7 +866,7 @@ export const reserveBackupDeleteEffect = Effect.fn("backups.reserveDelete")(
           `SELECT backup.id, backup.relay_id, backup.target_kind,
                   backup.target_id, backup.storage_id, backup.object_key
              FROM ${databaseTable("backup")} backup
-            WHERE backup.id = ? AND backup.status = 'available'
+            WHERE backup.id = ? AND backup.status IN ('available', 'failed')
               AND NOT EXISTS (
                 SELECT 1
                   FROM ${databaseTable("backup_task")} active_task
@@ -873,7 +882,7 @@ export const reserveBackupDeleteEffect = Effect.fn("backups.reserveDelete")(
           return yield* BackupStorageError.make({
             code: "backup_unavailable",
             operation: "backup.delete",
-            reason: "Only available backups can be deleted",
+            reason: "Only complete or failed backups can be deleted",
           })
         }
         yield* transaction.execute(
@@ -929,6 +938,36 @@ export const updateBackupLimitsEffect = Effect.fn("backups.updateLimits")(
     )
   }
 )
+
+export const getInstanceBackupPolicyEffect = Effect.fn(
+  "backups.getInstancePolicy"
+)(function* (relayId: string, targetId: string) {
+  const database = yield* Database
+  const rows = yield* database.queryRows<BackupPolicyRow>(
+    "backup_policy_get_instance",
+    `SELECT exclude_patterns, quantity_limit, size_limit_bytes, storage_id,
+            admin_quantity_limit, admin_size_limit_bytes
+       FROM ${databaseTable("backup_policy")}
+      WHERE relay_id = ? AND target_kind = 'instance' AND target_id = ?
+      LIMIT 1`,
+    [relayId, targetId]
+  )
+  const policy = rows[0]
+  return {
+    adminQuantityLimit: policy?.admin_quantity_limit ?? null,
+    adminSizeLimitBytes: nullableDatabaseNumber(
+      policy?.admin_size_limit_bytes ?? null,
+      "admin backup size limit"
+    ),
+    exclude: parseExcludes(policy?.exclude_patterns ?? []),
+    quantityLimit: policy?.quantity_limit ?? null,
+    sizeLimitBytes: nullableDatabaseNumber(
+      policy?.size_limit_bytes ?? null,
+      "backup size limit"
+    ),
+    storageId: policy?.storage_id ?? null,
+  } satisfies InstanceBackupPolicy
+})
 
 export const updateBackupExcludesEffect = Effect.fn("backups.updateExcludes")(
   function* (input: {

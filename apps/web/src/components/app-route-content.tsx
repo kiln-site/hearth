@@ -180,6 +180,7 @@ function RouteEmptyState() {
 
 function routeLabel(section: Exclude<GlobalSection, null>) {
   if (section === "infra") return "Infrastructure"
+  if (section === "backups") return "Backups"
   if (section === "activity") return "Activity"
   if (section === "access") return "Administration / Access"
   return "Settings"

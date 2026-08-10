@@ -12,6 +12,7 @@ import {
 
 import {
   listBackupCatalogEffect,
+  getInstanceBackupPolicyEffect,
   reserveBackupDeleteEffect,
   reserveBackupRestoreEffect,
   reserveDatabaseBackupEffect,
@@ -112,6 +113,11 @@ const backupLimitsInputSchema = z.strictObject({
 
 const backupExcludesInputSchema = z.strictObject({
   exclude: z.array(z.string().trim().min(1).max(1_024)).max(1_000),
+  instanceId: z.string().min(1).max(120),
+  relayId: relayIdSchema,
+})
+
+const instanceBackupPolicyInputSchema = z.strictObject({
   instanceId: z.string().min(1).max(120),
   relayId: relayIdSchema,
 })
@@ -325,6 +331,22 @@ export const getBackups = createServerFn({ method: "GET" }).handler(
       .map(({ createdBy: _, objectKey: __, ...backup }) => backup)
   }
 )
+
+export const getInstanceBackupPolicy = createServerFn({ method: "GET" })
+  .validator(instanceBackupPolicyInputSchema)
+  .handler(async ({ data }) => {
+    const user = await requireAuthenticatedUser()
+    await requireRelayPermission({
+      instanceId: data.instanceId,
+      permission: "backup.create",
+      relayId: data.relayId,
+      user,
+    })
+    return runAppEffect(
+      "backups.getInstancePolicy",
+      getInstanceBackupPolicyEffect(data.relayId, data.instanceId)
+    )
+  })
 
 export const deleteBackup = createServerFn({ method: "POST" })
   .validator(backupIdInputSchema)

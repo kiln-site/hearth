@@ -26,6 +26,7 @@ import { Route as XRouteImport } from './routes/x'
 import { Route as AppSplatRouteImport } from './routes/_app.$'
 import { Route as AppAccessRouteImport } from './routes/_app.access'
 import { Route as AppActivityRouteImport } from './routes/_app.activity'
+import { Route as AppBackupsRouteImport } from './routes/_app.backups'
 import { Route as AppInfraRouteImport } from './routes/_app.infra'
 import { Route as AppOperationsRouteImport } from './routes/_app.operations'
 import { Route as AppServersRouteImport } from './routes/_app.servers'
@@ -143,6 +144,11 @@ const AppAccessRoute = AppAccessRouteImport.update({
 const AppActivityRoute = AppActivityRouteImport.update({
   id: '/activity',
   path: '/activity',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppBackupsRoute = AppBackupsRouteImport.update({
+  id: '/backups',
+  path: '/backups',
   getParentRoute: () => AppRoute,
 } as any)
 const AppInfraRoute = AppInfraRouteImport.update({
@@ -337,6 +343,7 @@ export interface FileRoutesByFullPath {
   '/$': typeof AppSplatRoute
   '/access': typeof AppAccessRoute
   '/activity': typeof AppActivityRoute
+  '/backups': typeof AppBackupsRoute
   '/infra': typeof AppInfraRouteWithChildren
   '/operations': typeof AppOperationsRoute
   '/servers': typeof AppServersRoute
@@ -389,6 +396,7 @@ export interface FileRoutesByTo {
   '/$': typeof AppSplatRoute
   '/access': typeof AppAccessRoute
   '/activity': typeof AppActivityRoute
+  '/backups': typeof AppBackupsRoute
   '/operations': typeof AppOperationsRoute
   '/servers': typeof AppServersRoute
   '/api/health': typeof ApiHealthRoute
@@ -440,6 +448,7 @@ export interface FileRoutesById {
   '/_app/$': typeof AppSplatRoute
   '/_app/access': typeof AppAccessRoute
   '/_app/activity': typeof AppActivityRoute
+  '/_app/backups': typeof AppBackupsRoute
   '/_app/infra': typeof AppInfraRouteWithChildren
   '/_app/operations': typeof AppOperationsRoute
   '/_app/servers': typeof AppServersRoute
@@ -494,6 +503,7 @@ export interface FileRouteTypes {
     | '/$'
     | '/access'
     | '/activity'
+    | '/backups'
     | '/infra'
     | '/operations'
     | '/servers'
@@ -546,6 +556,7 @@ export interface FileRouteTypes {
     | '/$'
     | '/access'
     | '/activity'
+    | '/backups'
     | '/operations'
     | '/servers'
     | '/api/health'
@@ -596,6 +607,7 @@ export interface FileRouteTypes {
     | '/_app/$'
     | '/_app/access'
     | '/_app/activity'
+    | '/_app/backups'
     | '/_app/infra'
     | '/_app/operations'
     | '/_app/servers'
@@ -776,6 +788,13 @@ declare module '@tanstack/react-router' {
       path: '/activity'
       fullPath: '/activity'
       preLoaderRoute: typeof AppActivityRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/backups': {
+      id: '/_app/backups'
+      path: '/backups'
+      fullPath: '/backups'
+      preLoaderRoute: typeof AppBackupsRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/infra': {
@@ -1106,6 +1125,7 @@ interface AppRouteChildren {
   AppSplatRoute: typeof AppSplatRoute
   AppAccessRoute: typeof AppAccessRoute
   AppActivityRoute: typeof AppActivityRoute
+  AppBackupsRoute: typeof AppBackupsRoute
   AppInfraRoute: typeof AppInfraRouteWithChildren
   AppOperationsRoute: typeof AppOperationsRoute
   AppServersRoute: typeof AppServersRoute
@@ -1117,6 +1137,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppSplatRoute: AppSplatRoute,
   AppAccessRoute: AppAccessRoute,
   AppActivityRoute: AppActivityRoute,
+  AppBackupsRoute: AppBackupsRoute,
   AppInfraRoute: AppInfraRouteWithChildren,
   AppOperationsRoute: AppOperationsRoute,
   AppServersRoute: AppServersRoute,

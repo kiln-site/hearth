@@ -9,6 +9,8 @@ import {
   getInvitationPreview,
 } from "@/server/access"
 import { getActivity } from "@/server/activity"
+import { getBackups, getInstanceBackupPolicy } from "@/server/backups"
+import { getBackupStorage } from "@/server/backup-storage"
 import {
   getBrickCatalog,
   getInstanceRecipe,
@@ -57,6 +59,12 @@ export const queryKeys = {
     overview: ["access", "overview"] as const,
   },
   activity: (from?: string, to?: string) => ["activity", { from, to }] as const,
+  backups: {
+    all: ["backups"] as const,
+    policy: (relayId: string, instanceId: string) =>
+      ["backups", "policy", relayId, instanceId] as const,
+    storage: ["backups", "storage"] as const,
+  },
   bricks: ["bricks", "catalog"] as const,
   domains: {
     instance: (relayId: string, instanceId: string) =>
@@ -137,6 +145,42 @@ export function authStateQueryOptions() {
     queryKey: queryKeys.auth.state,
     queryFn: () => getAuthState(),
     staleTime: 30_000,
+  })
+}
+
+export function backupsQueryOptions() {
+  return queryOptions({
+    queryKey: queryKeys.backups.all,
+    queryFn: () => getBackups(),
+    refetchInterval: (query) =>
+      query.state.data?.some(
+        (backup) =>
+          ["queued", "running", "deleting"].includes(backup.status) ||
+          ["queued", "running"].includes(backup.taskStatus)
+      )
+        ? 1_500
+        : false,
+    refetchOnWindowFocus: "always",
+    staleTime: 1_000,
+  })
+}
+
+export function backupStorageQueryOptions() {
+  return queryOptions({
+    queryKey: queryKeys.backups.storage,
+    queryFn: () => getBackupStorage(),
+    staleTime: 30_000,
+  })
+}
+
+export function instanceBackupPolicyQueryOptions(
+  relayId: string,
+  instanceId: string
+) {
+  return queryOptions({
+    queryKey: queryKeys.backups.policy(relayId, instanceId),
+    queryFn: () => getInstanceBackupPolicy({ data: { instanceId, relayId } }),
+    staleTime: 5_000,
   })
 }
 

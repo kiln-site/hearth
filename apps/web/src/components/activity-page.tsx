@@ -4,7 +4,6 @@ import { Link } from "@tanstack/react-router"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { ensuringPromise, forkPromise } from "@/effect/promise"
 import {
-  ArrowLeftRight,
   CalendarDays,
   Bot,
   ChevronDown,
@@ -25,7 +24,6 @@ import {
   X,
 } from "lucide-react"
 
-import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
 import {
@@ -40,11 +38,7 @@ import {
 } from "@workspace/ui/components/tooltip"
 import { cn } from "@workspace/ui/lib/utils"
 
-import { WorkspaceSummaryCard } from "@/components/workspace-summary-card"
-import {
-  ServerPickerList,
-  serverPickerOptionKey,
-} from "@/components/server-picker-list"
+import { ServerScopePicker } from "@/components/server-scope-picker"
 import {
   activityLocalRangeToUtc,
   activityTypes,
@@ -729,75 +723,20 @@ const ActivityServerFilter = React.memo(function ActivityServerFilter({
   const selectedRelayName = filters.relay
     ? relayNameById.get(filters.relay)
     : undefined
-  const [pickerOpen, setPickerOpen] = React.useState(false)
-  const selectedKeys = React.useMemo(
-    () =>
-      new Set(selectedServer ? [serverPickerOptionKey(selectedServer)] : []),
-    [selectedServer]
-  )
   const selectServer = React.useCallback(
-    (server: (typeof servers)[number]) => {
-      onFiltersChange({ server: server.id })
-      setPickerOpen(false)
+    (server: (typeof servers)[number] | null) => {
+      onFiltersChange({ server: server?.id })
     },
     [onFiltersChange]
   )
-  const selectionMetadata = selectedServer
-    ? selectedServer.id
-    : `${servers.length} accessible ${
-        servers.length === 1 ? "instance" : "instances"
-      }`
 
   return (
-    <div className="mb-3">
-      <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
-        <WorkspaceSummaryCard
-          action={
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="shrink-0"
-              >
-                <ArrowLeftRight />
-                {selectedServer ? "Change server" : "Choose server"}
-              </Button>
-            </PopoverTrigger>
-          }
-          icon={<Server className="size-5" />}
-          title={selectedServer?.name ?? "All servers"}
-          titleAccessory={
-            <Badge variant="outline" className="font-mono text-[9px]">
-              {selectedServer?.relayName ?? selectedRelayName ?? "All Relays"}
-            </Badge>
-          }
-        >
-          <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground/70">
-            {selectionMetadata}
-          </p>
-        </WorkspaceSummaryCard>
-        <PopoverContent
-          align="end"
-          className="w-[min(32rem,calc(100vw-2rem))] p-1.5"
-        >
-          <ServerPickerList
-            allOption={{
-              description: "Every accessible instance",
-              label: "All servers",
-              selected: selectedServer === null,
-              onSelect: () => {
-                onFiltersChange({ server: undefined })
-                setPickerOpen(false)
-              },
-            }}
-            selectedKeys={selectedKeys}
-            servers={servers}
-            onSelect={selectServer}
-          />
-        </PopoverContent>
-      </Popover>
-    </div>
+    <ServerScopePicker
+      selectedRelayName={selectedRelayName}
+      selectedServer={selectedServer}
+      servers={servers}
+      onSelect={selectServer}
+    />
   )
 }, areActivityServerFilterPropsEqual)
 
