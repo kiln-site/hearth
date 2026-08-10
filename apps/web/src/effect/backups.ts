@@ -195,7 +195,8 @@ export const reserveInstanceBackupEffect = Effect.fn("backups.reserve")(
           `SELECT COUNT(*) AS quantity_used,
                   COALESCE(SUM(
                     CASE
-                      WHEN backup.status = 'available' THEN COALESCE(backup.bytes, 0)
+                      WHEN backup.status IN ('available', 'deleting')
+                        THEN COALESCE(backup.bytes, 0)
                       ELSE COALESCE((
                         SELECT MAX(task.reserved_bytes)
                           FROM ${databaseTable("backup_task")} task
@@ -209,7 +210,7 @@ export const reserveInstanceBackupEffect = Effect.fn("backups.reserve")(
             WHERE backup.relay_id = ?
               AND backup.target_kind = 'instance'
               AND backup.target_id = ?
-              AND backup.status IN ('queued', 'running', 'available')`,
+              AND backup.status IN ('queued', 'running', 'available', 'deleting')`,
           [input.relayId, input.targetId]
         )
         const usage = usageRows[0]

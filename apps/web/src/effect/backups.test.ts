@@ -1,11 +1,26 @@
 import { describe, expect, it } from "vite-plus/test"
+import { Effect, Layer } from "effect"
+import type { ResultSetHeader, RowDataPacket } from "mysql2/promise"
 
+import { Database } from "@/effect/database"
 import { BackupLimitError } from "@/effect/errors"
 import {
   backupReservation,
   effectiveBackupLimit,
+  reserveInstanceBackupEffect,
   shouldApplyRelayBackupTaskSnapshot,
 } from "@/effect/backups"
+
+const emptyResult: ResultSetHeader = {
+  affectedRows: 0,
+  changedRows: 0,
+  constructor: { name: "ResultSetHeader" },
+  fieldCount: 0,
+  info: "",
+  insertId: 0,
+  serverStatus: 0,
+  warningStatus: 0,
+}
 
 describe("backup limits", () => {
   it("uses the stricter user or platform limit", () => {
@@ -43,6 +58,53 @@ describe("backup limits", () => {
         sizeUsed: 1_000,
       })
     ).toThrow(BackupLimitError)
+  })
+
+  it("keeps deleting backups in quantity and size usage", async () => {
+    const queries: Array<string> = []
+    const databaseLayer = Layer.succeed(Database)({
+      execute: () => Effect.die("Unexpected standalone database write"),
+      queryRows: () => Effect.die("Unexpected standalone database query"),
+      transaction: (_operation, run) =>
+        run({
+          execute: () => Effect.succeed(emptyResult),
+          queryRows: <TRow extends RowDataPacket>(sql: string) =>
+            Effect.sync(() => {
+              queries.push(sql)
+              const rows = sql.includes("backup_policy")
+                ? [
+                    {
+                      admin_quantity_limit: null,
+                      admin_size_limit_bytes: null,
+                      exclude_patterns: [],
+                      quantity_limit: 2,
+                      size_limit_bytes: 2_048,
+                      storage_id: null,
+                    },
+                  ]
+                : [{ quantity_used: 1, size_used: 1_024 }]
+              return rows as unknown as ReadonlyArray<TRow>
+            }),
+        }),
+    })
+
+    await Effect.runPromise(
+      reserveInstanceBackupEffect({
+        backupId: "backup-one",
+        createdBy: "user-one",
+        name: "Backup one",
+        relayId: "relay-one",
+        requestedMaxBytes: null,
+        targetId: "instance-one",
+        taskId: "task-one",
+      }).pipe(Effect.provide(databaseLayer))
+    )
+
+    const usageQuery = queries.find((sql) => sql.includes("SELECT COUNT(*)"))
+    expect(usageQuery).toContain(
+      "backup.status IN ('queued', 'running', 'available', 'deleting')"
+    )
+    expect(usageQuery).toContain("backup.status IN ('available', 'deleting')")
   })
 })
 

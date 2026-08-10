@@ -60,7 +60,11 @@ export const getBackupStorage = createServerFn({ method: "GET" }).handler(
       "backupStorage.listVisible",
       listBackupStorageEffect()
     )
-    return visibleStorage(storage, user.id)
+    return visibleBackupStorage(
+      storage,
+      user.id,
+      hasPlatformPermission(user, "platform.backups.manage-storage")
+    )
   }
 )
 
@@ -194,10 +198,12 @@ export const setPreferredBackupStorage = createServerFn({ method: "POST" })
     return { updated: true }
   })
 
-function visibleStorage(
+export function visibleBackupStorage(
   storage: ReadonlyArray<BackupStorageRecord>,
-  userId: string
+  userId: string,
+  canManagePlatformStorage: boolean
 ): Array<BackupStorageRecord> {
+  if (canManagePlatformStorage) return [...storage]
   return storage.filter((record) => canUseStorage(record, userId))
 }
 
