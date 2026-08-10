@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it } from "vite-plus/test"
 
-import { cliDefaultAccessDays, kilnRootDomain } from "./environment"
+import {
+  cliDefaultAccessDays,
+  kilnInstallationId,
+  kilnRootDomain,
+} from "./environment"
 
 const originalKilnUrl = process.env.KILN_URL
 const originalCliDefaultAccessDays = process.env.KILN_CLI_DEFAULT_ACCESS_DAYS
+const originalKilnInstallationId = process.env.KILN_INSTALLATION_ID
 
 afterEach(() => {
   if (originalKilnUrl === undefined) delete process.env.KILN_URL
@@ -13,6 +18,22 @@ afterEach(() => {
   } else {
     process.env.KILN_CLI_DEFAULT_ACCESS_DAYS = originalCliDefaultAccessDays
   }
+  if (originalKilnInstallationId === undefined) {
+    delete process.env.KILN_INSTALLATION_ID
+  } else {
+    process.env.KILN_INSTALLATION_ID = originalKilnInstallationId
+  }
+})
+
+describe("kilnInstallationId", () => {
+  it("uses a stable safe default and validates deployment IDs", () => {
+    delete process.env.KILN_INSTALLATION_ID
+    expect(kilnInstallationId()).toBe("kiln")
+    process.env.KILN_INSTALLATION_ID = "kiln-production_1"
+    expect(kilnInstallationId()).toBe("kiln-production_1")
+    process.env.KILN_INSTALLATION_ID = "not/a/key-segment"
+    expect(() => kilnInstallationId()).toThrow("KILN_INSTALLATION_ID")
+  })
 })
 
 describe("cliDefaultAccessDays", () => {

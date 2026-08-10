@@ -14,6 +14,8 @@
     "format": "vp fmt \"**/*.{ts,tsx}\""
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1106.0",
+    "@aws-sdk/s3-request-presigner": "3.1106.0",
     "@better-auth/passkey": "^1.6.23",
     "@codemirror/commands": "^6.10.4",
     "@codemirror/language": "^6.12.4",
@@ -29,6 +31,7 @@
     "@pierre/trees": "1.0.0-beta.5",
     "@react-email/components": "^1.0.12",
     "@sentry/tanstackstart-react": "^10.66.0",
+    "@smithy/node-http-handler": "4.9.13",
     "@tanstack/react-query": "^5.101.2",
     "@tanstack/react-router": "1.170.18",
     "@tanstack/react-router-ssr-query": "1.167.1",

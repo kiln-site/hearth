@@ -8,8 +8,9 @@ import { Effect } from "effect"
 
 import type {
   BackupCreateTaskInput,
-  BackupTaskResult,
+  BackupCreateTaskResult,
 } from "@workspace/contracts"
+import { relayBackupTaskSchema } from "@workspace/contracts"
 
 import {
   BackupManager,
@@ -26,6 +27,38 @@ afterAll(() => {
 })
 
 describe("Relay backups", () => {
+  it("rejects inconsistent task envelopes and result kinds", () => {
+    const input = backupInput(4)
+    const task = {
+      backupId: input.backupId,
+      bytesCompleted: 1,
+      bytesTotal: 1,
+      createdAt: 1,
+      error: null,
+      finishedAt: 2,
+      input,
+      kind: "create" as const,
+      result: backupResult(0),
+      startedAt: 1,
+      status: "succeeded" as const,
+      taskId: input.taskId,
+      updatedAt: 2,
+    }
+    assert.isTrue(relayBackupTaskSchema.safeParse(task).success)
+    assert.isFalse(
+      relayBackupTaskSchema.safeParse({
+        ...task,
+        backupId: backupInput(5).backupId,
+      }).success
+    )
+    assert.isFalse(
+      relayBackupTaskSchema.safeParse({
+        ...task,
+        result: { warnings: [] },
+      }).success
+    )
+  })
+
   layer(makeRelayStateLayer(join(testDirectory, "relay.sqlite")))((it) => {
     it.effect("runs durable tasks through one Relay-wide worker", () =>
       Effect.gen(function* () {
@@ -169,7 +202,7 @@ function backupInput(
   }
 }
 
-function backupResult(index: number): BackupTaskResult {
+function backupResult(index: number): BackupCreateTaskResult {
   return {
     bytes: index + 1,
     checksumSha256: String(index).repeat(64),

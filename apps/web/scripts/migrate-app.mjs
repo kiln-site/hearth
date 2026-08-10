@@ -47,6 +47,15 @@ async function ensureBackupSchema(database) {
        ADD COLUMN relay_updated_at_ms BIGINT UNSIGNED NULL AFTER reserved_bytes`
     )
   }
+  const [privateNetworkColumns] = await database.query(
+    `SHOW COLUMNS FROM ${databaseTable("backup_storage")} LIKE 'allow_private_network'`
+  )
+  if (privateNetworkColumns.length === 0) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup_storage")}
+       ADD COLUMN allow_private_network BOOLEAN NOT NULL DEFAULT FALSE AFTER force_path_style`
+    )
+  }
 }
 
 async function ensureInstanceOwnershipSchema(database) {

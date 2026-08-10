@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto"
 import {
   constants as fsConstants,
+  createReadStream,
   createWriteStream,
   type ReadStream,
 } from "node:fs"
+import { request as httpsRequest } from "node:https"
 import {
   lstat,
   mkdir,
@@ -16,6 +18,7 @@ import {
   statfs,
 } from "node:fs/promises"
 import { basename, relative, resolve, sep } from "node:path"
+import { isIP } from "node:net"
 import { constants as zlibConstants } from "node:zlib"
 import { Effect, Fiber, Queue, Result } from "effect"
 import { minimatch } from "minimatch"
@@ -23,8 +26,9 @@ import ZipStream from "zip-stream"
 
 import type {
   BackupCreateTaskInput,
+  BackupCreateTaskResult,
+  BackupDeleteTaskInput,
   BackupTaskInput,
-  BackupTaskResult,
   RelayBackupTask,
 } from "@workspace/contracts"
 
@@ -32,9 +36,12 @@ import type { RelayConfig, RelayInstanceConfig } from "./config.js"
 import { RelayBackupError } from "./effect/errors.js"
 import { promiseEffect } from "./effect/promise.js"
 import { RelayStateStore } from "./effect/state.js"
+import { isPublicRemoteAddress, secureRemoteLookup } from "./source-policy.js"
 
 const MAX_BACKUP_ENTRIES = 100_000
 const ZIP_OVERHEAD_RESERVE_BYTES = 64 * 1024 * 1024
+const MAX_S3_SINGLE_PUT_BYTES = 5 * 1024 ** 3
+const BACKUP_TRANSFER_IDLE_TIMEOUT_MS = 30_000
 const DEFAULT_EXCLUDES = [
   ".DS_Store",
   "Thumbs.db",
@@ -63,9 +70,10 @@ type CreateArchive = (
   input: BackupCreateTaskInput,
   instance: RelayInstanceConfig,
   progress: BackupProgress
-) => Promise<BackupTaskResult>
+) => Promise<BackupCreateTaskResult>
 
 export class BackupManager {
+  readonly #config: RelayConfig
   readonly #createArchive: CreateArchive
   readonly #findInstance: (
     instanceId: string
@@ -74,12 +82,14 @@ export class BackupManager {
   readonly #wake: Queue.Queue<void>
 
   private constructor(options: {
+    config: RelayConfig
     createArchive: CreateArchive
     findInstance: (instanceId: string) => Promise<RelayInstanceConfig | null>
     state: RelayStateStore["Service"]
     wake: Queue.Queue<void>
   }) {
     this.#createArchive = options.createArchive
+    this.#config = options.config
     this.#findInstance = options.findInstance
     this.#state = options.state
     this.#wake = options.wake
@@ -94,6 +104,7 @@ export class BackupManager {
       const state = yield* RelayStateStore
       const wake = yield* Queue.unbounded<void>()
       const manager = new BackupManager({
+        config: options.config,
         createArchive:
           options.createArchive ??
           ((input, instance, progress) =>
@@ -173,24 +184,39 @@ export class BackupManager {
 
   #execute(task: RelayBackupTask) {
     return Effect.gen({ self: this }, function* () {
-      if (task.input.kind !== "create") {
+      if (task.input.kind === "restore") {
         return yield* backupFailure(
           "unsupported_task",
           "execute",
-          `${task.input.kind} backup tasks are not available yet`
+          "restore backup tasks are not available yet"
         )
+      }
+      if (task.input.kind === "delete") {
+        const result = yield* deleteBackupArtifact(this.#config, task.input)
+        const completed = yield* this.#state.completeBackupTask(
+          task.taskId,
+          result,
+          Date.now()
+        )
+        if (!completed) {
+          return yield* backupFailure(
+            "task_state_changed",
+            "delete.complete",
+            "The backup task was no longer running when deletion completed"
+          )
+        }
+        return
       }
       const input = task.input
       if (
         input.target.kind !== "instance" ||
         input.artifactKind !== "archive" ||
-        input.mode !== "full" ||
-        input.destination.kind !== "local"
+        input.mode !== "full"
       ) {
         return yield* backupFailure(
           "unsupported_backup",
           "create",
-          "This Relay currently supports full local instance archives"
+          "This Relay currently supports full instance archives"
         )
       }
       const instance = yield* Effect.tryPromise({
@@ -229,7 +255,7 @@ export class BackupManager {
           Effect.forever
         )
       )
-      const result = yield* Effect.tryPromise({
+      const archived = yield* Effect.tryPromise({
         try: () => this.#createArchive(input, instance, progress),
         catch: (cause) =>
           cause instanceof RelayBackupError
@@ -241,6 +267,23 @@ export class BackupManager {
                 cause,
               }),
       }).pipe(Effect.ensuring(Fiber.interrupt(progressFiber)))
+      const destination = input.destination
+      const result =
+        destination.kind === "s3"
+          ? yield* uploadBackupArtifact(
+              this.#config,
+              { ...input, destination },
+              archived
+            ).pipe(
+              Effect.ensuring(
+                promiseEffect(() =>
+                  rm(backupArchivePath(this.#config, input.backupId), {
+                    force: true,
+                  })
+                ).pipe(Effect.ignore)
+              )
+            )
+          : archived
       const completed = yield* this.#state.completeBackupTask(
         task.taskId,
         result,
@@ -262,15 +305,22 @@ export async function createPortableInstanceBackup(
   input: BackupCreateTaskInput,
   instance: RelayInstanceConfig,
   progress: BackupProgress
-): Promise<BackupTaskResult> {
+): Promise<BackupCreateTaskResult> {
   const configuredRoot = await realpath(config.rootDirectory)
   const instanceRoot = await realpath(
     resolve(configuredRoot, instance.directory)
   )
   requireContained(configuredRoot, instanceRoot)
-  const backupDirectory = resolve(config.dataDirectory, "backups")
+  const backupDirectory = backupDirectoryPath(config)
   await mkdir(backupDirectory, { recursive: true, mode: 0o700 })
-  const destination = resolve(backupDirectory, `${input.backupId}.zip`)
+  const destination = backupArchivePath(config, input.backupId)
+  const maximumBytes =
+    input.destination.kind === "s3"
+      ? Math.min(
+          input.maxBytes ?? MAX_S3_SINGLE_PUT_BYTES,
+          MAX_S3_SINGLE_PUT_BYTES
+        )
+      : input.maxBytes
   const patterns = [...DEFAULT_EXCLUDES, ...input.exclude]
   let warnings: Array<string> = []
 
@@ -293,12 +343,12 @@ export async function createPortableInstanceBackup(
           await requireBackupSpace(
             backupDirectory,
             progress.total,
-            input.maxBytes
+            maximumBytes
           )
           const written = await writeBackupArchive(
             temporary,
             collected.entries,
-            input.maxBytes,
+            maximumBytes,
             progress
           )
           warnings = [...collected.warnings, ...written.warnings]
@@ -318,7 +368,7 @@ export async function createPortableInstanceBackup(
             checksumSha256: written.checksumSha256,
             filename: basename(destination),
             warnings: warnings.slice(0, 1_000),
-          } satisfies BackupTaskResult
+          } satisfies BackupCreateTaskResult
         },
         catch: (cause) =>
           cause instanceof RelayBackupError
@@ -344,6 +394,140 @@ export async function createPortableInstanceBackup(
     operation: "create.archive",
     reason: "The archive could not be completed",
   })
+}
+
+function uploadBackupArtifact(
+  config: RelayConfig,
+  input: BackupCreateTaskInput & {
+    destination: Extract<BackupCreateTaskInput["destination"], { kind: "s3" }>
+  },
+  result: BackupCreateTaskResult
+) {
+  if (result.bytes > MAX_S3_SINGLE_PUT_BYTES) {
+    return backupFailure(
+      "s3_single_put_too_large",
+      "create.upload",
+      "S3 backups cannot exceed 5 GiB until multipart upload support is enabled"
+    )
+  }
+  return Effect.tryPromise({
+    try: () =>
+      sendSignedBackupRequest({
+        allowPrivateNetwork: input.destination.allowPrivateNetwork,
+        bodyPath: backupArchivePath(config, input.backupId),
+        headers: {
+          ...input.destination.headers,
+          "content-length": String(result.bytes),
+        },
+        method: "PUT",
+        url: input.destination.uploadUrl,
+      }),
+    catch: (cause) =>
+      RelayBackupError.make({
+        code: "s3_upload_failed",
+        operation: "create.upload",
+        reason: "The backup archive could not be uploaded to S3 storage",
+        cause,
+      }),
+  }).pipe(Effect.as(result))
+}
+
+function deleteBackupArtifact(
+  config: RelayConfig,
+  input: BackupDeleteTaskInput & { kind: "delete" }
+) {
+  if (input.destination.kind === "local") {
+    return promiseEffect(() =>
+      rm(backupArchivePath(config, input.backupId), { force: true })
+    ).pipe(Effect.as({ warnings: [] }))
+  }
+  const destination = input.destination
+  return Effect.tryPromise({
+    try: () =>
+      sendSignedBackupRequest({
+        allowPrivateNetwork: destination.allowPrivateNetwork,
+        headers: destination.headers,
+        method: "DELETE",
+        url: destination.deleteUrl,
+      }),
+    catch: (cause) =>
+      RelayBackupError.make({
+        code: "s3_delete_failed",
+        operation: "delete.remote",
+        reason: "The backup archive could not be deleted from S3 storage",
+        cause,
+      }),
+  }).pipe(Effect.as({ warnings: [] }))
+}
+
+function sendSignedBackupRequest(input: {
+  allowPrivateNetwork: boolean
+  bodyPath?: string
+  headers: Readonly<Record<string, string>>
+  method: "DELETE" | "PUT"
+  url: string
+}): Promise<void> {
+  const url = new URL(input.url)
+  if (url.protocol !== "https:" || url.username || url.password) {
+    return Promise.reject(new Error("Signed backup URLs must use HTTPS"))
+  }
+  const literal = url.hostname.replace(/^\[|\]$/gu, "")
+  if (
+    !input.allowPrivateNetwork &&
+    isIP(literal) !== 0 &&
+    !isPublicRemoteAddress(literal)
+  ) {
+    return Promise.reject(
+      new Error("Signed backup URL resolves to a private or reserved address")
+    )
+  }
+  return new Promise((resolveRequest, rejectRequest) => {
+    const request = httpsRequest(
+      url,
+      {
+        headers: input.headers,
+        lookup: input.allowPrivateNetwork ? undefined : secureRemoteLookup,
+        method: input.method,
+      },
+      (response) => {
+        let responseBytes = 0
+        response.on("data", (chunk: Buffer) => {
+          responseBytes += chunk.byteLength
+          if (responseBytes > 64 * 1024) {
+            response.destroy(new Error("S3 storage response was too large"))
+          }
+        })
+        response.once("aborted", () => {
+          rejectRequest(new Error("S3 storage closed the response early"))
+        })
+        response.once("end", () => {
+          const status = response.statusCode ?? 0
+          if (status >= 200 && status < 300) resolveRequest()
+          else rejectRequest(new Error(`S3 storage returned HTTP ${status}`))
+        })
+        response.once("error", rejectRequest)
+      }
+    )
+    request.setTimeout(BACKUP_TRANSFER_IDLE_TIMEOUT_MS, () => {
+      request.destroy(new Error("S3 backup request timed out"))
+    })
+    request.once("error", rejectRequest)
+    if (input.bodyPath) {
+      const body = createReadStream(input.bodyPath)
+      body.once("error", (cause) => request.destroy(cause))
+      body.pipe(request)
+    } else {
+      request.end()
+    }
+  })
+}
+
+function backupDirectoryPath(config: RelayConfig): string {
+  return resolve(config.dataDirectory, "backups")
+}
+
+function backupArchivePath(config: RelayConfig, backupId: string): string {
+  return resolve(backupDirectoryPath(config), `${backupId}.zip`)
 }
 
 async function cleanupBackupPartials(

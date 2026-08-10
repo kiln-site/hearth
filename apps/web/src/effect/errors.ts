@@ -36,6 +36,20 @@ export class BackupLimitError extends Schema.TaggedErrorClass<BackupLimitError>(
   }
 }
 
+export class BackupStorageError extends Schema.TaggedErrorClass<BackupStorageError>()(
+  "BackupStorageError",
+  {
+    code: Schema.String,
+    operation: Schema.String,
+    reason: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  }
+) {
+  override get message() {
+    return this.reason
+  }
+}
+
 export class CacheError extends Schema.TaggedErrorClass<CacheError>()(
   "CacheError",
   {
@@ -156,6 +170,7 @@ export class TailscaleOrchestrationError extends Schema.TaggedErrorClass<Tailsca
 export type AppError =
   | AuthenticationError
   | BackupLimitError
+  | BackupStorageError
   | CacheError
   | CliAccessError
   | CredentialError

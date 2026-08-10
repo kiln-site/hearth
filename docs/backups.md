@@ -37,16 +37,16 @@ The managed server or database process never owns the backup job.
    last cursor whenever a Relay reconnects.
 
 Submitting an existing task ID returns its current task rather than starting a
-second operation. A Relay restart changes an interrupted `running` task back to
-`queued` when it is safe to retry. Relay-local creates are immediately
-reclaimable and continue without Hearth. If a repeatable task contains an
+second operation. A Relay restart changes an interrupted `running` create or
+idempotent delete task back to `queued`. Relay-local work is immediately
+reclaimable and continues without Hearth. If a repeatable task contains an
 expiring signed S3 request, Relay sets `inputRefreshRequired`, leaves the task
 unclaimable, and exposes that flag when Hearth lists tasks after reconnecting.
 Hearth then signs fresh input and re-enqueues the same task ID; Relay atomically
 replaces the durable input, clears the flag, and wakes the worker. Orchestration
-must use the flag rather than infer this handshake from an error message. Tasks
-that reached a non-repeatable restore or delete step are marked failed for
-explicit review instead of guessed at.
+must use the flag rather than infer this handshake from an error message. A task
+that reached a non-repeatable restore step is marked failed for explicit review
+instead of guessed at.
 
 Effect's `Queue` is the in-process wake-up mechanism and a one-permit
 `Semaphore` protects the worker. The SQLite task journal supplies durability;
@@ -102,7 +102,13 @@ browser. Hearth signs a narrowly scoped object request for Relay. The first
 implementation stages one artifact locally, validates its size and digest,
 then uploads it. The single queue plus free-space preflight prevents the
 unbounded concurrent staging failure seen in other panels. Multipart streaming
-can replace this adapter later without changing task or catalog contracts.
+can replace this adapter later without changing task or catalog contracts. The
+initial single-request adapter has a 5 GiB artifact ceiling.
+
+User-owned endpoints must resolve exclusively to public network addresses on
+every connection. Platform administrators may explicitly allow private
+addresses for trusted MinIO or Ceph RGW deployments; ordinary users cannot turn
+that SSRF boundary off.
 
 Object keys are generated, not supplied by users:
 

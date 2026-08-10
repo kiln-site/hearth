@@ -85,6 +85,7 @@ export const backupLocalDestinationSchema = z
 
 export const backupS3UploadDestinationSchema = z
   .object({
+    allowPrivateNetwork: z.boolean().default(false),
     headers: z.record(z.string(), z.string()).default({}),
     kind: z.literal("s3"),
     objectKey: backupObjectKeySchema,
@@ -155,7 +156,7 @@ export const backupTaskInputSchema = z.discriminatedUnion("kind", [
   backupDeleteTaskInputSchema.extend({ kind: z.literal("delete") }),
 ])
 
-export const backupTaskResultSchema = z
+export const backupCreateTaskResultSchema = z
   .object({
     bytes: z.number().int().nonnegative(),
     checksumSha256: z.string().regex(/^[a-f0-9]{64}$/u),
@@ -173,6 +174,17 @@ export const backupTaskResultSchema = z
     warnings: z.array(z.string().max(1_024)).max(1_000),
   })
   .strict()
+
+export const backupOperationTaskResultSchema = z
+  .object({
+    warnings: z.array(z.string().max(1_024)).max(1_000),
+  })
+  .strict()
+
+export const backupTaskResultSchema = z.union([
+  backupCreateTaskResultSchema,
+  backupOperationTaskResultSchema,
+])
 
 export const relayBackupTaskSchema = z
   .object({
@@ -192,9 +204,44 @@ export const relayBackupTaskSchema = z
     updatedAt: z.number().int().nonnegative(),
   })
   .strict()
+  .superRefine((task, context) => {
+    if (
+      task.kind !== task.input.kind ||
+      task.backupId !== task.input.backupId ||
+      task.taskId !== task.input.taskId
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Backup task metadata must match its input",
+      })
+    }
+    if (task.status !== "succeeded") return
+    if (!task.result) {
+      context.addIssue({
+        code: "custom",
+        message: "Succeeded backup tasks require a result",
+      })
+      return
+    }
+    if (task.kind === "create" && !("bytes" in task.result)) {
+      context.addIssue({
+        code: "custom",
+        message: "Succeeded create tasks require an artifact result",
+      })
+    }
+    if (task.kind !== "create" && "bytes" in task.result) {
+      context.addIssue({
+        code: "custom",
+        message: "Backup operation tasks cannot return an artifact result",
+      })
+    }
+  })
 
 export type BackupArtifactKind = z.infer<typeof backupArtifactKindSchema>
 export type BackupCreateTaskInput = z.infer<typeof backupCreateTaskInputSchema>
+export type BackupCreateTaskResult = z.infer<
+  typeof backupCreateTaskResultSchema
+>
 export type BackupDeleteTaskInput = z.infer<typeof backupDeleteTaskInputSchema>
 export type BackupMode = z.infer<typeof backupModeSchema>
 export type BackupReason = z.infer<typeof backupReasonSchema>

@@ -479,6 +479,40 @@ describe("Relay state", () => {
         const interruptedRestore = yield* store.getBackupTask(restore.taskId)
         assert.strictEqual(interruptedRestore?.status, "failed")
         assert.strictEqual(interruptedRestore?.finishedAt, 220)
+
+        const deletion: BackupTaskInput = {
+          backupId: first.backupId,
+          destination: { kind: "local" },
+          kind: "delete",
+          target: first.target,
+          taskId: "00000000-0000-4000-8000-000000000014",
+        }
+        yield* store.enqueueBackupTask(deletion, 230)
+        assert.strictEqual(
+          (yield* store.claimNextBackupTask(240))?.taskId,
+          deletion.taskId
+        )
+        assert.strictEqual(yield* store.requeueInterruptedBackupTasks(250), 1)
+        assert.strictEqual(
+          (yield* store.getBackupTask(deletion.taskId))?.status,
+          "queued"
+        )
+        assert.isNull(yield* store.claimNextBackupTask(260))
+        yield* store.enqueueBackupTask(deletion, 270)
+        assert.strictEqual(
+          (yield* store.claimNextBackupTask(280))?.taskId,
+          deletion.taskId
+        )
+        assert.isTrue(
+          yield* store.completeBackupTask(
+            deletion.taskId,
+            { warnings: [] },
+            290
+          )
+        )
+        const completedDeletion = yield* store.getBackupTask(deletion.taskId)
+        assert.strictEqual(completedDeletion?.bytesCompleted, 0)
+        assert.strictEqual(completedDeletion?.status, "succeeded")
       })
     )
 

@@ -22,6 +22,16 @@ export function kilnEnvironment(): KilnEnvironment {
   return parseKilnEnvironment(process.env.KILN_ENVIRONMENT)
 }
 
+export function kilnInstallationId(): string {
+  const configured = process.env.KILN_INSTALLATION_ID?.trim() || "kiln"
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/u.test(configured)) {
+    throw new Error(
+      "KILN_INSTALLATION_ID must use 1-128 letters, numbers, dots, underscores, or hyphens"
+    )
+  }
+  return configured
+}
+
 export function developmentBypassEnabled(): boolean {
   return kilnEnvironment() === "dev"
 }

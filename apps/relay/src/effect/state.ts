@@ -1047,12 +1047,13 @@ const makeRelayStateStore = Effect.gen(function* () {
               LIMIT 1
             `
             if (!rows[0]) return false
+            const bytes = "bytes" in result ? result.bytes : 0
             yield* sql`
               UPDATE relay_backup_tasks
               SET status = 'succeeded',
                   result_json = ${JSON.stringify(result)},
-                  bytes_completed = ${result.bytes},
-                  bytes_total = ${result.bytes},
+                  bytes_completed = ${bytes},
+                  bytes_total = ${bytes},
                   error = NULL,
                   finished_at = ${now},
                   updated_at = ${now}
@@ -1121,7 +1122,7 @@ const makeRelayStateStore = Effect.gen(function* () {
                   bytes_total = NULL,
                   updated_at = ${now},
                   error = 'Relay restarted before the task completed'
-              WHERE status = 'running' AND kind = 'create'
+              WHERE status = 'running' AND kind IN ('create', 'delete')
             `
             yield* sql`
               UPDATE relay_backup_tasks
@@ -1129,7 +1130,7 @@ const makeRelayStateStore = Effect.gen(function* () {
                   updated_at = ${now},
                   finished_at = ${now},
                   error = 'Relay restarted during a non-repeatable task; inspect the target before retrying'
-              WHERE status = 'running' AND kind IN ('restore', 'delete')
+              WHERE status = 'running' AND kind = 'restore'
             `
             return count
           })

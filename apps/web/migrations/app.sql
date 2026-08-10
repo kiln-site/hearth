@@ -224,6 +224,7 @@ CREATE TABLE IF NOT EXISTS kiln_backup_storage (
   bucket VARCHAR(255) NOT NULL,
   object_prefix VARCHAR(512) NOT NULL DEFAULT '',
   force_path_style BOOLEAN NOT NULL DEFAULT FALSE,
+  allow_private_network BOOLEAN NOT NULL DEFAULT FALSE,
   access_key_id_ciphertext TEXT NOT NULL,
   secret_access_key_ciphertext TEXT NOT NULL,
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
