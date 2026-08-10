@@ -34,11 +34,17 @@ import type {
 } from "@workspace/contracts"
 
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
+import type { DatabaseDriver } from "./databases.js"
+import {
+  createCompressedDatabaseBackup,
+  restoreCompressedDatabaseBackup,
+} from "./database-backups.js"
 import { RelayBackupError } from "./effect/errors.js"
 import { promiseEffect } from "./effect/promise.js"
 import { RelayStateStore } from "./effect/state.js"
 import { isPublicRemoteAddress, secureRemoteLookup } from "./source-policy.js"
 import {
+  materializeBackupArtifact,
   recoverInterruptedRestores,
   restorePortableInstanceBackup,
 } from "./backup-restore.js"
@@ -86,6 +92,7 @@ export class BackupManager {
     instanceId: string
   ) => Promise<RelayInstanceConfig | null>
   readonly #isInstanceStopped: (instanceId: string) => Promise<boolean>
+  readonly #databases: DatabaseDriver | null
   readonly #state: RelayStateStore["Service"]
   readonly #wake: Queue.Queue<void>
 
@@ -94,6 +101,7 @@ export class BackupManager {
     createArchive: CreateArchive
     findInstance: (instanceId: string) => Promise<RelayInstanceConfig | null>
     isInstanceStopped: (instanceId: string) => Promise<boolean>
+    databases: DatabaseDriver | null
     state: RelayStateStore["Service"]
     wake: Queue.Queue<void>
   }) {
@@ -101,6 +109,7 @@ export class BackupManager {
     this.#config = options.config
     this.#findInstance = options.findInstance
     this.#isInstanceStopped = options.isInstanceStopped
+    this.#databases = options.databases
     this.#state = options.state
     this.#wake = options.wake
   }
@@ -110,6 +119,7 @@ export class BackupManager {
     createArchive?: CreateArchive
     findInstance: (instanceId: string) => Promise<RelayInstanceConfig | null>
     isInstanceStopped: (instanceId: string) => Promise<boolean>
+    databases?: DatabaseDriver
   }) {
     return Effect.gen(function* () {
       const state = yield* RelayStateStore
@@ -127,6 +137,7 @@ export class BackupManager {
             )),
         findInstance: options.findInstance,
         isInstanceStopped: options.isInstanceStopped,
+        databases: options.databases ?? null,
         state,
         wake,
       })
@@ -208,6 +219,67 @@ export class BackupManager {
     return Effect.gen({ self: this }, function* () {
       if (task.input.kind === "restore") {
         const input = task.input
+        if (input.target.kind === "database") {
+          if (!this.#databases) {
+            return yield* backupFailure(
+              "database_driver_unavailable",
+              "restore.lookup",
+              "The database backup driver is unavailable"
+            )
+          }
+          const temporary = resolve(
+            this.#config.dataDirectory,
+            "restores",
+            `${input.taskId}.dmp.gz`
+          )
+          const artifact = yield* Effect.tryPromise({
+            try: () =>
+              materializeBackupArtifact(this.#config, input, temporary),
+            catch: (cause) =>
+              RelayBackupError.make({
+                code: "database_restore_download_failed",
+                operation: "restore.database.verify",
+                reason: backupErrorMessage(cause),
+                cause,
+              }),
+          })
+          const result = yield* Effect.tryPromise({
+            try: () =>
+              restoreCompressedDatabaseBackup(
+                this.#databases!,
+                input.target.id,
+                artifact
+              ),
+            catch: (cause) =>
+              RelayBackupError.make({
+                code: "database_restore_failed",
+                operation: "restore.database",
+                reason: backupErrorMessage(cause),
+                cause,
+              }),
+          }).pipe(
+            Effect.ensuring(
+              input.source.kind === "remote"
+                ? promiseEffect(() => rm(temporary, { force: true })).pipe(
+                    Effect.ignore
+                  )
+                : Effect.void
+            )
+          )
+          const completed = yield* this.#state.completeBackupTask(
+            task.taskId,
+            result,
+            Date.now()
+          )
+          if (!completed) {
+            return yield* backupFailure(
+              "task_state_changed",
+              "restore.complete",
+              "The backup task was no longer running when restore completed"
+            )
+          }
+          return
+        }
         if (input.target.kind !== "instance") {
           return yield* backupFailure(
             "unsupported_restore",
@@ -297,6 +369,88 @@ export class BackupManager {
         return
       }
       const input = task.input
+      if (
+        input.target.kind === "database" &&
+        input.artifactKind === "database_dump" &&
+        input.mode === "full"
+      ) {
+        if (!this.#databases) {
+          return yield* backupFailure(
+            "database_driver_unavailable",
+            "create.database",
+            "The database backup driver is unavailable"
+          )
+        }
+        const progress = { completed: 0, total: 0 }
+        const progressFiber = yield* Effect.forkChild(
+          Effect.sleep("500 millis").pipe(
+            Effect.andThen(
+              Effect.suspend(() =>
+                this.#state
+                  .updateBackupTaskProgress(
+                    task.taskId,
+                    progress.completed,
+                    null,
+                    Date.now()
+                  )
+                  .pipe(Effect.asVoid)
+              )
+            ),
+            Effect.forever
+          )
+        )
+        const destination = backupArchivePath(this.#config, input.backupId)
+        yield* promiseEffect(() =>
+          mkdir(backupDirectoryPath(this.#config), {
+            recursive: true,
+            mode: 0o700,
+          })
+        )
+        yield* promiseEffect(() => rm(destination, { force: true }))
+        const created = yield* Effect.tryPromise({
+          try: () =>
+            createCompressedDatabaseBackup(
+              this.#databases!,
+              input,
+              destination,
+              progress
+            ),
+          catch: (cause) =>
+            RelayBackupError.make({
+              code: "database_backup_failed",
+              operation: "create.database",
+              reason: backupErrorMessage(cause),
+              cause,
+            }),
+        }).pipe(Effect.ensuring(Fiber.interrupt(progressFiber)))
+        const result =
+          input.destination.kind === "s3"
+            ? yield* uploadBackupArtifact(
+                this.#config,
+                { ...input, destination: input.destination },
+                created
+              ).pipe(
+                Effect.ensuring(
+                  promiseEffect(() => rm(destination, { force: true })).pipe(
+                    Effect.ignore
+                  )
+                )
+              )
+            : created
+        const completed = yield* this.#state.completeBackupTask(
+          task.taskId,
+          result,
+          Date.now()
+        )
+        if (!completed) {
+          return yield* backupFailure(
+            "task_state_changed",
+            "create.complete",
+            "The backup task was no longer running when the dump completed"
+          )
+        }
+        return
+      }
       if (
         input.target.kind !== "instance" ||
         input.artifactKind !== "archive" ||

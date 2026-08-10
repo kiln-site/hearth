@@ -241,6 +241,7 @@ const backupManager = await runRelayEffect(
   "relay.startup.backups",
   BackupManager.make({
     config,
+    databases,
     findInstance: (instanceId) => docker.findInstance(instanceId),
     isInstanceStopped: async (instanceId) => {
       const instance = (await docker.inspectInstances()).find(

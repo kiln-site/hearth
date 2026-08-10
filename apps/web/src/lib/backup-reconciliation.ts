@@ -55,9 +55,15 @@ export async function reconcileRelayBackups(
   }
   const { processFinalInstanceDeletions } =
     await import("@/lib/final-instance-deletion")
-  const hasPendingFinalDeletion = await processFinalInstanceDeletions(relay)
+  const { processFinalDatabaseDeletions } =
+    await import("@/lib/final-database-deletion")
+  const [instancesPending, databasesPending] = await Promise.all([
+    processFinalInstanceDeletions(relay),
+    processFinalDatabaseDeletions(relay),
+  ])
   if (
-    hasPendingFinalDeletion ||
+    instancesPending ||
+    databasesPending ||
     dispatchable.length > 0 ||
     tasks.some((task) => task.status === "queued" || task.status === "running")
   ) {

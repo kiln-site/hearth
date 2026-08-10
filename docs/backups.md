@@ -235,12 +235,15 @@ and should be an optional Relay snapshot adapter rather than the default.
    downloads.
 4. `feat/backup-restore`: safe instance restore, optional pre-restore backup,
    final-backup-before-delete, and local download tokens.
-5. `feat/backup-databases-platform`: compressed logical database dumps,
-   database restore, Redis/Valkey snapshots, and encrypted Kiln bundles.
-6. `ui/backups`: Operations table, server Backups tab, filters, dialogs,
+5. `feat/backup-databases`: compressed logical MySQL, MariaDB, and PostgreSQL
+   dumps, database restore, and final-backup-before-delete.
+6. `feat/backup-platform`: encrypted Kiln bundles and offline disaster-recovery
+   restore tooling. Redis/Valkey snapshots follow once their consistency hook
+   and ACL-safe snapshot path are defined.
+7. `ui/backups`: Operations table, server Backups tab, filters, dialogs,
    progress/reconciliation, storage settings, accessibility, and responsive
    browser validation.
-7. `feat/backup-cli`: list/create/status/download/restore/delete/storage CLI,
+8. `feat/backup-cli`: list/create/status/download/restore/delete/storage CLI,
    help, README, and synchronized CLI skill documentation.
 
 Each layer receives targeted deterministic tests, full typecheck/lint, and a

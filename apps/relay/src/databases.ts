@@ -152,6 +152,21 @@ export class DatabaseDriver {
     )
   }
 
+  async backupTarget(id: string): Promise<RelayManagedDatabase> {
+    const database = await this.#required(id)
+    if (!database.supportsImportExport) {
+      throw new Error(
+        `${database.engine} logical backups are not supported yet`
+      )
+    }
+    if (!database.observedState.match(/^(?:running|starting)$/u)) {
+      throw new Error(
+        "Start the database before creating or restoring a backup"
+      )
+    }
+    return database
+  }
+
   async create(input: RelayCreateDatabase): Promise<RelayManagedDatabase> {
     if ((await this.list()).some((database) => database.id === input.id)) {
       throw new Error("Database already exists")

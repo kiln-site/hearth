@@ -321,3 +321,19 @@ CREATE TABLE IF NOT EXISTS kiln_backup_final_delete (
   CONSTRAINT kiln_backup_final_delete_backup_fk
     FOREIGN KEY (backup_id) REFERENCES kiln_backup (id) ON DELETE RESTRICT
 );
+
+CREATE TABLE IF NOT EXISTS kiln_backup_final_database_delete (
+  relay_id CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  target_id VARCHAR(120) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  backup_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  requested_by VARCHAR(36) NOT NULL,
+  status ENUM('backing_up', 'deleting', 'failed', 'completed') NOT NULL,
+  error TEXT NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (relay_id, target_id),
+  UNIQUE KEY kiln_backup_final_database_delete_backup_unique (backup_id),
+  KEY kiln_backup_final_database_delete_status_idx (status, updated_at),
+  CONSTRAINT kiln_backup_final_database_delete_backup_fk
+    FOREIGN KEY (backup_id) REFERENCES kiln_backup (id) ON DELETE RESTRICT
+);

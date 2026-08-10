@@ -17,7 +17,6 @@ import { z } from "zod"
 
 import {
   createManagedDatabaseRecordEffect,
-  deleteManagedDatabaseRecordEffect,
   listManagedDatabaseDirectoryEffect,
   listManagedDatabaseRecordsEffect,
   loadManagedDatabaseCredentialEffect,
@@ -32,7 +31,7 @@ import {
 } from "@/lib/access-control"
 import type { AccessGrant } from "@/lib/access-control"
 import type { AuthenticatedUser } from "@/lib/auth-session"
-import { isManagedDatabaseNotFoundError } from "@/lib/managed-database-errors"
+import { deleteDatabaseWithFinalBackup } from "@/lib/final-database-deletion"
 import { accessPermissions, roleHasPermission } from "@/lib/permissions"
 import type { AccessPermission } from "@/lib/permissions"
 import type { PersistedRelay } from "@/lib/relay-registry"
@@ -548,25 +547,11 @@ export const deleteManagedDatabase = createServerFn({ method: "POST" })
   .validator(databaseInputSchema)
   .handler(async ({ data }) => {
     const { relay, user } = await authorizedDatabase(data, "database.delete")
-    const deleted = await promiseResult(() =>
-      databaseRpc(
-        relay,
-        "database.delete",
-        { databaseId: data.databaseId, deleteData: true },
-        180_000,
-        user.id
-      )
-    )
-    if (
-      Result.isFailure(deleted) &&
-      !isManagedDatabaseNotFoundError(deleted.failure)
-    ) {
-      throw deleted.failure
-    }
-    await runAppEffect(
-      "managedDatabases.record.delete",
-      deleteManagedDatabaseRecordEffect(data.relayId, data.databaseId)
-    )
+    await deleteDatabaseWithFinalBackup({
+      databaseId: data.databaseId,
+      relay,
+      requestedBy: user.id,
+    })
     return { deleted: true }
   })
 

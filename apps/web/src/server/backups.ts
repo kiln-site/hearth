@@ -13,11 +13,13 @@ import {
   listBackupCatalogEffect,
   reserveBackupDeleteEffect,
   reserveBackupRestoreEffect,
+  reserveDatabaseBackupEffect,
   reserveInstanceBackupEffect,
   updateBackupExcludesEffect,
   updateBackupLimitsEffect,
   type BackupCatalogRecord,
 } from "@/effect/backups"
+import { listManagedDatabaseRecordsEffect } from "@/effect/managed-databases"
 import {
   loadBackupStorageCredentialEffect,
   loadBackupStorageEffect,
@@ -46,6 +48,20 @@ import { requireAuthenticatedUser } from "@/server/auth"
 
 const instanceBackupInputSchema = z.strictObject({
   instanceId: z.string().min(1).max(120),
+  maxBytes: z
+    .number()
+    .int()
+    .positive()
+    .max(Number.MAX_SAFE_INTEGER)
+    .nullable()
+    .optional(),
+  name: z.string().trim().min(1).max(120),
+  relayId: relayIdSchema,
+  storageId: z.uuid().nullable().optional(),
+})
+
+const databaseBackupInputSchema = z.strictObject({
+  databaseId: z.string().min(1).max(120),
   maxBytes: z
     .number()
     .int()
@@ -140,6 +156,71 @@ export const createInstanceBackup = createServerFn({ method: "POST" })
     ).find((candidate) => candidate.id === input.backupId)
     if (!backup) throw new Error("Backup catalog record was not created")
     return { backup, relayAccepted }
+  })
+
+export const createDatabaseBackup = createServerFn({ method: "POST" })
+  .validator(databaseBackupInputSchema)
+  .handler(async ({ data }) => {
+    const user = await requireAuthenticatedUser()
+    const relay = await requireBackupRelay(data.relayId)
+    await requireRelayPermission({
+      databaseId: data.databaseId,
+      permission: "backup.create",
+      relayId: relay.id,
+      user,
+    })
+    const records = await runAppEffect(
+      "backups.databaseTarget",
+      listManagedDatabaseRecordsEffect()
+    )
+    if (
+      !records.some(
+        (record) =>
+          record.relayId === relay.id && record.databaseId === data.databaseId
+      )
+    ) {
+      throw new Error("Database not found on this Relay")
+    }
+    if (data.storageId) {
+      const storage = await runAppEffect(
+        "backups.loadSelectedDatabaseStorage",
+        loadBackupStorageEffect(data.storageId)
+      )
+      if (
+        !storage ||
+        !storage.enabled ||
+        (storage.ownerUserId !== null && storage.ownerUserId !== user.id)
+      ) {
+        throw new Error("Backup destination is unavailable")
+      }
+    }
+    const input = await runAppEffect(
+      "backups.reserveDatabase",
+      reserveDatabaseBackupEffect({
+        backupId: randomUUID(),
+        createdBy: user.id,
+        name: data.name,
+        relayId: relay.id,
+        requestedMaxBytes: data.maxBytes ?? null,
+        ...(data.storageId === undefined ? {} : { storageId: data.storageId }),
+        targetId: data.databaseId,
+        taskId: randomUUID(),
+      })
+    )
+    const dispatched = await Promise.allSettled([
+      dispatchBackupTask(relay, input, user.id),
+    ])
+    const backup = (
+      await runAppEffect(
+        "backups.listAfterDatabaseCreate",
+        listBackupCatalogEffect()
+      )
+    ).find((candidate) => candidate.id === input.backupId)
+    if (!backup) throw new Error("Backup catalog record was not created")
+    return {
+      backup,
+      relayAccepted: dispatched[0]?.status === "fulfilled",
+    }
   })
 
 export const getBackups = createServerFn({ method: "GET" }).handler(
@@ -318,6 +399,83 @@ export const restoreInstanceBackup = createServerFn({ method: "POST" })
     if (safety && dispatched[0]?.status === "fulfilled") {
       scheduleBackupReconciliation(relay, user.id)
     }
+    return {
+      relayAccepted: dispatched[0]?.status === "fulfilled",
+      restoreTaskId: restore.taskId,
+      safetyBackupId: safety?.backupId ?? null,
+    }
+  })
+
+export const restoreDatabaseBackup = createServerFn({ method: "POST" })
+  .validator(backupRestoreInputSchema)
+  .handler(async ({ data }) => {
+    const user = await requireAuthenticatedUser()
+    const catalog = await runAppEffect(
+      "backups.listForDatabaseRestore",
+      listBackupCatalogEffect()
+    )
+    const backup = catalog.find((candidate) => candidate.id === data.backupId)
+    if (
+      !backup ||
+      backup.status !== "available" ||
+      backup.targetKind !== "database" ||
+      backup.artifactKind !== "database_dump" ||
+      backup.backupMode !== "full"
+    ) {
+      throw new Error("Backup is not available for a database restore")
+    }
+    const grants = isPlatformAdmin(user) ? [] : await listUserGrants(user.id)
+    if (!hasBackupPermission(user, grants, backup, "backup.restore")) {
+      throw new Error("You do not have permission to restore this backup")
+    }
+    const relay = await requireBackupRelay(backup.relayId)
+    if (data.safetyBackup) {
+      await requireRelayPermission({
+        databaseId: backup.targetId,
+        permission: "backup.create",
+        relayId: relay.id,
+        user,
+      })
+    }
+    const records = await runAppEffect(
+      "backups.databaseRestoreTarget",
+      listManagedDatabaseRecordsEffect()
+    )
+    if (
+      !records.some(
+        (record) =>
+          record.relayId === relay.id && record.databaseId === backup.targetId
+      )
+    ) {
+      throw new Error("Restore target was not found on this Relay")
+    }
+    const safety = data.safetyBackup
+      ? await runAppEffect(
+          "backups.reserveDatabaseSafety",
+          reserveDatabaseBackupEffect({
+            backupId: randomUUID(),
+            createdBy: user.id,
+            name: `Before restoring ${backup.name}`.slice(0, 120),
+            reason: "pre_restore",
+            relayId: relay.id,
+            requestedMaxBytes: null,
+            targetId: backup.targetId,
+            taskId: randomUUID(),
+          })
+        )
+      : null
+    const restore = await runAppEffect(
+      "backups.reserveDatabaseRestore",
+      reserveBackupRestoreEffect({
+        backupId: backup.id,
+        dependsOnTaskId: safety?.taskId ?? null,
+        requestedBy: user.id,
+        taskId: randomUUID(),
+      })
+    )
+    const dispatched = await Promise.allSettled([
+      dispatchBackupTask(relay, safety ?? restore, user.id),
+    ])
     return {
       relayAccepted: dispatched[0]?.status === "fulfilled",
       restoreTaskId: restore.taskId,

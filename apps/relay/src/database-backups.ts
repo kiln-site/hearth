@@ -1,0 +1,217 @@
+import { createHash } from "node:crypto"
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
+import { createReadStream, createWriteStream } from "node:fs"
+import { rm, stat } from "node:fs/promises"
+import { Transform } from "node:stream"
+import { pipeline } from "node:stream/promises"
+import { createGunzip, createGzip } from "node:zlib"
+import { Effect, Result } from "effect"
+
+import type {
+  BackupCreateTaskInput,
+  BackupCreateTaskResult,
+  RelayManagedDatabase,
+} from "@workspace/contracts"
+
+import type { DatabaseDriver } from "./databases.js"
+
+const DATABASE_BACKUP_TIMEOUT_MS = 30 * 60_000
+const MAX_DATABASE_ERROR_BYTES = 64 * 1024
+const MAX_DATABASE_RESTORE_BYTES = 1024 ** 4
+
+export interface DatabaseBackupProgress {
+  completed: number
+  total: number
+}
+
+export async function createCompressedDatabaseBackup(
+  databases: DatabaseDriver,
+  input: BackupCreateTaskInput,
+  destination: string,
+  progress: DatabaseBackupProgress
+): Promise<BackupCreateTaskResult> {
+  const database = await databases.backupTarget(input.target.id)
+  const child = spawnDatabaseClient(database, "export")
+  const stderr = collectProcessErrors(child)
+  const sourceMeter = byteMeter((bytes) => {
+    progress.completed = bytes
+  })
+  const storedLimit = byteMeter(undefined, input.maxBytes)
+
+  const written = await Effect.runPromise(
+    Effect.result(
+      Effect.tryPromise({
+        try: () =>
+          Promise.all([
+            pipeline(
+              child.stdout,
+              sourceMeter,
+              createGzip({ level: 6 }),
+              storedLimit,
+              createWriteStream(destination, { flags: "wx", mode: 0o600 })
+            ),
+            requireSuccessfulProcess(child, stderr),
+          ]),
+        catch: (cause) => cause,
+      })
+    )
+  )
+  if (Result.isFailure(written)) {
+    child.kill("SIGKILL")
+    await rm(destination, { force: true })
+    throw written.failure
+  }
+
+  const metadata = await stat(destination)
+  const digest = createHash("sha256")
+  for await (const chunk of createReadStream(destination)) digest.update(chunk)
+  return {
+    bytes: metadata.size,
+    checksumSha256: digest.digest("hex"),
+    filename: `${safeFileName(database.name)}-${new Date().toISOString().slice(0, 10)}.dmp.gz`,
+    warnings: [],
+  }
+}
+
+export async function restoreCompressedDatabaseBackup(
+  databases: DatabaseDriver,
+  databaseId: string,
+  source: string
+): Promise<{ warnings: Array<string> }> {
+  const database = await databases.backupTarget(databaseId)
+  const child = spawnDatabaseClient(database, "import")
+  const stderr = collectProcessErrors(child)
+  const restored = await Effect.runPromise(
+    Effect.result(
+      Effect.tryPromise({
+        try: () =>
+          Promise.all([
+            pipeline(
+              createReadStream(source),
+              createGunzip(),
+              byteMeter(undefined, MAX_DATABASE_RESTORE_BYTES),
+              child.stdin
+            ),
+            requireSuccessfulProcess(child, stderr),
+          ]),
+        catch: (cause) => cause,
+      })
+    )
+  )
+  if (Result.isFailure(restored)) {
+    child.kill("SIGKILL")
+    throw restored.failure
+  }
+  return { warnings: [] }
+}
+
+function spawnDatabaseClient(
+  database: RelayManagedDatabase,
+  mode: "export" | "import"
+): ChildProcessWithoutNullStreams {
+  const container = database.containerId ?? database.id
+  const shell = databaseBackupShell(database, mode)
+  return spawn(
+    "docker",
+    [
+      "exec",
+      "-i",
+      ...(database.engine === "postgres" ? ["--user", "postgres"] : []),
+      container,
+      "sh",
+      "-ec",
+      shell,
+    ],
+    { stdio: ["pipe", "pipe", "pipe"] }
+  )
+}
+
+function databaseBackupShell(
+  database: RelayManagedDatabase,
+  mode: "export" | "import"
+): string {
+  if (database.engine === "mysql") {
+    return mode === "export"
+      ? 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump --user=root --single-transaction --skip-lock-tables --no-tablespaces "$MYSQL_DATABASE"'
+      : 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql --user=root "$MYSQL_DATABASE"'
+  }
+  if (database.engine === "mariadb") {
+    return mode === "export"
+      ? 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump --user=root --single-transaction --skip-lock-tables "$MARIADB_DATABASE"'
+      : 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb --user=root "$MARIADB_DATABASE"'
+  }
+  if (database.engine === "postgres") {
+    return mode === "export"
+      ? 'exec pg_dump --clean --if-exists --no-owner --username "$POSTGRES_USER" --dbname "$POSTGRES_DB"'
+      : 'exec psql --set ON_ERROR_STOP=on --username "$POSTGRES_USER" --dbname "$POSTGRES_DB"'
+  }
+  throw new Error(`${database.engine} logical backups are not supported yet`)
+}
+
+function collectProcessErrors(child: ChildProcessWithoutNullStreams) {
+  const chunks: Array<Buffer> = []
+  let bytes = 0
+  child.stderr.on("data", (chunk: Buffer) => {
+    if (bytes >= MAX_DATABASE_ERROR_BYTES) return
+    const remaining = MAX_DATABASE_ERROR_BYTES - bytes
+    const retained = chunk.subarray(0, remaining)
+    bytes += retained.byteLength
+    chunks.push(retained)
+  })
+  return () => Buffer.concat(chunks).toString("utf8").trim()
+}
+
+function requireSuccessfulProcess(
+  child: ChildProcessWithoutNullStreams,
+  stderr: () => string
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL")
+      reject(new Error("Database backup command timed out"))
+    }, DATABASE_BACKUP_TIMEOUT_MS)
+    child.once("error", (cause) => {
+      clearTimeout(timeout)
+      reject(cause)
+    })
+    child.once("close", (code) => {
+      clearTimeout(timeout)
+      if (code === 0) resolve()
+      else
+        reject(
+          new Error(stderr() || `Database command exited with code ${code}`)
+        )
+    })
+  })
+}
+
+function byteMeter(
+  update?: (bytes: number) => void,
+  maximumBytes?: number | null
+): Transform {
+  let bytes = 0
+  return new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      bytes += chunk.byteLength
+      if (
+        maximumBytes !== undefined &&
+        maximumBytes !== null &&
+        bytes > maximumBytes
+      ) {
+        callback(new Error("Database backup exceeded its size limit"))
+        return
+      }
+      update?.(bytes)
+      callback(null, chunk)
+    },
+  })
+}
+
+function safeFileName(name: string): string {
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/gu, "-")
+      .replace(/^-+|-+$/gu, "") || "database"
+  )
+}

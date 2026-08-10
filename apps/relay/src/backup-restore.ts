@@ -79,11 +79,11 @@ export async function restorePortableInstanceBackup(
   return Effect.runPromise(
     Effect.tryPromise({
       try: async () => {
-        const archive =
-          input.source.kind === "local"
-            ? backupArchivePath(config, input.backupId)
-            : await downloadRestoreArchive(paths.archive, input)
-        await verifyBackupArchive(archive, input.bytes, input.checksumSha256)
+        const archive = await materializeBackupArtifact(
+          config,
+          input,
+          paths.archive
+        )
         warnings = await extractBackupArchive(
           archive,
           paths.staging,
@@ -327,7 +327,24 @@ async function readManifest(zip: ZipFile, entry: Entry) {
   )
 }
 
-async function downloadRestoreArchive(
+export async function materializeBackupArtifact(
+  config: RelayConfig,
+  input: BackupRestoreTaskInput,
+  destination = resolve(
+    restoreDirectoryPath(config),
+    `${input.taskId}.artifact`
+  )
+): Promise<string> {
+  await mkdir(restoreDirectoryPath(config), { mode: 0o700, recursive: true })
+  const artifact =
+    input.source.kind === "local"
+      ? backupArchivePath(config, input.backupId)
+      : await downloadRestoreArtifact(destination, input)
+  await verifyBackupArtifact(artifact, input.bytes, input.checksumSha256)
+  return artifact
+}
+
+async function downloadRestoreArtifact(
   destination: string,
   input: BackupRestoreTaskInput
 ): Promise<string> {
@@ -406,7 +423,7 @@ async function downloadRestoreArchive(
   return destination
 }
 
-async function verifyBackupArchive(
+export async function verifyBackupArtifact(
   path: string,
   expectedBytes: number,
   expectedChecksum: string
