@@ -134,6 +134,23 @@ const backupHourMs = 60 * backupMinuteMs
 const backupDayMs = 24 * backupHourMs
 const subscribeToBrowser = () => () => undefined
 
+function selectBackupScope(
+  snapshot: Awaited<ReturnType<typeof getRelaySnapshot>>
+) {
+  return {
+    nodes: snapshot.nodes.map(({ relayId, relayName }) => ({
+      relayId,
+      relayName,
+    })),
+    servers: snapshot.instances.map(({ id, name, relayId, relayName }) => ({
+      id,
+      name,
+      relayId,
+      relayName,
+    })),
+  }
+}
+
 export function createBackupSearchStore(initialValue: string) {
   return createWorkspaceTableSearchStore(initialValue)
 }
@@ -152,7 +169,11 @@ export const BackupsPage = React.memo(function BackupsPage({
     notifyOnChangeProps: ["data"],
   })
   const { data: storage } = useSuspenseQuery(backupStorageQueryOptions())
-  const { data: snapshot } = useSuspenseQuery(relaySnapshotQueryOptions())
+  const { data: backupScope } = useSuspenseQuery({
+    ...relaySnapshotQueryOptions(),
+    notifyOnChangeProps: ["data"],
+    select: selectBackupScope,
+  })
   const { data: databases } = useSuspenseQuery(
     managedDatabaseDirectoryQueryOptions()
   )
@@ -164,16 +185,7 @@ export const BackupsPage = React.memo(function BackupsPage({
   const [storageOpen, setStorageOpen] = React.useState(false)
   const [dialog, setDialog] = React.useState<BackupDialog>(null)
 
-  const servers = React.useMemo<Array<ServerPickerOption>>(
-    () =>
-      snapshot.instances.map((instance) => ({
-        id: instance.id,
-        name: instance.name,
-        relayId: instance.relayId,
-        relayName: instance.relayName,
-      })),
-    [snapshot.instances]
-  )
+  const servers = backupScope.servers
   const selectedServer = React.useMemo(
     () =>
       servers.find(
@@ -204,14 +216,14 @@ export const BackupsPage = React.memo(function BackupsPage({
   const relayNames = React.useMemo(
     () =>
       new Map([
-        ...snapshot.nodes.map(
+        ...backupScope.nodes.map(
           (relay) => [relay.relayId, relay.relayName] as const
         ),
-        ...snapshot.instances.map(
+        ...backupScope.servers.map(
           (instance) => [instance.relayId, instance.relayName] as const
         ),
       ]),
-    [snapshot.instances, snapshot.nodes]
+    [backupScope.nodes, backupScope.servers]
   )
   const storageNames = React.useMemo(
     () =>
@@ -242,10 +254,10 @@ export const BackupsPage = React.memo(function BackupsPage({
       availableCreateTargets({
         capabilities,
         databases,
-        nodes: snapshot.nodes,
-        servers: snapshot.instances,
+        nodes: backupScope.nodes,
+        servers: backupScope.servers,
       }),
-    [capabilities, databases, snapshot.instances, snapshot.nodes]
+    [backupScope.nodes, backupScope.servers, capabilities, databases]
   )
   const selectedCreateTargetKey = selectedServer
     ? targetKey("instance", selectedServer.relayId, selectedServer.id)
@@ -2201,8 +2213,8 @@ function availableCreateTargets({
 }: {
   capabilities: Awaited<ReturnType<typeof getAccessCapabilities>>
   databases: Awaited<ReturnType<typeof getManagedDatabaseDirectory>>
-  nodes: Awaited<ReturnType<typeof getRelaySnapshot>>["nodes"]
-  servers: Awaited<ReturnType<typeof getRelaySnapshot>>["instances"]
+  nodes: ReturnType<typeof selectBackupScope>["nodes"]
+  servers: ReturnType<typeof selectBackupScope>["servers"]
 }): Array<CreateTarget> {
   const targets: Array<CreateTarget> = []
   for (const server of servers) {
