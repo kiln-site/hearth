@@ -24,18 +24,20 @@ export async function reconcileRelayBackups(
   relay: PersistedRelay,
   subject?: string
 ): Promise<void> {
+  // Import Relay state first so interrupted tasks can be refreshed and
+  // redispatched during this same reconciliation pass.
+  const tasks = z
+    .array(relayBackupTaskSchema)
+    .parse(await relayRpc(relay, "backup.task.list", {}, 15_000, subject))
+  for (const task of tasks) {
+    await runAppEffect("backups.reconcileTask", reconcileBackupTaskEffect(task))
+  }
   const dispatchable = await runAppEffect(
     "backups.dispatchable",
     listDispatchableBackupTasksEffect(relay.id)
   )
   for (const task of dispatchable) {
     await dispatchBackupTask(relay, task, subject)
-  }
-  const tasks = z
-    .array(relayBackupTaskSchema)
-    .parse(await relayRpc(relay, "backup.task.list", {}, 15_000, subject))
-  for (const task of tasks) {
-    await runAppEffect("backups.reconcileTask", reconcileBackupTaskEffect(task))
   }
 }
 
