@@ -380,6 +380,12 @@ describe("Relay state", () => {
         const second = {
           ...first,
           backupId: "00000000-0000-4000-8000-000000000002",
+          destination: {
+            headers: {},
+            kind: "s3" as const,
+            objectKey: "backups/second.zip",
+            uploadUrl: "https://s3.example.test/expired-upload",
+          },
           taskId: "00000000-0000-4000-8000-000000000012",
         }
 
@@ -418,16 +424,41 @@ describe("Relay state", () => {
 
         const next = yield* store.claimNextBackupTask(140)
         assert.strictEqual(next?.taskId, second.taskId)
+        assert.isTrue(
+          yield* store.updateBackupTaskProgress(second.taskId, 50, 100, 145)
+        )
         assert.strictEqual(yield* store.requeueInterruptedBackupTasks(150), 1)
         const requeued = yield* store.getBackupTask(second.taskId)
         assert.strictEqual(requeued?.status, "queued")
         assert.isNull(requeued?.startedAt)
+        assert.strictEqual(requeued?.bytesCompleted, 0)
+        assert.isNull(requeued?.bytesTotal)
+        assert.isNull(requeued?.result)
+
+        assert.isNull(yield* store.claimNextBackupTask(160))
+        const refreshed = yield* store.enqueueBackupTask(
+          {
+            ...second,
+            destination: {
+              ...second.destination,
+              uploadUrl: "https://s3.example.test/fresh-upload",
+            },
+          },
+          170
+        )
+        assert.strictEqual(
+          refreshed.input.kind === "create" &&
+            refreshed.input.destination.kind === "s3"
+            ? refreshed.input.destination.uploadUrl
+            : null,
+          "https://s3.example.test/fresh-upload"
+        )
 
         assert.strictEqual(
-          (yield* store.claimNextBackupTask(160))?.taskId,
+          (yield* store.claimNextBackupTask(180))?.taskId,
           second.taskId
         )
-        assert.isTrue(yield* store.failBackupTask(second.taskId, "test", 170))
+        assert.isTrue(yield* store.failBackupTask(second.taskId, "test", 190))
 
         const restore: BackupTaskInput = {
           backupId: first.backupId,
@@ -436,15 +467,15 @@ describe("Relay state", () => {
           target: first.target,
           taskId: "00000000-0000-4000-8000-000000000013",
         }
-        yield* store.enqueueBackupTask(restore, 180)
+        yield* store.enqueueBackupTask(restore, 200)
         assert.strictEqual(
-          (yield* store.claimNextBackupTask(190))?.taskId,
+          (yield* store.claimNextBackupTask(210))?.taskId,
           restore.taskId
         )
-        assert.strictEqual(yield* store.requeueInterruptedBackupTasks(200), 1)
+        assert.strictEqual(yield* store.requeueInterruptedBackupTasks(220), 1)
         const interruptedRestore = yield* store.getBackupTask(restore.taskId)
         assert.strictEqual(interruptedRestore?.status, "failed")
-        assert.strictEqual(interruptedRestore?.finishedAt, 200)
+        assert.strictEqual(interruptedRestore?.finishedAt, 220)
       })
     )
   })

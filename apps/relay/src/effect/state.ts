@@ -232,6 +232,10 @@ const RelayBackupTaskRowSchema = Schema.Struct({
   updatedAt: Schema.Number,
 })
 
+const RelayBackupTaskRefreshRowSchema = Schema.Struct({
+  inputRefreshRequired: Schema.Number,
+})
+
 export class RelayStateStore extends Context.Service<
   RelayStateStore,
   {
@@ -547,6 +551,14 @@ const migrations = SqliteMigrator.fromRecord({
     yield* sql`
       CREATE INDEX relay_backup_tasks_updated
       ON relay_backup_tasks (updated_at, task_id)
+    `
+  }),
+  "7_backup_task_input_refresh": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`
+      ALTER TABLE relay_backup_tasks
+      ADD COLUMN input_refresh_required INTEGER NOT NULL DEFAULT 0
+        CHECK (input_refresh_required IN (0, 1))
     `
   }),
 })
@@ -920,6 +932,30 @@ const makeRelayStateStore = Effect.gen(function* () {
                   new Error("Backup task ID already has different input")
                 )
               }
+              const refreshRows = yield* sql<Record<string, unknown>>`
+                SELECT input_refresh_required AS inputRefreshRequired
+                FROM relay_backup_tasks
+                WHERE task_id = ${input.taskId}
+                LIMIT 1
+              `
+              const refreshRow = yield* Schema.decodeUnknownEffect(
+                Schema.Array(RelayBackupTaskRefreshRowSchema)
+              )(refreshRows).pipe(Effect.map((rows) => rows[0]))
+              if (refreshRow?.inputRefreshRequired === 1) {
+                yield* sql`
+                  UPDATE relay_backup_tasks
+                  SET input_json = ${JSON.stringify(input)},
+                      input_refresh_required = 0,
+                      error = NULL,
+                      updated_at = ${now}
+                  WHERE task_id = ${input.taskId}
+                    AND status = 'queued'
+                    AND input_refresh_required = 1
+                `
+                return (
+                  (yield* backupTasks({ taskId: input.taskId }))[0] ?? existing
+                )
+              }
               return existing
             }
             yield* sql`
@@ -956,7 +992,7 @@ const makeRelayStateStore = Effect.gen(function* () {
             const rows = yield* sql<{ taskId: string }>`
               SELECT task_id AS taskId
               FROM relay_backup_tasks
-              WHERE status = 'queued'
+              WHERE status = 'queued' AND input_refresh_required = 0
               ORDER BY created_at ASC, task_id ASC
               LIMIT 1
             `
@@ -969,7 +1005,9 @@ const makeRelayStateStore = Effect.gen(function* () {
                   updated_at = ${now},
                   error = NULL,
                   finished_at = NULL
-              WHERE task_id = ${taskId} AND status = 'queued'
+              WHERE task_id = ${taskId}
+                AND status = 'queued'
+                AND input_refresh_required = 0
             `
             return (yield* backupTasks({ taskId }))[0] ?? null
           })
@@ -1074,7 +1112,12 @@ const makeRelayStateStore = Effect.gen(function* () {
             yield* sql`
               UPDATE relay_backup_tasks
               SET status = 'queued',
+                  input_refresh_required = 1,
                   started_at = NULL,
+                  finished_at = NULL,
+                  result_json = NULL,
+                  bytes_completed = 0,
+                  bytes_total = NULL,
                   updated_at = ${now},
                   error = 'Relay restarted before the task completed'
               WHERE status = 'running' AND kind = 'create'
