@@ -214,3 +214,89 @@ CREATE TABLE IF NOT EXISTS kiln_invitation (
   KEY kiln_invitation_email_pending_idx (email, expires_at),
   KEY kiln_invitation_relay_idx (relay_id, created_at)
 );
+
+CREATE TABLE IF NOT EXISTS kiln_backup_storage (
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+  owner_user_id VARCHAR(36) NULL,
+  name VARCHAR(120) NOT NULL,
+  endpoint VARCHAR(2048) NOT NULL,
+  region VARCHAR(120) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  bucket VARCHAR(255) NOT NULL,
+  object_prefix VARCHAR(512) NOT NULL DEFAULT '',
+  force_path_style BOOLEAN NOT NULL DEFAULT FALSE,
+  access_key_id_ciphertext TEXT NOT NULL,
+  secret_access_key_ciphertext TEXT NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  last_verified_at TIMESTAMP(3) NULL,
+  last_error VARCHAR(512) NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  UNIQUE KEY kiln_backup_storage_owner_name_unique (owner_user_id, name),
+  KEY kiln_backup_storage_owner_enabled_idx (owner_user_id, enabled, name)
+);
+
+CREATE TABLE IF NOT EXISTS kiln_backup_policy (
+  relay_id CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  target_kind ENUM('instance', 'database', 'platform') NOT NULL,
+  target_id VARCHAR(120) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  storage_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  exclude_patterns JSON NOT NULL,
+  quantity_limit INT UNSIGNED NULL,
+  size_limit_bytes BIGINT UNSIGNED NULL,
+  admin_quantity_limit INT UNSIGNED NULL,
+  admin_size_limit_bytes BIGINT UNSIGNED NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (relay_id, target_kind, target_id),
+  KEY kiln_backup_policy_storage_idx (storage_id),
+  CONSTRAINT kiln_backup_policy_storage_fk
+    FOREIGN KEY (storage_id) REFERENCES kiln_backup_storage (id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS kiln_backup (
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+  relay_id CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  target_kind ENUM('instance', 'database', 'platform') NOT NULL,
+  target_id VARCHAR(120) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  storage_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  artifact_kind ENUM('archive', 'database_dump', 'platform_bundle') NOT NULL,
+  backup_mode ENUM('full', 'incremental') NOT NULL DEFAULT 'full',
+  reason ENUM('manual', 'pre_restore', 'final_delete', 'scheduled') NOT NULL,
+  status ENUM('queued', 'running', 'available', 'failed', 'deleting', 'deleted') NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  filename VARCHAR(255) NULL,
+  object_key VARCHAR(1024) NULL,
+  bytes BIGINT UNSIGNED NULL,
+  checksum_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  warnings JSON NOT NULL,
+  created_by VARCHAR(36) NULL,
+  started_at TIMESTAMP(3) NULL,
+  completed_at TIMESTAMP(3) NULL,
+  deleted_at TIMESTAMP(3) NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  KEY kiln_backup_target_created_idx (relay_id, target_kind, target_id, created_at),
+  KEY kiln_backup_status_updated_idx (status, updated_at),
+  KEY kiln_backup_storage_idx (storage_id),
+  CONSTRAINT kiln_backup_storage_fk
+    FOREIGN KEY (storage_id) REFERENCES kiln_backup_storage (id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS kiln_backup_task (
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+  backup_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  task_kind ENUM('create', 'restore', 'delete') NOT NULL,
+  status ENUM('queued', 'running', 'succeeded', 'failed', 'cancelled') NOT NULL,
+  bytes_completed BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  bytes_total BIGINT UNSIGNED NULL,
+  error TEXT NULL,
+  requested_by VARCHAR(36) NULL,
+  started_at TIMESTAMP(3) NULL,
+  finished_at TIMESTAMP(3) NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  KEY kiln_backup_task_backup_created_idx (backup_id, created_at),
+  KEY kiln_backup_task_status_updated_idx (status, updated_at),
+  CONSTRAINT kiln_backup_task_backup_fk
+    FOREIGN KEY (backup_id) REFERENCES kiln_backup (id) ON DELETE CASCADE
+);

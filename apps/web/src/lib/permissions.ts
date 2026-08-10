@@ -3,6 +3,8 @@ export type PlatformRole = (typeof platformRoles)[number]
 
 export const platformPermissions = [
   "platform.appearance.manage-default",
+  "platform.backups.manage-storage",
+  "platform.backups.manage-limits",
 ] as const
 export type PlatformPermission = (typeof platformPermissions)[number]
 
@@ -45,6 +47,11 @@ export const accessPermissions = [
   "database.network.write",
   "database.dump.export",
   "database.dump.import",
+  "backup.read",
+  "backup.create",
+  "backup.download",
+  "backup.restore",
+  "backup.delete",
 ] as const
 
 export type AccessPermission = (typeof accessPermissions)[number]
@@ -73,6 +80,11 @@ const rolePermissions: Record<AccessRole, ReadonlySet<AccessPermission>> = {
     "database.network.write",
     "database.dump.export",
     "database.dump.import",
+    "backup.read",
+    "backup.create",
+    "backup.download",
+    "backup.restore",
+    "backup.delete",
   ]),
   viewer: new Set([
     "relay.read",
@@ -84,6 +96,8 @@ const rolePermissions: Record<AccessRole, ReadonlySet<AccessPermission>> = {
     "instance.sftp.connect",
     "database.read",
     "database.network.read",
+    "backup.read",
+    "backup.download",
   ]),
 }
 

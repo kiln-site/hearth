@@ -2,11 +2,18 @@ import { SqliteClient, SqliteMigrator } from "@effect/sql-sqlite-node"
 import { Context, Effect, Layer, Schema } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import type {
+  BackupTaskInput,
+  BackupTaskResult,
+  RelayBackupTask,
   RelayDesiredState,
   RelayInstanceRecovery,
   RelayInstancePendingPrimaryPort,
   RelayInstancePortProtocol,
   RelayInstanceWebRoute,
+} from "@workspace/contracts"
+import {
+  backupTaskInputSchema,
+  backupTaskResultSchema,
 } from "@workspace/contracts"
 
 import { RelayStateError } from "./errors.js"
@@ -197,6 +204,34 @@ const RelayRuntimeRecoveryRowSchema = Schema.Struct({
   updatedAt: Schema.Number,
 })
 
+const RelayBackupTaskKindSchema = Schema.Literals([
+  "create",
+  "restore",
+  "delete",
+])
+const RelayBackupTaskStatusSchema = Schema.Literals([
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
+])
+const RelayBackupTaskRowSchema = Schema.Struct({
+  backupId: Schema.String,
+  bytesCompleted: Schema.Number,
+  bytesTotal: Schema.NullOr(Schema.Number),
+  createdAt: Schema.Number,
+  error: Schema.NullOr(Schema.String),
+  finishedAt: Schema.NullOr(Schema.Number),
+  inputJson: Schema.String,
+  kind: RelayBackupTaskKindSchema,
+  resultJson: Schema.NullOr(Schema.String),
+  startedAt: Schema.NullOr(Schema.Number),
+  status: RelayBackupTaskStatusSchema,
+  taskId: Schema.String,
+  updatedAt: Schema.Number,
+})
+
 export class RelayStateStore extends Context.Service<
   RelayStateStore,
   {
@@ -222,6 +257,38 @@ export class RelayStateStore extends Context.Service<
     readonly getMetadata: (
       key: string
     ) => Effect.Effect<string | null, RelayStateError>
+    readonly enqueueBackupTask: (
+      input: BackupTaskInput,
+      now: number
+    ) => Effect.Effect<RelayBackupTask, RelayStateError>
+    readonly claimNextBackupTask: (
+      now: number
+    ) => Effect.Effect<RelayBackupTask | null, RelayStateError>
+    readonly getBackupTask: (
+      taskId: string
+    ) => Effect.Effect<RelayBackupTask | null, RelayStateError>
+    readonly listBackupTasks: (
+      updatedAfter?: number
+    ) => Effect.Effect<ReadonlyArray<RelayBackupTask>, RelayStateError>
+    readonly updateBackupTaskProgress: (
+      taskId: string,
+      bytesCompleted: number,
+      bytesTotal: number | null,
+      now: number
+    ) => Effect.Effect<boolean, RelayStateError>
+    readonly completeBackupTask: (
+      taskId: string,
+      result: BackupTaskResult,
+      now: number
+    ) => Effect.Effect<boolean, RelayStateError>
+    readonly failBackupTask: (
+      taskId: string,
+      error: string,
+      now: number
+    ) => Effect.Effect<boolean, RelayStateError>
+    readonly requeueInterruptedBackupTasks: (
+      now: number
+    ) => Effect.Effect<number, RelayStateError>
     readonly listClients: () => Effect.Effect<
       ReadonlyArray<RelayClientRecord>,
       RelayStateError
@@ -452,6 +519,36 @@ const migrations = SqliteMigrator.fromRecord({
         CHECK (stop_pending IN (0, 1))
     `
   }),
+  "6_backup_tasks": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`
+      CREATE TABLE relay_backup_tasks (
+        task_id TEXT PRIMARY KEY NOT NULL,
+        backup_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('create', 'restore', 'delete')),
+        status TEXT NOT NULL
+          CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
+        input_json TEXT NOT NULL,
+        result_json TEXT,
+        bytes_completed INTEGER NOT NULL DEFAULT 0
+          CHECK (bytes_completed >= 0),
+        bytes_total INTEGER CHECK (bytes_total IS NULL OR bytes_total >= 0),
+        error TEXT,
+        created_at INTEGER NOT NULL,
+        started_at INTEGER,
+        finished_at INTEGER,
+        updated_at INTEGER NOT NULL
+      ) STRICT
+    `
+    yield* sql`
+      CREATE INDEX relay_backup_tasks_queue
+      ON relay_backup_tasks (status, created_at, task_id)
+    `
+    yield* sql`
+      CREATE INDEX relay_backup_tasks_updated
+      ON relay_backup_tasks (updated_at, task_id)
+    `
+  }),
 })
 
 const makeRelayStateStore = Effect.gen(function* () {
@@ -478,6 +575,9 @@ const makeRelayStateStore = Effect.gen(function* () {
   )
   const decodeRuntimeRecoveryRows = Schema.decodeUnknownEffect(
     Schema.Array(RelayRuntimeRecoveryRowSchema)
+  )
+  const decodeBackupTaskRows = Schema.decodeUnknownEffect(
+    Schema.Array(RelayBackupTaskRowSchema)
   )
 
   const pendingPrimaryPorts = Effect.fn("RelayStateStore.pendingPrimaryPorts")(
@@ -565,6 +665,98 @@ const makeRelayStateStore = Effect.gen(function* () {
       )
     }
   )
+
+  const backupTaskFromRow = Effect.fn("RelayStateStore.backupTaskFromRow")(
+    function* (row: typeof RelayBackupTaskRowSchema.Type) {
+      const input = yield* decodeBackupTaskInput(row.inputJson)
+      const result = row.resultJson
+        ? yield* decodeBackupTaskResult(row.resultJson)
+        : null
+      return {
+        backupId: row.backupId,
+        bytesCompleted: row.bytesCompleted,
+        bytesTotal: row.bytesTotal,
+        createdAt: row.createdAt,
+        error: row.error,
+        finishedAt: row.finishedAt,
+        input,
+        kind: row.kind,
+        result,
+        startedAt: row.startedAt,
+        status: row.status,
+        taskId: row.taskId,
+        updatedAt: row.updatedAt,
+      } satisfies RelayBackupTask
+    }
+  )
+
+  const backupTasks = Effect.fn("RelayStateStore.backupTasks")(function* (
+    filter:
+      | { readonly taskId: string }
+      | { readonly updatedAfter?: number } = {}
+  ) {
+    const rows =
+      "taskId" in filter
+        ? yield* sql<Record<string, unknown>>`
+            SELECT
+              task_id AS taskId,
+              backup_id AS backupId,
+              kind,
+              status,
+              input_json AS inputJson,
+              result_json AS resultJson,
+              bytes_completed AS bytesCompleted,
+              bytes_total AS bytesTotal,
+              error,
+              created_at AS createdAt,
+              started_at AS startedAt,
+              finished_at AS finishedAt,
+              updated_at AS updatedAt
+            FROM relay_backup_tasks
+            WHERE task_id = ${filter.taskId}
+            LIMIT 1
+          `
+        : filter.updatedAfter === undefined
+          ? yield* sql<Record<string, unknown>>`
+              SELECT
+                task_id AS taskId,
+                backup_id AS backupId,
+                kind,
+                status,
+                input_json AS inputJson,
+                result_json AS resultJson,
+                bytes_completed AS bytesCompleted,
+                bytes_total AS bytesTotal,
+                error,
+                created_at AS createdAt,
+                started_at AS startedAt,
+                finished_at AS finishedAt,
+                updated_at AS updatedAt
+              FROM relay_backup_tasks
+              ORDER BY updated_at ASC, task_id ASC
+            `
+          : yield* sql<Record<string, unknown>>`
+              SELECT
+                task_id AS taskId,
+                backup_id AS backupId,
+                kind,
+                status,
+                input_json AS inputJson,
+                result_json AS resultJson,
+                bytes_completed AS bytesCompleted,
+                bytes_total AS bytesTotal,
+                error,
+                created_at AS createdAt,
+                started_at AS startedAt,
+                finished_at AS finishedAt,
+                updated_at AS updatedAt
+              FROM relay_backup_tasks
+              WHERE updated_at > ${filter.updatedAfter}
+              ORDER BY updated_at ASC, task_id ASC
+            `
+    const decoded = yield* decodeBackupTaskRows(rows)
+    return yield* Effect.forEach(decoded, backupTaskFromRow)
+  })
 
   const webRoutes = Effect.fn("RelayStateStore.webRoutes")(function* (
     instanceId?: string
@@ -710,6 +902,194 @@ const makeRelayStateStore = Effect.gen(function* () {
             ${input.expiresAt}
           )
         `.pipe(Effect.asVoid)
+      ),
+    enqueueBackupTask: (input, now) =>
+      run(
+        "enqueue_backup_task",
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const existing = (yield* backupTasks({ taskId: input.taskId }))[0]
+            if (existing) {
+              if (
+                existing.backupId !== input.backupId ||
+                existing.kind !== input.kind ||
+                existing.input.target.kind !== input.target.kind ||
+                existing.input.target.id !== input.target.id
+              ) {
+                return yield* Effect.fail(
+                  new Error("Backup task ID already has different input")
+                )
+              }
+              return existing
+            }
+            yield* sql`
+              INSERT INTO relay_backup_tasks (
+                task_id,
+                backup_id,
+                kind,
+                status,
+                input_json,
+                created_at,
+                updated_at
+              ) VALUES (
+                ${input.taskId},
+                ${input.backupId},
+                ${input.kind},
+                'queued',
+                ${JSON.stringify(input)},
+                ${now},
+                ${now}
+              )
+            `
+            const created = (yield* backupTasks({ taskId: input.taskId }))[0]
+            return yield* created
+              ? Effect.succeed(created)
+              : Effect.fail(new Error("Backup task was not persisted"))
+          })
+        )
+      ),
+    claimNextBackupTask: (now) =>
+      run(
+        "claim_next_backup_task",
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{ taskId: string }>`
+              SELECT task_id AS taskId
+              FROM relay_backup_tasks
+              WHERE status = 'queued'
+              ORDER BY created_at ASC, task_id ASC
+              LIMIT 1
+            `
+            const taskId = rows[0]?.taskId
+            if (!taskId) return null
+            yield* sql`
+              UPDATE relay_backup_tasks
+              SET status = 'running',
+                  started_at = COALESCE(started_at, ${now}),
+                  updated_at = ${now},
+                  error = NULL,
+                  finished_at = NULL
+              WHERE task_id = ${taskId} AND status = 'queued'
+            `
+            return (yield* backupTasks({ taskId }))[0] ?? null
+          })
+        )
+      ),
+    getBackupTask: (taskId) =>
+      run(
+        "get_backup_task",
+        backupTasks({ taskId }).pipe(Effect.map((tasks) => tasks[0] ?? null))
+      ),
+    listBackupTasks: (updatedAfter) =>
+      run("list_backup_tasks", backupTasks({ updatedAfter })),
+    updateBackupTaskProgress: (taskId, bytesCompleted, bytesTotal, now) =>
+      run(
+        "update_backup_task_progress",
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{ taskId: string }>`
+              SELECT task_id AS taskId
+              FROM relay_backup_tasks
+              WHERE task_id = ${taskId} AND status = 'running'
+              LIMIT 1
+            `
+            if (!rows[0]) return false
+            yield* sql`
+              UPDATE relay_backup_tasks
+              SET bytes_completed = ${bytesCompleted},
+                  bytes_total = ${bytesTotal},
+                  updated_at = ${now}
+              WHERE task_id = ${taskId} AND status = 'running'
+            `
+            return true
+          })
+        )
+      ),
+    completeBackupTask: (taskId, result, now) =>
+      run(
+        "complete_backup_task",
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{ taskId: string }>`
+              SELECT task_id AS taskId
+              FROM relay_backup_tasks
+              WHERE task_id = ${taskId} AND status = 'running'
+              LIMIT 1
+            `
+            if (!rows[0]) return false
+            yield* sql`
+              UPDATE relay_backup_tasks
+              SET status = 'succeeded',
+                  result_json = ${JSON.stringify(result)},
+                  bytes_completed = ${result.bytes},
+                  bytes_total = ${result.bytes},
+                  error = NULL,
+                  finished_at = ${now},
+                  updated_at = ${now}
+              WHERE task_id = ${taskId} AND status = 'running'
+            `
+            return true
+          })
+        )
+      ),
+    failBackupTask: (taskId, error, now) =>
+      run(
+        "fail_backup_task",
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{ taskId: string }>`
+              SELECT task_id AS taskId
+              FROM relay_backup_tasks
+              WHERE task_id = ${taskId}
+                AND status IN ('queued', 'running')
+              LIMIT 1
+            `
+            if (!rows[0]) return false
+            yield* sql`
+              UPDATE relay_backup_tasks
+              SET status = 'failed',
+                  result_json = NULL,
+                  error = ${error.slice(0, 4_096)},
+                  finished_at = ${now},
+                  updated_at = ${now}
+              WHERE task_id = ${taskId}
+                AND status IN ('queued', 'running')
+            `
+            return true
+          })
+        )
+      ),
+    requeueInterruptedBackupTasks: (now) =>
+      run(
+        "requeue_interrupted_backup_tasks",
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{ count: number }>`
+              SELECT COUNT(*) AS count
+              FROM relay_backup_tasks
+              WHERE status = 'running'
+            `
+            const count = rows[0]?.count ?? 0
+            if (count === 0) return 0
+            yield* sql`
+              UPDATE relay_backup_tasks
+              SET status = 'queued',
+                  started_at = NULL,
+                  updated_at = ${now},
+                  error = 'Relay restarted before the task completed'
+              WHERE status = 'running' AND kind = 'create'
+            `
+            yield* sql`
+              UPDATE relay_backup_tasks
+              SET status = 'failed',
+                  updated_at = ${now},
+                  finished_at = ${now},
+                  error = 'Relay restarted during a non-repeatable task; inspect the target before retrying'
+              WHERE status = 'running' AND kind IN ('restore', 'delete')
+            `
+            return count
+          })
+        )
       ),
     findActiveInvitation: (invitationId, now) =>
       run(
@@ -1264,4 +1644,18 @@ function decodeAuditDetails(value: string) {
     try: (): unknown => JSON.parse(value),
     catch: (cause) => RelayStateError.make({ operation: "decode_json", cause }),
   }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(RelayAuditDetailsSchema)))
+}
+
+function decodeBackupTaskInput(value: string) {
+  return Effect.try({
+    try: () => backupTaskInputSchema.parse(JSON.parse(value)),
+    catch: (cause) => RelayStateError.make({ operation: "decode_json", cause }),
+  })
+}
+
+function decodeBackupTaskResult(value: string) {
+  return Effect.try({
+    try: () => backupTaskResultSchema.parse(JSON.parse(value)),
+    catch: (cause) => RelayStateError.make({ operation: "decode_json", cause }),
+  })
 }

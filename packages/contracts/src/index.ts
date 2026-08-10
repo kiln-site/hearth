@@ -7,6 +7,7 @@ export * from "./release-version.js"
 export * from "./minecraft-java.js"
 export * from "./cli.js"
 export * from "./instance-limits.js"
+export * from "./backups.js"
 
 export const relayIdSchema = z.string().regex(/^[A-Za-z\d_-]{43}$/u)
 
