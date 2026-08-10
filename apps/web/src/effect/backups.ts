@@ -326,12 +326,24 @@ const reserveBackupCreateEffect = Effect.fn("backups.reserveCreate")(
             "admin backup size limit"
           )
         )
-        const reservation = backupReservation({
-          quantityLimit,
-          quantityUsed,
-          requestedMaxBytes: input.requestedMaxBytes,
-          sizeLimit,
-          sizeUsed,
+        const reservation = yield* Effect.try({
+          try: () =>
+            backupReservation({
+              quantityLimit,
+              quantityUsed,
+              requestedMaxBytes: input.requestedMaxBytes,
+              sizeLimit,
+              sizeUsed,
+            }),
+          catch: (cause) =>
+            cause instanceof BackupLimitError
+              ? cause
+              : BackupStorageError.make({
+                  cause,
+                  code: "reservation_failed",
+                  operation: "backup.reserve",
+                  reason: "The backup reservation could not be calculated",
+                }),
         })
 
         yield* transaction.execute(

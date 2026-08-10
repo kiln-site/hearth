@@ -1,5 +1,14 @@
 import { z } from "zod"
 
+import {
+  backupArtifactKindSchema,
+  backupFilenameSchema,
+  backupIdSchema,
+  backupModeSchema,
+  backupStatusSchema,
+  backupTargetKindSchema,
+  backupTaskStatusSchema,
+} from "./backups.js"
 import { MINIMUM_INSTANCE_DISK_LIMIT_BYTES } from "./instance-limits.js"
 
 export const cliAccessModes = ["full_access", "read_only"] as const
@@ -268,6 +277,108 @@ export const cliDeleteServerResponseSchema = z
     deleted: z.literal(true),
     instanceId: z.string(),
     relayId: z.string(),
+  })
+  .strict()
+
+export const cliBackupSchema = z
+  .object({
+    artifactKind: backupArtifactKindSchema,
+    backupMode: backupModeSchema,
+    bytes: z.number().int().nonnegative().nullable(),
+    createdAt: z.iso.datetime(),
+    destination: z.enum(["local", "s3"]),
+    filename: backupFilenameSchema.nullable(),
+    id: backupIdSchema,
+    name: z.string().min(1).max(120),
+    relayId: z.string().regex(/^[A-Za-z\d_-]{43}$/u),
+    status: backupStatusSchema,
+    targetId: z.string().min(1).max(120),
+    targetKind: backupTargetKindSchema,
+    taskError: z.string().nullable(),
+    taskStatus: backupTaskStatusSchema,
+  })
+  .strict()
+
+export const cliBackupsResponseSchema = z
+  .object({ backups: z.array(cliBackupSchema) })
+  .strict()
+
+export const cliBackupTargetSchema = z
+  .object({
+    kind: z.enum(["server", "database", "platform"]),
+    name: z.string().min(1).max(120),
+    reference: z.string().min(1).max(256),
+    relayName: z.string().min(1).max(120),
+  })
+  .strict()
+
+export const cliBackupTargetsResponseSchema = z
+  .object({ targets: z.array(cliBackupTargetSchema) })
+  .strict()
+
+const cliCreateBackupBaseSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  relayId: z.string().regex(/^[A-Za-z\d_-]{43}$/u),
+  storageId: z.union([z.uuid(), z.null()]).optional(),
+})
+
+export const cliCreateBackupRequestSchema = z.discriminatedUnion("targetKind", [
+  cliCreateBackupBaseSchema
+    .extend({
+      targetId: z.string().min(1).max(120),
+      targetKind: z.literal("instance"),
+    })
+    .strict(),
+  cliCreateBackupBaseSchema
+    .extend({
+      targetId: z.string().min(1).max(120),
+      targetKind: z.literal("database"),
+    })
+    .strict(),
+  cliCreateBackupBaseSchema
+    .extend({ targetKind: z.literal("platform") })
+    .strict(),
+])
+
+export const cliBackupMutationResponseSchema = z
+  .object({
+    backupId: backupIdSchema,
+    relayAccepted: z.boolean(),
+    taskId: z.uuid(),
+  })
+  .strict()
+
+export const cliRestoreBackupRequestSchema = z
+  .object({ backupId: backupIdSchema, safetyBackup: z.boolean().default(true) })
+  .strict()
+
+export const cliRestoreBackupResponseSchema = z
+  .object({
+    relayAccepted: z.boolean(),
+    restoreTaskId: z.uuid(),
+    safetyBackupId: backupIdSchema.nullable(),
+  })
+  .strict()
+
+export const cliDeleteBackupRequestSchema = z
+  .object({ backupId: backupIdSchema, confirmation: backupIdSchema })
+  .strict()
+
+export const cliDeleteBackupResponseSchema = z
+  .object({ backupId: backupIdSchema, relayAccepted: z.boolean() })
+  .strict()
+
+export const cliBackupDownloadRequestSchema = z
+  .object({ backupId: backupIdSchema })
+  .strict()
+
+export const cliBackupDownloadResponseSchema = z
+  .object({
+    expiresAt: z.iso.datetime(),
+    filename: backupFilenameSchema,
+    url: z.url().refine((value) => new URL(value).protocol === "https:", {
+      message: "Backup downloads must use HTTPS",
+    }),
   })
   .strict()
 

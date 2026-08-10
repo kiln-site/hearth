@@ -2,42 +2,42 @@ import { describe, expect, it } from "vite-plus/test"
 
 import type { BackupCatalogRecord } from "@/effect/backups"
 import type { AccessGrant } from "@/lib/access-control"
-import type { AuthenticatedUser } from "@/lib/auth-session"
 import { hasBackupPermission } from "@/lib/backup-access"
+import type { AuthenticatedUser } from "@/lib/auth-session"
 
-const user: AuthenticatedUser = {
-  email: "creator@example.com",
+const user = {
+  email: "user@example.com",
   emailVerified: true,
-  id: "creator",
+  id: "user-1",
   isDevelopmentBypass: false,
-  name: "Creator",
+  name: "User",
   role: "user",
   twoFactorEnabled: false,
-}
+} satisfies AuthenticatedUser
 
-const backup: BackupCatalogRecord = {
+const backup = {
   artifactKind: "archive",
   backupMode: "full",
   bytes: 1,
-  checksumSha256: "0".repeat(64),
+  checksumSha256: "a".repeat(64),
   completedAt: "2026-08-10T00:00:00.000Z",
   createdAt: "2026-08-10T00:00:00.000Z",
-  createdBy: user.id,
+  createdBy: "another-user",
   filename: "backup.zip",
-  id: "backup-one",
-  name: "Backup one",
+  id: "15e6df81-575f-421d-a666-e3eaabaafc3b",
+  name: "Backup",
   objectKey: null,
   reason: "manual",
-  relayId: "relay-one",
+  relayId: "relay-1",
   status: "available",
   storageId: null,
-  targetId: "instance-one",
+  targetId: "instance-1",
   targetKind: "instance",
   taskError: null,
-  taskId: "task-one",
+  taskId: "319864b6-421f-4a19-8946-f51048245d73",
   taskStatus: "succeeded",
   warnings: [],
-}
+} satisfies BackupCatalogRecord
 
 describe("backup access", () => {
   it("keeps platform bundles exclusive to platform admins", () => {
@@ -73,29 +73,43 @@ describe("backup access", () => {
     ).toBe(true)
   })
 
-  it("keeps creator download access without granting restore or delete", () => {
-    expect(hasBackupPermission(user, [], backup, "backup.read")).toBe(true)
-    expect(hasBackupPermission(user, [], backup, "backup.download")).toBe(true)
-    expect(hasBackupPermission(user, [], backup, "backup.restore")).toBe(false)
-    expect(hasBackupPermission(user, [], backup, "backup.delete")).toBe(false)
+  it("keeps creator reads and downloads without granting mutations", () => {
+    const creatorBackup = { ...backup, createdBy: user.id }
+    expect(hasBackupPermission(user, [], creatorBackup, "backup.read")).toBe(
+      true
+    )
+    expect(
+      hasBackupPermission(user, [], creatorBackup, "backup.download")
+    ).toBe(true)
+    expect(hasBackupPermission(user, [], creatorBackup, "backup.restore")).toBe(
+      false
+    )
+    expect(hasBackupPermission(user, [], creatorBackup, "backup.delete")).toBe(
+      false
+    )
   })
 
-  it("uses current resource grants for mutating backup actions", () => {
-    const grants: Array<AccessGrant> = [
-      {
-        id: "grant-one",
-        relayId: backup.relayId,
-        resourceId: backup.targetId,
-        resourceType: "instance",
-        role: "operator",
-      },
-    ]
-
-    expect(hasBackupPermission(user, grants, backup, "backup.restore")).toBe(
+  it("uses matching current grants for mutating backup actions", () => {
+    const grant = {
+      id: "grant-1",
+      relayId: backup.relayId,
+      resourceId: backup.targetId,
+      resourceType: "instance",
+      role: "operator",
+    } satisfies AccessGrant
+    expect(hasBackupPermission(user, [grant], backup, "backup.restore")).toBe(
       true
     )
-    expect(hasBackupPermission(user, grants, backup, "backup.delete")).toBe(
+    expect(hasBackupPermission(user, [grant], backup, "backup.delete")).toBe(
       true
     )
+    expect(
+      hasBackupPermission(
+        user,
+        [{ ...grant, resourceId: "another-instance" }],
+        backup,
+        "backup.restore"
+      )
+    ).toBe(false)
   })
 })

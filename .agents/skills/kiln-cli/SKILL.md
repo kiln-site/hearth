@@ -1,7 +1,7 @@
 ---
 name: kiln-cli
-description: Use the Kiln CLI to authenticate, select profiles, inspect Relays, activity, and server metadata, create or delete servers, change Bricks and startup settings, inspect logs, send console or power commands, and manage server files including Relay-side HTTPS downloads. Use when a user asks to run, test, or troubleshoot `kiln` commands or mentions Kiln CLI Relay/server references, startup settings, remote paths, or file transfers.
-version: "1.1.0"
+description: Use the Kiln CLI to authenticate, select profiles, inspect Relays, activity, backups, and server metadata, create or delete servers, create, restore, download, or delete backups, change Bricks and startup settings, inspect logs, send console or power commands, and manage server files including Relay-side HTTPS downloads. Use when a user asks to run, test, or troubleshoot `kiln` commands or mentions Kiln CLI Relay/server references, backups, startup settings, remote paths, or file transfers.
+version: "1.2.0"
 requires:
   bins: ["kiln"]
   auth: true
@@ -134,6 +134,67 @@ kiln server delete <server> --confirm <server>
 
 The confirmation must exactly match `<relay-id>:<instance-id>`. Deletion
 requires full CLI access and `instance.delete` permission.
+
+## Backups
+
+Discover every server, database, and platform target that the active account
+can back up:
+
+```sh
+kiln backups targets
+```
+
+List visible backups and copy the complete UUID from the `ID` column:
+
+```sh
+kiln backups list --limit 200
+```
+
+Create a manual backup with a reference from `backups targets`:
+
+```sh
+kiln backups create server <relay-id>:<instance-id> --name "Before update"
+kiln backups create database <relay-id>:<database-id> --name "Before migration"
+kiln backups create platform <relay-id> --name "Before Hearth update"
+```
+
+The default destination follows the server backup policy and otherwise uses
+Relay-local storage. Override it explicitly when needed:
+
+```sh
+kiln backups create server <server> --storage local
+kiln backups create server <server> --storage <destination-uuid>
+```
+
+Restore a complete server or database backup by UUID. A full safety backup is
+created first unless explicitly disabled. Game servers must be stopped;
+managed databases remain online for their logical import:
+
+```sh
+kiln backup restore <backup-id>
+kiln backup restore <backup-id> --no-safety-backup
+```
+
+Download through a temporary signed URL without printing the URL itself. The
+backup filename is used when the local path is omitted:
+
+```sh
+kiln backup download <backup-id>
+kiln backup download <backup-id> ./before-update.zip
+```
+
+Permanently remove a retained or failed backup only after confirming the exact
+UUID:
+
+```sh
+kiln backup delete <backup-id> --confirm <backup-id>
+```
+
+Create, restore, and delete require a full-access CLI credential and the
+matching backup permission. Relay owns the durable single-worker queue, so a
+successful reservation can report that it will resume after Relay reconnects.
+Platform restores remain an offline Hearth operation and are not exposed as a
+CLI restore command.
 
 ## Bricks and startup settings
 

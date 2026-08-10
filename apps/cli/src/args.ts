@@ -16,6 +16,8 @@ export interface CliArguments {
   name?: string
   noOpen: boolean
   profile?: string
+  safetyBackup: boolean
+  storage?: string
   token?: string
   url?: string
   variables: Array<string>
@@ -37,6 +39,8 @@ export function parseArguments(argv: Array<string>): CliArguments {
   let name: string | undefined
   let noOpen = false
   let profile: string | undefined
+  let safetyBackup = true
+  let storage: string | undefined
   let token: string | undefined
   let url: string | undefined
   const variables: Array<string> = []
@@ -69,6 +73,7 @@ export function parseArguments(argv: Array<string>): CliArguments {
     else if (flag === "--java-version") javaVersion = value()
     else if (flag === "--memory") memory = value()
     else if (flag === "--no-open") noOpen = true
+    else if (flag === "--no-safety-backup") safetyBackup = false
     else if (flag === "--no-start") start = false
     else if (flag === "--version" || flag === "-v") version = true
     else if (flag === "--limit") {
@@ -88,6 +93,7 @@ export function parseArguments(argv: Array<string>): CliArguments {
       limit = parsed.data
     } else if (flag === "--name") name = value()
     else if (flag === "--profile") profile = value()
+    else if (flag === "--storage") storage = value()
     else if (flag === "--token") token = value()
     else if (flag === "--url") url = value()
     else if (flag === "--variable") variables.push(value())
@@ -113,6 +119,8 @@ export function parseArguments(argv: Array<string>): CliArguments {
     ...(name ? { name } : {}),
     noOpen,
     ...(profile ? { profile } : {}),
+    safetyBackup,
+    ...(storage ? { storage } : {}),
     ...(token ? { token } : {}),
     ...(url ? { url } : {}),
     variables,

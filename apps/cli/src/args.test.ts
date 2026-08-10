@@ -79,4 +79,22 @@ describe("CLI arguments", () => {
       variables: ["online_mode=json:false"],
     })
   })
+
+  it("parses backup destination and restore safety options", () => {
+    expect(
+      parseArguments([
+        "backups",
+        "create",
+        "server",
+        "relay:instance",
+        "--storage",
+        "local",
+        "--no-safety-backup",
+      ])
+    ).toMatchObject({
+      command: ["backups", "create", "server", "relay:instance"],
+      safetyBackup: false,
+      storage: "local",
+    })
+  })
 })

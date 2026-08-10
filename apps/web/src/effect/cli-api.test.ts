@@ -3,6 +3,8 @@ import { Effect } from "effect"
 import { vi } from "vite-plus/test"
 import {
   cliBrickReferenceSchema,
+  cliBackupDownloadResponseSchema,
+  cliCreateBackupRequestSchema,
   cliRemoteFileUploadRequestSchema,
   cliServerInfoResponseSchema,
 } from "@workspace/contracts"
@@ -141,6 +143,30 @@ describe("CLI response and URL boundaries", () => {
       cliBrickReferenceSchema.safeParse(
         "https://user:password@example.com/paper.yml"
       ).success
+    )
+  })
+
+  it("keeps backup targets typed and signed downloads HTTPS-only", () => {
+    assert.isTrue(
+      cliCreateBackupRequestSchema.safeParse({
+        name: "Platform backup",
+        relayId: "r".repeat(43),
+        targetKind: "platform",
+      }).success
+    )
+    assert.isFalse(
+      cliCreateBackupRequestSchema.safeParse({
+        name: "Server backup",
+        relayId: "r".repeat(43),
+        targetKind: "instance",
+      }).success
+    )
+    assert.isFalse(
+      cliBackupDownloadResponseSchema.safeParse({
+        expiresAt: "2026-08-10T00:00:00.000Z",
+        filename: "backup.zip",
+        url: "http://relay.example.com/backup.zip",
+      }).success
     )
   })
 

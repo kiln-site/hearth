@@ -71,6 +71,19 @@ export const publicJsonEffect = Effect.fn("cli.http.publicJson")(function* <
   })
 })
 
+export const publicResponseEffect = Effect.fn("cli.http.publicResponse")(
+  function* (url: string, init?: CliRequestInit) {
+    return yield* requestEffect(url, {
+      ...init,
+      headers: {
+        Accept: "application/octet-stream",
+        "User-Agent": "kiln-cli/0.0.1",
+        ...init?.headers,
+      },
+    })
+  }
+)
+
 function requestEffect(url: string, init: CliRequestInit) {
   const { timeoutMs = 30_000, ...requestInit } = init
   return Effect.tryPromise({

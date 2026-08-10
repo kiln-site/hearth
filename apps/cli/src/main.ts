@@ -6,13 +6,20 @@ import { basename } from "node:path"
 import { spawn } from "node:child_process"
 
 import {
+  backupIdSchema,
   cliActivityResponseSchema,
+  cliBackupDownloadResponseSchema,
+  cliBackupMutationResponseSchema,
+  cliBackupTargetsResponseSchema,
+  cliBackupsResponseSchema,
+  cliDeleteBackupResponseSchema,
   cliDeleteServerResponseSchema,
   cliDeviceCodeResponseSchema,
   cliDeviceTokenResponseSchema,
   cliRelayInfoResponseSchema,
   cliRelaysResponseSchema,
   cliRemoteFileUploadResponseSchema,
+  cliRestoreBackupResponseSchema,
   cliServerReferenceSchema,
   cliServerInfoResponseSchema,
   cliServerMutationResponseSchema,
@@ -38,6 +45,7 @@ import {
   type KilnSession,
 } from "./config.js"
 import { CliCommandError, commandError } from "./errors.js"
+import { downloadBackupEffect } from "./downloads.js"
 import {
   apiJsonEffect,
   apiResponseEffect,
@@ -218,6 +226,169 @@ const runCommandEffect = Effect.fn("cli.command")(function* (
         ])
       )
     }
+    return
+  }
+  if (group === "backups" && action === "targets") {
+    const result = yield* apiJsonEffect(
+      session,
+      "/api/cli/v1/backup-targets",
+      cliBackupTargetsResponseSchema
+    )
+    if (result.targets.length === 0) {
+      writeLine("No backup targets found.")
+    } else {
+      writeTable(
+        ["TYPE", "NAME", "RELAY", "REFERENCE"],
+        result.targets.map((target) => [
+          target.kind,
+          target.name,
+          target.relayName,
+          target.reference,
+        ])
+      )
+    }
+    return
+  }
+  if (group === "backups" && action === "list") {
+    const query = new URLSearchParams({ limit: String(args.limit) })
+    const result = yield* apiJsonEffect(
+      session,
+      `/api/cli/v1/backups?${query}`,
+      cliBackupsResponseSchema
+    )
+    if (result.backups.length === 0) {
+      writeLine("No backups found.")
+    } else {
+      writeTable(
+        ["CREATED", "STATUS", "NAME", "TARGET", "DEST", "SIZE", "ID"],
+        result.backups.map((backup) => [
+          backup.createdAt,
+          cliBackupStatus(backup),
+          backup.name,
+          `${backup.targetKind}:${backup.targetId}`,
+          backup.destination,
+          backup.bytes === null ? "-" : formatBytes(backup.bytes),
+          backup.id,
+        ])
+      )
+    }
+    return
+  }
+  if (group === "backups" && action === "create") {
+    const targetKind = z
+      .enum(["server", "database", "platform"])
+      .safeParse(rest[0])
+    if (!targetKind.success) {
+      return yield* invalidUsage(
+        "Usage: kiln backups create <server|database|platform> <reference> [--name <name>] [--storage <default|local|id>]"
+      )
+    }
+    const storageId = yield* parseBackupStorageEffect(args.storage)
+    const common = {
+      name: args.name?.trim() || "CLI backup",
+      ...(storageId === undefined ? {} : { storageId }),
+    }
+    const body =
+      targetKind.data === "platform"
+        ? {
+            ...common,
+            relayId: yield* parseRelayIdEffect(rest[1]),
+            targetKind: "platform",
+          }
+        : targetKind.data === "server"
+          ? yield* parseServerReferenceEffect(rest[1]).pipe(
+              Effect.map((target) => ({
+                ...common,
+                relayId: target.relayId,
+                targetId: target.instanceId,
+                targetKind: "instance",
+              }))
+            )
+          : {
+              ...common,
+              ...(yield* parseBackupTargetReferenceEffect(rest[1])),
+              targetKind: "database",
+            }
+    const result = yield* apiJsonEffect(
+      session,
+      "/api/cli/v1/backups",
+      cliBackupMutationResponseSchema,
+      jsonRequest("POST", body, CLI_LONG_OPERATION_TIMEOUT_MS)
+    )
+    writeLine(
+      result.relayAccepted
+        ? `Queued backup ${result.backupId}.`
+        : `Saved backup ${result.backupId}; Relay will resume it when connected.`
+    )
+    return
+  }
+  if (group === "backup" && action === "restore") {
+    const backupId = yield* parseBackupIdEffect(rest[0])
+    const result = yield* apiJsonEffect(
+      session,
+      "/api/cli/v1/backup/restore",
+      cliRestoreBackupResponseSchema,
+      jsonRequest(
+        "POST",
+        { backupId, safetyBackup: args.safetyBackup },
+        CLI_LONG_OPERATION_TIMEOUT_MS
+      )
+    )
+    writeLine(
+      result.relayAccepted
+        ? `Queued restore ${result.restoreTaskId}.`
+        : `Saved restore ${result.restoreTaskId}; Relay will resume it when connected.`
+    )
+    if (result.safetyBackupId) {
+      writeLine(`Safety backup: ${result.safetyBackupId}`)
+    }
+    return
+  }
+  if (group === "backup" && action === "delete") {
+    const backupId = yield* parseBackupIdEffect(rest[0])
+    if (!args.confirm) {
+      return yield* invalidUsage(
+        `Deletion permanently removes the stored artifact. Repeat the backup ID with --confirm ${backupId}.`
+      )
+    }
+    if (args.confirm !== backupId) {
+      return yield* invalidUsage(
+        `Deletion confirmation must exactly match ${backupId}.`
+      )
+    }
+    const result = yield* apiJsonEffect(
+      session,
+      "/api/cli/v1/backup",
+      cliDeleteBackupResponseSchema,
+      jsonRequest(
+        "DELETE",
+        { backupId, confirmation: args.confirm },
+        CLI_LONG_OPERATION_TIMEOUT_MS
+      )
+    )
+    writeLine(
+      result.relayAccepted
+        ? `Queued deletion of ${result.backupId}.`
+        : `Saved deletion of ${result.backupId}; Relay will resume it when connected.`
+    )
+    return
+  }
+  if (group === "backup" && action === "download") {
+    const backupId = yield* parseBackupIdEffect(rest[0])
+    const signed = yield* apiJsonEffect(
+      session,
+      "/api/cli/v1/backup/download",
+      cliBackupDownloadResponseSchema,
+      jsonRequest("POST", { backupId })
+    )
+    const localPath = rest[1] || basename(signed.filename)
+    const downloaded = yield* downloadBackupEffect({
+      localPath,
+      url: signed.url,
+    })
+    writeLine(
+      `Downloaded ${downloaded.bytes} bytes to ${downloaded.localPath}.`
+    )
     return
   }
   if (group === "servers" && action === "create") {
@@ -791,6 +962,65 @@ const parseServerReferenceEffect = Effect.fn("cli.serverReference.parse")(
   }
 )
 
+const parseBackupTargetReferenceEffect = Effect.fn(
+  "cli.backupTargetReference.parse"
+)(function* (value: string | undefined) {
+  const separator = value?.indexOf(":") ?? -1
+  const targetId = separator > 0 ? value?.slice(separator + 1) : undefined
+  const parsedTarget = z.string().min(1).max(120).safeParse(targetId)
+  if (!value || separator < 1 || !parsedTarget.success) {
+    return yield* commandError({
+      code: "invalid_arguments",
+      exitCode: 2,
+      message: "Backup target references use relayId:targetId.",
+    })
+  }
+  const relayId = yield* parseRelayIdEffect(value.slice(0, separator))
+  return { relayId, targetId: parsedTarget.data }
+})
+
+const parseBackupIdEffect = Effect.fn("cli.backupId.parse")(function* (
+  value: string | undefined
+) {
+  const parsed = backupIdSchema.safeParse(value)
+  if (!parsed.success) {
+    return yield* commandError({
+      code: "invalid_arguments",
+      exitCode: 2,
+      message: "A complete backup UUID is required. Run `kiln backups list`.",
+    })
+  }
+  return parsed.data
+})
+
+const parseBackupStorageEffect = Effect.fn("cli.backupStorage.parse")(
+  function* (value: string | undefined) {
+    if (!value || value === "default") return undefined
+    if (value === "local") return null
+    const parsed = z.uuid().safeParse(value)
+    if (!parsed.success) {
+      return yield* commandError({
+        code: "invalid_arguments",
+        exitCode: 2,
+        message: "--storage must be default, local, or a destination UUID.",
+      })
+    }
+    return parsed.data
+  }
+)
+
+function cliBackupStatus(
+  backup: z.infer<typeof cliBackupsResponseSchema>["backups"][number]
+): string {
+  if (
+    backup.status === "available" &&
+    (backup.taskStatus === "queued" || backup.taskStatus === "running")
+  ) {
+    return "restoring"
+  }
+  return backup.status
+}
+
 const requiredPathEffect = Effect.fn("cli.path.required")(function* (
   value: string | undefined
 ) {
@@ -909,6 +1139,13 @@ Commands:
   relays list                             List accessible Relays
   relay info <relay-id>                   Show Relay metadata and capacity
   activity list                           Show accessible recent activity
+  backups targets                         List resources that can be backed up
+  backups list                            List accessible backups
+  backups create <type> <reference>       Create a manual backup
+  backup restore <backup-id>              Restore a server or database backup
+  backup download <backup-id> [local]     Download a backup
+  backup delete <backup-id> --confirm <backup-id>
+                                          Permanently delete a backup
   servers list                            List available servers
   servers create <relay> <brick>          Create a server
   server info <server>                    Show server metadata and resources
@@ -928,8 +1165,7 @@ Commands:
 
 Options:
       --brick <id|url> Change the Brick recipe
-      --confirm <server>
-                       Confirm a destructive server deletion
+      --confirm <id>   Confirm a destructive server or backup deletion
       --disk <size>    Set disk quota (minimum 0.1GiB), for example 25GiB
   -f, --follow        Follow server logs
       --game-version <version>
@@ -937,12 +1173,16 @@ Options:
   -h, --help          Show help
       --java-version <version>
                        Set the Brick's java_version variable
-      --limit <n>     Limit log or activity history (1-10000)
+      --limit <n>     Limit log, activity, or backup history (1-10000)
       --memory <size> Set the Brick's memory variable, for example 4GiB
-      --name <name>   Name this CLI credential or new server
+      --name <name>   Name this CLI credential, server, or backup
       --no-open       Do not open a browser during login
+      --no-safety-backup
+                       Restore without taking a full backup first
       --no-start      Leave a created or reconfigured server stopped
       --profile <id>  Use a named profile
+      --storage <default|local|id>
+                       Select a backup destination
       --token <token> Use a token without saving it
       --url <url>     Use a specific Kiln or Hearth URL
       --variable <name=value>

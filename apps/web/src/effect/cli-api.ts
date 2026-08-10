@@ -1,7 +1,17 @@
+import { randomUUID } from "node:crypto"
+
 import type { CliPrincipal } from "@/effect/cli-access"
 import {
   cliActivityResponseSchema,
+  cliBackupDownloadRequestSchema,
+  cliBackupDownloadResponseSchema,
+  cliBackupMutationResponseSchema,
+  cliBackupTargetsResponseSchema,
+  cliBackupsResponseSchema,
   cliCreateServerRequestSchema,
+  cliCreateBackupRequestSchema,
+  cliDeleteBackupRequestSchema,
+  cliDeleteBackupResponseSchema,
   cliDeleteServerRequestSchema,
   cliFileTargetSchema,
   cliFileWriteRequestSchema,
@@ -9,6 +19,8 @@ import {
   cliRelayInfoResponseSchema,
   cliRelaySchema,
   cliRelaysResponseSchema,
+  cliRestoreBackupRequestSchema,
+  cliRestoreBackupResponseSchema,
   cliRemoteFileUploadRequestSchema,
   cliRemoteFileUploadResponseSchema,
   cliServerSchema,
@@ -30,6 +42,20 @@ import { Effect, Option, Result } from "effect"
 import { z } from "zod"
 
 import { cliRelaySubject, requireCliWrite } from "@/effect/cli-access"
+import {
+  listBackupCatalogEffect,
+  reserveBackupDeleteEffect,
+  reserveBackupRestoreEffect,
+  reserveDatabaseBackupEffect,
+  reserveInstanceBackupEffect,
+  reservePlatformBackupEffect,
+  type BackupCatalogRecord,
+  type BackupDispatch,
+} from "@/effect/backups"
+import {
+  loadBackupStorageCredentialEffect,
+  loadBackupStorageEffect,
+} from "@/effect/backup-storage"
 import { CliAccessError } from "@/effect/errors"
 import {
   allowedInstanceIdsEffect,
@@ -37,15 +63,24 @@ import {
   listUserGrantsEffect,
   requireRelayPermissionEffect,
 } from "@/lib/access-control"
+import { hasBackupPermission } from "@/lib/backup-access"
+import { signLocalBackupDownload } from "@/lib/backup-download"
+import { signS3BackupDownload } from "@/lib/backup-storage-s3"
 import type { AccessPermission } from "@/lib/permissions"
 import { roleHasPermission } from "@/lib/permissions"
 import { invalidateRelayCache, relayCachePolicy } from "@/lib/relay-client"
 import { relayRpc } from "@/lib/relay-connection"
+import {
+  dispatchBackupTask,
+  reconcileRelayBackups,
+} from "@/lib/backup-reconciliation"
 import { deleteInstanceWithFinalBackup } from "@/lib/final-instance-deletion"
+import { kilnInstallationId } from "@/lib/environment"
 import {
   listPersistedRelaysEffect,
   type PersistedRelay,
 } from "@/lib/relay-registry"
+import { listManagedDatabaseRecordsEffect } from "@/effect/managed-databases"
 import { getActivityForUser } from "@/server/activity-data.server"
 import { provisionInstanceDomainBestEffort } from "@/server/domains.server"
 
@@ -228,6 +263,370 @@ export const listCliActivityEffect = Effect.fn("cli.api.activity.list")(
         }),
     })
     return cliActivityResponse(activity.entries, limit)
+  }
+)
+
+export const listCliBackupsEffect = Effect.fn("cli.api.backups.list")(
+  function* (principal: CliPrincipal, limit: number) {
+    const grants = isPlatformAdmin(principal.user)
+      ? []
+      : yield* listUserGrantsEffect(principal.user.id)
+    const catalog = yield* loadCliBackupCatalogEffect()
+    const visibleRelayIds = new Set(
+      catalog
+        .filter((backup) =>
+          hasBackupPermission(principal.user, grants, backup, "backup.read")
+        )
+        .map((backup) => backup.relayId)
+    )
+    const relays = (yield* listPersistedRelaysEffect()).filter(
+      (relay) => relay.enabled && visibleRelayIds.has(relay.id)
+    )
+    yield* Effect.forEach(
+      relays,
+      (relay) =>
+        Effect.tryPromise({
+          try: () => reconcileRelayBackups(relay, cliRelaySubject(principal)),
+          catch: () => undefined,
+        }).pipe(Effect.ignore),
+      { concurrency: 4 }
+    )
+    const reconciled = yield* loadCliBackupCatalogEffect()
+    return cliBackupsResponseSchema.parse({
+      backups: reconciled
+        .filter((backup) =>
+          hasBackupPermission(principal.user, grants, backup, "backup.read")
+        )
+        .slice(0, limit)
+        .map(cliBackupSummary),
+    })
+  }
+)
+
+export const listCliBackupTargetsEffect = Effect.fn("cli.api.backups.targets")(
+  function* (principal: CliPrincipal) {
+    const [servers, records, relays, grants] = yield* Effect.all(
+      [
+        listCliServersEffect(principal),
+        mapCliBackupFailure(
+          listManagedDatabaseRecordsEffect(),
+          "Hearth could not inspect managed databases."
+        ),
+        listPersistedRelaysEffect(),
+        isPlatformAdmin(principal.user)
+          ? Effect.succeed([])
+          : listUserGrantsEffect(principal.user.id),
+      ],
+      { concurrency: 4 }
+    )
+    const relayNames = new Map(relays.map((relay) => [relay.id, relay.name]))
+    const enabledRelayIds = new Set(
+      relays.filter((relay) => relay.enabled).map((relay) => relay.id)
+    )
+    const targets = [
+      ...servers.servers
+        .filter(
+          (server) =>
+            isPlatformAdmin(principal.user) ||
+            grants.some(
+              (grant) =>
+                grant.relayId === server.relayId &&
+                roleHasPermission(grant.role, "backup.create") &&
+                (grant.resourceType === "relay" ||
+                  (grant.resourceType === "instance" &&
+                    grant.resourceId === server.instanceId))
+            )
+        )
+        .map((server) => ({
+          kind: "server",
+          name: server.name,
+          reference: server.id,
+          relayName: server.relayName,
+        })),
+      ...records
+        .filter(
+          (record) =>
+            enabledRelayIds.has(record.relayId) &&
+            (isPlatformAdmin(principal.user) ||
+              grants.some(
+                (grant) =>
+                  grant.relayId === record.relayId &&
+                  roleHasPermission(grant.role, "backup.create") &&
+                  (grant.resourceType === "relay" ||
+                    (grant.resourceType === "database" &&
+                      grant.resourceId === record.databaseId))
+              ))
+        )
+        .map((record) => ({
+          kind: "database",
+          name: record.name,
+          reference: `${record.relayId}:${record.databaseId}`,
+          relayName: relayNames.get(record.relayId) ?? record.relayId,
+        })),
+      ...(isPlatformAdmin(principal.user)
+        ? relays
+            .filter((relay) => relay.enabled)
+            .map((relay) => ({
+              kind: "platform",
+              name: "Kiln platform",
+              reference: relay.id,
+              relayName: relay.name,
+            }))
+        : []),
+    ]
+    return cliBackupTargetsResponseSchema.parse({ targets })
+  }
+)
+
+export const createCliBackupEffect = Effect.fn("cli.api.backups.create")(
+  function* (principal: CliPrincipal, unknownInput: unknown) {
+    yield* requireCliWrite(principal)
+    const input = yield* parseInput(cliCreateBackupRequestSchema, unknownInput)
+    const relay = yield* authorizeCliBackupCreateTarget(principal, input)
+    yield* validateCliBackupStorage(principal, input)
+    const backupId = randomUUID()
+    const taskId = randomUUID()
+    const common = {
+      backupId,
+      createdBy: principal.user.id,
+      name: input.name,
+      relayId: relay.id,
+      requestedMaxBytes: null,
+      ...(input.storageId === undefined ? {} : { storageId: input.storageId }),
+      taskId,
+    }
+    const dispatch = yield* mapCliBackupFailure(
+      input.targetKind === "instance"
+        ? reserveInstanceBackupEffect({
+            ...common,
+            targetId: input.targetId,
+          })
+        : input.targetKind === "database"
+          ? reserveDatabaseBackupEffect({
+              ...common,
+              targetId: input.targetId,
+            })
+          : reservePlatformBackupEffect({
+              ...common,
+              targetId: kilnInstallationId(),
+            }),
+      "Hearth could not reserve the backup."
+    )
+    const relayAccepted = yield* enqueueCliBackupEffect(
+      principal,
+      relay,
+      dispatch
+    )
+    return cliBackupMutationResponseSchema.parse({
+      backupId,
+      relayAccepted,
+      taskId,
+    })
+  }
+)
+
+export const restoreCliBackupEffect = Effect.fn("cli.api.backups.restore")(
+  function* (principal: CliPrincipal, unknownInput: unknown) {
+    yield* requireCliWrite(principal)
+    const input = yield* parseInput(cliRestoreBackupRequestSchema, unknownInput)
+    const { backup } = yield* loadCliBackupForAction(
+      principal,
+      input.backupId,
+      "backup.restore"
+    )
+    if (
+      backup.status !== "available" ||
+      backup.backupMode !== "full" ||
+      (backup.targetKind !== "instance" && backup.targetKind !== "database") ||
+      (backup.targetKind === "instance" &&
+        backup.artifactKind !== "archive") ||
+      (backup.targetKind === "database" &&
+        backup.artifactKind !== "database_dump")
+    ) {
+      return yield* cliConflict(
+        "Only complete server or database backups can be restored."
+      )
+    }
+    const relay = yield* requiredRelay(backup.relayId)
+    if (input.safetyBackup) {
+      yield* requireCliBackupPermission(principal, backup, "backup.create")
+    }
+    if (backup.targetKind === "instance") {
+      const snapshot = yield* relayRpcEffect(
+        relay,
+        "relay.snapshot",
+        {},
+        principal
+      ).pipe(Effect.flatMap(parseRelaySnapshot))
+      const instance = snapshot.instances.find(
+        (candidate) => candidate.id === backup.targetId
+      )
+      if (!instance)
+        return yield* cliNotFound("The restore target was not found.")
+      if (
+        instance.observedState !== "stopped" ||
+        instance.desiredState !== "stopped"
+      ) {
+        return yield* cliConflict(
+          "Stop the server before restoring its backup."
+        )
+      }
+    } else {
+      const records = yield* mapCliBackupFailure(
+        listManagedDatabaseRecordsEffect(),
+        "Hearth could not inspect managed databases."
+      )
+      if (
+        !records.some(
+          (record) =>
+            record.relayId === relay.id && record.databaseId === backup.targetId
+        )
+      ) {
+        return yield* cliNotFound("The restore target was not found.")
+      }
+    }
+    const safety = input.safetyBackup
+      ? yield* mapCliBackupFailure(
+          backup.targetKind === "instance"
+            ? reserveInstanceBackupEffect({
+                backupId: randomUUID(),
+                createdBy: principal.user.id,
+                name: `Before restoring ${backup.name}`.slice(0, 120),
+                reason: "pre_restore",
+                relayId: relay.id,
+                requestedMaxBytes: null,
+                targetId: backup.targetId,
+                taskId: randomUUID(),
+              })
+            : reserveDatabaseBackupEffect({
+                backupId: randomUUID(),
+                createdBy: principal.user.id,
+                name: `Before restoring ${backup.name}`.slice(0, 120),
+                reason: "pre_restore",
+                relayId: relay.id,
+                requestedMaxBytes: null,
+                targetId: backup.targetId,
+                taskId: randomUUID(),
+              }),
+          "Hearth could not reserve the safety backup."
+        )
+      : null
+    const restore = yield* mapCliBackupFailure(
+      reserveBackupRestoreEffect({
+        backupId: backup.id,
+        dependsOnTaskId: safety?.taskId ?? null,
+        requestedBy: principal.user.id,
+        taskId: randomUUID(),
+      }),
+      "Hearth could not reserve the restore."
+    )
+    const relayAccepted = yield* enqueueCliBackupEffect(
+      principal,
+      relay,
+      safety ?? restore
+    )
+    return cliRestoreBackupResponseSchema.parse({
+      relayAccepted,
+      restoreTaskId: restore.taskId,
+      safetyBackupId: safety?.backupId ?? null,
+    })
+  }
+)
+
+export const deleteCliBackupEffect = Effect.fn("cli.api.backups.delete")(
+  function* (principal: CliPrincipal, unknownInput: unknown) {
+    yield* requireCliWrite(principal)
+    const input = yield* parseInput(cliDeleteBackupRequestSchema, unknownInput)
+    if (input.confirmation !== input.backupId) {
+      return yield* forbidden(
+        "The backup confirmation did not match the requested backup."
+      )
+    }
+    const { backup } = yield* loadCliBackupForAction(
+      principal,
+      input.backupId,
+      "backup.delete"
+    )
+    const relay = yield* requiredRelay(backup.relayId)
+    const dispatch = yield* mapCliBackupFailure(
+      reserveBackupDeleteEffect({
+        backupId: backup.id,
+        requestedBy: principal.user.id,
+        taskId: randomUUID(),
+      }),
+      "Hearth could not reserve backup deletion."
+    )
+    const relayAccepted = yield* enqueueCliBackupEffect(
+      principal,
+      relay,
+      dispatch
+    )
+    return cliDeleteBackupResponseSchema.parse({
+      backupId: backup.id,
+      relayAccepted,
+    })
+  }
+)
+
+export const getCliBackupDownloadEffect = Effect.fn("cli.api.backups.download")(
+  function* (principal: CliPrincipal, unknownInput: unknown) {
+    const input = yield* parseInput(
+      cliBackupDownloadRequestSchema,
+      unknownInput
+    )
+    const { backup } = yield* loadCliBackupForAction(
+      principal,
+      input.backupId,
+      "backup.download"
+    )
+    if (backup.status !== "available" || !backup.filename) {
+      return yield* cliConflict("The backup is not available for download.")
+    }
+    const filename = backup.filename
+    if (!backup.storageId) {
+      if (backup.objectKey) {
+        return yield* cliConflict("The local backup metadata is invalid.")
+      }
+      const relay = yield* requiredRelay(backup.relayId)
+      const signed = yield* Effect.tryPromise({
+        try: () =>
+          signLocalBackupDownload(
+            relay,
+            backup,
+            filename,
+            cliRelaySubject(principal)
+          ),
+        catch: (cause) =>
+          CliAccessError.make({
+            code: "relay_unavailable",
+            message: "Hearth could not sign the Relay download.",
+            retryable: true,
+            cause,
+          }),
+      })
+      return cliBackupDownloadResponseSchema.parse({
+        ...signed,
+        filename,
+      })
+    }
+    if (!backup.objectKey) {
+      return yield* cliConflict("The S3 backup metadata is invalid.")
+    }
+    const objectKey = backup.objectKey
+    const storage = yield* mapCliBackupFailure(
+      loadBackupStorageCredentialEffect(backup.storageId),
+      "Hearth could not load the backup destination."
+    )
+    if (!storage)
+      return yield* cliNotFound("The backup destination was not found.")
+    const signed = yield* mapCliBackupFailure(
+      signS3BackupDownload(storage, objectKey, filename),
+      "Hearth could not sign the S3 download."
+    )
+    return cliBackupDownloadResponseSchema.parse({
+      ...signed,
+      filename,
+    })
   }
 )
 
@@ -558,6 +957,210 @@ export function cliSftpConnectionResponse(
     port: connection.port,
     root: `/${instanceId}`,
     username,
+  })
+}
+
+const loadCliBackupCatalogEffect = Effect.fn("cli.api.backups.catalog")(
+  function* () {
+    return yield* mapCliBackupFailure(
+      listBackupCatalogEffect(),
+      "Hearth could not load backups."
+    )
+  }
+)
+
+const authorizeCliBackupCreateTarget = Effect.fn(
+  "cli.api.backups.create.authorize"
+)(function* (
+  principal: CliPrincipal,
+  input: z.infer<typeof cliCreateBackupRequestSchema>
+) {
+  if (input.targetKind === "platform") {
+    if (!isPlatformAdmin(principal.user)) {
+      return yield* forbidden(
+        "Platform backups require platform administrator access."
+      )
+    }
+    return yield* requiredRelay(input.relayId)
+  }
+  if (input.targetKind === "instance") {
+    const { relay } = yield* loadAuthorizedInstance(
+      principal,
+      { instanceId: input.targetId, relayId: input.relayId },
+      "backup.create"
+    )
+    return relay
+  }
+  const relay = yield* requiredRelay(input.relayId)
+  yield* requireRelayPermissionEffect({
+    databaseId: input.targetId,
+    permission: "backup.create",
+    relayId: relay.id,
+    user: principal.user,
+  }).pipe(
+    Effect.catchTag("PermissionDeniedError", (cause) =>
+      CliAccessError.make({
+        code: "forbidden",
+        message: cause.message,
+        retryable: false,
+      })
+    )
+  )
+  const records = yield* mapCliBackupFailure(
+    listManagedDatabaseRecordsEffect(),
+    "Hearth could not inspect managed databases."
+  )
+  if (
+    !records.some(
+      (record) =>
+        record.relayId === relay.id && record.databaseId === input.targetId
+    )
+  ) {
+    return yield* cliNotFound("The requested database was not found.")
+  }
+  return relay
+})
+
+const validateCliBackupStorage = Effect.fn("cli.api.backups.storage.authorize")(
+  function* (
+    principal: CliPrincipal,
+    input: z.infer<typeof cliCreateBackupRequestSchema>
+  ) {
+    if (!input.storageId) return
+    const storage = yield* mapCliBackupFailure(
+      loadBackupStorageEffect(input.storageId),
+      "Hearth could not load the backup destination."
+    )
+    if (
+      !storage ||
+      !storage.enabled ||
+      (input.targetKind === "platform"
+        ? storage.ownerUserId !== null
+        : storage.ownerUserId !== null &&
+          storage.ownerUserId !== principal.user.id)
+    ) {
+      return yield* forbidden("The backup destination is unavailable.")
+    }
+  }
+)
+
+const loadCliBackupForAction = Effect.fn("cli.api.backups.action.authorize")(
+  function* (
+    principal: CliPrincipal,
+    backupId: string,
+    permission: AccessPermission
+  ) {
+    const backup = (yield* loadCliBackupCatalogEffect()).find(
+      (candidate) => candidate.id === backupId
+    )
+    if (!backup)
+      return yield* cliNotFound("The requested backup was not found.")
+    const grants = isPlatformAdmin(principal.user)
+      ? []
+      : yield* listUserGrantsEffect(principal.user.id)
+    if (!hasBackupPermission(principal.user, grants, backup, permission)) {
+      return yield* forbidden(
+        "You do not have permission to manage this backup."
+      )
+    }
+    return { backup }
+  }
+)
+
+const requireCliBackupPermission = Effect.fn(
+  "cli.api.backups.target.authorize"
+)(function* (
+  principal: CliPrincipal,
+  backup: BackupCatalogRecord,
+  permission: AccessPermission
+) {
+  yield* requireRelayPermissionEffect({
+    ...(backup.targetKind === "instance"
+      ? { instanceId: backup.targetId }
+      : { databaseId: backup.targetId }),
+    permission,
+    relayId: backup.relayId,
+    user: principal.user,
+  }).pipe(
+    Effect.catchTag("PermissionDeniedError", (cause) =>
+      CliAccessError.make({
+        code: "forbidden",
+        message: cause.message,
+        retryable: false,
+      })
+    )
+  )
+})
+
+const enqueueCliBackupEffect = Effect.fn("cli.api.backups.enqueue")(function* (
+  principal: CliPrincipal,
+  relay: PersistedRelay,
+  dispatch: BackupDispatch
+) {
+  const result = yield* Effect.result(
+    Effect.tryPromise({
+      try: () =>
+        dispatchBackupTask(relay, dispatch, cliRelaySubject(principal)),
+      catch: (cause) =>
+        CliAccessError.make({
+          code: "relay_unavailable",
+          message: "The backup was saved but Relay did not accept it yet.",
+          retryable: true,
+          cause,
+        }),
+    })
+  )
+  return Result.isSuccess(result)
+})
+
+function mapCliBackupFailure<TResult, TError, TRequirements>(
+  effect: Effect.Effect<TResult, TError, TRequirements>,
+  fallbackMessage: string
+) {
+  return effect.pipe(
+    Effect.mapError((cause) =>
+      CliAccessError.make({
+        code: "conflict",
+        message: cause instanceof Error ? cause.message : fallbackMessage,
+        retryable: false,
+        cause,
+      })
+    )
+  )
+}
+
+function cliBackupSummary(backup: BackupCatalogRecord) {
+  return {
+    artifactKind: backup.artifactKind,
+    backupMode: backup.backupMode,
+    bytes: backup.bytes,
+    createdAt: backup.createdAt,
+    destination: backup.storageId ? "s3" : "local",
+    filename: backup.filename,
+    id: backup.id,
+    name: backup.name,
+    relayId: backup.relayId,
+    status: backup.status,
+    targetId: backup.targetId,
+    targetKind: backup.targetKind,
+    taskError: backup.taskError,
+    taskStatus: backup.taskStatus,
+  }
+}
+
+function cliConflict(message: string) {
+  return CliAccessError.make({
+    code: "conflict",
+    message,
+    retryable: false,
+  })
+}
+
+function cliNotFound(message: string) {
+  return CliAccessError.make({
+    code: "not_found",
+    message,
+    retryable: false,
   })
 }
 

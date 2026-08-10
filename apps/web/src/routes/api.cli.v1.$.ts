@@ -1,12 +1,16 @@
 import { createFileRoute } from "@tanstack/react-router"
 import {
+  cliBackupDownloadRequestSchema,
   cliConsoleRequestSchema,
+  cliCreateBackupRequestSchema,
   cliCreateServerRequestSchema,
+  cliDeleteBackupRequestSchema,
   cliDeleteServerRequestSchema,
   cliFileWriteRequestSchema,
   cliPowerRequestSchema,
   cliRemoteFileUploadRequestSchema,
   cliTargetSchema,
+  cliRestoreBackupRequestSchema,
   cliUpdateServerStartupRequestSchema,
   relayIdSchema,
   relayConsoleStreamEventSchema,
@@ -21,18 +25,24 @@ import {
 } from "@/effect/cli-access"
 import {
   authorizeCliConsoleStreamEffect,
+  createCliBackupEffect,
   createCliServerEffect,
+  deleteCliBackupEffect,
   deleteCliServerEffect,
   getCliConsoleHistoryEffect,
+  getCliBackupDownloadEffect,
   getCliFileTreeEffect,
   getCliRelayInfoEffect,
   getCliServerInfoEffect,
   getCliSftpConnectionEffect,
   listCliActivityEffect,
+  listCliBackupsEffect,
+  listCliBackupTargetsEffect,
   listCliRelaysEffect,
   listCliServersEffect,
   performCliPowerActionEffect,
   readCliFileEffect,
+  restoreCliBackupEffect,
   sendCliConsoleCommandEffect,
   updateCliServerStartupEffect,
   uploadCliFileFromUrlEffect,
@@ -86,6 +96,21 @@ export const Route = createFileRoute("/api/cli/v1/$")({
               principal,
               boundedLimit(url.searchParams.get("limit"))
             )
+          )
+        }
+        if (endpoint === "backups") {
+          return runCliEffect(
+            "cli.http.backups",
+            listCliBackupsEffect(
+              principal,
+              boundedLimit(url.searchParams.get("limit"))
+            )
+          )
+        }
+        if (endpoint === "backup-targets") {
+          return runCliEffect(
+            "cli.http.backups.targets",
+            listCliBackupTargetsEffect(principal)
           )
         }
         if (endpoint === "relay/info") {
@@ -179,6 +204,34 @@ export const Route = createFileRoute("/api/cli/v1/$")({
             )
           )
         }
+        if (endpoint === "backups") {
+          return runCliEffect(
+            "cli.http.backups.create",
+            decodeBody(cliCreateBackupRequestSchema, body.value).pipe(
+              Effect.flatMap((input) => createCliBackupEffect(principal, input))
+            )
+          )
+        }
+        if (endpoint === "backup/restore") {
+          return runCliEffect(
+            "cli.http.backups.restore",
+            decodeBody(cliRestoreBackupRequestSchema, body.value).pipe(
+              Effect.flatMap((input) =>
+                restoreCliBackupEffect(principal, input)
+              )
+            )
+          )
+        }
+        if (endpoint === "backup/download") {
+          return runCliEffect(
+            "cli.http.backups.download",
+            decodeBody(cliBackupDownloadRequestSchema, body.value).pipe(
+              Effect.flatMap((input) =>
+                getCliBackupDownloadEffect(principal, input)
+              )
+            )
+          )
+        }
         if (endpoint === "server/startup") {
           return runCliEffect(
             "cli.http.server.startup",
@@ -234,6 +287,16 @@ export const Route = createFileRoute("/api/cli/v1/$")({
             "cli.http.server.delete",
             decodeBody(cliDeleteServerRequestSchema, body.value).pipe(
               Effect.flatMap((input) => deleteCliServerEffect(principal, input))
+            )
+          )
+        }
+        if (endpoint === "backup") {
+          const body = await requestBody(request)
+          if (body instanceof Response) return body
+          return runCliEffect(
+            "cli.http.backups.delete",
+            decodeBody(cliDeleteBackupRequestSchema, body.value).pipe(
+              Effect.flatMap((input) => deleteCliBackupEffect(principal, input))
             )
           )
         }
