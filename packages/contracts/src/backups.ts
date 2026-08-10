@@ -183,6 +183,7 @@ export const relayBackupTaskSchema = z
     error: z.string().max(4_096).nullable(),
     finishedAt: z.number().int().nonnegative().nullable(),
     input: backupTaskInputSchema,
+    inputRefreshRequired: z.boolean(),
     kind: backupTaskKindSchema,
     result: backupTaskResultSchema.nullable(),
     startedAt: z.number().int().nonnegative().nullable(),

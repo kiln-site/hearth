@@ -223,6 +223,7 @@ const RelayBackupTaskRowSchema = Schema.Struct({
   createdAt: Schema.Number,
   error: Schema.NullOr(Schema.String),
   finishedAt: Schema.NullOr(Schema.Number),
+  inputRefreshRequired: Schema.Number,
   inputJson: Schema.String,
   kind: RelayBackupTaskKindSchema,
   resultJson: Schema.NullOr(Schema.String),
@@ -230,10 +231,6 @@ const RelayBackupTaskRowSchema = Schema.Struct({
   status: RelayBackupTaskStatusSchema,
   taskId: Schema.String,
   updatedAt: Schema.Number,
-})
-
-const RelayBackupTaskRefreshRowSchema = Schema.Struct({
-  inputRefreshRequired: Schema.Number,
 })
 
 export class RelayStateStore extends Context.Service<
@@ -692,6 +689,7 @@ const makeRelayStateStore = Effect.gen(function* () {
         error: row.error,
         finishedAt: row.finishedAt,
         input,
+        inputRefreshRequired: row.inputRefreshRequired === 1,
         kind: row.kind,
         result,
         startedAt: row.startedAt,
@@ -716,6 +714,7 @@ const makeRelayStateStore = Effect.gen(function* () {
               kind,
               status,
               input_json AS inputJson,
+              input_refresh_required AS inputRefreshRequired,
               result_json AS resultJson,
               bytes_completed AS bytesCompleted,
               bytes_total AS bytesTotal,
@@ -736,6 +735,7 @@ const makeRelayStateStore = Effect.gen(function* () {
                 kind,
                 status,
                 input_json AS inputJson,
+                input_refresh_required AS inputRefreshRequired,
                 result_json AS resultJson,
                 bytes_completed AS bytesCompleted,
                 bytes_total AS bytesTotal,
@@ -754,6 +754,7 @@ const makeRelayStateStore = Effect.gen(function* () {
                 kind,
                 status,
                 input_json AS inputJson,
+                input_refresh_required AS inputRefreshRequired,
                 result_json AS resultJson,
                 bytes_completed AS bytesCompleted,
                 bytes_total AS bytesTotal,
@@ -932,16 +933,7 @@ const makeRelayStateStore = Effect.gen(function* () {
                   new Error("Backup task ID already has different input")
                 )
               }
-              const refreshRows = yield* sql<Record<string, unknown>>`
-                SELECT input_refresh_required AS inputRefreshRequired
-                FROM relay_backup_tasks
-                WHERE task_id = ${input.taskId}
-                LIMIT 1
-              `
-              const refreshRow = yield* Schema.decodeUnknownEffect(
-                Schema.Array(RelayBackupTaskRefreshRowSchema)
-              )(refreshRows).pipe(Effect.map((rows) => rows[0]))
-              if (refreshRow?.inputRefreshRequired === 1) {
+              if (existing.inputRefreshRequired) {
                 yield* sql`
                   UPDATE relay_backup_tasks
                   SET input_json = ${JSON.stringify(input)},
@@ -1112,7 +1104,16 @@ const makeRelayStateStore = Effect.gen(function* () {
             yield* sql`
               UPDATE relay_backup_tasks
               SET status = 'queued',
-                  input_refresh_required = 1,
+                  input_refresh_required = CASE
+                    WHEN json_extract(input_json, '$.destination.kind') = 's3'
+                      OR EXISTS (
+                        SELECT 1
+                        FROM json_each(input_json, '$.replicas')
+                        WHERE json_extract(value, '$.kind') = 's3'
+                      )
+                    THEN 1
+                    ELSE 0
+                  END,
                   started_at = NULL,
                   finished_at = NULL,
                   result_json = NULL,

@@ -38,8 +38,15 @@ The managed server or database process never owns the backup job.
 
 Submitting an existing task ID returns its current task rather than starting a
 second operation. A Relay restart changes an interrupted `running` task back to
-`queued` when it is safe to retry. Tasks that reached a non-repeatable restore
-or delete step are marked failed for explicit review instead of guessed at.
+`queued` when it is safe to retry. Relay-local creates are immediately
+reclaimable and continue without Hearth. If a repeatable task contains an
+expiring signed S3 request, Relay sets `inputRefreshRequired`, leaves the task
+unclaimable, and exposes that flag when Hearth lists tasks after reconnecting.
+Hearth then signs fresh input and re-enqueues the same task ID; Relay atomically
+replaces the durable input, clears the flag, and wakes the worker. Orchestration
+must use the flag rather than infer this handshake from an error message. Tasks
+that reached a non-repeatable restore or delete step are marked failed for
+explicit review instead of guessed at.
 
 Effect's `Queue` is the in-process wake-up mechanism and a one-permit
 `Semaphore` protects the worker. The SQLite task journal supplies durability;

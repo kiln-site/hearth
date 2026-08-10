@@ -390,6 +390,7 @@ describe("Relay state", () => {
         }
 
         const enqueued = yield* store.enqueueBackupTask(first, 100)
+        assert.isFalse(enqueued.inputRefreshRequired)
         const repeated = yield* store.enqueueBackupTask(first, 200)
         assert.deepStrictEqual(repeated, enqueued)
         yield* store.enqueueBackupTask(second, 101)
@@ -434,6 +435,7 @@ describe("Relay state", () => {
         assert.strictEqual(requeued?.bytesCompleted, 0)
         assert.isNull(requeued?.bytesTotal)
         assert.isNull(requeued?.result)
+        assert.isTrue(requeued?.inputRefreshRequired)
 
         assert.isNull(yield* store.claimNextBackupTask(160))
         const refreshed = yield* store.enqueueBackupTask(
@@ -453,6 +455,7 @@ describe("Relay state", () => {
             : null,
           "https://s3.example.test/fresh-upload"
         )
+        assert.isFalse(refreshed.inputRefreshRequired)
 
         assert.strictEqual(
           (yield* store.claimNextBackupTask(180))?.taskId,
@@ -476,6 +479,42 @@ describe("Relay state", () => {
         const interruptedRestore = yield* store.getBackupTask(restore.taskId)
         assert.strictEqual(interruptedRestore?.status, "failed")
         assert.strictEqual(interruptedRestore?.finishedAt, 220)
+      })
+    )
+
+    it.effect("reclaims interrupted local creates without Hearth", () =>
+      Effect.gen(function* () {
+        const store = yield* RelayStateStore
+        const local: BackupTaskInput = {
+          artifactKind: "archive",
+          backupId: "00000000-0000-4000-8000-000000000004",
+          destination: { kind: "local" },
+          exclude: [],
+          kind: "create",
+          maxBytes: null,
+          mode: "full",
+          reason: "manual",
+          target: { id: "instance-b", kind: "instance" },
+          taskId: "00000000-0000-4000-8000-000000000014",
+        }
+        yield* store.enqueueBackupTask(local, 300)
+        assert.strictEqual(
+          (yield* store.claimNextBackupTask(310))?.taskId,
+          local.taskId
+        )
+        assert.isTrue(
+          yield* store.updateBackupTaskProgress(local.taskId, 25, 50, 320)
+        )
+
+        assert.strictEqual(yield* store.requeueInterruptedBackupTasks(330), 1)
+        const requeued = yield* store.getBackupTask(local.taskId)
+        assert.strictEqual(requeued?.bytesCompleted, 0)
+        assert.isNull(requeued?.bytesTotal)
+        assert.isFalse(requeued?.inputRefreshRequired)
+        assert.strictEqual(
+          (yield* store.claimNextBackupTask(340))?.taskId,
+          local.taskId
+        )
       })
     )
   })
