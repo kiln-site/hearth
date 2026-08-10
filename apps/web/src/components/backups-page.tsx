@@ -8,12 +8,18 @@ import {
 import {
   Archive,
   ArrowLeft,
+  Check,
+  CircleCheck,
+  CircleX,
   Cloud,
   CloudCog,
+  Copy,
   Database,
   Download,
   HardDrive,
+  History as RotateCcwClock,
   LoaderCircle,
+  Link2,
   Pencil,
   Plus,
   RefreshCw,
@@ -23,6 +29,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Trash2,
+  TriangleAlert,
   X,
 } from "lucide-react"
 
@@ -95,6 +102,7 @@ type BackupStorage = Awaited<ReturnType<typeof getBackupStorage>>[number]
 type InstanceBackupPolicy = Awaited<ReturnType<typeof getInstanceBackupPolicy>>
 type BackupDialog =
   | { backup: Backup; kind: "delete" }
+  | { backup: Backup; kind: "download" }
   | { backup: Backup; kind: "restore" }
   | null
 
@@ -117,15 +125,14 @@ interface CreateTarget {
 }
 
 const activeStatuses = new Set(["queued", "running", "deleting"])
-const backupDate = new Intl.DateTimeFormat("en", {
-  day: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-  month: "short",
-  timeZone: "UTC",
-  timeZoneName: "short",
-  year: "numeric",
+const backupDate = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
 })
+const backupMinuteMs = 60_000
+const backupHourMs = 60 * backupMinuteMs
+const backupDayMs = 24 * backupHourMs
+const subscribeToBrowser = () => () => undefined
 
 export function createBackupSearchStore(initialValue: string) {
   return createWorkspaceTableSearchStore(initialValue)
@@ -140,7 +147,10 @@ export const BackupsPage = React.memo(function BackupsPage({
   onFiltersChange: (change: Partial<BackupFilters>) => void
   searchStore: BackupSearchStore
 }) {
-  const { data: backups } = useSuspenseQuery(backupsQueryOptions())
+  const { data: backups } = useSuspenseQuery({
+    ...backupsQueryOptions(),
+    notifyOnChangeProps: ["data"],
+  })
   const { data: storage } = useSuspenseQuery(backupStorageQueryOptions())
   const { data: snapshot } = useSuspenseQuery(relaySnapshotQueryOptions())
   const { data: databases } = useSuspenseQuery(
@@ -321,6 +331,16 @@ export const BackupsPage = React.memo(function BackupsPage({
           }}
         />
       ) : null}
+      {dialog?.kind === "download" ? (
+        <DownloadBackupDialog
+          backup={dialog.backup}
+          open
+          storageNames={storageNames}
+          onOpenChange={(open) => {
+            if (!open) setDialog(null)
+          }}
+        />
+      ) : null}
       {dialog?.kind === "delete" ? (
         <DeleteBackupDialog
           backup={dialog.backup}
@@ -361,7 +381,12 @@ const BackupToolbar = React.memo(function BackupToolbar({
     ...backupsQueryOptions(),
     notifyOnChangeProps: ["fetchStatus"],
   })
-  const syncing = fetchStatus === "fetching"
+  const browserReady = React.useSyncExternalStore(
+    subscribeToBrowser,
+    () => true,
+    () => false
+  )
+  const syncing = browserReady && fetchStatus === "fetching"
   useWorkspaceTableSearchInput(inputRef, searchStore)
 
   React.useEffect(() => {
@@ -523,11 +548,7 @@ const BackupTable = React.memo(function BackupTable({
       <BackupTableRow
         backup={backup}
         relayName={relayNames.get(backup.relayId) ?? backup.relayId}
-        storageName={
-          backup.storageId
-            ? (storageNames.get(backup.storageId) ?? "S3")
-            : "Local Relay"
-        }
+        storageNames={storageNames}
         targetAvailable={
           backup.targetKind === "platform" ||
           targetNames.has(
@@ -576,8 +597,10 @@ const BackupTable = React.memo(function BackupTable({
 
 const BackupTableHead = React.memo(function BackupTableHead() {
   return (
-    <WorkspaceTableHead>
-      <WorkspaceTableHeading className="w-28">Status</WorkspaceTableHeading>
+    <WorkspaceTableHead className="sticky top-0 z-20 bg-background/95 shadow-[0_1px_0_var(--border)] backdrop-blur">
+      <WorkspaceTableHeading className="w-14">
+        <span className="sr-only">Status</span>
+      </WorkspaceTableHeading>
       <WorkspaceTableHeading className="w-auto sm:w-[27%]">
         Backup
       </WorkspaceTableHeading>
@@ -585,15 +608,15 @@ const BackupTableHead = React.memo(function BackupTableHead() {
         Target
       </WorkspaceTableHeading>
       <WorkspaceTableHeading className="hidden w-[14%] lg:table-cell">
-        Destination
+        Destinations
       </WorkspaceTableHeading>
       <WorkspaceTableHeading className="hidden w-24 xl:table-cell">
         Size
       </WorkspaceTableHeading>
-      <WorkspaceTableHeading className="hidden w-48 sm:table-cell">
+      <WorkspaceTableHeading className="hidden w-28 sm:table-cell">
         Created
       </WorkspaceTableHeading>
-      <WorkspaceTableHeading className="w-28 text-right">
+      <WorkspaceTableHeading className="w-48 text-right">
         Actions
       </WorkspaceTableHeading>
     </WorkspaceTableHead>
@@ -604,31 +627,17 @@ const BackupTableRow = React.memo(function BackupTableRow({
   backup,
   onDialog,
   relayName,
-  storageName,
+  storageNames,
   targetAvailable,
   targetName,
 }: {
   backup: Backup
   onDialog: (dialog: BackupDialog) => void
   relayName: string
-  storageName: string
+  storageNames: ReadonlyMap<string, string>
   targetAvailable: boolean
   targetName: string
 }) {
-  const download = useMutation({
-    mutationFn: () => getBackupDownloadUrl({ data: { backupId: backup.id } }),
-    onSuccess: ({ url }) => {
-      const link = document.createElement("a")
-      link.href = url
-      link.rel = "noopener"
-      link.click()
-    },
-    onError: (error) =>
-      showToast({
-        message: `Download failed: ${error.message}`,
-        type: "error",
-      }),
-  })
   const canRestore =
     backup.status === "available" &&
     !backupIsActive(backup) &&
@@ -668,43 +677,45 @@ const BackupTableRow = React.memo(function BackupTableRow({
         </div>
       </WorkspaceTableCell>
       <WorkspaceTableCell className="hidden lg:table-cell">
-        <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          {backup.storageId ? (
-            <Cloud className="size-3.5" />
-          ) : (
-            <HardDrive className="size-3.5" />
-          )}
-          <span className="truncate">{storageName}</span>
-        </span>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {backup.artifacts.map((artifact) => (
+            <BackupDestinationTag
+              key={artifact.id}
+              artifact={artifact}
+              storageName={
+                artifact.storageId
+                  ? (storageNames.get(artifact.storageId) ?? "S3 destination")
+                  : "Local Relay"
+              }
+            />
+          ))}
+        </div>
       </WorkspaceTableCell>
       <WorkspaceTableCell className="hidden font-mono text-[10px] text-muted-foreground xl:table-cell">
         {backup.bytes === null ? "—" : formatBytes(backup.bytes)}
       </WorkspaceTableCell>
       <WorkspaceTableCell className="hidden text-[10px] whitespace-nowrap text-muted-foreground sm:table-cell">
-        <span>{backupDate.format(new Date(backup.createdAt))}</span>
+        <BackupCreatedTime createdAt={backup.createdAt} />
       </WorkspaceTableCell>
       <WorkspaceTableCell className="text-right">
         <div className="flex items-center justify-end gap-0.5">
-          <BackupActionButton
-            disabled={!canDownload || download.isPending}
-            icon={download.isPending ? LoaderCircle : Download}
-            label={`Download ${backup.name}`}
-            spinning={download.isPending}
-            tooltip="Download backup"
-            onClick={() => download.mutate()}
-          />
-          <BackupActionButton
+          <Button
+            aria-label={`Restore ${backup.name}`}
+            className="h-8 px-2.5 text-xs"
             disabled={!canRestore}
-            icon={RotateCcw}
-            label={`Restore ${backup.name}`}
-            tooltip={
-              backup.targetKind === "platform"
-                ? "Platform restore is performed offline"
-                : !targetAvailable
-                  ? "The original target no longer exists"
-                  : "Restore backup"
-            }
+            size="sm"
+            type="button"
+            variant="outline"
             onClick={() => onDialog({ backup, kind: "restore" })}
+          >
+            <RotateCcwClock /> Restore
+          </Button>
+          <BackupActionButton
+            disabled={!canDownload}
+            icon={Download}
+            label={`Download ${backup.name}`}
+            tooltip="Download or create a link"
+            onClick={() => onDialog({ backup, kind: "download" })}
           />
           <BackupActionButton
             disabled={backupIsActive(backup)}
@@ -721,13 +732,87 @@ const BackupTableRow = React.memo(function BackupTableRow({
 
 function BackupStatusBadge({ backup }: { backup: Backup }) {
   const details = backupStatusDetails(backup)
+  const Icon = backupIsActive(backup)
+    ? LoaderCircle
+    : backup.status === "available"
+      ? CircleCheck
+      : backup.status === "failed"
+        ? TriangleAlert
+        : CircleX
   return (
-    <Badge variant="outline" className={details.className}>
-      {backupIsActive(backup) ? (
-        <LoaderCircle className="animate-spin" />
-      ) : null}
-      {details.label}
-    </Badge>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          aria-label={details.label}
+          className={`grid size-7 place-items-center rounded-full border ${details.className}`}
+          role="img"
+        >
+          <Icon
+            className={`size-4 ${backupIsActive(backup) ? "animate-spin" : ""}`}
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="right">{details.label}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+function BackupDestinationTag({
+  artifact,
+  storageName,
+}: {
+  artifact: Backup["artifacts"][number]
+  storageName: string
+}) {
+  const available = artifact.status === "available"
+  const active = artifact.status === "queued" || artifact.status === "running"
+  const label = artifact.storageId ? "S3" : "Local"
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className={`inline-flex h-6 items-center gap-1 rounded-md border px-2 font-mono text-[9px] font-semibold uppercase ${
+            available
+              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+              : active
+                ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                : "border-destructive/30 bg-destructive/10 text-destructive"
+          }`}
+        >
+          {active ? (
+            <LoaderCircle className="size-2.5 animate-spin" />
+          ) : available ? (
+            <Check className="size-2.5" />
+          ) : null}
+          {label}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        {storageName} · {artifactStatusLabel(artifact.status)}
+        {artifact.error ? ` · ${artifact.error}` : ""}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function BackupCreatedTime({ createdAt }: { createdAt: string }) {
+  const timestamp = new Date(createdAt).getTime()
+  const relative = shortRelativeBackupTime(timestamp)
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <time
+          className="block cursor-help truncate font-mono text-[10px]"
+          dateTime={createdAt}
+          suppressHydrationWarning
+        >
+          {relative ?? backupDate.format(timestamp)}
+        </time>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        <span suppressHydrationWarning>{backupDate.format(timestamp)}</span>
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -775,6 +860,287 @@ function BackupActionButton({
   )
 }
 
+function DownloadBackupDialog({
+  backup,
+  onOpenChange,
+  open,
+  storageNames,
+}: {
+  backup: Backup
+  onOpenChange: (open: boolean) => void
+  open: boolean
+  storageNames: ReadonlyMap<string, string>
+}) {
+  const availableArtifacts = backup.artifacts.filter(
+    (artifact) => artifact.status === "available"
+  )
+  const [artifactId, setArtifactId] = React.useState(
+    () =>
+      availableArtifacts.find((artifact) => artifact.storageId === null)?.id ??
+      availableArtifacts[0]?.id ??
+      ""
+  )
+  const [expiryValue, setExpiryValue] = React.useState("15")
+  const [expiryUnit, setExpiryUnit] = React.useState<"hours" | "minutes">(
+    "minutes"
+  )
+  const [shared, setShared] = React.useState<{
+    expiresAt: string
+    url: string
+  } | null>(null)
+  const artifact = availableArtifacts.find(
+    (candidate) => candidate.id === artifactId
+  )
+  const expiresInSeconds = Math.min(
+    7 * 24 * 60 * 60,
+    Math.max(
+      60,
+      Math.round(
+        Number(expiryValue || 0) * (expiryUnit === "hours" ? 3600 : 60)
+      )
+    )
+  )
+  const signDownload = useMutation({
+    mutationFn: (mode: "download" | "link") =>
+      getBackupDownloadUrl({
+        data: {
+          artifactId,
+          backupId: backup.id,
+          expiresInSeconds: mode === "download" ? 300 : expiresInSeconds,
+        },
+      }),
+    onSuccess: (result, mode) => {
+      if (mode === "link") {
+        setShared(result)
+        return
+      }
+      const anchor = document.createElement("a")
+      anchor.href = result.url
+      anchor.rel = "noopener"
+      anchor.click()
+    },
+    onError: (error) =>
+      showToast({
+        message: `Download failed: ${error.message}`,
+        type: "error",
+      }),
+  })
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Download {backup.name}</DialogTitle>
+          <DialogDescription>
+            Choose an available copy, then download it or create a temporary
+            signed URL.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <label className="block">
+            <span className="mb-2 block text-xs font-medium">Source</span>
+            <select
+              aria-label="Backup download source"
+              className="h-10 w-full rounded-lg border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+              value={artifactId}
+              onChange={(event) => {
+                setArtifactId(event.currentTarget.value)
+                setShared(null)
+              }}
+            >
+              {availableArtifacts.map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>
+                  {candidate.storageId
+                    ? `${storageNames.get(candidate.storageId) ?? "S3"} · S3`
+                    : "Local Relay"}
+                  {candidate.bytes === null
+                    ? ""
+                    : ` · ${formatBytes(candidate.bytes)}`}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="grid grid-cols-2 gap-3 rounded-lg border bg-muted/15 p-3">
+            <div>
+              <p className="font-mono text-[9px] tracking-wider text-muted-foreground uppercase">
+                Destination
+              </p>
+              <p className="mt-1 truncate text-sm font-medium">
+                {artifact?.storageId
+                  ? (storageNames.get(artifact.storageId) ?? "S3")
+                  : "Local Relay"}
+              </p>
+            </div>
+            <div>
+              <p className="font-mono text-[9px] tracking-wider text-muted-foreground uppercase">
+                Size
+              </p>
+              <p className="mt-1 font-mono text-sm font-medium">
+                {artifact?.bytes === null || artifact?.bytes === undefined
+                  ? "—"
+                  : formatBytes(artifact.bytes)}
+              </p>
+            </div>
+          </div>
+
+          <div className="rounded-lg border p-3">
+            <div className="flex items-center gap-2">
+              <Link2 className="size-4 text-muted-foreground" />
+              <p className="text-xs font-medium">Temporary URL</p>
+            </div>
+            <div className="mt-3 flex gap-2">
+              <Input
+                aria-label="Temporary URL duration"
+                className="min-w-0 flex-1"
+                min={1}
+                type="number"
+                value={expiryValue}
+                onChange={(event) => {
+                  setExpiryValue(event.currentTarget.value)
+                  setShared(null)
+                }}
+              />
+              <select
+                aria-label="Temporary URL duration unit"
+                className="h-9 rounded-lg border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                value={expiryUnit}
+                onChange={(event) => {
+                  setExpiryUnit(
+                    event.currentTarget.value === "hours" ? "hours" : "minutes"
+                  )
+                  setShared(null)
+                }}
+              >
+                <option value="minutes">Minutes</option>
+                <option value="hours">Hours</option>
+              </select>
+              <Button
+                disabled={!artifact || signDownload.isPending}
+                type="button"
+                variant="outline"
+                onClick={() => signDownload.mutate("link")}
+              >
+                {signDownload.isPending ? (
+                  <LoaderCircle className="animate-spin" />
+                ) : (
+                  <Link2 />
+                )}
+                Get URL
+              </Button>
+            </div>
+            <p className="mt-2 text-[10px] text-muted-foreground">
+              Links can remain valid from 1 minute up to 7 days.
+            </p>
+            {shared ? (
+              <div className="mt-3 flex gap-2">
+                <Input
+                  aria-label="Generated temporary backup URL"
+                  className="font-mono text-[10px]"
+                  readOnly
+                  value={shared.url}
+                />
+                <Button
+                  aria-label="Copy temporary URL"
+                  size="icon"
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(shared.url).then(() =>
+                      showToast({
+                        message: "Temporary URL copied",
+                        type: "success",
+                      })
+                    )
+                  }}
+                >
+                  <Copy />
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => onOpenChange(false)}
+          >
+            Close
+          </Button>
+          <Button
+            disabled={!artifact || signDownload.isPending}
+            type="button"
+            onClick={() => signDownload.mutate("download")}
+          >
+            {signDownload.isPending ? (
+              <LoaderCircle className="animate-spin" />
+            ) : (
+              <Download />
+            )}
+            Download
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function BackupDestinationChoice({
+  checked,
+  description,
+  icon: Icon,
+  label,
+  onCheckedChange,
+}: {
+  checked: boolean
+  description: string
+  icon: typeof Cloud
+  label: string
+  onCheckedChange: (checked: boolean) => void
+}) {
+  return (
+    <label
+      className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors ${
+        checked
+          ? "border-primary/45 bg-primary/5"
+          : "border-border/80 hover:bg-muted/25"
+      }`}
+    >
+      <input
+        checked={checked}
+        className="sr-only"
+        type="checkbox"
+        onChange={(event) => onCheckedChange(event.currentTarget.checked)}
+      />
+      <span
+        className={`grid size-8 shrink-0 place-items-center rounded-md border ${
+          checked
+            ? "border-primary/30 bg-primary/10 text-primary"
+            : "text-muted-foreground"
+        }`}
+      >
+        <Icon className="size-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-xs font-semibold">{label}</span>
+        <span className="block truncate text-[10px] text-muted-foreground">
+          {description}
+        </span>
+      </span>
+      <span
+        className={`grid size-4 place-items-center rounded-sm border ${
+          checked
+            ? "border-primary bg-primary text-primary-foreground"
+            : "border-input"
+        }`}
+      >
+        {checked ? <Check className="size-3" /> : null}
+      </span>
+    </label>
+  )
+}
+
 function CreateBackupDialog({
   initialTargetKey,
   onOpenChange,
@@ -796,12 +1162,22 @@ function CreateBackupDialog({
       targets.at(0)?.key ??
       ""
   )
-  const [storageId, setStorageId] = React.useState<string>("default")
+  const [destinationKeys, setDestinationKeys] = React.useState<Array<string>>([
+    "default",
+  ])
   const target = targets.find((candidate) => candidate.key === targetKeyValue)
-  const availableStorage = storage.filter(
-    (destination) =>
-      destination.enabled &&
-      (target?.kind !== "platform" || destination.ownerUserId === null)
+  const availableStorage = React.useMemo(
+    () =>
+      storage.filter(
+        (destination) =>
+          destination.enabled &&
+          (target?.kind !== "platform" || destination.ownerUserId === null)
+      ),
+    [storage, target?.kind]
+  )
+  const selectedDestinations = React.useMemo(
+    () => new Set(destinationKeys),
+    [destinationKeys]
   )
   const create = useMutation({
     mutationFn: async () => {
@@ -810,9 +1186,13 @@ function CreateBackupDialog({
         maxBytes: null,
         name: name.trim(),
         relayId: target.relayId,
-        ...(storageId === "default"
+        ...(selectedDestinations.has("default")
           ? {}
-          : { storageId: storageId === "local" ? null : storageId }),
+          : {
+              storageIds: destinationKeys.map((destination) =>
+                destination === "local" ? null : destination
+              ),
+            }),
       }
       if (target.kind === "instance") {
         return createInstanceBackup({
@@ -839,14 +1219,29 @@ function CreateBackupDialog({
   })
 
   React.useEffect(() => {
-    if (
-      storageId !== "default" &&
-      storageId !== "local" &&
-      !availableStorage.some((destination) => destination.id === storageId)
-    ) {
-      setStorageId("default")
-    }
-  }, [availableStorage, storageId])
+    const allowed = new Set([
+      "default",
+      "local",
+      ...availableStorage.map((destination) => destination.id),
+    ])
+    setDestinationKeys((current) => {
+      const next = current.filter((destination) => allowed.has(destination))
+      return next.length > 0 ? next : ["default"]
+    })
+  }, [availableStorage])
+
+  const toggleDestination = (destination: string, checked: boolean) => {
+    setDestinationKeys((current) => {
+      if (destination === "default") {
+        return checked ? ["default"] : ["local"]
+      }
+      const withoutDefault = current.filter((key) => key !== "default")
+      const next = checked
+        ? [...new Set([...withoutDefault, destination])]
+        : withoutDefault.filter((key) => key !== destination)
+      return next.length > 0 ? next : ["default"]
+    })
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -885,30 +1280,48 @@ function CreateBackupDialog({
               ))}
             </select>
           </label>
-          <label className="block">
-            <span className="mb-2 block text-xs font-medium">Destination</span>
-            <select
-              aria-label="Backup destination"
-              className="h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-              value={storageId}
-              onChange={(event) => setStorageId(event.currentTarget.value)}
-            >
-              <option value="default">Default destination</option>
-              <option value="local">Local Relay storage</option>
+          <fieldset>
+            <legend className="mb-2 text-xs font-medium">Destinations</legend>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <BackupDestinationChoice
+                checked={selectedDestinations.has("default")}
+                description="Use the target’s preferred destination"
+                icon={CloudCog}
+                label="Default"
+                onCheckedChange={(checked) =>
+                  toggleDestination("default", checked)
+                }
+              />
+              <BackupDestinationChoice
+                checked={selectedDestinations.has("local")}
+                description="Keep a copy on this Relay"
+                icon={HardDrive}
+                label="Local"
+                onCheckedChange={(checked) =>
+                  toggleDestination("local", checked)
+                }
+              />
               {availableStorage.map((destination) => (
-                <option key={destination.id} value={destination.id}>
-                  {destination.name} · S3
-                </option>
+                <BackupDestinationChoice
+                  key={destination.id}
+                  checked={selectedDestinations.has(destination.id)}
+                  description={destination.name}
+                  icon={Cloud}
+                  label="S3"
+                  onCheckedChange={(checked) =>
+                    toggleDestination(destination.id, checked)
+                  }
+                />
               ))}
-            </select>
+            </div>
             <span className="mt-1.5 block text-[10px] text-muted-foreground">
               {target?.kind === "platform"
-                ? "Platform bundles can only use platform-owned S3 destinations."
+                ? "Platform bundles can use Relay-local and platform-owned S3 destinations."
                 : target?.kind === "instance"
-                  ? "Default uses this server’s preferred destination, then Relay-local storage."
-                  : "Default uses Relay-local storage. You can also choose an S3 destination."}
+                  ? "Choose one or more copies. Default uses this server’s preferred destination."
+                  : "Choose one or more copies. Default uses Relay-local storage."}
             </span>
-          </label>
+          </fieldset>
           {create.error ? (
             <p className="text-xs text-destructive">{create.error.message}</p>
           ) : null}
@@ -1002,19 +1415,23 @@ function InstanceBackupSettingsEditor({
 }) {
   const queryClient = useQueryClient()
   const [quantityLimit, setQuantityLimit] = React.useState(
-    policy.quantityLimit?.toString() ?? ""
+    () => policy.quantityLimit?.toString() ?? ""
   )
-  const [sizeLimit, setSizeLimit] = React.useState(
+  const [sizeLimit, setSizeLimit] = React.useState(() =>
     bytesToGiBInput(policy.sizeLimitBytes)
   )
   const [adminQuantityLimit, setAdminQuantityLimit] = React.useState(
-    policy.adminQuantityLimit?.toString() ?? ""
+    () => policy.adminQuantityLimit?.toString() ?? ""
   )
-  const [adminSizeLimit, setAdminSizeLimit] = React.useState(
+  const [adminSizeLimit, setAdminSizeLimit] = React.useState(() =>
     bytesToGiBInput(policy.adminSizeLimitBytes)
   )
   const [storageId, setStorageId] = React.useState(policy.storageId ?? "local")
-  const [exclude, setExclude] = React.useState(policy.exclude.join("\n"))
+  const [exclude, setExclude] = React.useState(() => policy.exclude.join("\n"))
+  const enabledStorage = React.useMemo(
+    () => storage.filter((destination) => destination.enabled),
+    [storage]
+  )
   const save = useMutation({
     mutationFn: async () => {
       const operations: Array<Promise<unknown>> = [
@@ -1138,13 +1555,11 @@ function InstanceBackupSettingsEditor({
             onChange={(event) => setStorageId(event.currentTarget.value)}
           >
             <option value="local">Local Relay storage</option>
-            {storage
-              .filter((destination) => destination.enabled)
-              .map((destination) => (
-                <option key={destination.id} value={destination.id}>
-                  {destination.name} · S3
-                </option>
-              ))}
+            {enabledStorage.map((destination) => (
+              <option key={destination.id} value={destination.id}>
+                {destination.name} · S3
+              </option>
+            ))}
           </select>
         </label>
         <label className="block sm:col-span-2">
@@ -1944,9 +2359,37 @@ function backupSearchText(backup: Backup): string {
     backup.targetId,
     backup.targetKind,
     backup.status,
+    ...backup.artifacts.map((artifact) =>
+      artifact.storageId ? "s3" : "local"
+    ),
   ]
     .filter(Boolean)
     .join(" ")
+}
+
+function artifactStatusLabel(
+  status: Backup["artifacts"][number]["status"]
+): string {
+  if (status === "available") return "Available"
+  if (status === "failed") return "Failed"
+  if (status === "deleting") return "Deleting"
+  if (status === "deleted") return "Deleted"
+  return status === "queued" ? "Queued" : "Running"
+}
+
+function shortRelativeBackupTime(timestamp: number): string | null {
+  const elapsed = Math.max(0, Date.now() - timestamp)
+  if (elapsed < backupMinuteMs) return "just now"
+  if (elapsed < backupHourMs) {
+    return `${Math.floor(elapsed / backupMinuteMs)}m ago`
+  }
+  if (elapsed < backupDayMs) {
+    return `${Math.floor(elapsed / backupHourMs)}h ago`
+  }
+  if (elapsed < 7 * backupDayMs) {
+    return `${Math.floor(elapsed / backupDayMs)}d ago`
+  }
+  return null
 }
 
 function parseOptionalInteger(value: string, label: string): number | null {

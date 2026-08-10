@@ -150,6 +150,9 @@ List visible backups and copy the complete UUID from the `ID` column:
 kiln backups list --limit 200
 ```
 
+The `DEST` column consolidates the logical backup's destinations, such as
+`local+s3`; it does not repeat a backup once per destination.
+
 Create a manual backup with a reference from `backups targets`:
 
 ```sh

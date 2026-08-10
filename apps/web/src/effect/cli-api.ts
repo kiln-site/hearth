@@ -1157,7 +1157,13 @@ function cliBackupSummary(backup: BackupCatalogRecord) {
     backupMode: backup.backupMode,
     bytes: backup.bytes,
     createdAt: backup.createdAt,
-    destination: backup.storageId ? "s3" : "local",
+    destinations: [
+      ...new Set(
+        backup.artifacts.map((artifact) =>
+          artifact.storageId ? ("s3" as const) : ("local" as const)
+        )
+      ),
+    ],
     filename: backup.filename,
     id: backup.id,
     name: backup.name,

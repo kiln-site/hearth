@@ -286,7 +286,7 @@ export const cliBackupSchema = z
     backupMode: backupModeSchema,
     bytes: z.number().int().nonnegative().nullable(),
     createdAt: z.iso.datetime(),
-    destination: z.enum(["local", "s3"]),
+    destinations: z.array(z.enum(["local", "s3"])).min(1),
     filename: backupFilenameSchema.nullable(),
     id: backupIdSchema,
     name: z.string().min(1).max(120),

@@ -106,7 +106,7 @@ export function WorkspaceDataTable<T>({
   }
 
   return (
-    <div className="min-w-0 overflow-hidden">
+    <div className="min-w-0 overflow-clip">
       <table className="w-full table-fixed border-collapse text-left">
         {head}
         <tbody className="divide-y divide-border/70">
@@ -155,12 +155,14 @@ function SearchableWorkspaceTableRow<T>({
 }
 
 export const WorkspaceTableHead = React.memo(function WorkspaceTableHead({
+  className = "",
   children,
 }: {
+  className?: string
   children: React.ReactNode
 }) {
   return (
-    <thead>
+    <thead className={className}>
       <tr className="border-b bg-muted/20 font-mono text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
         {children}
       </tr>

@@ -266,7 +266,7 @@ const runCommandEffect = Effect.fn("cli.command")(function* (
           cliBackupStatus(backup),
           backup.name,
           `${backup.targetKind}:${backup.targetId}`,
-          backup.destination,
+          backup.destinations.join("+"),
           backup.bytes === null ? "-" : formatBytes(backup.bytes),
           backup.id,
         ])
