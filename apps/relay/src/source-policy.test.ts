@@ -36,12 +36,14 @@ describe("Relay source policy", () => {
 
   it("blocks private, loopback, link-local, and reserved remote downloads", () => {
     expect(isPublicRemoteAddress("8.8.8.8")).toBe(true)
+    expect(isPublicRemoteAddress("::ffff:808:808")).toBe(true)
     expect(isPublicRemoteAddress("2606:4700:4700::1111")).toBe(true)
     expect(isPublicRemoteAddress("127.0.0.1")).toBe(false)
     expect(isPublicRemoteAddress("10.42.0.1")).toBe(false)
     expect(isPublicRemoteAddress("169.254.169.254")).toBe(false)
     expect(isPublicRemoteAddress("::1")).toBe(false)
     expect(isPublicRemoteAddress("::ffff:127.0.0.1")).toBe(false)
+    expect(isPublicRemoteAddress("::ffff:7f00:1")).toBe(false)
     expect(isPublicRemoteAddress("64:ff9b::7f00:1")).toBe(false)
   })
 })

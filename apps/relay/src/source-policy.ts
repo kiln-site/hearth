@@ -2,6 +2,8 @@ import { lookup } from "node:dns"
 import { BlockList, isIP } from "node:net"
 import type { LookupFunction } from "node:net"
 
+import { Result } from "effect"
+
 const MAX_SOURCE_CIDRS = 16
 const BLOCKED_REMOTE_ADDRESSES = new BlockList()
 const BLOCKED_IPV4_SUBNETS: ReadonlyArray<readonly [string, number]> = [
@@ -164,5 +166,16 @@ function normalizeSourceCidr(value: unknown): string {
 function normalizePeerAddress(value: string): string {
   const withoutZone = value.split("%", 1)[0] ?? value
   const mappedIpv4 = withoutZone.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/u)
-  return mappedIpv4?.[1] ?? withoutZone
+  if (mappedIpv4?.[1]) return mappedIpv4[1]
+  if (isIP(withoutZone) !== 6) return withoutZone
+  return Result.try(() => {
+    const hostname = new URL(`http://[${withoutZone}]/`).hostname.slice(1, -1)
+    const mappedHex = /^::ffff:([\da-f]{1,4}):([\da-f]{1,4})$/iu.exec(
+      hostname
+    )
+    if (!mappedHex?.[1] || !mappedHex[2]) return withoutZone
+    const high = Number.parseInt(mappedHex[1], 16)
+    const low = Number.parseInt(mappedHex[2], 16)
+    return `${high >>> 8}.${high & 0xff}.${low >>> 8}.${low & 0xff}`
+  }).pipe(Result.getOrElse(() => withoutZone))
 }

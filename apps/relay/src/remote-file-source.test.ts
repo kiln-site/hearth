@@ -33,6 +33,7 @@ describe("Relay remote file sources", () => {
           "https://10.0.0.1/file.jar",
           "https://169.254.169.254/latest/meta-data",
           "https://[::1]/file.jar",
+          "https://[::ffff:7f00:1]/file.jar",
         ]) {
           const failure = yield* withRemoteFileSource(
             source,

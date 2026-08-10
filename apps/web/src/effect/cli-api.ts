@@ -45,7 +45,7 @@ import {
   listPersistedRelaysEffect,
   type PersistedRelay,
 } from "@/lib/relay-registry"
-import { getActivityForUser } from "@/server/activity"
+import { getActivityForUser } from "@/server/activity-data.server"
 import {
   deleteInstanceDomainEffect,
   provisionInstanceDomainBestEffort,

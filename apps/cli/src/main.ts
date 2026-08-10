@@ -644,7 +644,7 @@ const filesEffect = Effect.fn("cli.files")(function* (
         )
       )
       writeLine(
-        `Downloaded ${localPath} to ${result.path} on the Relay (${formatBytes(result.size)}).`
+        `Downloaded URL to ${result.path} on the Relay (${formatBytes(result.size)}).`
       )
       return
     }
