@@ -486,7 +486,7 @@ describe("Relay state", () => {
           destination: { kind: "local" },
           kind: "delete",
           target: first.target,
-          taskId: "00000000-0000-4000-8000-000000000014",
+          taskId: "00000000-0000-4000-8000-000000000015",
         }
         yield* store.enqueueBackupTask(deletion, 230)
         assert.strictEqual(
@@ -494,21 +494,18 @@ describe("Relay state", () => {
           deletion.taskId
         )
         assert.strictEqual(yield* store.requeueInterruptedBackupTasks(250), 1)
+        const requeuedDeletion = yield* store.getBackupTask(deletion.taskId)
+        assert.strictEqual(requeuedDeletion?.status, "queued")
+        assert.isFalse(requeuedDeletion?.inputRefreshRequired)
         assert.strictEqual(
-          (yield* store.getBackupTask(deletion.taskId))?.status,
-          "queued"
-        )
-        assert.isNull(yield* store.claimNextBackupTask(260))
-        yield* store.enqueueBackupTask(deletion, 270)
-        assert.strictEqual(
-          (yield* store.claimNextBackupTask(280))?.taskId,
+          (yield* store.claimNextBackupTask(260))?.taskId,
           deletion.taskId
         )
         assert.isTrue(
           yield* store.completeBackupTask(
             deletion.taskId,
             { warnings: [] },
-            290
+            270
           )
         )
         const completedDeletion = yield* store.getBackupTask(deletion.taskId)

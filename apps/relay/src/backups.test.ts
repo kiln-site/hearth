@@ -37,6 +37,7 @@ describe("Relay backups", () => {
       error: null,
       finishedAt: 2,
       input,
+      inputRefreshRequired: false,
       kind: "create" as const,
       result: backupResult(0),
       startedAt: 1,
