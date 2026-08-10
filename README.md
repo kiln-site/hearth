@@ -27,6 +27,7 @@ Start from `.env.hearth.example`. These are the values worth setting for a first
 KILN_URL=https://hearth.example.com
 DB_PASSWORD=
 BETTER_AUTH_SECRETS=1:
+KILN_PLATFORM_BACKUP_KEY=
 
 KILN_RELAY_HOST=relay.example.com
 KILN_RELAY_GAME_HOST=games.example.com
@@ -38,7 +39,7 @@ KILN_RELAY_ACME_EMAIL=
 KILN_ENABLE_SIGNUPS=false
 ```
 
-Generate secrets with `openssl rand -base64 48`. `BETTER_AUTH_SECRETS` is versioned (`1:<secret>`). For a colocated Compose stack, give Hearth and Relay the same bootstrap token so they can pair on first boot. Set `KILN_RELAY_PROXY` to `traefik` or `coolify` when an edge should terminate TLS; `none` leaves that to you.
+Generate secrets with `openssl rand -base64 48`. `BETTER_AUTH_SECRETS` is versioned (`1:<secret>`). Keep an offline copy of `KILN_PLATFORM_BACKUP_KEY`; it is intentionally separate from Hearth's live secrets so a platform bundle remains recoverable after Hearth is lost. For a colocated Compose stack, give Hearth and Relay the same bootstrap token so they can pair on first boot. Set `KILN_RELAY_PROXY` to `traefik` or `coolify` when an edge should terminate TLS; `none` leaves that to you.
 
 Then:
 

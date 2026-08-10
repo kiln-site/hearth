@@ -144,9 +144,18 @@ compression. Their deletion therefore proceeds without a final backup instead
 of reserving a logical dump that Relay cannot create.
 
 A platform bundle contains a logical Hearth database dump plus a versioned
-manifest describing the installation and Relay registrations. Secret-bearing
-configuration must be encrypted with a separately recoverable platform backup
-key; using only the live Hearth secret would make disaster recovery circular.
+manifest describing the installation. Relay gzip-compresses the dump and
+encrypts it with AES-256-GCM using a key derived from the separately recoverable
+`KILN_PLATFORM_BACKUP_KEY`; using only a live Hearth secret would make disaster
+recovery circular. The first adapter targets the colocated Compose MySQL
+database identified by installation-scoped Docker labels. External Hearth
+databases will require an explicit platform-backup adapter rather than sending
+connection credentials through Relay's task journal.
+
+The bundle is a backup of Kiln's Hearth catalog, not its deployment
+configuration. Operators must retain the Compose environment, TLS material,
+and platform recovery key separately; rotating or losing application encryption
+secrets can make restored secret-bearing catalog values unusable.
 
 Every artifact gets a manifest containing format version, target identity,
 created time, engine/Brick metadata, exclusions, consistency warnings, logical
@@ -164,6 +173,22 @@ or roll back deterministically.
 Database restore requires the database to be running. The logical import is a
 tracked task and its output is bounded and redacted. A pre-restore dump is the
 default recommendation.
+
+Kiln platform restore is deliberately offline because importing Hearth's own
+catalog while Hearth is serving requests cannot be made transactionally safe.
+Stop Hearth, keep its MySQL and Relay containers running, and use:
+
+```text
+kiln-relay platform-backup inspect /data/backups/<backup-id>.zip
+kiln-relay platform-backup restore /data/backups/<backup-id>.zip \
+  --confirm <installation-id>
+```
+
+The restore verifies the authenticated manifest and ciphertext before replacing
+the Hearth database. It refuses a mismatched installation and refuses to run
+while a labeled Hearth application container is running. Start Hearth
+afterward; normal Relay reconciliation repairs the restored catalog's queued
+snapshot of the backup task.
 
 Deleting a server or database becomes a durable compound operation: create a
 `final_delete` full backup, verify it, then delete the resource. If backup

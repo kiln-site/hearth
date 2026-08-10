@@ -16,6 +16,7 @@ import {
   reserveBackupRestoreEffect,
   reserveDatabaseBackupEffect,
   reserveInstanceBackupEffect,
+  reservePlatformBackupEffect,
   updateBackupExcludesEffect,
   updateBackupLimitsEffect,
   type BackupCatalogRecord,
@@ -35,6 +36,7 @@ import {
 import { hasBackupPermission } from "@/lib/backup-access"
 import { relayRpc } from "@/lib/relay-connection"
 import { signS3BackupDownload } from "@/lib/backup-storage-s3"
+import { kilnInstallationId } from "@/lib/environment"
 import {
   dispatchBackupTask,
   reconcileRelayBackups,
@@ -63,6 +65,19 @@ const instanceBackupInputSchema = z.strictObject({
 
 const databaseBackupInputSchema = z.strictObject({
   databaseId: z.string().min(1).max(120),
+  maxBytes: z
+    .number()
+    .int()
+    .positive()
+    .max(Number.MAX_SAFE_INTEGER)
+    .nullable()
+    .optional(),
+  name: z.string().trim().min(1).max(120),
+  relayId: relayIdSchema,
+  storageId: z.uuid().nullable().optional(),
+})
+
+const platformBackupInputSchema = z.strictObject({
   maxBytes: z
     .number()
     .int()
@@ -218,6 +233,54 @@ export const createDatabaseBackup = createServerFn({ method: "POST" })
     const backup = (
       await runAppEffect(
         "backups.listAfterDatabaseCreate",
+        listBackupCatalogEffect()
+      )
+    ).find((candidate) => candidate.id === input.backupId)
+    if (!backup) throw new Error("Backup catalog record was not created")
+    return {
+      backup,
+      relayAccepted: dispatched[0]?.status === "fulfilled",
+    }
+  })
+
+export const createPlatformBackup = createServerFn({ method: "POST" })
+  .validator(platformBackupInputSchema)
+  .handler(async ({ data }) => {
+    const user = await requireAuthenticatedUser()
+    if (!isPlatformAdmin(user)) {
+      throw new Error("Platform backups require administrator access")
+    }
+    const relay = await requireBackupRelay(data.relayId)
+    if (data.storageId) {
+      const storage = await runAppEffect(
+        "backups.loadSelectedPlatformStorage",
+        loadBackupStorageEffect(data.storageId)
+      )
+      if (!storage || !storage.enabled || storage.ownerUserId !== null) {
+        throw new Error(
+          "Kiln platform backups require a platform-owned destination"
+        )
+      }
+    }
+    const input = await runAppEffect(
+      "backups.reservePlatform",
+      reservePlatformBackupEffect({
+        backupId: randomUUID(),
+        createdBy: user.id,
+        name: data.name,
+        relayId: relay.id,
+        requestedMaxBytes: data.maxBytes ?? null,
+        ...(data.storageId === undefined ? {} : { storageId: data.storageId }),
+        targetId: kilnInstallationId(),
+        taskId: randomUUID(),
+      })
+    )
+    const dispatched = await Promise.allSettled([
+      dispatchBackupTask(relay, input, user.id),
+    ])
+    const backup = (
+      await runAppEffect(
+        "backups.listAfterPlatformCreate",
         listBackupCatalogEffect()
       )
     ).find((candidate) => candidate.id === input.backupId)

@@ -33,6 +33,9 @@ services:
       TZ: America/New_York
     volumes:
       - hearth-mysql:/var/lib/mysql
+    labels:
+      io.kiln.installation: ${KILN_INSTALLATION_ID:-}
+      io.kiln.resource: hearth-database
     healthcheck:
       test:
         [
@@ -69,6 +72,7 @@ services:
       KILN_RELAY_PUBLIC_PORT: ${KILN_RELAY_PUBLIC_PORT:-}
       KILN_RELAY_PUBLIC_URL: ${KILN_RELAY_PUBLIC_URL:-}
       KILN_RELAY_RESOURCE_NAMESPACE: ${KILN_RELAY_RESOURCE_NAMESPACE:-}
+      KILN_PLATFORM_BACKUP_KEY: ${KILN_PLATFORM_BACKUP_KEY:-}
       KILN_RELAY_DISCOVER_PUBLIC_IP: ${KILN_RELAY_DISCOVER_PUBLIC_IP:-true}
       KILN_RELAY_SFTP_PORT: ${KILN_RELAY_SFTP_PORT:-2022}
       KILN_RELAY_TLS_MODE: ${KILN_RELAY_TLS_MODE:-managed}
@@ -144,6 +148,7 @@ services:
       - "3000:3000"
     labels:
       io.kiln.installation: ${KILN_INSTALLATION_ID:-}
+      io.kiln.resource: hearth
 
 volumes:
   hearth-mysql:

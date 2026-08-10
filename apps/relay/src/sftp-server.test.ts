@@ -494,6 +494,7 @@ function testConfig(dataDirectory: string): RelayConfig {
     nodeId: "test",
     nodeName: "Test Relay",
     port: 4100,
+    platformBackupKey: null,
     publicPort: 4100,
     projectDirectory: resolve(dataDirectory, "instances"),
     projectName: "test",

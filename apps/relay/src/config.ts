@@ -76,6 +76,7 @@ export interface RelayConfig {
   nodeId: string
   nodeName: string
   port: number
+  platformBackupKey: string | null
   publicPort: number
   projectDirectory: string
   projectName: string
@@ -190,6 +191,7 @@ export function loadConfig(
     nodeId: "kiln-relay",
     nodeName: environment.KILN_RELAY_NAME?.trim() || "",
     port,
+    platformBackupKey: optionalPlatformBackupKey(environment),
     publicPort,
     projectDirectory: `${dataDirectory}/instances`,
     projectName: resourceNamespace
@@ -232,6 +234,17 @@ export function loadConfig(
     traefikAcmeEmail: environment.KILN_RELAY_ACME_EMAIL?.trim() || null,
     traefikImage: traefikImage(environment),
   }
+}
+
+function optionalPlatformBackupKey(
+  environment: NodeJS.ProcessEnv
+): string | null {
+  const key = environment.KILN_PLATFORM_BACKUP_KEY?.trim()
+  if (!key) return null
+  if (Buffer.byteLength(key, "utf8") < 32) {
+    throw new Error("KILN_PLATFORM_BACKUP_KEY must be at least 32 bytes")
+  }
+  return key
 }
 
 function optionalDockerIdentifier(

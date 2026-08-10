@@ -48,6 +48,22 @@ describe("loadConfig", () => {
     ).toThrow("KILN_RELAY_CRASH_RETRY_LIMIT must be an integer from 0 to 10")
   })
 
+  it("keeps the platform recovery key optional but rejects weak keys", () => {
+    expect(loadConfig({ NODE_ENV: "development" }).platformBackupKey).toBeNull()
+    expect(
+      loadConfig({
+        KILN_PLATFORM_BACKUP_KEY: "a".repeat(32),
+        NODE_ENV: "development",
+      }).platformBackupKey
+    ).toBe("a".repeat(32))
+    expect(() =>
+      loadConfig({
+        KILN_PLATFORM_BACKUP_KEY: "too-short",
+        NODE_ENV: "development",
+      })
+    ).toThrow("KILN_PLATFORM_BACKUP_KEY must be at least 32 bytes")
+  })
+
   it("validates the managed game port range", () => {
     expect(
       loadConfig({

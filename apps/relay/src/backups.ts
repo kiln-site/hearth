@@ -39,6 +39,7 @@ import {
   createCompressedDatabaseBackup,
   restoreCompressedDatabaseBackup,
 } from "./database-backups.js"
+import { createEncryptedPlatformBackup } from "./platform-backups.js"
 import { RelayBackupError } from "./effect/errors.js"
 import { promiseEffect } from "./effect/promise.js"
 import { RelayStateStore } from "./effect/state.js"
@@ -369,6 +370,81 @@ export class BackupManager {
         return
       }
       const input = task.input
+      if (
+        input.target.kind === "platform" &&
+        input.artifactKind === "platform_bundle" &&
+        input.mode === "full"
+      ) {
+        const progress = { completed: 0, total: 0 }
+        const progressFiber = yield* Effect.forkChild(
+          Effect.sleep("500 millis").pipe(
+            Effect.andThen(
+              Effect.suspend(() =>
+                this.#state
+                  .updateBackupTaskProgress(
+                    task.taskId,
+                    progress.completed,
+                    null,
+                    Date.now()
+                  )
+                  .pipe(Effect.asVoid)
+              )
+            ),
+            Effect.forever
+          )
+        )
+        const destination = backupArchivePath(this.#config, input.backupId)
+        yield* promiseEffect(() =>
+          mkdir(backupDirectoryPath(this.#config), {
+            recursive: true,
+            mode: 0o700,
+          })
+        )
+        yield* promiseEffect(() => rm(destination, { force: true }))
+        const created = yield* Effect.tryPromise({
+          try: () =>
+            createEncryptedPlatformBackup(
+              this.#config,
+              input,
+              destination,
+              progress
+            ),
+          catch: (cause) =>
+            RelayBackupError.make({
+              code: "platform_backup_failed",
+              operation: "create.platform",
+              reason: backupErrorMessage(cause),
+              cause,
+            }),
+        }).pipe(Effect.ensuring(Fiber.interrupt(progressFiber)))
+        const result =
+          input.destination.kind === "s3"
+            ? yield* uploadBackupArtifact(
+                this.#config,
+                { ...input, destination: input.destination },
+                created
+              ).pipe(
+                Effect.ensuring(
+                  promiseEffect(() => rm(destination, { force: true })).pipe(
+                    Effect.ignore
+                  )
+                )
+              )
+            : created
+        const completed = yield* this.#state.completeBackupTask(
+          task.taskId,
+          result,
+          Date.now()
+        )
+        if (!completed) {
+          return yield* backupFailure(
+            "task_state_changed",
+            "create.complete",
+            "The backup task was no longer running when the platform bundle completed"
+          )
+        }
+        return
+      }
       if (
         input.target.kind === "database" &&
         input.artifactKind === "database_dump" &&

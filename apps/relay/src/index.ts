@@ -60,6 +60,10 @@ import {
 import { attachControlSocket } from "./control-socket.js"
 import { DockerDriver } from "./docker.js"
 import { DatabaseDriver } from "./databases.js"
+import {
+  inspectEncryptedPlatformBackup,
+  restoreEncryptedPlatformBackup,
+} from "./platform-backups.js"
 import { FilesystemDriver } from "./files.js"
 import { LifecycleDriver } from "./lifecycle.js"
 import { nodeSnapshot } from "./node.js"
@@ -162,7 +166,11 @@ const startupProxySettings = await lifecycle.proxySettings()
 lifecycle.hydrateProxySettings(startupProxySettings)
 let activeTls = await runRelayEffect("relay.startup.tls", loadRelayTls(config))
 const startup = { ...startupCore, tls: activeTls }
-if (cliArguments[0] === "pair" || cliArguments[0] === "hearth") {
+if (
+  cliArguments[0] === "pair" ||
+  cliArguments[0] === "hearth" ||
+  cliArguments[0] === "platform-backup"
+) {
   await runRelayCli(cliArguments)
   await disposeRelayRuntime()
   process.exit(0)
@@ -400,8 +408,39 @@ async function runRelayCli(arguments_: ReadonlyArray<string>): Promise<void> {
     console.log(revoked ? `Revoked ${clientId}` : "Hearth client not found")
     return
   }
+  if (resource === "platform-backup" && command === "inspect") {
+    const source = requiredCliArgument(arguments_[2], "backup path")
+    if (!config.platformBackupKey) {
+      throw new Error("KILN_PLATFORM_BACKUP_KEY is not configured")
+    }
+    console.log(
+      JSON.stringify(
+        await inspectEncryptedPlatformBackup(config.platformBackupKey, source),
+        null,
+        2
+      )
+    )
+    return
+  }
+  if (resource === "platform-backup" && command === "restore") {
+    const source = requiredCliArgument(arguments_[2], "backup path")
+    const confirmIndex = arguments_.indexOf("--confirm")
+    const confirmedInstallationId = requiredCliArgument(
+      confirmIndex === -1 ? undefined : arguments_[confirmIndex + 1],
+      "--confirm installation ID"
+    )
+    const restored = await restoreEncryptedPlatformBackup(
+      config,
+      source,
+      confirmedInstallationId
+    )
+    console.log(
+      `Restored Kiln platform backup for ${restored.installationId}. Start Hearth and verify the installation before resuming operations.`
+    )
+    return
+  }
   throw new Error(
-    "Usage: kiln-relay pair create|list|revoke or kiln-relay hearth list|revoke"
+    "Usage: kiln-relay pair create|list|revoke; kiln-relay hearth list|revoke; or kiln-relay platform-backup inspect|restore <path> [--confirm <installation-id>]"
   )
 }
 

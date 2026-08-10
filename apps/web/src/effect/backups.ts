@@ -430,6 +430,25 @@ export const reserveDatabaseBackupEffect = Effect.fn("backups.reserveDatabase")(
     })
 )
 
+export const reservePlatformBackupEffect = Effect.fn("backups.reservePlatform")(
+  (input: {
+    backupId: string
+    createdBy: string
+    name: string
+    relayId: string
+    requestedMaxBytes: number | null
+    storageId?: string | null
+    targetId: string
+    taskId: string
+  }) =>
+    reserveBackupCreateEffect({
+      ...input,
+      artifactKind: "platform_bundle",
+      exclude: [],
+      targetKind: "platform",
+    })
+)
+
 export const reconcileBackupTaskEffect = Effect.fn("backups.reconcile")(
   function* (task: RelayBackupTask) {
     const database = yield* Database
@@ -640,7 +659,8 @@ export const listDispatchableBackupTasksEffect = Effect.fn(
       WHERE backup.relay_id = ?
         AND backup.backup_mode = 'full'
         AND ((backup.target_kind = 'instance' AND backup.artifact_kind = 'archive')
-          OR (backup.target_kind = 'database' AND backup.artifact_kind = 'database_dump'))
+          OR (backup.target_kind = 'database' AND backup.artifact_kind = 'database_dump')
+          OR (backup.target_kind = 'platform' AND backup.artifact_kind = 'platform_bundle'))
         AND ((task.task_kind = 'create' AND backup.status = 'queued')
           OR (task.task_kind = 'restore' AND backup.status = 'available')
           OR (task.task_kind = 'delete' AND backup.status = 'deleting'))
