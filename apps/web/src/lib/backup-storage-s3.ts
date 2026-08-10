@@ -19,7 +19,6 @@ import { BackupStorageError } from "@/effect/errors"
 
 const CONNECTION_TEST_PREFIX = "kiln/connection-tests"
 const PRESIGNED_UPLOAD_SECONDS = 7 * 24 * 60 * 60
-const PRESIGNED_DOWNLOAD_SECONDS = 5 * 60
 const BLOCKED_ADDRESSES = new BlockList()
 const BLOCKED_IPV4: ReadonlyArray<readonly [string, number]> = [
   ["0.0.0.0", 8],
@@ -244,7 +243,8 @@ export function signS3BackupDelete(
 export function signS3BackupDownload(
   credential: S3BackupCredential,
   objectKey: string,
-  filename: string
+  filename: string,
+  expiresInSeconds: number
 ) {
   return withS3Client(credential, (client) =>
     s3Request("storage.signDownload", () =>
@@ -255,12 +255,12 @@ export function signS3BackupDownload(
           Key: objectKey,
           ResponseContentDisposition: `attachment; filename="${filename.replace(/["\\\r\n]/gu, "_")}"`,
         }),
-        { expiresIn: PRESIGNED_DOWNLOAD_SECONDS }
+        { expiresIn: expiresInSeconds }
       )
     ).pipe(
       Effect.map((url) => ({
         expiresAt: new Date(
-          Date.now() + PRESIGNED_DOWNLOAD_SECONDS * 1_000
+          Date.now() + expiresInSeconds * 1_000
         ).toISOString(),
         url,
       }))

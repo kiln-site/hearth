@@ -354,7 +354,7 @@ export class BackupManager {
         return
       }
       if (task.input.kind === "delete") {
-        const result = yield* deleteBackupArtifact(this.#config, task.input)
+        const result = yield* deleteBackupArtifacts(this.#config, task.input)
         const completed = yield* this.#state.completeBackupTask(
           task.taskId,
           result,
@@ -417,20 +417,7 @@ export class BackupManager {
               cause,
             }),
         }).pipe(Effect.ensuring(Fiber.interrupt(progressFiber)))
-        const result =
-          input.destination.kind === "s3"
-            ? yield* uploadBackupArtifact(
-                this.#config,
-                { ...input, destination: input.destination },
-                created
-              ).pipe(
-                Effect.ensuring(
-                  promiseEffect(() => rm(destination, { force: true })).pipe(
-                    Effect.ignore
-                  )
-                )
-              )
-            : created
+        const result = yield* storeCreatedBackup(this.#config, input, created)
         const completed = yield* this.#state.completeBackupTask(
           task.taskId,
           result,
@@ -499,20 +486,7 @@ export class BackupManager {
               cause,
             }),
         }).pipe(Effect.ensuring(Fiber.interrupt(progressFiber)))
-        const result =
-          input.destination.kind === "s3"
-            ? yield* uploadBackupArtifact(
-                this.#config,
-                { ...input, destination: input.destination },
-                created
-              ).pipe(
-                Effect.ensuring(
-                  promiseEffect(() => rm(destination, { force: true })).pipe(
-                    Effect.ignore
-                  )
-                )
-              )
-            : created
+        const result = yield* storeCreatedBackup(this.#config, input, created)
         const completed = yield* this.#state.completeBackupTask(
           task.taskId,
           result,
@@ -586,23 +560,7 @@ export class BackupManager {
                 cause,
               }),
       }).pipe(Effect.ensuring(Fiber.interrupt(progressFiber)))
-      const destination = input.destination
-      const result =
-        destination.kind === "s3"
-          ? yield* uploadBackupArtifact(
-              this.#config,
-              { ...input, destination },
-              archived
-            ).pipe(
-              Effect.ensuring(
-                promiseEffect(() =>
-                  rm(backupArchivePath(this.#config, input.backupId), {
-                    force: true,
-                  })
-                ).pipe(Effect.ignore)
-              )
-            )
-          : archived
+      const result = yield* storeCreatedBackup(this.#config, input, archived)
       const completed = yield* this.#state.completeBackupTask(
         task.taskId,
         result,
@@ -633,13 +591,14 @@ export async function createPortableInstanceBackup(
   const backupDirectory = backupDirectoryPath(config)
   await mkdir(backupDirectory, { recursive: true, mode: 0o700 })
   const destination = backupArchivePath(config, input.backupId)
-  const maximumBytes =
-    input.destination.kind === "s3"
-      ? Math.min(
-          input.maxBytes ?? MAX_S3_SINGLE_PUT_BYTES,
-          MAX_S3_SINGLE_PUT_BYTES
-        )
-      : input.maxBytes
+  const maximumBytes = [input.destination, ...(input.replicas ?? [])].some(
+    (destination) => destination.kind === "s3"
+  )
+    ? Math.min(
+        input.maxBytes ?? MAX_S3_SINGLE_PUT_BYTES,
+        MAX_S3_SINGLE_PUT_BYTES
+      )
+    : input.maxBytes
   const patterns = [...DEFAULT_EXCLUDES, ...input.exclude]
   let warnings: Array<string> = []
 
@@ -723,6 +682,63 @@ export async function createPortableInstanceBackup(
   })
 }
 
+function storeCreatedBackup(
+  config: RelayConfig,
+  input: BackupCreateTaskInput,
+  result: BackupCreateTaskResult
+) {
+  return Effect.gen(function* () {
+    const destinations = [input.destination, ...(input.replicas ?? [])]
+    const outcomes: NonNullable<BackupCreateTaskResult["artifacts"]> = []
+    let available = 0
+    for (const destination of destinations) {
+      if (destination.kind === "local") {
+        available += 1
+        if (destination.artifactId) {
+          outcomes.push({
+            artifactId: destination.artifactId,
+            error: null,
+            status: "available",
+          })
+        }
+        continue
+      }
+      const uploaded = yield* Effect.result(
+        uploadBackupArtifact(config, { ...input, destination }, result)
+      )
+      if (Result.isSuccess(uploaded)) {
+        available += 1
+        if (destination.artifactId) {
+          outcomes.push({
+            artifactId: destination.artifactId,
+            error: null,
+            status: "available",
+          })
+        }
+      } else if (destination.artifactId) {
+        outcomes.push({
+          artifactId: destination.artifactId,
+          error: backupErrorMessage(uploaded.failure),
+          status: "failed",
+        })
+      }
+    }
+    if (!destinations.some((destination) => destination.kind === "local")) {
+      yield* promiseEffect(() =>
+        rm(backupArchivePath(config, input.backupId), { force: true })
+      ).pipe(Effect.ignore)
+    }
+    if (available === 0) {
+      return yield* backupFailure(
+        "backup_storage_failed",
+        "create.store",
+        "The backup archive could not be stored in any destination"
+      )
+    }
+    return { ...result, artifacts: outcomes }
+  })
+}
+
 function uploadBackupArtifact(
   config: RelayConfig,
   input: BackupCreateTaskInput & {
@@ -757,6 +773,48 @@ function uploadBackupArtifact(
         cause,
       }),
   }).pipe(Effect.as(result))
+}
+
+function deleteBackupArtifacts(
+  config: RelayConfig,
+  input: BackupDeleteTaskInput & { kind: "delete" }
+) {
+  return Effect.gen(function* () {
+    const outcomes: Array<{
+      artifactId: string
+      error: string | null
+      status: "deleted" | "failed"
+    }> = []
+    for (const destination of [input.destination, ...(input.replicas ?? [])]) {
+      const deleted = yield* Effect.result(
+        deleteBackupArtifact(config, { ...input, destination })
+      )
+      if (!destination.artifactId) {
+        if (Result.isFailure(deleted)) {
+          return yield* backupFailure(
+            "backup_delete_failed",
+            "delete",
+            backupErrorMessage(deleted.failure)
+          )
+        }
+        continue
+      }
+      outcomes.push(
+        Result.isSuccess(deleted)
+          ? {
+              artifactId: destination.artifactId,
+              error: null,
+              status: "deleted",
+            }
+          : {
+              artifactId: destination.artifactId,
+              error: backupErrorMessage(deleted.failure),
+              status: "failed",
+            }
+      )
+    }
+    return { artifacts: outcomes, warnings: [] }
+  })
 }
 
 function deleteBackupArtifact(

@@ -584,12 +584,18 @@ export const getCliBackupDownloadEffect = Effect.fn("cli.api.backups.download")(
       input.backupId,
       "backup.download"
     )
-    if (backup.status !== "available" || !backup.filename) {
+    const artifact =
+      backup.artifacts.find(
+        (candidate) =>
+          candidate.status === "available" && candidate.storageId === null
+      ) ??
+      backup.artifacts.find((candidate) => candidate.status === "available")
+    const filename = artifact?.filename ?? backup.filename
+    if (backup.status !== "available" || !artifact || !filename) {
       return yield* cliConflict("The backup is not available for download.")
     }
-    const filename = backup.filename
-    if (!backup.storageId) {
-      if (backup.objectKey) {
+    if (!artifact.storageId) {
+      if (artifact.objectKey) {
         return yield* cliConflict("The local backup metadata is invalid.")
       }
       const relay = yield* requiredRelay(backup.relayId)
@@ -599,7 +605,8 @@ export const getCliBackupDownloadEffect = Effect.fn("cli.api.backups.download")(
             relay,
             backup,
             filename,
-            cliRelaySubject(principal)
+            cliRelaySubject(principal),
+            300
           ),
         catch: (cause) =>
           CliAccessError.make({
@@ -614,18 +621,18 @@ export const getCliBackupDownloadEffect = Effect.fn("cli.api.backups.download")(
         filename,
       })
     }
-    if (!backup.objectKey) {
+    if (!artifact.objectKey) {
       return yield* cliConflict("The S3 backup metadata is invalid.")
     }
-    const objectKey = backup.objectKey
+    const objectKey = artifact.objectKey
     const storage = yield* mapCliBackupFailure(
-      loadBackupStorageCredentialEffect(backup.storageId),
+      loadBackupStorageCredentialEffect(artifact.storageId),
       "Hearth could not load the backup destination."
     )
     if (!storage)
       return yield* cliNotFound("The backup destination was not found.")
     const signed = yield* mapCliBackupFailure(
-      signS3BackupDownload(storage, objectKey, filename),
+      signS3BackupDownload(storage, objectKey, filename, 300),
       "Hearth could not sign the S3 download."
     )
     return cliBackupDownloadResponseSchema.parse({

@@ -66,6 +66,18 @@ async function ensureBackupSchema(database) {
        ADD COLUMN allow_private_network BOOLEAN NOT NULL DEFAULT FALSE AFTER force_path_style`
     )
   }
+  await database.query(
+    `INSERT IGNORE INTO ${databaseTable("backup_artifact")}
+      (id, backup_id, destination_key, storage_id, status, filename,
+       object_key, bytes, checksum_sha256, completed_at, deleted_at,
+       created_at, updated_at)
+     SELECT backup.id, backup.id, COALESCE(backup.storage_id, 'local'),
+            backup.storage_id, backup.status, backup.filename,
+            backup.object_key, backup.bytes, backup.checksum_sha256,
+            backup.completed_at, backup.deleted_at,
+            backup.created_at, backup.updated_at
+       FROM ${databaseTable("backup")} backup`
+  )
 }
 
 async function ensureInstanceOwnershipSchema(database) {

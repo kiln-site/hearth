@@ -9,14 +9,15 @@ export async function signLocalBackupDownload(
   relay: PersistedRelay,
   backup: BackupCatalogRecord,
   filename: string,
-  subject: string
+  subject: string,
+  expiresInSeconds: number
 ) {
   if (relay.role === "custom" && !relay.actions.includes("backup.download")) {
     throw new Error("This Hearth client cannot download Relay backups")
   }
   const credentials = await loadRelayCredentials(relay.id)
   const now = Date.now()
-  const expiresAt = now + 5 * 60_000
+  const expiresAt = now + expiresInSeconds * 1_000
   const payload = backupDownloadCapabilityPayloadSchema.parse({
     action: "backup.download",
     audience: relay.id,

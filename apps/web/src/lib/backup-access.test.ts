@@ -16,6 +16,18 @@ const user = {
 } satisfies AuthenticatedUser
 
 const backup = {
+  artifacts: [
+    {
+      bytes: 1,
+      checksumSha256: "a".repeat(64),
+      error: null,
+      filename: "backup.zip",
+      id: "730ae31f-a620-43f3-93fd-d259b58f6614",
+      objectKey: null,
+      status: "available",
+      storageId: null,
+    },
+  ],
   artifactKind: "archive",
   backupMode: "full",
   bytes: 1,

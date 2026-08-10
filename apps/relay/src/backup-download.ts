@@ -15,7 +15,7 @@ import { actionsForRole } from "./permissions.js"
 
 const MAX_ACTIVE_DOWNLOADS = 4
 const MAX_TOKEN_BYTES = 16 * 1024
-const MAX_TOKEN_LIFETIME_MS = 5 * 60_000
+const MAX_TOKEN_LIFETIME_MS = 7 * 24 * 60 * 60_000
 
 export class BackupDownloadServer {
   #active = 0

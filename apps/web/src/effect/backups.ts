@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import type { RowDataPacket } from "mysql2/promise"
 import { Effect } from "effect"
 
@@ -28,6 +29,18 @@ interface BackupStorageKeyRow extends RowDataPacket {
   id: string
   object_prefix: string
   owner_user_id: string | null
+}
+
+interface BackupArtifactRow extends RowDataPacket {
+  backup_id: string
+  bytes: number | string | null
+  checksum_sha256: string | null
+  error: string | null
+  filename: string | null
+  id: string
+  object_key: string | null
+  status: "available" | "deleted" | "deleting" | "failed" | "queued" | "running"
+  storage_id: string | null
 }
 
 interface BackupUsageRow extends RowDataPacket {
@@ -116,6 +129,7 @@ export interface FinalInstanceDeletion {
 export type FinalDatabaseDeletion = FinalInstanceDeletion
 
 export interface BackupCatalogRecord {
+  artifacts: Array<BackupArtifactRecord>
   artifactKind: BackupRow["artifact_kind"]
   backupMode: BackupRow["backup_mode"]
   bytes: number | null
@@ -139,6 +153,23 @@ export interface BackupCatalogRecord {
   warnings: Array<string>
 }
 
+export interface BackupArtifactRecord {
+  bytes: number | null
+  checksumSha256: string | null
+  error: string | null
+  filename: string | null
+  id: string
+  objectKey: string | null
+  status: BackupArtifactRow["status"]
+  storageId: string | null
+}
+
+export interface BackupDispatchArtifact {
+  artifactId: string
+  objectKey: string | null
+  storageId: string | null
+}
+
 export interface InstanceBackupPolicy {
   adminQuantityLimit: number | null
   adminSizeLimitBytes: number | null
@@ -150,26 +181,25 @@ export interface InstanceBackupPolicy {
 
 export interface BackupCreateDispatch extends Omit<
   BackupCreateTaskInput,
-  "destination"
+  "destination" | "replicas"
 > {
+  artifacts: Array<BackupDispatchArtifact>
   kind: "create"
-  objectKey: string | null
-  storageId: string | null
 }
 
 export interface BackupDeleteDispatch extends Omit<
   BackupDeleteTaskInput,
-  "destination"
+  "destination" | "replicas"
 > {
+  artifacts: Array<BackupDispatchArtifact>
   kind: "delete"
-  objectKey: string | null
-  storageId: string | null
 }
 
 export interface BackupRestoreDispatch extends Omit<
   BackupRestoreTaskInput,
   "source"
 > {
+  artifactId: string
   kind: "restore"
   objectKey: string | null
   storageId: string | null
@@ -191,6 +221,7 @@ const reserveBackupCreateEffect = Effect.fn("backups.reserveCreate")(
     relayId: string
     requestedMaxBytes: number | null
     storageId?: string | null
+    storageIds?: ReadonlyArray<string | null>
     targetId: string
     targetKind: BackupCreateTaskInput["target"]["kind"]
     taskId: string
@@ -242,39 +273,58 @@ const reserveBackupCreateEffect = Effect.fn("backups.reserveCreate")(
             })
           }
         }
-        const storageId =
-          input.storageId === undefined ? policy.storage_id : input.storageId
-        const storage = storageId
-          ? (yield* transaction.queryRows<BackupStorageKeyRow>(
-              `SELECT id, object_prefix, owner_user_id
-                   FROM ${databaseTable("backup_storage")}
-                  WHERE id = ? AND enabled = TRUE
-                  LIMIT 1`,
-              [storageId]
-            ))[0]
-          : null
-        if (
-          storageId &&
-          (!storage ||
-            (storage.owner_user_id !== null &&
-              storage.owner_user_id !== input.createdBy))
-        ) {
+        const selectedStorageIds = deduplicateStorageIds(
+          input.storageIds ?? [
+            input.storageId === undefined ? policy.storage_id : input.storageId,
+          ]
+        )
+        if (selectedStorageIds.length === 0) {
           return yield* BackupStorageError.make({
             code: "storage_unavailable",
             operation: "backup.reserve",
-            reason: "The selected backup destination is unavailable",
+            reason: "Choose at least one backup destination",
           })
         }
-        const objectKey = storage
-          ? backupObjectKey({
-              backupId: input.backupId,
-              installationId: kilnInstallationId(),
-              objectPrefix: storage.object_prefix,
-              relayId: input.relayId,
-              targetId: input.targetId,
-              targetKind: input.targetKind,
+        const artifacts: Array<BackupDispatchArtifact> = []
+        for (const storageId of selectedStorageIds) {
+          const storage = storageId
+            ? (yield* transaction.queryRows<BackupStorageKeyRow>(
+                `SELECT id, object_prefix, owner_user_id
+                     FROM ${databaseTable("backup_storage")}
+                    WHERE id = ? AND enabled = TRUE
+                    LIMIT 1`,
+                [storageId]
+              ))[0]
+            : null
+          if (
+            storageId &&
+            (!storage ||
+              (storage.owner_user_id !== null &&
+                storage.owner_user_id !== input.createdBy))
+          ) {
+            return yield* BackupStorageError.make({
+              code: "storage_unavailable",
+              operation: "backup.reserve",
+              reason: "A selected backup destination is unavailable",
             })
-          : null
+          }
+          artifacts.push({
+            artifactId: randomUUID(),
+            objectKey: storage
+              ? backupObjectKey({
+                  backupId: input.backupId,
+                  installationId: kilnInstallationId(),
+                  objectPrefix: storage.object_prefix,
+                  relayId: input.relayId,
+                  targetId: input.targetId,
+                  targetKind: input.targetKind,
+                })
+              : null,
+            storageId,
+          })
+        }
+        const primaryArtifact = artifacts[0]
+        if (!primaryArtifact) return yield* Effect.die("Backup has no artifact")
         const usageRows = yield* transaction.queryRows<BackupUsageRow>(
           `SELECT COUNT(*) AS quantity_used,
                   COALESCE(SUM(
@@ -357,14 +407,28 @@ const reserveBackupCreateEffect = Effect.fn("backups.reserveCreate")(
             input.relayId,
             input.targetKind,
             input.targetId,
-            storageId,
+            primaryArtifact.storageId,
             input.artifactKind,
             input.reason ?? "manual",
             input.name,
-            objectKey,
+            primaryArtifact.objectKey,
             input.createdBy,
           ]
         )
+        for (const artifact of artifacts) {
+          yield* transaction.execute(
+            `INSERT INTO ${databaseTable("backup_artifact")}
+              (id, backup_id, destination_key, storage_id, status, object_key)
+             VALUES (?, ?, ?, ?, 'queued', ?)`,
+            [
+              artifact.artifactId,
+              input.backupId,
+              artifact.storageId ?? "local",
+              artifact.storageId,
+              artifact.objectKey,
+            ]
+          )
+        }
         yield* transaction.execute(
           `INSERT INTO ${databaseTable("backup_task")}
             (id, backup_id, task_kind, status, reserved_bytes, requested_by)
@@ -394,6 +458,7 @@ const reserveBackupCreateEffect = Effect.fn("backups.reserveCreate")(
           )
         }
         return {
+          artifacts,
           artifactKind: input.artifactKind,
           backupId: input.backupId,
           exclude: parseExcludes(policy.exclude_patterns),
@@ -401,8 +466,6 @@ const reserveBackupCreateEffect = Effect.fn("backups.reserveCreate")(
           maxBytes: reservation.maxBytes,
           mode: "full",
           reason: input.reason ?? "manual",
-          objectKey,
-          storageId,
           target: { id: input.targetId, kind: input.targetKind },
           taskId: input.taskId,
         } satisfies BackupCreateDispatch
@@ -420,6 +483,7 @@ export const reserveInstanceBackupEffect = Effect.fn("backups.reserve")(
     relayId: string
     requestedMaxBytes: number | null
     storageId?: string | null
+    storageIds?: ReadonlyArray<string | null>
     targetId: string
     taskId: string
   }) =>
@@ -440,6 +504,7 @@ export const reserveDatabaseBackupEffect = Effect.fn("backups.reserveDatabase")(
     relayId: string
     requestedMaxBytes: number | null
     storageId?: string | null
+    storageIds?: ReadonlyArray<string | null>
     targetId: string
     taskId: string
   }) =>
@@ -459,6 +524,7 @@ export const reservePlatformBackupEffect = Effect.fn("backups.reservePlatform")(
     relayId: string
     requestedMaxBytes: number | null
     storageId?: string | null
+    storageIds?: ReadonlyArray<string | null>
     targetId: string
     taskId: string
   }) =>
@@ -531,18 +597,69 @@ export const reconcileBackupTaskEffect = Effect.fn("backups.reconcile")(
                 WHERE id = ?`,
               [task.backupId]
             )
+            yield* transaction.execute(
+              `UPDATE ${databaseTable("backup_artifact")}
+                  SET status = 'deleting'
+                WHERE backup_id = ? AND status <> 'deleted'`,
+              [task.backupId]
+            )
           } else if (task.status === "succeeded") {
+            const outcomes = task.result?.artifacts ?? []
+            if (outcomes.length === 0) {
+              yield* transaction.execute(
+                `UPDATE ${databaseTable("backup_artifact")}
+                    SET status = 'deleted', deleted_at = FROM_UNIXTIME(? / 1000)
+                  WHERE backup_id = ?`,
+                [task.finishedAt ?? Date.now(), task.backupId]
+              )
+            } else {
+              for (const outcome of outcomes) {
+                yield* transaction.execute(
+                  `UPDATE ${databaseTable("backup_artifact")}
+                      SET status = ?, error = ?,
+                          deleted_at = CASE WHEN ? = 'deleted'
+                            THEN FROM_UNIXTIME(? / 1000) ELSE NULL END
+                    WHERE id = ? AND backup_id = ?`,
+                  [
+                    outcome.status,
+                    outcome.error,
+                    outcome.status,
+                    task.finishedAt ?? Date.now(),
+                    outcome.artifactId,
+                    task.backupId,
+                  ]
+                )
+              }
+            }
+            const remaining = yield* transaction.queryRows<RowDataPacket>(
+              `SELECT id FROM ${databaseTable("backup_artifact")}
+                WHERE backup_id = ? AND status <> 'deleted' LIMIT 1`,
+              [task.backupId]
+            )
             yield* transaction.execute(
               `UPDATE ${databaseTable("backup")}
-                  SET status = 'deleted', deleted_at = FROM_UNIXTIME(? / 1000)
+                  SET status = ?,
+                      deleted_at = CASE WHEN ? = 'deleted'
+                        THEN FROM_UNIXTIME(? / 1000) ELSE NULL END
                 WHERE id = ?`,
-              [task.finishedAt ?? Date.now(), task.backupId]
+              [
+                remaining[0] ? "available" : "deleted",
+                remaining[0] ? "available" : "deleted",
+                task.finishedAt ?? Date.now(),
+                task.backupId,
+              ]
             )
           } else if (task.status === "failed" || task.status === "cancelled") {
             yield* transaction.execute(
               `UPDATE ${databaseTable("backup")}
                   SET status = 'available'
                 WHERE id = ?`,
+              [task.backupId]
+            )
+            yield* transaction.execute(
+              `UPDATE ${databaseTable("backup_artifact")}
+                  SET status = 'available'
+                WHERE backup_id = ? AND status = 'deleting'`,
               [task.backupId]
             )
           }
@@ -557,6 +674,12 @@ export const reconcileBackupTaskEffect = Effect.fn("backups.reconcile")(
               WHERE id = ?`,
             [task.status, task.startedAt, task.backupId]
           )
+          yield* transaction.execute(
+            `UPDATE ${databaseTable("backup_artifact")}
+                SET status = ?
+              WHERE backup_id = ? AND status IN ('queued', 'running')`,
+            [task.status, task.backupId]
+          )
           return
         }
         if (
@@ -564,13 +687,59 @@ export const reconcileBackupTaskEffect = Effect.fn("backups.reconcile")(
           task.result &&
           "bytes" in task.result
         ) {
+          const outcomes = task.result.artifacts ?? []
+          if (outcomes.length === 0) {
+            yield* transaction.execute(
+              `UPDATE ${databaseTable("backup_artifact")}
+                  SET status = 'available', filename = ?, bytes = ?,
+                      checksum_sha256 = ?, error = NULL,
+                      completed_at = FROM_UNIXTIME(? / 1000)
+                WHERE backup_id = ?`,
+              [
+                task.result.filename,
+                task.result.bytes,
+                task.result.checksumSha256,
+                task.finishedAt ?? Date.now(),
+                task.backupId,
+              ]
+            )
+          } else {
+            for (const outcome of outcomes) {
+              yield* transaction.execute(
+                `UPDATE ${databaseTable("backup_artifact")}
+                    SET status = ?, filename = ?,
+                        bytes = CASE WHEN ? = 'available' THEN ? ELSE NULL END,
+                        checksum_sha256 = CASE WHEN ? = 'available' THEN ? ELSE NULL END,
+                        error = ?, completed_at = FROM_UNIXTIME(? / 1000)
+                  WHERE id = ? AND backup_id = ?`,
+                [
+                  outcome.status,
+                  task.result.filename,
+                  outcome.status,
+                  task.result.bytes,
+                  outcome.status,
+                  task.result.checksumSha256,
+                  outcome.error,
+                  task.finishedAt ?? Date.now(),
+                  outcome.artifactId,
+                  task.backupId,
+                ]
+              )
+            }
+          }
+          const available = yield* transaction.queryRows<RowDataPacket>(
+            `SELECT id FROM ${databaseTable("backup_artifact")}
+              WHERE backup_id = ? AND status = 'available' LIMIT 1`,
+            [task.backupId]
+          )
           yield* transaction.execute(
             `UPDATE ${databaseTable("backup")}
-                SET status = 'available', filename = ?, bytes = ?,
+                SET status = ?, filename = ?, bytes = ?,
                     checksum_sha256 = ?, warnings = ?,
                     completed_at = FROM_UNIXTIME(? / 1000)
               WHERE id = ?`,
             [
+              available[0] ? "available" : "failed",
               task.result.filename,
               task.result.bytes,
               task.result.checksumSha256,
@@ -588,6 +757,13 @@ export const reconcileBackupTaskEffect = Effect.fn("backups.reconcile")(
                     completed_at = FROM_UNIXTIME(? / 1000)
               WHERE id = ?`,
             [task.finishedAt ?? Date.now(), task.backupId]
+          )
+          yield* transaction.execute(
+            `UPDATE ${databaseTable("backup_artifact")}
+                SET status = 'failed', error = ?,
+                    completed_at = FROM_UNIXTIME(? / 1000)
+              WHERE backup_id = ? AND status IN ('queued', 'running')`,
+            [task.error, task.finishedAt ?? Date.now(), task.backupId]
           )
         }
       })
@@ -620,7 +796,33 @@ export const listBackupCatalogEffect = Effect.fn("backups.list")(function* () {
       WHERE backup.status <> 'deleted'
       ORDER BY backup.created_at DESC, backup.id DESC`
   )
+  const artifactRows = yield* database.queryRows<BackupArtifactRow>(
+    "backup_artifact_catalog_list",
+    `SELECT artifact.id, artifact.backup_id, artifact.storage_id,
+            artifact.status, artifact.filename, artifact.object_key,
+            artifact.bytes, artifact.checksum_sha256, artifact.error
+       FROM ${databaseTable("backup_artifact")} artifact
+       JOIN ${databaseTable("backup")} backup ON backup.id = artifact.backup_id
+      WHERE backup.status <> 'deleted' AND artifact.status <> 'deleted'
+      ORDER BY artifact.created_at ASC, artifact.id ASC`
+  )
+  const artifactsByBackup = new Map<string, Array<BackupArtifactRecord>>()
+  for (const artifact of artifactRows) {
+    const records = artifactsByBackup.get(artifact.backup_id) ?? []
+    records.push({
+      bytes: nullableDatabaseNumber(artifact.bytes, "backup artifact bytes"),
+      checksumSha256: artifact.checksum_sha256,
+      error: artifact.error,
+      filename: artifact.filename,
+      id: artifact.id,
+      objectKey: artifact.object_key,
+      status: artifact.status,
+      storageId: artifact.storage_id,
+    })
+    artifactsByBackup.set(artifact.backup_id, records)
+  }
   return rows.map((row) => ({
+    artifacts: artifactsByBackup.get(row.id) ?? [],
     artifactKind: row.artifact_kind,
     backupMode: row.backup_mode,
     bytes: nullableDatabaseNumber(row.bytes, "backup bytes"),
@@ -695,10 +897,34 @@ export const listDispatchableBackupTasksEffect = Effect.fn(
       ORDER BY task.created_at ASC, task.id ASC`,
     [relayId]
   )
+  const artifactRows = yield* database.queryRows<BackupArtifactRow>(
+    "backup_dispatchable_artifacts",
+    `SELECT artifact.id, artifact.backup_id, artifact.storage_id,
+            artifact.status, artifact.filename, artifact.object_key,
+            artifact.bytes, artifact.checksum_sha256, artifact.error
+       FROM ${databaseTable("backup_artifact")} artifact
+       JOIN ${databaseTable("backup")} backup ON backup.id = artifact.backup_id
+      WHERE backup.relay_id = ? AND artifact.status <> 'deleted'
+      ORDER BY (artifact.storage_id IS NULL) DESC, artifact.created_at ASC`,
+    [relayId]
+  )
+  const artifactsByBackup = new Map<string, Array<BackupArtifactRow>>()
+  for (const artifact of artifactRows) {
+    const artifacts = artifactsByBackup.get(artifact.backup_id) ?? []
+    artifacts.push(artifact)
+    artifactsByBackup.set(artifact.backup_id, artifacts)
+  }
   return rows.map((row): BackupDispatch => {
+    const artifacts = artifactsByBackup.get(row.backup_id) ?? []
     if (row.task_kind === "restore") {
-      const bytes = nullableDatabaseNumber(row.bytes, "backup bytes")
-      if (bytes === null || !row.checksum_sha256) {
+      const artifact = artifacts.find(
+        (candidate) => candidate.status === "available"
+      )
+      const bytes = nullableDatabaseNumber(
+        artifact?.bytes ?? null,
+        "backup artifact bytes"
+      )
+      if (!artifact || bytes === null || !artifact.checksum_sha256) {
         throw new Error(
           "Available backup is missing restore integrity metadata"
         )
@@ -706,25 +932,26 @@ export const listDispatchableBackupTasksEffect = Effect.fn(
       return {
         backupId: row.backup_id,
         bytes,
-        checksumSha256: row.checksum_sha256,
+        checksumSha256: artifact.checksum_sha256,
+        artifactId: artifact.id,
         kind: "restore",
-        objectKey: row.object_key,
-        storageId: row.storage_id,
+        objectKey: artifact.object_key,
+        storageId: artifact.storage_id,
         target: { id: row.target_id, kind: row.target_kind },
         taskId: row.task_id,
       }
     }
     if (row.task_kind === "delete") {
       return {
+        artifacts: artifacts.map(dispatchArtifact),
         backupId: row.backup_id,
         kind: "delete",
-        objectKey: row.object_key,
-        storageId: row.storage_id,
         target: { id: row.target_id, kind: row.target_kind },
         taskId: row.task_id,
       }
     }
     return {
+      artifacts: artifacts.map(dispatchArtifact),
       artifactKind: row.artifact_kind,
       backupId: row.backup_id,
       exclude: parseExcludes(row.exclude_patterns),
@@ -734,9 +961,7 @@ export const listDispatchableBackupTasksEffect = Effect.fn(
         "backup reservation"
       ),
       mode: row.backup_mode,
-      objectKey: row.object_key,
       reason: row.reason,
-      storageId: row.storage_id,
       target: { id: row.target_id, kind: row.target_kind },
       taskId: row.task_id,
     }
@@ -775,10 +1000,29 @@ export const reserveBackupRestoreEffect = Effect.fn("backups.reserveRestore")(
             [input.backupId]
           )
           const backup = rows[0]
-          const bytes = backup
-            ? nullableDatabaseNumber(backup.bytes, "backup bytes")
-            : null
-          if (!backup || bytes === null || !backup.checksum_sha256) {
+          const artifacts = backup
+            ? yield* transaction.queryRows<BackupArtifactRow>(
+                `SELECT artifact.id, artifact.backup_id, artifact.storage_id,
+                        artifact.status, artifact.filename, artifact.object_key,
+                        artifact.bytes, artifact.checksum_sha256, artifact.error
+                   FROM ${databaseTable("backup_artifact")} artifact
+                  WHERE artifact.backup_id = ? AND artifact.status = 'available'
+                  ORDER BY (artifact.storage_id IS NULL) DESC, artifact.created_at ASC
+                  FOR UPDATE`,
+                [input.backupId]
+              )
+            : []
+          const artifact = artifacts[0]
+          const bytes = nullableDatabaseNumber(
+            artifact?.bytes ?? null,
+            "backup artifact bytes"
+          )
+          if (
+            !backup ||
+            !artifact ||
+            bytes === null ||
+            !artifact.checksum_sha256
+          ) {
             return yield* BackupStorageError.make({
               code: "backup_unavailable",
               operation: "backup.restore",
@@ -855,12 +1099,13 @@ export const reserveBackupRestoreEffect = Effect.fn("backups.reserveRestore")(
             ]
           )
           return {
+            artifactId: artifact.id,
             backupId: input.backupId,
             bytes,
-            checksumSha256: backup.checksum_sha256,
+            checksumSha256: artifact.checksum_sha256,
             kind: "restore",
-            objectKey: backup.object_key,
-            storageId: backup.storage_id,
+            objectKey: artifact.object_key,
+            storageId: artifact.storage_id,
             target: { id: backup.target_id, kind: backup.target_kind },
             taskId: input.taskId,
           } satisfies BackupRestoreDispatch
@@ -910,10 +1155,17 @@ export const reserveBackupDeleteEffect = Effect.fn("backups.reserveDelete")(
           [input.taskId, input.backupId, input.requestedBy]
         )
         return {
+          artifacts: (yield* transaction.queryRows<BackupArtifactRow>(
+            `SELECT artifact.id, artifact.backup_id, artifact.storage_id,
+                      artifact.status, artifact.filename, artifact.object_key,
+                      artifact.bytes, artifact.checksum_sha256, artifact.error
+                 FROM ${databaseTable("backup_artifact")} artifact
+                WHERE artifact.backup_id = ? AND artifact.status <> 'deleted'
+                ORDER BY (artifact.storage_id IS NULL) DESC, artifact.created_at ASC`,
+            [input.backupId]
+          )).map(dispatchArtifact),
           backupId: input.backupId,
           kind: "delete",
-          objectKey: backup.object_key,
-          storageId: backup.storage_id,
           target: { id: backup.target_id, kind: backup.target_kind },
           taskId: input.taskId,
         } satisfies BackupDeleteDispatch
@@ -1256,6 +1508,26 @@ function backupTaskStatusOrder(status: BackupTaskStatus): number {
     case "failed":
     case "succeeded":
       return 2
+  }
+}
+
+function deduplicateStorageIds(
+  storageIds: ReadonlyArray<string | null>
+): Array<string | null> {
+  const seen = new Set<string>()
+  return storageIds.filter((storageId) => {
+    const key = storageId ?? "local"
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function dispatchArtifact(artifact: BackupArtifactRow): BackupDispatchArtifact {
+  return {
+    artifactId: artifact.id,
+    objectKey: artifact.object_key,
+    storageId: artifact.storage_id,
   }
 }
 

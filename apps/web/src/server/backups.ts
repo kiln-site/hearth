@@ -57,6 +57,7 @@ const instanceBackupInputSchema = z.strictObject({
   name: z.string().trim().min(1).max(120),
   relayId: relayIdSchema,
   storageId: z.uuid().nullable().optional(),
+  storageIds: z.array(z.uuid().nullable()).min(1).max(16).optional(),
 })
 
 const databaseBackupInputSchema = z.strictObject({
@@ -71,6 +72,7 @@ const databaseBackupInputSchema = z.strictObject({
   name: z.string().trim().min(1).max(120),
   relayId: relayIdSchema,
   storageId: z.uuid().nullable().optional(),
+  storageIds: z.array(z.uuid().nullable()).min(1).max(16).optional(),
 })
 
 const platformBackupInputSchema = z.strictObject({
@@ -84,9 +86,21 @@ const platformBackupInputSchema = z.strictObject({
   name: z.string().trim().min(1).max(120),
   relayId: relayIdSchema,
   storageId: z.uuid().nullable().optional(),
+  storageIds: z.array(z.uuid().nullable()).min(1).max(16).optional(),
 })
 
 const backupIdInputSchema = z.strictObject({ backupId: z.uuid() })
+
+const backupDownloadInputSchema = z.strictObject({
+  artifactId: z.uuid().optional(),
+  backupId: z.uuid(),
+  expiresInSeconds: z
+    .number()
+    .int()
+    .min(60)
+    .max(7 * 24 * 60 * 60)
+    .default(300),
+})
 
 const backupRestoreInputSchema = z.strictObject({
   backupId: z.uuid(),
@@ -136,19 +150,7 @@ export const createInstanceBackup = createServerFn({ method: "POST" })
     ) {
       throw new Error("Server not found on this Relay")
     }
-    if (data.storageId) {
-      const storage = await runAppEffect(
-        "backups.loadSelectedStorage",
-        loadBackupStorageEffect(data.storageId)
-      )
-      if (
-        !storage ||
-        !storage.enabled ||
-        (storage.ownerUserId !== null && storage.ownerUserId !== user.id)
-      ) {
-        throw new Error("Backup destination is unavailable")
-      }
-    }
+    await validateRequestedStorage(data, user.id)
 
     const input = await runAppEffect(
       "backups.reserve",
@@ -159,6 +161,9 @@ export const createInstanceBackup = createServerFn({ method: "POST" })
         relayId: relay.id,
         requestedMaxBytes: data.maxBytes ?? null,
         ...(data.storageId === undefined ? {} : { storageId: data.storageId }),
+        ...(data.storageIds === undefined
+          ? {}
+          : { storageIds: data.storageIds }),
         targetId: data.instanceId,
         taskId: randomUUID(),
       })
@@ -202,19 +207,7 @@ export const createDatabaseBackup = createServerFn({ method: "POST" })
         `${database.engine} logical backups are not supported yet`
       )
     }
-    if (data.storageId) {
-      const storage = await runAppEffect(
-        "backups.loadSelectedDatabaseStorage",
-        loadBackupStorageEffect(data.storageId)
-      )
-      if (
-        !storage ||
-        !storage.enabled ||
-        (storage.ownerUserId !== null && storage.ownerUserId !== user.id)
-      ) {
-        throw new Error("Backup destination is unavailable")
-      }
-    }
+    await validateRequestedStorage(data, user.id)
     const input = await runAppEffect(
       "backups.reserveDatabase",
       reserveDatabaseBackupEffect({
@@ -224,6 +217,9 @@ export const createDatabaseBackup = createServerFn({ method: "POST" })
         relayId: relay.id,
         requestedMaxBytes: data.maxBytes ?? null,
         ...(data.storageId === undefined ? {} : { storageId: data.storageId }),
+        ...(data.storageIds === undefined
+          ? {}
+          : { storageIds: data.storageIds }),
         targetId: data.databaseId,
         taskId: randomUUID(),
       })
@@ -252,17 +248,7 @@ export const createPlatformBackup = createServerFn({ method: "POST" })
       throw new Error("Platform backups require administrator access")
     }
     const relay = await requireBackupRelay(data.relayId)
-    if (data.storageId) {
-      const storage = await runAppEffect(
-        "backups.loadSelectedPlatformStorage",
-        loadBackupStorageEffect(data.storageId)
-      )
-      if (!storage || !storage.enabled || storage.ownerUserId !== null) {
-        throw new Error(
-          "Kiln platform backups require a platform-owned destination"
-        )
-      }
-    }
+    await validateRequestedStorage(data, user.id, true)
     const input = await runAppEffect(
       "backups.reservePlatform",
       reservePlatformBackupEffect({
@@ -272,6 +258,9 @@ export const createPlatformBackup = createServerFn({ method: "POST" })
         relayId: relay.id,
         requestedMaxBytes: data.maxBytes ?? null,
         ...(data.storageId === undefined ? {} : { storageId: data.storageId }),
+        ...(data.storageIds === undefined
+          ? {}
+          : { storageIds: data.storageIds }),
         targetId: kilnInstallationId(),
         taskId: randomUUID(),
       })
@@ -323,7 +312,12 @@ export const getBackups = createServerFn({ method: "GET" }).handler(
       .filter((backup) =>
         hasBackupPermission(user, grants, backup, "backup.read")
       )
-      .map(({ createdBy: _, objectKey: __, ...backup }) => backup)
+      .map(({ createdBy: _, objectKey: __, ...backup }) => ({
+        ...backup,
+        artifacts: backup.artifacts.map(
+          ({ objectKey: ___, ...artifact }) => artifact
+        ),
+      }))
   }
 )
 
@@ -373,7 +367,7 @@ export const deleteBackup = createServerFn({ method: "POST" })
   })
 
 export const getBackupDownloadUrl = createServerFn({ method: "POST" })
-  .validator(backupIdInputSchema)
+  .validator(backupDownloadInputSchema)
   .handler(async ({ data }) => {
     const { setResponseHeader } = await import("@tanstack/react-start/server")
     setResponseHeader("Cache-Control", "no-store")
@@ -390,21 +384,44 @@ export const getBackupDownloadUrl = createServerFn({ method: "POST" })
     if (!hasBackupPermission(user, grants, backup, "backup.download")) {
       throw new Error("You do not have permission to download this backup")
     }
-    if (!backup.filename) throw new Error("Backup filename is unavailable")
-    if (!backup.storageId) {
-      if (backup.objectKey) throw new Error("Local backup metadata is invalid")
-      const relay = await requireBackupRelay(backup.relayId)
-      return signLocalBackupDownload(relay, backup, backup.filename, user.id)
+    const artifact = data.artifactId
+      ? backup.artifacts.find((candidate) => candidate.id === data.artifactId)
+      : (backup.artifacts.find(
+          (candidate) =>
+            candidate.status === "available" && candidate.storageId === null
+        ) ??
+        backup.artifacts.find((candidate) => candidate.status === "available"))
+    if (!artifact || artifact.status !== "available") {
+      throw new Error("Backup source is not available")
     }
-    if (!backup.objectKey) throw new Error("Backup object key is unavailable")
+    const filename = artifact.filename ?? backup.filename
+    if (!filename) throw new Error("Backup filename is unavailable")
+    if (!artifact.storageId) {
+      if (artifact.objectKey)
+        throw new Error("Local backup metadata is invalid")
+      const relay = await requireBackupRelay(backup.relayId)
+      return signLocalBackupDownload(
+        relay,
+        backup,
+        filename,
+        user.id,
+        data.expiresInSeconds
+      )
+    }
+    if (!artifact.objectKey) throw new Error("Backup object key is unavailable")
     const storage = await runAppEffect(
       "backups.loadDownloadStorage",
-      loadBackupStorageCredentialEffect(backup.storageId)
+      loadBackupStorageCredentialEffect(artifact.storageId)
     )
     if (!storage) throw new Error("Backup destination is unavailable")
     return runAppEffect(
       "backups.signDownload",
-      signS3BackupDownload(storage, backup.objectKey, backup.filename)
+      signS3BackupDownload(
+        storage,
+        artifact.objectKey,
+        filename,
+        data.expiresInSeconds
+      )
     )
   })
 
@@ -620,6 +637,41 @@ export const updateInstanceBackupExcludes = createServerFn({ method: "POST" })
     )
     return { updated: true }
   })
+
+async function validateRequestedStorage(
+  input: {
+    storageId?: string | null
+    storageIds?: Array<string | null>
+  },
+  userId: string,
+  platformOnly = false
+): Promise<void> {
+  const storageIds =
+    input.storageIds ?? (input.storageId === undefined ? [] : [input.storageId])
+  await Promise.all(
+    [...new Set(storageIds)]
+      .filter((storageId): storageId is string => storageId !== null)
+      .map(async (storageId) => {
+        const storage = await runAppEffect(
+          "backups.loadSelectedStorage",
+          loadBackupStorageEffect(storageId)
+        )
+        if (
+          !storage ||
+          !storage.enabled ||
+          (platformOnly
+            ? storage.ownerUserId !== null
+            : storage.ownerUserId !== null && storage.ownerUserId !== userId)
+        ) {
+          throw new Error(
+            platformOnly
+              ? "Kiln platform backups require platform-owned destinations"
+              : "Backup destination is unavailable"
+          )
+        }
+      })
+  )
+}
 
 async function requireBackupRelay(relayId: string): Promise<PersistedRelay> {
   const relay = (await listPersistedRelays()).find(

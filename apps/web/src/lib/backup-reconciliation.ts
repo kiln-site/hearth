@@ -53,13 +53,13 @@ export async function reconcileRelayBackups(
     if (relayTask && !relayTask.inputRefreshRequired) continue
     await dispatchBackupTask(relay, task, subject)
   }
-  const { processFinalInstanceDeletions } =
-    await import("@/lib/final-instance-deletion")
-  const { processFinalDatabaseDeletions } =
-    await import("@/lib/final-database-deletion")
+  const [instanceDeletion, databaseDeletion] = await Promise.all([
+    import("@/lib/final-instance-deletion"),
+    import("@/lib/final-database-deletion"),
+  ])
   const [instancesPending, databasesPending] = await Promise.all([
-    processFinalInstanceDeletions(relay),
-    processFinalDatabaseDeletions(relay),
+    instanceDeletion.processFinalInstanceDeletions(relay),
+    databaseDeletion.processFinalDatabaseDeletions(relay),
   ])
   if (
     instancesPending ||
@@ -92,23 +92,69 @@ export async function dispatchBackupTask(
 const prepareBackupTaskEffect = Effect.fn("backups.prepareTask")(function* (
   input: BackupDispatch
 ) {
+  if (input.kind === "create" || input.kind === "delete") {
+    if (input.artifacts.length === 0) {
+      return yield* invalidDestination("The backup has no stored artifacts")
+    }
+    const destinations: Array<
+      Extract<BackupTaskInput, { kind: typeof input.kind }>["destination"]
+    > = []
+    for (const artifact of input.artifacts) {
+      if (artifact.storageId === null) {
+        if (artifact.objectKey !== null) {
+          return yield* invalidDestination(
+            "A local backup cannot have a remote object key"
+          )
+        }
+        destinations.push({ artifactId: artifact.artifactId, kind: "local" })
+        continue
+      }
+      if (!artifact.objectKey) {
+        return yield* invalidDestination(
+          "An S3 backup is missing its remote object key"
+        )
+      }
+      const storage = yield* loadBackupStorageCredentialEffect(
+        artifact.storageId
+      )
+      if (!storage || (input.kind === "create" && !storage.enabled)) {
+        return yield* invalidDestination(
+          "The backup destination is unavailable"
+        )
+      }
+      destinations.push(
+        input.kind === "create"
+          ? {
+              ...(yield* signS3BackupUpload(storage, artifact.objectKey)),
+              artifactId: artifact.artifactId,
+            }
+          : {
+              ...(yield* signS3BackupDelete(storage, artifact.objectKey)),
+              artifactId: artifact.artifactId,
+            }
+      )
+    }
+    const [destination, ...replicas] = destinations
+    if (!destination) {
+      return yield* invalidDestination("The backup has no stored artifacts")
+    }
+    const { artifacts: _, ...task } = input
+    return {
+      ...task,
+      destination,
+      replicas,
+    } as BackupTaskInput
+  }
   if (input.storageId === null) {
     if (input.objectKey !== null) {
       return yield* invalidDestination(
         "A local backup cannot have a remote object key"
       )
     }
-    if (input.kind === "restore") {
-      const { objectKey: _, storageId: __, ...task } = input
-      return {
-        ...task,
-        source: { kind: "local" as const },
-      } satisfies BackupTaskInput
-    }
-    const { objectKey: _, storageId: __, ...task } = input
+    const { artifactId: _, objectKey: __, storageId: ___, ...task } = input
     return {
       ...task,
-      destination: { kind: "local" as const },
+      source: { kind: "local" as const },
     } satisfies BackupTaskInput
   }
   if (!input.objectKey) {
@@ -117,22 +163,12 @@ const prepareBackupTaskEffect = Effect.fn("backups.prepareTask")(function* (
     )
   }
   const storage = yield* loadBackupStorageCredentialEffect(input.storageId)
-  if (!storage || (input.kind === "create" && !storage.enabled)) {
+  if (!storage) {
     return yield* invalidDestination("The backup destination is unavailable")
   }
-  if (input.kind === "create") {
-    const destination = yield* signS3BackupUpload(storage, input.objectKey)
-    const { objectKey: _, storageId: __, ...task } = input
-    return { ...task, destination } satisfies BackupTaskInput
-  }
-  if (input.kind === "restore") {
-    const source = yield* signS3BackupRestore(storage, input.objectKey)
-    const { objectKey: _, storageId: __, ...task } = input
-    return { ...task, source } satisfies BackupTaskInput
-  }
-  const destination = yield* signS3BackupDelete(storage, input.objectKey)
-  const { objectKey: _, storageId: __, ...task } = input
-  return { ...task, destination } satisfies BackupTaskInput
+  const source = yield* signS3BackupRestore(storage, input.objectKey)
+  const { artifactId: _, objectKey: __, storageId: ___, ...task } = input
+  return { ...task, source } satisfies BackupTaskInput
 })
 
 function invalidDestination(reason: string) {

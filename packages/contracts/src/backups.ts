@@ -84,6 +84,15 @@ export const backupTaskStatusSchema = z.enum([
   "cancelled",
 ])
 
+export const backupArtifactStatusSchema = z.enum([
+  "queued",
+  "running",
+  "available",
+  "failed",
+  "deleting",
+  "deleted",
+])
+
 export const backupTargetSchema = z
   .object({
     id: z.string().min(1).max(120),
@@ -93,6 +102,7 @@ export const backupTargetSchema = z
 
 export const backupLocalDestinationSchema = z
   .object({
+    artifactId: z.uuid().optional(),
     kind: z.literal("local"),
   })
   .strict()
@@ -100,6 +110,7 @@ export const backupLocalDestinationSchema = z
 export const backupS3UploadDestinationSchema = z
   .object({
     allowPrivateNetwork: z.boolean().default(false),
+    artifactId: z.uuid().optional(),
     headers: z.record(z.string(), z.string()).default({}),
     kind: z.literal("s3"),
     objectKey: backupObjectKeySchema,
@@ -119,6 +130,15 @@ export const backupCreateTaskInputSchema = z
     maxBytes: z.number().int().positive().nullable(),
     mode: backupModeSchema,
     reason: backupReasonSchema,
+    replicas: z
+      .array(
+        z.discriminatedUnion("kind", [
+          backupLocalDestinationSchema,
+          backupS3UploadDestinationSchema,
+        ])
+      )
+      .max(15)
+      .optional(),
     target: backupTargetSchema,
     taskId: backupTaskIdSchema,
   })
@@ -162,6 +182,17 @@ export const backupDeleteTaskInputSchema = z
         deleteUrl: backupHttpsUrlSchema,
       }),
     ]),
+    replicas: z
+      .array(
+        z.discriminatedUnion("kind", [
+          backupLocalDestinationSchema,
+          backupS3UploadDestinationSchema.omit({ uploadUrl: true }).extend({
+            deleteUrl: backupHttpsUrlSchema,
+          }),
+        ])
+      )
+      .max(15)
+      .optional(),
     target: backupTargetSchema,
     taskId: backupTaskIdSchema,
   })
@@ -175,6 +206,18 @@ export const backupTaskInputSchema = z.discriminatedUnion("kind", [
 
 export const backupCreateTaskResultSchema = z
   .object({
+    artifacts: z
+      .array(
+        z
+          .object({
+            artifactId: z.uuid(),
+            error: z.string().max(4_096).nullable(),
+            status: z.enum(["available", "failed"]),
+          })
+          .strict()
+      )
+      .max(16)
+      .optional(),
     bytes: z.number().int().nonnegative(),
     checksumSha256: backupChecksumSha256Schema,
     filename: backupFilenameSchema,
@@ -212,6 +255,18 @@ export const backupDownloadCapabilityPayloadSchema = z
 
 export const backupOperationTaskResultSchema = z
   .object({
+    artifacts: z
+      .array(
+        z
+          .object({
+            artifactId: z.uuid(),
+            error: z.string().max(4_096).nullable(),
+            status: z.enum(["deleted", "failed"]),
+          })
+          .strict()
+      )
+      .max(16)
+      .optional(),
     warnings: z.array(z.string().max(1_024)).max(1_000),
   })
   .strict()
