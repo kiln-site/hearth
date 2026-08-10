@@ -88,7 +88,8 @@ export function activityTypeForAudit(audit: RelayAuditRecord): ActivityType {
   }
   if (
     audit.event.startsWith("browser.file.") ||
-    operation === "instance.files.write"
+    operation === "instance.files.write" ||
+    operation === "instance.files.upload-url"
   ) {
     return "files"
   }
@@ -161,6 +162,9 @@ export function activityLabelForAudit(audit: RelayAuditRecord): string {
     return "Updated server startup settings"
   }
   if (operation === "instance.files.write") return "Saved a server file"
+  if (operation === "instance.files.upload-url") {
+    return "Downloaded a URL to a server"
+  }
   if (operation === "instance.console.write") return "Sent a console command"
   if (operation === "instance.network.ports.write") {
     return "Updated server port allocations"
@@ -251,6 +255,7 @@ export function activityPermissionForAudit(
     operation === "instance.rename" ||
     operation === "instance.delete" ||
     operation === "instance.files.write" ||
+    operation === "instance.files.upload-url" ||
     operation === "instance.console.write" ||
     operation === "instance.network.ports.write" ||
     operation === "instance.network.routes.write"

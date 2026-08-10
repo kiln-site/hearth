@@ -5,7 +5,7 @@ import type { z } from "zod"
 import type { KilnSession } from "./config.js"
 import { commandError } from "./errors.js"
 
-export const CLI_LONG_OPERATION_TIMEOUT_MS = 190_000
+export const CLI_LONG_OPERATION_TIMEOUT_MS = 370_000
 
 export interface CliRequestInit extends RequestInit {
   timeoutMs?: number | null

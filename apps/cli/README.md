@@ -50,7 +50,14 @@ permissions.
 ## Discover and operate
 
 ```sh
+kiln relays list
+kiln relay info <relay-id>
+kiln activity list --limit 200
 kiln servers list
+kiln servers create <relay-id> paper --name survival --memory 4GiB --disk 25GiB
+kiln server info <relay-id>:<instance-id>
+kiln server startup <relay-id>:<instance-id> --memory 6GiB --java-version 25
+kiln server brick <relay-id>:<instance-id> fabric --game-version 1.21.11
 kiln server power <relay-id>:<instance-id> restart
 kiln server logs <relay-id>:<instance-id> --follow
 kiln server console <relay-id>:<instance-id> "say deploy complete"
@@ -59,11 +66,16 @@ kiln files read <relay-id>:<instance-id> server.properties
 kiln files write <relay-id>:<instance-id> server.properties ./server.properties
 kiln files download <relay-id>:<instance-id> logs/latest.log ./latest.log
 kiln files upload <relay-id>:<instance-id> ./plugins/example.jar plugins/example.jar
+kiln files upload <relay-id>:<instance-id> https://example.com/example.jar plugins/example.jar
+kiln server delete <relay-id>:<instance-id> --confirm <relay-id>:<instance-id>
 ```
 
 Uploads and downloads use the Relay SFTP endpoint and verify its advertised
-SSH host-key fingerprint. Other file operations use the versioned CLI API.
-Read-only credentials can discover servers, follow logs, and read files, but
-cannot power servers, send console commands, modify files, or upload.
+SSH host-key fingerprint. HTTPS upload sources are downloaded directly by the
+Relay through the authenticated control channel and reject private or reserved
+network destinations. Other file operations use the versioned CLI API.
+Read-only credentials can discover authorized resources, follow logs, and read
+files, but cannot create or delete servers, change startup settings, power
+servers, send console commands, modify files, or upload.
 
 Run `kiln help` for the complete command reference.

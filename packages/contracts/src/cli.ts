@@ -103,6 +103,213 @@ export const cliTargetSchema = z
   })
   .strict()
 
+const cliBrickVariableValueSchema = z.union([
+  z.string().max(4_096),
+  z.number().finite(),
+  z.boolean(),
+])
+
+export const cliBrickReferenceSchema = z.union([
+  z.string().regex(/^[a-z0-9][a-z0-9.-]{0,63}$/u),
+  z
+    .url()
+    .max(2_048)
+    .refine((value) => new URL(value).protocol === "https:", {
+      message: "Custom Brick recipes must use HTTPS",
+    })
+    .refine(
+      (value) => {
+        const url = new URL(value)
+        return !url.username && !url.password
+      },
+      { message: "Custom Brick recipe URLs cannot contain credentials" }
+    ),
+])
+
+export const cliRelaySchema = z
+  .object({
+    arch: z.string().min(1).nullable(),
+    canProvisionServers: z.boolean().nullable(),
+    id: z.string().regex(/^[A-Za-z\d_-]{43}$/u),
+    name: z.string().min(1).max(120),
+    platform: z.string().min(1).nullable(),
+    serverCount: z.number().int().nonnegative().nullable(),
+    status: z.enum(["connected", "unreachable"]),
+    version: z.string().min(1).nullable(),
+  })
+  .strict()
+
+export const cliRelaysResponseSchema = z
+  .object({ relays: z.array(cliRelaySchema) })
+  .strict()
+
+const cliResourceUsageSchema = z
+  .object({
+    totalBytes: z.number().nonnegative(),
+    usedBytes: z.number().nonnegative(),
+  })
+  .strict()
+
+export const cliRelayInfoResponseSchema = z
+  .object({
+    relay: cliRelaySchema,
+    node: z
+      .object({
+        connectedAt: z.string().datetime(),
+        cpuCores: z.number().int().positive(),
+        cpuLoadPercent: z.number().nonnegative(),
+        id: z.string().min(1),
+        memory: cliResourceUsageSchema,
+        name: z.string().min(1),
+        startedAt: z.string().datetime().nullable(),
+        storage: cliResourceUsageSchema,
+        uptimeSeconds: z.number().nonnegative().nullable(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict()
+
+const cliServerResourceSchema = z
+  .object({
+    cpuPercent: z.number().nonnegative(),
+    memoryUsedBytes: z.number().nonnegative(),
+    networkReceivedBytes: z.number().nonnegative().nullable(),
+    networkSentBytes: z.number().nonnegative().nullable(),
+    sampledAt: z.string().datetime(),
+    storageUsedBytes: z.number().nonnegative().nullable(),
+  })
+  .strict()
+
+export const cliServerInfoResponseSchema = z
+  .object({
+    relay: z
+      .object({
+        id: z.string().regex(/^[A-Za-z\d_-]{43}$/u),
+        name: z.string().min(1).max(120),
+      })
+      .strict(),
+    server: z
+      .object({
+        brickId: z.string().nullable(),
+        brickSource: z.string().url().nullable(),
+        connectAddress: z.string().min(1),
+        desiredState: z.enum(["stopped", "running"]),
+        diskLimitBytes: z.number().int().nonnegative(),
+        game: z.string().min(1),
+        id: z.string().regex(/^[a-f\d]{40}$/u),
+        implementation: z.string().min(1),
+        javaVersion: z.string().min(1),
+        memoryLimitBytes: z.number().int().nonnegative(),
+        name: z.string().min(1).max(120),
+        observedState: z.string().min(1),
+        publicAddress: z.string().nullable(),
+        readyAt: z.string().datetime().nullable(),
+        resources: cliServerResourceSchema.nullable(),
+        shortId: z.string().regex(/^[a-f\d]{8}$/u),
+        startedAt: z.string().datetime().nullable(),
+        version: z.string().min(1),
+      })
+      .strict(),
+  })
+  .strict()
+
+export const cliCreateServerRequestSchema = z
+  .object({
+    brick: cliBrickReferenceSchema,
+    diskLimitBytes: z.number().int().positive(),
+    name: z.string().trim().min(1).max(120),
+    relayId: z.string().regex(/^[A-Za-z\d_-]{43}$/u),
+    start: z.boolean().default(true),
+    variables: z
+      .record(z.string().min(1).max(120), cliBrickVariableValueSchema)
+      .default({}),
+  })
+  .strict()
+
+export const cliUpdateServerStartupRequestSchema = cliTargetSchema
+  .extend({
+    brick: cliBrickReferenceSchema.optional(),
+    diskLimitBytes: z.number().int().positive().optional(),
+    start: z.boolean().default(true),
+    variables: z
+      .record(z.string().min(1).max(120), cliBrickVariableValueSchema)
+      .default({}),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.brick !== undefined ||
+      value.diskLimitBytes !== undefined ||
+      Object.keys(value.variables).length > 0,
+    "Provide a Brick, disk limit, or startup variable"
+  )
+
+export const cliDeleteServerRequestSchema = cliTargetSchema
+  .extend({ confirmation: cliServerReferenceSchema })
+  .strict()
+
+export const cliServerMutationResponseSchema = z
+  .object({
+    relayId: z.string(),
+    server: cliServerInfoResponseSchema.shape.server,
+  })
+  .strict()
+
+export const cliDeleteServerResponseSchema = z
+  .object({
+    deleted: z.literal(true),
+    instanceId: z.string(),
+    relayId: z.string(),
+  })
+  .strict()
+
+export const cliActivityEntrySchema = z
+  .object({
+    actor: z
+      .object({
+        email: z.email().nullable(),
+        id: z.string().min(1),
+        name: z.string().min(1),
+      })
+      .strict(),
+    id: z.string().min(1),
+    label: z.string().min(1),
+    occurredAt: z.number().int().nonnegative(),
+    permission: z.string().nullable(),
+    relay: z.object({ id: z.string(), name: z.string().min(1) }).strict(),
+    server: z
+      .object({ id: z.string(), name: z.string().min(1) })
+      .strict()
+      .nullable(),
+    source: z.enum(["web", "cli"]),
+    type: z.enum([
+      "server",
+      "power",
+      "console",
+      "files",
+      "network",
+      "access",
+      "relay",
+      "updates",
+      "system",
+    ]),
+  })
+  .strict()
+
+export const cliActivityResponseSchema = z
+  .object({ entries: z.array(cliActivityEntrySchema) })
+  .strict()
+
+export const cliRemoteFileUploadResponseSchema = z
+  .object({
+    modifiedAt: z.string().datetime(),
+    path: z.string().min(1).max(2_048),
+    sha256: z.string().regex(/^[a-f\d]{64}$/u),
+    size: z.number().int().nonnegative(),
+  })
+  .strict()
+
 export const cliPowerRequestSchema = cliTargetSchema
   .extend({ action: z.enum(["start", "stop", "restart", "kill"]) })
   .strict()
@@ -130,6 +337,24 @@ export const cliFileTargetSchema = cliTargetSchema
           !path.startsWith("/") &&
           !path.split(/[\\/]/u).includes(".."),
         "Path must be relative to the server root"
+      ),
+  })
+  .strict()
+
+export const cliRemoteFileUploadRequestSchema = cliFileTargetSchema
+  .extend({
+    url: z
+      .url()
+      .max(2_048)
+      .refine((value) => new URL(value).protocol === "https:", {
+        message: "Remote file URLs must use HTTPS",
+      })
+      .refine(
+        (value) => {
+          const url = new URL(value)
+          return !url.username && !url.password
+        },
+        { message: "Remote file URLs cannot contain credentials" }
       ),
   })
   .strict()

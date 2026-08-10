@@ -718,6 +718,7 @@ export function isAuditedOperation(operation: RelayControlOperation): boolean {
     operation === "instance.delete" ||
     operation === "instance.action" ||
     operation === "instance.files.write" ||
+    operation === "instance.files.upload-url" ||
     operation === "instance.files.mutate" ||
     operation === "instance.console.write" ||
     operation === "instance.network.ports.write" ||
@@ -919,6 +920,8 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
     case "instance.files.write":
     case "instance.files.mutate":
       return "instance.files.write"
+    case "instance.files.upload-url":
+      return "instance.files.upload-url"
     case "instance.console.history":
       return "instance.console.read"
     case "instance.console.write":

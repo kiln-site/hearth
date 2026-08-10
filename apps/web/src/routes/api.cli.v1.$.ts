@@ -1,9 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router"
 import {
   cliConsoleRequestSchema,
+  cliCreateServerRequestSchema,
+  cliDeleteServerRequestSchema,
   cliFileWriteRequestSchema,
   cliPowerRequestSchema,
+  cliRemoteFileUploadRequestSchema,
   cliTargetSchema,
+  cliUpdateServerStartupRequestSchema,
+  relayIdSchema,
   relayConsoleStreamEventSchema,
 } from "@workspace/contracts"
 import { Effect } from "effect"
@@ -16,13 +21,21 @@ import {
 } from "@/effect/cli-access"
 import {
   authorizeCliConsoleStreamEffect,
+  createCliServerEffect,
+  deleteCliServerEffect,
   getCliConsoleHistoryEffect,
   getCliFileTreeEffect,
+  getCliRelayInfoEffect,
+  getCliServerInfoEffect,
   getCliSftpConnectionEffect,
+  listCliActivityEffect,
+  listCliRelaysEffect,
   listCliServersEffect,
   performCliPowerActionEffect,
   readCliFileEffect,
   sendCliConsoleCommandEffect,
+  updateCliServerStartupEffect,
+  uploadCliFileFromUrlEffect,
   writeCliFileEffect,
 } from "@/effect/cli-api"
 import { CliAccessError } from "@/effect/errors"
@@ -61,10 +74,40 @@ export const Route = createFileRoute("/api/cli/v1/$")({
             listCliServersEffect(principal)
           )
         }
+        if (endpoint === "relays") {
+          return runCliEffect("cli.http.relays", listCliRelaysEffect(principal))
+        }
 
         const url = new URL(request.url)
+        if (endpoint === "activity") {
+          return runCliEffect(
+            "cli.http.activity",
+            listCliActivityEffect(
+              principal,
+              boundedLimit(url.searchParams.get("limit"))
+            )
+          )
+        }
+        if (endpoint === "relay/info") {
+          const relayId = relayIdSchema.safeParse(
+            url.searchParams.get("relayId")
+          )
+          if (!relayId.success)
+            return invalidRequest("A valid relayId is required.")
+          return runCliEffect(
+            "cli.http.relay.info",
+            getCliRelayInfoEffect(principal, relayId.data)
+          )
+        }
+
         const target = targetFromSearch(url)
         if (target instanceof Response) return target
+        if (endpoint === "server/info") {
+          return runCliEffect(
+            "cli.http.server.info",
+            getCliServerInfoEffect(principal, target)
+          )
+        }
         if (endpoint === "logs") {
           const limit = boundedLimit(url.searchParams.get("limit"))
           if (url.searchParams.get("follow") === "true") {
@@ -128,6 +171,34 @@ export const Route = createFileRoute("/api/cli/v1/$")({
             )
           )
         }
+        if (endpoint === "servers") {
+          return runCliEffect(
+            "cli.http.servers.create",
+            decodeBody(cliCreateServerRequestSchema, body.value).pipe(
+              Effect.flatMap((input) => createCliServerEffect(principal, input))
+            )
+          )
+        }
+        if (endpoint === "server/startup") {
+          return runCliEffect(
+            "cli.http.server.startup",
+            decodeBody(cliUpdateServerStartupRequestSchema, body.value).pipe(
+              Effect.flatMap((input) =>
+                updateCliServerStartupEffect(principal, input)
+              )
+            )
+          )
+        }
+        if (endpoint === "files/upload-url") {
+          return runCliEffect(
+            "cli.http.files.uploadUrl",
+            decodeBody(cliRemoteFileUploadRequestSchema, body.value).pipe(
+              Effect.flatMap((input) =>
+                uploadCliFileFromUrlEffect(principal, input)
+              )
+            )
+          )
+        }
         return notFound()
       },
       PUT: async ({ request }) => {
@@ -146,14 +217,27 @@ export const Route = createFileRoute("/api/cli/v1/$")({
       DELETE: async ({ request }) => {
         const principal = await authenticateRequest(request)
         if (principal instanceof Response) return principal
-        if (endpointName(request.url) !== "credential") return notFound()
-        return runCliEffect(
-          "cli.http.credential.revoke",
-          revokeCliCredentialEffect({
-            credentialId: principal.credentialId,
-            user: principal.user,
-          })
-        )
+        const endpoint = endpointName(request.url)
+        if (endpoint === "credential") {
+          return runCliEffect(
+            "cli.http.credential.revoke",
+            revokeCliCredentialEffect({
+              credentialId: principal.credentialId,
+              user: principal.user,
+            })
+          )
+        }
+        if (endpoint === "server") {
+          const body = await requestBody(request)
+          if (body instanceof Response) return body
+          return runCliEffect(
+            "cli.http.server.delete",
+            decodeBody(cliDeleteServerRequestSchema, body.value).pipe(
+              Effect.flatMap((input) => deleteCliServerEffect(principal, input))
+            )
+          )
+        }
+        return notFound()
       },
     },
   },
@@ -308,6 +392,16 @@ function notFound(): Response {
     CliAccessError.make({
       code: "not_found",
       message: "The CLI API endpoint was not found.",
+      retryable: false,
+    })
+  )
+}
+
+function invalidRequest(message: string): Response {
+  return cliFailureResponse(
+    CliAccessError.make({
+      code: "invalid_request",
+      message,
       retryable: false,
     })
   )

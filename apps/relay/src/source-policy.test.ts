@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test"
 
 import {
   exactSourceCidr,
+  isPublicRemoteAddress,
   isSourceAllowed,
   normalizeSourceCidrs,
 } from "./source-policy.js"
@@ -31,5 +32,16 @@ describe("Relay source policy", () => {
   it("rejects malformed and oversized policies", () => {
     expect(() => normalizeSourceCidrs(["192.0.2.1/33"])).toThrow()
     expect(() => normalizeSourceCidrs(Array(17).fill("192.0.2.1"))).toThrow()
+  })
+
+  it("blocks private, loopback, link-local, and reserved remote downloads", () => {
+    expect(isPublicRemoteAddress("8.8.8.8")).toBe(true)
+    expect(isPublicRemoteAddress("2606:4700:4700::1111")).toBe(true)
+    expect(isPublicRemoteAddress("127.0.0.1")).toBe(false)
+    expect(isPublicRemoteAddress("10.42.0.1")).toBe(false)
+    expect(isPublicRemoteAddress("169.254.169.254")).toBe(false)
+    expect(isPublicRemoteAddress("::1")).toBe(false)
+    expect(isPublicRemoteAddress("::ffff:127.0.0.1")).toBe(false)
+    expect(isPublicRemoteAddress("64:ff9b::7f00:1")).toBe(false)
   })
 })

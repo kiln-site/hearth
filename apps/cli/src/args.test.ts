@@ -48,4 +48,35 @@ describe("CLI arguments", () => {
       "Unknown option: --raw"
     )
   })
+
+  it("parses server creation and startup options", () => {
+    expect(
+      parseArguments([
+        "servers",
+        "create",
+        "relay-id",
+        "paper",
+        "--name",
+        "Survival",
+        "--disk=25GiB",
+        "--memory",
+        "4GiB",
+        "--java-version=21",
+        "--game-version",
+        "1.21.11",
+        "--variable",
+        "online_mode=json:false",
+        "--no-start",
+      ])
+    ).toMatchObject({
+      command: ["servers", "create", "relay-id", "paper"],
+      disk: "25GiB",
+      gameVersion: "1.21.11",
+      javaVersion: "21",
+      memory: "4GiB",
+      name: "Survival",
+      start: false,
+      variables: ["online_mode=json:false"],
+    })
+  })
 })

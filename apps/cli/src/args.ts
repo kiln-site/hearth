@@ -3,29 +3,45 @@ import { z } from "zod"
 import { commandError } from "./errors.js"
 
 export interface CliArguments {
+  brick?: string
   command: Array<string>
+  confirm?: string
+  disk?: string
   follow: boolean
+  gameVersion?: string
   help: boolean
+  javaVersion?: string
   limit: number
+  memory?: string
   name?: string
   noOpen: boolean
   profile?: string
   token?: string
   url?: string
+  variables: Array<string>
   version: boolean
+  start: boolean
 }
 
 export function parseArguments(argv: Array<string>): CliArguments {
   const command: Array<string> = []
+  let brick: string | undefined
+  let confirm: string | undefined
+  let disk: string | undefined
   let follow = false
+  let gameVersion: string | undefined
   let help = false
   let limit = 2_000
+  let javaVersion: string | undefined
+  let memory: string | undefined
   let name: string | undefined
   let noOpen = false
   let profile: string | undefined
   let token: string | undefined
   let url: string | undefined
+  const variables: Array<string> = []
   let version = false
+  let start = true
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
@@ -44,9 +60,16 @@ export function parseArguments(argv: Array<string>): CliArguments {
       index += 1
       return next
     }
-    if (flag === "--follow" || flag === "-f") follow = true
+    if (flag === "--brick") brick = value()
+    else if (flag === "--confirm") confirm = value()
+    else if (flag === "--disk") disk = value()
+    else if (flag === "--follow" || flag === "-f") follow = true
+    else if (flag === "--game-version") gameVersion = value()
     else if (flag === "--help" || flag === "-h") help = true
+    else if (flag === "--java-version") javaVersion = value()
+    else if (flag === "--memory") memory = value()
     else if (flag === "--no-open") noOpen = true
+    else if (flag === "--no-start") start = false
     else if (flag === "--version" || flag === "-v") version = true
     else if (flag === "--limit") {
       const parsed = z.coerce
@@ -67,6 +90,7 @@ export function parseArguments(argv: Array<string>): CliArguments {
     else if (flag === "--profile") profile = value()
     else if (flag === "--token") token = value()
     else if (flag === "--url") url = value()
+    else if (flag === "--variable") variables.push(value())
     else if (argument.startsWith("-")) {
       throw commandError({
         code: "invalid_arguments",
@@ -76,15 +100,23 @@ export function parseArguments(argv: Array<string>): CliArguments {
     } else command.push(argument)
   }
   return {
+    ...(brick ? { brick } : {}),
     command,
+    ...(confirm ? { confirm } : {}),
+    ...(disk ? { disk } : {}),
     follow,
+    ...(gameVersion ? { gameVersion } : {}),
     help,
+    ...(javaVersion ? { javaVersion } : {}),
     limit,
+    ...(memory ? { memory } : {}),
     ...(name ? { name } : {}),
     noOpen,
     ...(profile ? { profile } : {}),
     ...(token ? { token } : {}),
     ...(url ? { url } : {}),
+    variables,
     version,
+    start,
   }
 }

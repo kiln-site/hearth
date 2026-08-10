@@ -6,11 +6,20 @@ import { basename } from "node:path"
 import { spawn } from "node:child_process"
 
 import {
+  cliActivityResponseSchema,
+  cliDeleteServerResponseSchema,
   cliDeviceCodeResponseSchema,
   cliDeviceTokenResponseSchema,
+  cliRelayInfoResponseSchema,
+  cliRelaysResponseSchema,
+  cliRemoteFileUploadResponseSchema,
   cliServerReferenceSchema,
+  cliServerInfoResponseSchema,
+  cliServerMutationResponseSchema,
   cliServersResponseSchema,
   cliSftpResponseSchema,
+  DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
+  relayIdSchema,
   relayFileContentSchema,
   relayFileTreeSchema,
   relayConsoleCommandResultSchema,
@@ -37,6 +46,12 @@ import {
 } from "./http.js"
 import type { CliRequestInit } from "./http.js"
 import { prepareFollowLogOutput, withFollowLogReader } from "./logs.js"
+import {
+  parseDiskBytes,
+  parseMemoryVariable,
+  parseVariableAssignments,
+  remoteFileBasename,
+} from "./inputs.js"
 import {
   formatBytes,
   reportErrorEffect,
@@ -145,6 +160,171 @@ const runCommandEffect = Effect.fn("cli.command")(function* (
         ])
       )
     }
+    return
+  }
+  if (group === "relays" && action === "list") {
+    const result = yield* apiJsonEffect(
+      session,
+      "/api/cli/v1/relays",
+      cliRelaysResponseSchema
+    )
+    if (result.relays.length === 0) {
+      writeLine("No Relays found.")
+    } else {
+      writeTable(
+        ["NAME", "STATUS", "VERSION", "PLATFORM", "SERVERS", "ID"],
+        result.relays.map((relay) => [
+          relay.name,
+          relay.status,
+          relay.version ?? "-",
+          [relay.platform, relay.arch].filter(Boolean).join("/") || "-",
+          relay.serverCount === null ? "-" : String(relay.serverCount),
+          relay.id,
+        ])
+      )
+    }
+    return
+  }
+  if (group === "relay" && action === "info") {
+    const relayId = yield* parseRelayIdEffect(rest[0])
+    const query = new URLSearchParams({ relayId })
+    const result = yield* apiJsonEffect(
+      session,
+      `/api/cli/v1/relay/info?${query}`,
+      cliRelayInfoResponseSchema
+    )
+    writeRelayInfo(result)
+    return
+  }
+  if (group === "activity" && action === "list") {
+    const query = new URLSearchParams({ limit: String(args.limit) })
+    const result = yield* apiJsonEffect(
+      session,
+      `/api/cli/v1/activity?${query}`,
+      cliActivityResponseSchema
+    )
+    if (result.entries.length === 0) {
+      writeLine("No activity found.")
+    } else {
+      writeTable(
+        ["TIME", "ACTOR", "ACTION", "SERVER", "RELAY", "SOURCE"],
+        result.entries.map((entry) => [
+          new Date(entry.occurredAt).toISOString(),
+          entry.actor.email ?? entry.actor.name,
+          entry.label,
+          entry.server?.name ?? "-",
+          entry.relay.name,
+          entry.source,
+        ])
+      )
+    }
+    return
+  }
+  if (group === "servers" && action === "create") {
+    const relayId = yield* parseRelayIdEffect(rest[0])
+    const brick = args.brick ?? rest[1]
+    if (!brick) {
+      return yield* invalidUsage(
+        "Usage: kiln servers create <relayId> <brick-id|https-url> --name <name> [options]"
+      )
+    }
+    if (!args.name?.trim()) {
+      return yield* invalidUsage("--name is required when creating a server.")
+    }
+    const startup = yield* startupOptionsEffect(args)
+    const result = yield* apiJsonEffect(
+      session,
+      "/api/cli/v1/servers",
+      cliServerMutationResponseSchema,
+      jsonRequest(
+        "POST",
+        {
+          brick,
+          diskLimitBytes:
+            startup.diskLimitBytes ?? DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
+          name: args.name,
+          relayId,
+          start: args.start,
+          variables: startup.variables,
+        },
+        CLI_LONG_OPERATION_TIMEOUT_MS
+      )
+    )
+    writeLine(
+      `Created ${result.server.name} (${result.relayId}:${result.server.id}).`
+    )
+    return
+  }
+  if (group === "server" && action === "info") {
+    const target = yield* parseServerReferenceEffect(rest[0])
+    const result = yield* apiJsonEffect(
+      session,
+      `/api/cli/v1/server/info?${targetQuery(target)}`,
+      cliServerInfoResponseSchema
+    )
+    writeServerInfo(result)
+    return
+  }
+  if (group === "server" && (action === "startup" || action === "brick")) {
+    const target = yield* parseServerReferenceEffect(rest[0])
+    const startup = yield* startupOptionsEffect(args)
+    const brick = action === "brick" ? rest[1] : args.brick
+    if (
+      !brick &&
+      startup.diskLimitBytes === undefined &&
+      Object.keys(startup.variables).length === 0
+    ) {
+      return yield* invalidUsage(
+        action === "brick"
+          ? "Usage: kiln server brick <server> <brick-id|https-url> [options]"
+          : "Provide --brick, --disk, --memory, --java-version, --game-version, or --variable."
+      )
+    }
+    const result = yield* apiJsonEffect(
+      session,
+      "/api/cli/v1/server/startup",
+      cliServerMutationResponseSchema,
+      jsonRequest(
+        "POST",
+        {
+          ...target,
+          ...(brick ? { brick } : {}),
+          ...(startup.diskLimitBytes === undefined
+            ? {}
+            : { diskLimitBytes: startup.diskLimitBytes }),
+          start: args.start,
+          variables: startup.variables,
+        },
+        CLI_LONG_OPERATION_TIMEOUT_MS
+      )
+    )
+    writeLine(`Updated startup settings for ${result.server.name}.`)
+    return
+  }
+  if (group === "server" && action === "delete") {
+    const serverReference = rest[0]
+    const target = yield* parseServerReferenceEffect(serverReference)
+    if (!args.confirm) {
+      return yield* invalidUsage(
+        `Deletion permanently removes server data. Repeat the server reference with --confirm ${serverReference}.`
+      )
+    }
+    if (args.confirm !== serverReference) {
+      return yield* invalidUsage(
+        `Deletion confirmation must exactly match ${serverReference}.`
+      )
+    }
+    const result = yield* apiJsonEffect(
+      session,
+      "/api/cli/v1/server",
+      cliDeleteServerResponseSchema,
+      jsonRequest(
+        "DELETE",
+        { ...target, confirmation: args.confirm },
+        CLI_LONG_OPERATION_TIMEOUT_MS
+      )
+    )
+    writeLine(`Deleted ${result.relayId}:${result.instanceId}.`)
     return
   }
   if (group === "server" && action === "power") {
@@ -426,8 +606,8 @@ const filesEffect = Effect.fn("cli.files")(function* (
     return
   }
   if (action === "download" || action === "upload") {
-    const connection = yield* sftpConnectionEffect(session, target)
     if (action === "download") {
+      const connection = yield* sftpConnectionEffect(session, target)
       const remotePath = yield* requiredPathEffect(rest[1])
       const result = yield* downloadSftpFileEffect({
         connection,
@@ -443,6 +623,32 @@ const filesEffect = Effect.fn("cli.files")(function* (
     const localPath = rest[1]
     if (!localPath)
       return yield* invalidUsage("A local upload path is required.")
+    if (/^https?:\/\//iu.test(localPath)) {
+      if (!/^https:\/\//iu.test(localPath)) {
+        return yield* invalidUsage("Remote file uploads require an HTTPS URL.")
+      }
+      const remotePath = rest[2] || remoteFileBasename(localPath)
+      if (!remotePath) {
+        return yield* invalidUsage(
+          "A remote destination is required when the URL has no filename."
+        )
+      }
+      const result = yield* apiJsonEffect(
+        session,
+        "/api/cli/v1/files/upload-url",
+        cliRemoteFileUploadResponseSchema,
+        jsonRequest(
+          "POST",
+          { ...target, path: remotePath, url: localPath },
+          CLI_LONG_OPERATION_TIMEOUT_MS
+        )
+      )
+      writeLine(
+        `Downloaded ${localPath} to ${result.path} on the Relay (${formatBytes(result.size)}).`
+      )
+      return
+    }
+    const connection = yield* sftpConnectionEffect(session, target)
     const result = yield* uploadSftpFileEffect({
       connection,
       localPath,
@@ -468,6 +674,102 @@ function sftpConnectionEffect(
     `/api/cli/v1/sftp?${targetQuery(target)}`,
     cliSftpResponseSchema
   )
+}
+
+const parseRelayIdEffect = Effect.fn("cli.relayId.parse")(function* (
+  value: string | undefined
+) {
+  const parsed = relayIdSchema.safeParse(value)
+  if (!parsed.success) {
+    return yield* commandError({
+      code: "invalid_arguments",
+      exitCode: 2,
+      message:
+        "A full Relay ID is required. Run `kiln relays list` to discover it.",
+    })
+  }
+  return parsed.data
+})
+
+const startupOptionsEffect = Effect.fn("cli.startup.options")(function* (
+  args: CliArguments
+) {
+  return yield* Effect.try({
+    try: () => {
+      const variables = parseVariableAssignments(args.variables)
+      const memory = parseMemoryVariable(args.memory)
+      if (memory) variables.memory = memory
+      if (args.javaVersion) variables.java_version = args.javaVersion
+      if (args.gameVersion) variables.version = args.gameVersion
+      return {
+        diskLimitBytes: parseDiskBytes(args.disk),
+        variables,
+      }
+    },
+    catch: (cause) =>
+      cause instanceof CliCommandError
+        ? cause
+        : commandError({
+            cause,
+            code: "invalid_arguments",
+            exitCode: 2,
+            message: "The startup options are invalid.",
+          }),
+  })
+})
+
+function writeRelayInfo(
+  result: z.infer<typeof cliRelayInfoResponseSchema>
+): void {
+  writeLine(`Name: ${result.relay.name}`)
+  writeLine(`ID: ${result.relay.id}`)
+  writeLine(`Status: ${result.relay.status}`)
+  writeLine(`Version: ${result.relay.version ?? "unknown"}`)
+  writeLine(
+    `Platform: ${[result.relay.platform, result.relay.arch].filter(Boolean).join("/") || "unknown"}`
+  )
+  writeLine(
+    `Can provision servers: ${result.relay.canProvisionServers === null ? "unknown" : result.relay.canProvisionServers ? "yes" : "no"}`
+  )
+  writeLine(
+    `Servers: ${result.relay.serverCount === null ? "unknown" : result.relay.serverCount}`
+  )
+  if (!result.node) return
+  writeLine(`Node: ${result.node.name} (${result.node.id})`)
+  writeLine(
+    `CPU: ${result.node.cpuCores} cores, ${result.node.cpuLoadPercent.toFixed(1)}% load`
+  )
+  writeLine(
+    `Memory: ${formatBytes(result.node.memory.usedBytes)} / ${formatBytes(result.node.memory.totalBytes)}`
+  )
+  writeLine(
+    `Storage: ${formatBytes(result.node.storage.usedBytes)} / ${formatBytes(result.node.storage.totalBytes)}`
+  )
+}
+
+function writeServerInfo(
+  result: z.infer<typeof cliServerInfoResponseSchema>
+): void {
+  const server = result.server
+  writeLine(`Name: ${server.name}`)
+  writeLine(`ID: ${result.relay.id}:${server.id}`)
+  writeLine(`Relay: ${result.relay.name}`)
+  writeLine(`State: ${server.observedState} (desired ${server.desiredState})`)
+  writeLine(`Game: ${server.game}`)
+  writeLine(`Implementation: ${server.implementation} ${server.version}`)
+  writeLine(`Java: ${server.javaVersion}`)
+  writeLine(`Brick: ${server.brickId ?? server.brickSource ?? "unknown"}`)
+  writeLine(`Connect: ${server.connectAddress}`)
+  if (server.publicAddress) writeLine(`Public: ${server.publicAddress}`)
+  writeLine(`Memory limit: ${formatBytes(server.memoryLimitBytes)}`)
+  writeLine(`Disk limit: ${formatBytes(server.diskLimitBytes)}`)
+  if (server.resources) {
+    writeLine(`CPU usage: ${server.resources.cpuPercent.toFixed(1)}%`)
+    writeLine(`Memory usage: ${formatBytes(server.resources.memoryUsedBytes)}`)
+    if (server.resources.storageUsedBytes !== null) {
+      writeLine(`Disk usage: ${formatBytes(server.resources.storageUsedBytes)}`)
+    }
+  }
 }
 
 const parseServerReferenceEffect = Effect.fn("cli.serverReference.parse")(
@@ -604,7 +906,16 @@ Commands:
   login [url]                              Sign in to Kiln or Hearth
   logout                                  Sign out of the active profile
   whoami                                  Show the current account
+  relays list                             List accessible Relays
+  relay info <relay-id>                   Show Relay metadata and capacity
+  activity list                           Show accessible recent activity
   servers list                            List available servers
+  servers create <relay> <brick>          Create a server
+  server info <server>                    Show server metadata and resources
+  server startup <server> [options]       Change startup settings
+  server brick <server> <brick>           Change a server's Brick
+  server delete <server> --confirm <server>
+                                          Permanently delete a server
   server power <server> <action>          Start, stop, restart, or kill a server
   server logs <server>                    Show server logs
   server console <server> [command]       Send a console command
@@ -612,17 +923,30 @@ Commands:
   files read <server> <remote>            Print a file
   files write <server> <remote> [local|-] Write a file
   files download <server> <remote> [local] Download a file
-  files upload <server> <local> [remote]  Upload a file
+  files upload <server> <local|url> [remote]
+                                          Upload locally or download HTTPS on Relay
 
 Options:
+      --brick <id|url> Change the Brick recipe
+      --confirm <server>
+                       Confirm a destructive server deletion
+      --disk <size>    Set disk quota, for example 25GiB
   -f, --follow        Follow server logs
+      --game-version <version>
+                       Set the Brick's version variable
   -h, --help          Show help
-      --limit <n>     Limit log history (1-10000)
-      --name <name>   Name this CLI credential
+      --java-version <version>
+                       Set the Brick's java_version variable
+      --limit <n>     Limit log or activity history (1-10000)
+      --memory <size> Set the Brick's memory variable, for example 4GiB
+      --name <name>   Name this CLI credential or new server
       --no-open       Do not open a browser during login
+      --no-start      Leave a created or reconfigured server stopped
       --profile <id>  Use a named profile
       --token <token> Use a token without saving it
       --url <url>     Use a specific Kiln or Hearth URL
+      --variable <name=value>
+                       Set a Brick variable; prefix value with json: for numbers or booleans
   -v, --version       Show the CLI version
 
 Environment:

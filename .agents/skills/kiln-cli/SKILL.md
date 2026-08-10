@@ -1,7 +1,7 @@
 ---
 name: kiln-cli
-description: Use the Kiln CLI to authenticate, select profiles, discover Hearth servers, inspect logs, send console or power commands, and list, read, write, upload, or download server files. Use when a user asks to run, test, or troubleshoot `kiln` commands or mentions Kiln CLI server references, remote paths, or file transfers.
-version: "1.0.0"
+description: Use the Kiln CLI to authenticate, select profiles, inspect Relays, activity, and server metadata, create or delete servers, change Bricks and startup settings, inspect logs, send console or power commands, and manage server files including Relay-side HTTPS downloads. Use when a user asks to run, test, or troubleshoot `kiln` commands or mentions Kiln CLI Relay/server references, startup settings, remote paths, or file transfers.
+version: "1.1.0"
 requires:
   bins: ["kiln"]
   auth: true
@@ -15,10 +15,12 @@ available; do not stop at providing command examples.
 
 ## Safety and credentials
 
-- Treat power actions, console commands, file writes, and uploads as remote
-  mutations. Verify an ambiguous target or destination before running them. An
-  explicit user request naming the server, action, and path is sufficient
-  authorization.
+- Treat server creation/deletion, Brick or startup changes, power actions,
+  console commands, file writes, and uploads as remote mutations. Verify an
+  ambiguous target or destination before running them. An explicit user
+  request naming the Relay/server, action, and path is sufficient
+  authorization. Server deletion additionally requires the exact server
+  reference through `--confirm`.
 - Never print, copy, or commit a Kiln token. Prefer saved profiles. Use
   `KILN_TOKEN` or `--token` only when the user deliberately provides an
   ephemeral credential, and keep it out of reported command output.
@@ -71,6 +73,94 @@ combined reference:
 
 The relay ID and instance ID are both required. Do not pass the instance ID by
 itself, a short ID, or the display name.
+
+## Relays and activity
+
+List only the Relays available to the authenticated account:
+
+```sh
+kiln relays list
+```
+
+Copy the complete Relay ID from that output when another command requires it.
+Inspect safe Relay/node metadata and resource capacity with:
+
+```sh
+kiln relay info <relay-id>
+```
+
+The account must have Relay-level read access. An instance-only grant does not
+grant access to node metadata.
+
+Read recent activity visible through the account's Relay and instance grants:
+
+```sh
+kiln activity list --limit 200
+```
+
+Activity is scoped server-side. Missing entries may belong to resources the
+current account cannot access.
+
+## Server metadata and lifecycle
+
+Inspect safe server metadata, limits, state, and current resource usage:
+
+```sh
+kiln server info <server>
+```
+
+The response omits Brick variables, container identifiers, and internal paths.
+For custom Brick sources, credentials, query parameters, and fragments are
+removed from the displayed URL.
+
+Create a server on a provisioning-enabled Relay with a catalog Brick ID or a
+custom HTTPS recipe:
+
+```sh
+kiln servers create <relay-id> paper --name survival --memory 4GiB --disk 25GiB
+kiln servers create <relay-id> https://example.com/custom-brick.yml \
+  --name custom --variable version=1.0.0
+```
+
+Server creation requires a full-access CLI credential and platform
+administrator access. `--no-start` leaves the new server stopped.
+
+Permanently delete a server and its data only after verifying the full target:
+
+```sh
+kiln server delete <server> --confirm <server>
+```
+
+The confirmation must exactly match `<relay-id>:<instance-id>`. Deletion
+requires full CLI access and `instance.delete` permission.
+
+## Bricks and startup settings
+
+Change a server's Brick with a catalog ID or custom HTTPS recipe:
+
+```sh
+kiln server brick <server> paper --memory 4GiB --game-version 1.21.11
+kiln server brick <server> https://example.com/custom-brick.yml \
+  --variable channel=stable
+```
+
+Changing Bricks starts from the new recipe's defaults plus variables supplied
+on the command. It does not carry old Brick variables into the new recipe.
+
+Patch settings on the current Brick while preserving variables that are not
+mentioned:
+
+```sh
+kiln server startup <server> --memory 6GiB
+kiln server startup <server> --disk 40GiB --java-version 25
+kiln server startup <server> --game-version 1.21.11 \
+  --variable online_mode=json:false
+```
+
+Use `--variable name=value` for string variables. Prefix the value with
+`json:` for numbers or booleans, such as `slots=json:20` or
+`debug=json:true`. `--no-start` leaves the reconfigured server stopped.
+Startup changes require full CLI access and `instance.settings` permission.
 
 ## Remote path rules
 
@@ -135,6 +225,21 @@ If the remote destination is omitted, the CLI uses the local basename in the
 server root. The remote parent directory must already exist. Uploads and
 downloads verify the Relay's advertised SSH host-key fingerprint.
 
+Ask the Relay to download a file directly from an HTTPS URL:
+
+```sh
+kiln files upload <server> https://example.com/plugin.jar plugins/plugin.jar
+```
+
+If the destination is omitted, the CLI uses the URL path's decoded basename.
+Supply a destination when the URL has no filename. Relay-side downloads accept
+HTTPS only, follow at most five HTTPS redirects, reject credentials embedded in
+URLs, block private/loopback/link-local/reserved destinations (including after
+DNS resolution and redirects), enforce the 20 GiB transfer limit, and replace
+the destination atomically. They require full CLI access,
+`instance.files.write` in Hearth, and `instance.files.upload-url` in the Relay
+client policy.
+
 After a mutation, verify with the least expensive read operation, such as
 `files list` or `files read`. Do not print binary content for verification.
 
@@ -175,17 +280,22 @@ reference, and error message. Never include the token.
 Use this sequence to isolate the layer:
 
 1. Run `kiln whoami` to verify authentication, profile, access mode, and URL.
-2. Run `kiln servers list` to confirm the full server reference is still
-   available.
+2. Run `kiln relays list` or `kiln servers list` to confirm the full target is
+   still available.
 3. Run `kiln files list <server> .` to test the normal CLI API and Relay.
 4. For a text path, run `kiln files read <server> <path>` to test file reads.
-5. Run the requested upload or download to test SFTP bootstrap and transport.
+5. Run the requested upload or download. Local transfers test SFTP bootstrap
+   and transport; HTTPS sources test the authenticated Hearth-to-Relay control
+   path and Relay egress policy.
 
 Interpret the result narrowly:
 
 - If list and read work but upload and download fail, focus on the SFTP
   bootstrap response, Relay SFTP reachability, authentication, or host-key
   verification. General file reads do not use the same transfer path.
+- If a local SFTP upload works but an HTTPS upload fails, inspect the URL,
+  redirect chain, public DNS resolution, Relay egress, remote HTTP status, and
+  the Relay client's `instance.files.upload-url` action.
 - If all file operations fail, check the profile URL, credential access,
   server reference, Relay availability, and root-relative path first.
 - If a root file is not found, retry the path without `/` or `/data/`.

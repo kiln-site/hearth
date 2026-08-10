@@ -55,6 +55,7 @@ export const relayControlOperations = [
   "instance.files.list",
   "instance.files.read",
   "instance.files.write",
+  "instance.files.upload-url",
   "instance.files.mutate",
   "instance.console.history",
   "instance.console.write",
@@ -90,7 +91,8 @@ export function relayControlDeadlineMs(
   if (operation === "instance.logs.share") return 60_000
   if (
     operation === "instance.create" ||
-    operation === "instance.startup.write"
+    operation === "instance.startup.write" ||
+    operation === "instance.files.upload-url"
   ) {
     return 360_000
   }

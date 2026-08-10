@@ -1,7 +1,6 @@
-import { lookup } from "node:dns"
 import { readFile } from "node:fs/promises"
 import { get } from "node:https"
-import { BlockList, isIP } from "node:net"
+import { isIP } from "node:net"
 import { dirname, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -19,7 +18,6 @@ import {
 import { BrickRecipeError } from "./effect/errors.js"
 import { promiseEffect } from "./effect/promise.js"
 import type { IncomingMessage } from "node:http"
-import type { LookupFunction } from "node:net"
 import type {
   Brick,
   BrickCatalogDocument,
@@ -28,86 +26,16 @@ import type {
   BrickVariableValue,
   RelayCatalog,
 } from "@workspace/contracts"
+import {
+  BlockedRemoteAddressError,
+  isPublicRemoteAddress,
+  secureRemoteLookup,
+} from "./source-policy.js"
 
 const MAX_DOCUMENT_BYTES = 1024 * 1024
 const CACHE_TTL_MS = 5 * 60_000
 const MAX_REDIRECTS = 5
-const BLOCKED_RECIPE_ADDRESSES = new BlockList()
-const BLOCKED_IPV4_SUBNETS: ReadonlyArray<readonly [string, number]> = [
-  ["0.0.0.0", 8],
-  ["10.0.0.0", 8],
-  ["100.64.0.0", 10],
-  ["127.0.0.0", 8],
-  ["169.254.0.0", 16],
-  ["172.16.0.0", 12],
-  ["192.0.0.0", 24],
-  ["192.0.2.0", 24],
-  ["192.168.0.0", 16],
-  ["198.18.0.0", 15],
-  ["198.51.100.0", 24],
-  ["203.0.113.0", 24],
-  ["224.0.0.0", 4],
-  ["240.0.0.0", 4],
-]
-const BLOCKED_IPV6_SUBNETS: ReadonlyArray<readonly [string, number]> = [
-  ["::", 96],
-  ["64:ff9b:1::", 48],
-  ["100::", 64],
-  ["2001:10::", 28],
-  ["2001:db8::", 32],
-  ["2002::", 16],
-  ["fc00::", 7],
-  ["fe80::", 10],
-  ["fec0::", 10],
-  ["ff00::", 8],
-]
-
-for (const [network, prefix] of BLOCKED_IPV4_SUBNETS) {
-  BLOCKED_RECIPE_ADDRESSES.addSubnet(network, prefix, "ipv4")
-}
-for (const [network, prefix] of BLOCKED_IPV6_SUBNETS) {
-  BLOCKED_RECIPE_ADDRESSES.addSubnet(network, prefix, "ipv6")
-}
-
-class BlockedRecipeAddressError extends Error implements NodeJS.ErrnoException {
-  readonly code = "EACCES"
-
-  constructor(readonly address: string) {
-    super(`Recipe source resolves to blocked address ${address}`)
-  }
-}
-
-const secureLookup: LookupFunction = (hostname, options, callback) => {
-  lookup(
-    hostname,
-    {
-      all: true,
-      family: options.family,
-      hints: options.hints,
-      order: options.order ?? "verbatim",
-    },
-    (error, addresses) => {
-      if (error) {
-        callback(error, "")
-        return
-      }
-      const blocked = addresses.find(
-        ({ address }) => !isPublicRecipeAddress(address)
-      )
-      if (blocked) {
-        callback(new BlockedRecipeAddressError(blocked.address), "")
-        return
-      }
-      const selected = addresses.at(0)
-      if (!selected) {
-        callback(new Error("Recipe source did not resolve to an address"), "")
-        return
-      }
-      if (options.all) callback(null, addresses)
-      else callback(null, selected.address, selected.family)
-    }
-  )
-}
+const secureLookup = secureRemoteLookup
 
 interface CachedCatalog {
   expiresAt: number
@@ -648,11 +576,11 @@ function readHttpsDocument(
     request.on("error", (cause: Error) => {
       rejectDocument(
         recipeError(
-          cause instanceof BlockedRecipeAddressError
+          cause instanceof BlockedRemoteAddressError
             ? "blocked_recipe_address"
             : "recipe_fetch_failed",
           originalSource.href,
-          cause instanceof BlockedRecipeAddressError
+          cause instanceof BlockedRemoteAddressError
             ? "Brick source resolves to a private or reserved network address"
             : cause.message
         )
@@ -722,12 +650,7 @@ export function readResponseDocument(
 }
 
 export function isPublicRecipeAddress(address: string): boolean {
-  const family = isIP(address)
-  if (family === 0) return false
-  return !BLOCKED_RECIPE_ADDRESSES.check(
-    address,
-    family === 4 ? "ipv4" : "ipv6"
-  )
+  return isPublicRemoteAddress(address)
 }
 
 function validateLocalSource(source: URL, configuredCatalog: URL): void {

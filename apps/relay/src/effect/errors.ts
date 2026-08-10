@@ -108,6 +108,20 @@ export class RelayFilesystemError extends Schema.TaggedErrorClass<RelayFilesyste
   }
 }
 
+export class RelayRemoteFileError extends Schema.TaggedErrorClass<RelayRemoteFileError>()(
+  "RelayRemoteFileError",
+  {
+    code: Schema.String,
+    source: Schema.String,
+    reason: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  }
+) {
+  override get message() {
+    return this.reason
+  }
+}
+
 export class RelayPortAllocationError extends Schema.TaggedErrorClass<RelayPortAllocationError>()(
   "RelayPortAllocationError",
   {

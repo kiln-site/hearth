@@ -28,6 +28,8 @@ import {
   relayNetworkingSchema,
   relayProxySettingsSchema,
   relayFileMutationInputSchema,
+  relayRemoteFileUploadResultSchema,
+  relayRemoteFileUploadSchema,
   relaySaveFileInputSchema,
   relayTailscaleInstallSchema,
   relayTailscaleSettingsSchema,
@@ -90,6 +92,7 @@ import { attachSftpServer } from "./sftp-server.js"
 import { actionsForRole, relayActions } from "./permissions.js"
 import type { RelayAction } from "./permissions.js"
 import { normalizeSourceCidrs } from "./source-policy.js"
+import { withRemoteFileSource } from "./remote-file-source.js"
 import { RelaySnapshotHub } from "./snapshot-hub.js"
 import { retainProvisioningInstances } from "./instance-mutation-snapshot.js"
 import { RuntimeRecoveryManager } from "./runtime-recovery.js"
@@ -1235,6 +1238,20 @@ async function executeControlRequest(
         runRelayEffect(
           "relay.files.write",
           filesystem.write(instance, requiredString(payload, "path"), input)
+        )
+      )
+    }
+    case "instance.files.upload-url": {
+      const input = relayRemoteFileUploadSchema.parse(request.payload)
+      const instance = await requiredInstance(input)
+      return serializeInstanceMutation(instance.id, () =>
+        runRelayEffect(
+          "relay.files.uploadUrl",
+          withRemoteFileSource(input.url, (source) =>
+            filesystem
+              .upload(instance, input.path, source)
+              .pipe(Effect.map(relayRemoteFileUploadResultSchema.parse))
+          )
         )
       )
     }

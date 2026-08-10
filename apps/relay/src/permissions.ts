@@ -43,6 +43,7 @@ export const relayActions = [
   "instance.files.chmod",
   "instance.files.download",
   "instance.files.upload",
+  "instance.files.upload-url",
   "instance.network.read",
   "instance.network.write",
   "instance.logs.read",

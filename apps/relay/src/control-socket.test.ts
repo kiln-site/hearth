@@ -47,6 +47,7 @@ describe("Relay control timeouts", () => {
       relayControlDeadlineMs("hearth.tailscale.instance.detach") + 135_000
     )
     expect(relayControlDeadlineMs("instance.action")).toBeGreaterThan(75_000)
+    expect(relayControlDeadlineMs("instance.files.upload-url")).toBe(360_000)
     expect(
       relayControlRequestTimeoutMs({ ...request, timeoutMs: 0 }, 10_000_000)
     ).toBeNull()
@@ -154,6 +155,29 @@ describe("Relay control audit details", () => {
       permission: "instance.console.write",
       source: "cli",
       subject: "user-123",
+    })
+  })
+
+  it("audits Relay-side URL uploads with the dedicated action", () => {
+    const request: RelayControlRequest = {
+      deadline: Date.now() + 5_000,
+      id: "request",
+      operation: "instance.files.upload-url",
+      payload: {
+        instanceId: "a".repeat(40),
+        path: "plugins/example.jar",
+        url: "https://example.com/example.jar",
+      },
+      timeoutMs: 5_000,
+      type: "request",
+      v: 1,
+    }
+
+    expect(isAuditedOperation(request.operation)).toBe(true)
+    expect(auditDetailsForRequest(request, {})).toEqual({
+      instanceId: "a".repeat(40),
+      operation: "instance.files.upload-url",
+      permission: "instance.files.upload-url",
     })
   })
 })
