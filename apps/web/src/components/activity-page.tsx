@@ -37,7 +37,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
-import { useIsMobile } from "@workspace/ui/hooks/use-mobile"
 
 import { WorkspaceSummaryCard } from "@/components/workspace-summary-card"
 import {
@@ -558,24 +557,94 @@ const ActivityDateRange = React.memo(function ActivityDateRange({
   to?: string
   onChange: (range: Pick<ActivityFilters, "from" | "to">) => void
 }) {
-  const isMobile = useIsMobile()
   const [open, setOpen] = React.useState(false)
   const [range, setRange] = React.useState<
     { from: Date | undefined; to?: Date } | undefined
   >(() => selectedDateRange(from, to))
+  const [month, setMonth] = React.useState(() =>
+    dateRangeDisplayMonth(selectedDateRange(from, to))
+  )
+  const calendarRef = React.useRef<HTMLDivElement>(null)
+  const monthWheel = React.useRef<{
+    delta: number
+    locked: boolean
+    resetTimer?: number
+  }>({ delta: 0, locked: false })
   const maximumDate = React.useMemo(() => {
     const date = new Date()
     date.setHours(23, 59, 59, 999)
     return date
   }, [])
+  const maximumMonth = React.useMemo(
+    () => startOfLocalMonth(maximumDate),
+    [maximumDate]
+  )
+
+  const shiftMonth = React.useCallback(
+    (offset: number) => {
+      setMonth((current) => {
+        const next = new Date(
+          current.getFullYear(),
+          current.getMonth() + offset
+        )
+        return next > maximumMonth ? maximumMonth : next
+      })
+    },
+    [maximumMonth]
+  )
+
+  React.useEffect(() => {
+    const calendar = calendarRef.current
+    if (!calendar) return
+    const wheel = monthWheel.current
+
+    const handleWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || Math.abs(event.deltaX) > Math.abs(event.deltaY))
+        return
+
+      event.preventDefault()
+      if (wheel.resetTimer) window.clearTimeout(wheel.resetTimer)
+      wheel.resetTimer = window.setTimeout(() => {
+        wheel.delta = 0
+        wheel.locked = false
+        wheel.resetTimer = undefined
+      }, 140)
+      if (wheel.locked) return
+
+      const multiplier =
+        event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1
+      wheel.delta += event.deltaY * multiplier
+      if (Math.abs(wheel.delta) < 36) return
+
+      shiftMonth(wheel.delta > 0 ? 1 : -1)
+      wheel.delta = 0
+      wheel.locked = true
+    }
+
+    calendar.addEventListener("wheel", handleWheel, { passive: false })
+    return () => {
+      calendar.removeEventListener("wheel", handleWheel)
+      if (wheel.resetTimer) window.clearTimeout(wheel.resetTimer)
+    }
+  }, [open, shiftMonth])
 
   const updateOpen = React.useCallback(
     (nextOpen: boolean) => {
-      if (nextOpen) setRange(selectedDateRange(from, to))
+      if (nextOpen) {
+        const nextRange = selectedDateRange(from, to)
+        setRange(nextRange)
+        setMonth(dateRangeDisplayMonth(nextRange))
+      }
       setOpen(nextOpen)
     },
     [from, to]
   )
+
+  const selectRecentRange = React.useCallback((days: number) => {
+    const nextRange = recentRange(days)
+    setRange(nextRange)
+    setMonth(dateRangeDisplayMonth(nextRange))
+  }, [])
 
   const apply = React.useCallback(() => {
     if (!range?.from || !range.to) return
@@ -601,45 +670,56 @@ const ActivityDateRange = React.memo(function ActivityDateRange({
       <PopoverContent
         align="end"
         sideOffset={6}
-        className="w-auto max-w-[calc(100vw-1.5rem)] overflow-auto p-0"
+        className="w-[17rem] max-w-[calc(100vw-1.5rem)] overflow-hidden p-0"
       >
-        <div className="flex flex-col sm:flex-row">
-          <div className="grid shrink-0 grid-cols-3 gap-px border-b bg-border/70 p-px sm:w-32 sm:grid-cols-1 sm:border-r sm:border-b-0">
-            {[7, 30, 90].map((days) => (
-              <button
-                key={days}
-                type="button"
-                className="bg-popover px-3 py-2 text-left font-mono text-[9px] tracking-[0.06em] text-muted-foreground uppercase hover:bg-accent hover:text-foreground"
-                onClick={() => setRange(recentRange(days))}
-              >
-                {days} days
-              </button>
-            ))}
-          </div>
+        <div
+          ref={calendarRef}
+          role="group"
+          className="touch-pan-y overscroll-contain"
+          aria-label="Date range calendar. Scroll to change month."
+        >
           <Calendar
             mode="range"
-            defaultMonth={range?.from}
+            month={month}
+            onMonthChange={setMonth}
             selected={range}
             onSelect={setRange}
-            numberOfMonths={isMobile ? 1 : 2}
+            numberOfMonths={1}
+            endMonth={maximumDate}
             disabled={{ after: maximumDate }}
           />
         </div>
-        <div className="flex items-center justify-between gap-3 border-t bg-background/30 p-2">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setRange(undefined)
-              setOpen(false)
-              onChange({ from: undefined, to: undefined })
-            }}
-          >
-            All time
-          </Button>
-          <div className="flex items-center gap-2">
-            <span className="hidden font-mono text-[9px] text-muted-foreground sm:inline">
+        <div className="border-t bg-background/30 p-2">
+          <div className="flex items-center gap-1.5">
+            {[7, 30, 90].map((days) => (
+              <Button
+                key={days}
+                type="button"
+                variant="outline"
+                size="xs"
+                aria-pressed={dateRangeMatchesRecent(range, days)}
+                className="font-mono text-[9px] tracking-[0.04em] aria-pressed:border-primary/30 aria-pressed:bg-primary/10 aria-pressed:text-primary"
+                onClick={() => selectRecentRange(days)}
+              >
+                {days} days
+              </Button>
+            ))}
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              className="ml-auto text-muted-foreground"
+              onClick={() => {
+                setRange(undefined)
+                setOpen(false)
+                onChange({ from: undefined, to: undefined })
+              }}
+            >
+              All time
+            </Button>
+          </div>
+          <div className="mt-2 flex items-center justify-between gap-2 border-t border-border/65 pt-2">
+            <span className="min-w-0 truncate font-mono text-[9px] text-muted-foreground">
               {range?.from && range.to
                 ? `${formatShortDate(range.from)} → ${formatShortDate(range.to)}`
                 : "Select a start and end"}
@@ -647,6 +727,7 @@ const ActivityDateRange = React.memo(function ActivityDateRange({
             <Button
               type="button"
               size="sm"
+              className="shrink-0"
               disabled={!range?.from || !range.to}
               onClick={apply}
             >
@@ -926,6 +1007,36 @@ function selectedDateRange(
     from: from ? new Date(from) : undefined,
     ...(to ? { to: new Date(to) } : {}),
   }
+}
+
+function startOfLocalMonth(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth())
+}
+
+function dateRangeDisplayMonth(
+  range: { from: Date | undefined; to?: Date } | undefined
+): Date {
+  return startOfLocalMonth(range?.to ?? range?.from ?? new Date())
+}
+
+function dateRangeMatchesRecent(
+  range: { from: Date | undefined; to?: Date } | undefined,
+  days: number
+): boolean {
+  if (!range?.from || !range.to) return false
+  const recent = recentRange(days)
+  return (
+    isSameLocalDay(range.from, recent.from) &&
+    isSameLocalDay(range.to, recent.to)
+  )
+}
+
+function isSameLocalDay(left: Date, right: Date): boolean {
+  return (
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate()
+  )
 }
 
 function formatShortDate(date: Date): string {
