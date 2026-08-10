@@ -8,6 +8,8 @@ import {
   CalendarDays,
   Bot,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   CircleGauge,
   FileClock,
   FolderClock,
@@ -25,7 +27,6 @@ import {
 
 import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
-import { Calendar } from "@workspace/ui/components/calendar"
 import { Input } from "@workspace/ui/components/input"
 import {
   Popover,
@@ -37,6 +38,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
+import { cn } from "@workspace/ui/lib/utils"
 
 import { WorkspaceSummaryCard } from "@/components/workspace-summary-card"
 import {
@@ -102,6 +104,20 @@ const activityShortDate = new Intl.DateTimeFormat(undefined, {
   month: "short",
   year: "numeric",
 })
+
+const activityCalendarMonth = new Intl.DateTimeFormat(undefined, {
+  month: "long",
+  year: "numeric",
+})
+
+const activityCalendarDay = new Intl.DateTimeFormat(undefined, {
+  day: "numeric",
+  month: "long",
+  weekday: "long",
+  year: "numeric",
+})
+
+const activityCalendarWeekdays = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"]
 
 const minimumActivitySyncFeedbackMs = 500
 const activityTableBottomPadding = 12
@@ -548,6 +564,9 @@ const ActivitySearch = React.memo(function ActivitySearch({
   )
 })
 
+type ActivityDateRangeValue = { from: Date | undefined; to?: Date } | undefined
+type ActivityDateBoundary = "from" | "to"
+
 const ActivityDateRange = React.memo(function ActivityDateRange({
   from,
   to,
@@ -558,99 +577,167 @@ const ActivityDateRange = React.memo(function ActivityDateRange({
   onChange: (range: Pick<ActivityFilters, "from" | "to">) => void
 }) {
   const [open, setOpen] = React.useState(false)
-  const [range, setRange] = React.useState<
-    { from: Date | undefined; to?: Date } | undefined
-  >(() => selectedDateRange(from, to))
-  const [month, setMonth] = React.useState(() =>
-    dateRangeDisplayMonth(selectedDateRange(from, to))
+  const [range, setRange] = React.useState<ActivityDateRangeValue>(() =>
+    selectedDateRange(from, to)
   )
-  const calendarRef = React.useRef<HTMLDivElement>(null)
-  const monthWheel = React.useRef<{
-    delta: number
-    locked: boolean
-    resetTimer?: number
-  }>({ delta: 0, locked: false })
+  const [activeBoundary, setActiveBoundary] =
+    React.useState<ActivityDateBoundary>("from")
   const maximumDate = React.useMemo(() => {
     const date = new Date()
     date.setHours(23, 59, 59, 999)
     return date
   }, [])
-  const maximumMonth = React.useMemo(
-    () => startOfLocalMonth(maximumDate),
+  const maximumWeekStart = React.useMemo(
+    () => startOfLocalWeek(startOfLocalMonth(maximumDate)),
     [maximumDate]
   )
+  const [visibleWeekStart, setVisibleWeekStart] = React.useState(() =>
+    dateRangeDisplayWeek(selectedDateRange(from, to), maximumDate)
+  )
+  const calendarElement = React.useRef<HTMLDivElement>(null)
+  const weekWheel = React.useRef<{ delta: number; resetTimer?: number }>({
+    delta: 0,
+  })
 
-  const shiftMonth = React.useCallback(
+  const shiftWeeks = React.useCallback(
     (offset: number) => {
-      setMonth((current) => {
-        const next = new Date(
-          current.getFullYear(),
-          current.getMonth() + offset
-        )
-        return next > maximumMonth ? maximumMonth : next
+      setVisibleWeekStart((current) => {
+        const next = addLocalDays(current, offset * 7)
+        return next > maximumWeekStart ? maximumWeekStart : next
       })
     },
-    [maximumMonth]
+    [maximumWeekStart]
   )
 
-  React.useEffect(() => {
-    const calendar = calendarRef.current
-    if (!calendar) return
-    const wheel = monthWheel.current
-
-    const handleWheel = (event: WheelEvent) => {
-      if (event.ctrlKey || Math.abs(event.deltaX) > Math.abs(event.deltaY))
-        return
+  const handleCalendarWheel = React.useCallback(
+    (event: WheelEvent) => {
+      if (event.ctrlKey || event.deltaY === 0) return
 
       event.preventDefault()
+      const wheel = weekWheel.current
       if (wheel.resetTimer) window.clearTimeout(wheel.resetTimer)
       wheel.resetTimer = window.setTimeout(() => {
         wheel.delta = 0
-        wheel.locked = false
         wheel.resetTimer = undefined
-      }, 140)
-      if (wheel.locked) return
+      }, 120)
 
       const multiplier =
         event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1
       wheel.delta += event.deltaY * multiplier
-      if (Math.abs(wheel.delta) < 36) return
+      if (Math.abs(wheel.delta) < 8) return
 
-      shiftMonth(wheel.delta > 0 ? 1 : -1)
+      shiftWeeks(wheel.delta > 0 ? 1 : -1)
       wheel.delta = 0
-      wheel.locked = true
-    }
+    },
+    [shiftWeeks]
+  )
 
-    calendar.addEventListener("wheel", handleWheel, { passive: false })
+  const setCalendarRef = React.useCallback(
+    (calendar: HTMLDivElement | null) => {
+      calendarElement.current?.removeEventListener("wheel", handleCalendarWheel)
+      calendarElement.current = calendar
+      calendar?.addEventListener("wheel", handleCalendarWheel, {
+        passive: false,
+      })
+    },
+    [handleCalendarWheel]
+  )
+
+  const shiftMonths = React.useCallback(
+    (offset: number) => {
+      setVisibleWeekStart((current) => {
+        const visibleDays = localCalendarDays(current, 42)
+        const month = mostVisibleMonth(visibleDays)
+        const nextMonth = new Date(
+          month.getFullYear(),
+          month.getMonth() + offset
+        )
+        const next = startOfLocalWeek(nextMonth)
+        return next > maximumWeekStart ? maximumWeekStart : next
+      })
+    },
+    [maximumWeekStart]
+  )
+
+  React.useEffect(() => {
+    const wheel = weekWheel.current
     return () => {
-      calendar.removeEventListener("wheel", handleWheel)
-      if (wheel.resetTimer) window.clearTimeout(wheel.resetTimer)
+      if (wheel.resetTimer) {
+        window.clearTimeout(wheel.resetTimer)
+      }
     }
-  }, [open, shiftMonth])
+  }, [])
 
   const updateOpen = React.useCallback(
     (nextOpen: boolean) => {
       if (nextOpen) {
         const nextRange = selectedDateRange(from, to)
         setRange(nextRange)
-        setMonth(dateRangeDisplayMonth(nextRange))
+        setActiveBoundary("from")
+        setVisibleWeekStart(dateRangeDisplayWeek(nextRange, maximumDate))
       }
       setOpen(nextOpen)
     },
-    [from, to]
+    [from, maximumDate, to]
   )
 
-  const selectRecentRange = React.useCallback((days: number) => {
-    const nextRange = recentRange(days)
-    setRange(nextRange)
-    setMonth(dateRangeDisplayMonth(nextRange))
-  }, [])
+  const commitRange = React.useCallback(
+    (nextRange: ActivityDateRangeValue) => {
+      setRange(nextRange)
+      if (nextRange?.from && nextRange.to) {
+        onChange(activityLocalRangeToUtc(nextRange.from, nextRange.to))
+      }
+    },
+    [onChange]
+  )
 
-  const apply = React.useCallback(() => {
-    if (!range?.from || !range.to) return
-    setOpen(false)
-    onChange(activityLocalRangeToUtc(range.from, range.to))
-  }, [onChange, range])
+  const selectDay = React.useCallback(
+    (date: Date) => {
+      if (activeBoundary === "from") {
+        if (!range?.to) {
+          setRange({ from: date })
+          setActiveBoundary("to")
+          return
+        }
+        if (isLocalDayAfter(date, range.to)) {
+          commitRange({ from: range.to, to: date })
+          setActiveBoundary("to")
+          return
+        }
+        commitRange({ from: date, to: range.to })
+        return
+      }
+
+      if (!range?.from) {
+        setRange({ from: undefined, to: date })
+        setActiveBoundary("from")
+        return
+      }
+      if (isLocalDayBefore(date, range.from)) {
+        commitRange({ from: date, to: range.from })
+        setActiveBoundary("from")
+        return
+      }
+      commitRange({ from: range.from, to: date })
+    },
+    [activeBoundary, commitRange, range]
+  )
+
+  const selectRecentRange = React.useCallback(
+    (days: number) => {
+      const nextRange = recentRange(days)
+      commitRange(nextRange)
+      setVisibleWeekStart(dateRangeDisplayWeek(nextRange, maximumDate))
+    },
+    [commitRange, maximumDate]
+  )
+
+  const reset = React.useCallback(() => {
+    setRange(undefined)
+    setActiveBoundary("from")
+    setVisibleWeekStart(dateRangeDisplayWeek(undefined, maximumDate))
+    onChange({ from: undefined, to: undefined })
+  }, [maximumDate, onChange])
 
   return (
     <Popover open={open} onOpenChange={updateOpen}>
@@ -672,71 +759,214 @@ const ActivityDateRange = React.memo(function ActivityDateRange({
         sideOffset={6}
         className="w-[17rem] max-w-[calc(100vw-1.5rem)] overflow-hidden p-0"
       >
-        <div
-          ref={calendarRef}
-          role="group"
-          className="touch-pan-y overscroll-contain"
-          aria-label="Date range calendar. Scroll to change month."
-        >
-          <Calendar
-            mode="range"
-            month={month}
-            onMonthChange={setMonth}
-            selected={range}
-            onSelect={setRange}
-            numberOfMonths={1}
-            endMonth={maximumDate}
-            disabled={{ after: maximumDate }}
+        <div className="grid grid-cols-2 border-b bg-background/20">
+          <ActivityDateBoundaryButton
+            boundary="from"
+            active={activeBoundary === "from"}
+            date={range?.from}
+            onSelect={setActiveBoundary}
+          />
+          <ActivityDateBoundaryButton
+            boundary="to"
+            active={activeBoundary === "to"}
+            date={range?.to}
+            onSelect={setActiveBoundary}
           />
         </div>
-        <div className="border-t bg-background/30 p-2">
-          <div className="flex items-center gap-1.5">
-            {[7, 30, 90].map((days) => (
-              <Button
-                key={days}
-                type="button"
-                variant="outline"
-                size="xs"
-                aria-pressed={dateRangeMatchesRecent(range, days)}
-                className="font-mono text-[9px] tracking-[0.04em] aria-pressed:border-primary/30 aria-pressed:bg-primary/10 aria-pressed:text-primary"
-                onClick={() => selectRecentRange(days)}
-              >
-                {days} days
-              </Button>
-            ))}
+
+        <ActivityWeekCalendar
+          calendarRef={setCalendarRef}
+          maximumDate={maximumDate}
+          range={range}
+          visibleWeekStart={visibleWeekStart}
+          onSelectDay={selectDay}
+          onShiftMonths={shiftMonths}
+        />
+
+        <div className="flex items-center gap-1.5 border-t bg-background/30 p-2">
+          {[7, 30, 90].map((days) => (
             <Button
+              key={days}
               type="button"
-              variant="ghost"
+              variant="outline"
               size="xs"
-              className="ml-auto text-muted-foreground"
-              onClick={() => {
-                setRange(undefined)
-                setOpen(false)
-                onChange({ from: undefined, to: undefined })
-              }}
+              aria-pressed={dateRangeMatchesRecent(range, days)}
+              className="font-mono text-[9px] tracking-[0.04em] aria-pressed:border-primary/30 aria-pressed:bg-primary/10 aria-pressed:text-primary"
+              onClick={() => selectRecentRange(days)}
             >
-              All time
+              {days} days
             </Button>
-          </div>
-          <div className="mt-2 flex items-center justify-between gap-2 border-t border-border/65 pt-2">
-            <span className="min-w-0 truncate font-mono text-[9px] text-muted-foreground">
-              {range?.from && range.to
-                ? `${formatShortDate(range.from)} → ${formatShortDate(range.to)}`
-                : "Select a start and end"}
-            </span>
-            <Button
-              type="button"
-              size="sm"
-              className="shrink-0"
-              disabled={!range?.from || !range.to}
-              onClick={apply}
-            >
-              Apply range
-            </Button>
-          </div>
+          ))}
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="ml-auto text-muted-foreground"
+            onClick={reset}
+          >
+            Reset
+          </Button>
         </div>
       </PopoverContent>
     </Popover>
+  )
+})
+
+const ActivityDateBoundaryButton = React.memo(
+  function ActivityDateBoundaryButton({
+    active,
+    boundary,
+    date,
+    onSelect,
+  }: {
+    active: boolean
+    boundary: ActivityDateBoundary
+    date?: Date
+    onSelect: (boundary: ActivityDateBoundary) => void
+  }) {
+    const label = boundary === "from" ? "Start" : "End"
+    return (
+      <button
+        type="button"
+        aria-pressed={active}
+        className="relative min-w-0 border-l border-border/65 px-3 py-2.5 text-left first:border-l-0 hover:bg-accent/35"
+        onClick={() => onSelect(boundary)}
+      >
+        <span className="block font-mono text-[8px] tracking-[0.08em] text-muted-foreground uppercase">
+          {label}
+        </span>
+        <span className="mt-1 block truncate text-xs font-medium text-foreground">
+          {date ? formatShortDate(date) : "Choose date"}
+        </span>
+        <span
+          aria-hidden="true"
+          className={cn(
+            "absolute inset-x-3 bottom-0 h-px bg-primary transition-opacity",
+            active ? "opacity-100" : "opacity-0"
+          )}
+        />
+      </button>
+    )
+  }
+)
+
+const ActivityWeekCalendar = React.memo(function ActivityWeekCalendar({
+  calendarRef,
+  maximumDate,
+  range,
+  visibleWeekStart,
+  onSelectDay,
+  onShiftMonths,
+}: {
+  calendarRef: React.RefCallback<HTMLDivElement>
+  maximumDate: Date
+  range: ActivityDateRangeValue
+  visibleWeekStart: Date
+  onSelectDay: (date: Date) => void
+  onShiftMonths: (offset: number) => void
+}) {
+  const days = React.useMemo(
+    () => localCalendarDays(visibleWeekStart, 42),
+    [visibleWeekStart]
+  )
+  const displayMonth = React.useMemo(() => mostVisibleMonth(days), [days])
+  const maximumWeekStart = React.useMemo(
+    () => startOfLocalWeek(startOfLocalMonth(maximumDate)),
+    [maximumDate]
+  )
+  const today = React.useMemo(() => new Date(), [])
+
+  return (
+    <div
+      ref={calendarRef}
+      role="group"
+      className="touch-pan-y overscroll-contain px-2 pt-1.5 pb-2 sm:pt-2 sm:pb-2.5"
+      aria-label="Date range calendar. Scroll to move by week."
+    >
+      <div className="flex h-7 items-center justify-between sm:h-8">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label="Show previous month"
+          onClick={() => onShiftMonths(-1)}
+        >
+          <ChevronLeft />
+        </Button>
+        <span
+          role="status"
+          aria-live="polite"
+          className="font-mono text-[11px] font-semibold tracking-[0.04em]"
+        >
+          {activityCalendarMonth.format(displayMonth)}
+        </span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label="Show next month"
+          disabled={visibleWeekStart >= maximumWeekStart}
+          onClick={() => onShiftMonths(1)}
+        >
+          <ChevronRight />
+        </Button>
+      </div>
+
+      <div
+        aria-hidden="true"
+        className="mt-1 mb-1.5 grid grid-cols-7 text-center"
+      >
+        {activityCalendarWeekdays.map((weekday) => (
+          <span
+            key={weekday}
+            className="font-mono text-[9px] font-medium tracking-[0.08em] text-muted-foreground"
+          >
+            {weekday}
+          </span>
+        ))}
+      </div>
+
+      <div
+        role="grid"
+        aria-label={activityCalendarMonth.format(displayMonth)}
+        className="grid grid-cols-7 gap-y-0.5 overflow-hidden sm:gap-y-1"
+      >
+        {days.map((date) => {
+          const disabled = isLocalDayAfter(date, maximumDate)
+          const selectedStart = isSameLocalDay(date, range?.from)
+          const selectedEnd = isSameLocalDay(date, range?.to)
+          const selectedMiddle = isLocalDayWithinRange(date, range)
+          const outside =
+            date.getMonth() !== displayMonth.getMonth() ||
+            date.getFullYear() !== displayMonth.getFullYear()
+          const isToday = isSameLocalDay(date, today)
+          return (
+            <button
+              key={date.getTime()}
+              type="button"
+              role="gridcell"
+              aria-label={activityCalendarDay.format(date)}
+              aria-selected={selectedStart || selectedEnd || selectedMiddle}
+              disabled={disabled}
+              className={cn(
+                "relative isolate grid h-7 min-w-0 place-items-center border border-transparent font-mono text-[10px] font-medium transition-colors outline-none focus-visible:z-10 focus-visible:border-ring/75 focus-visible:ring-2 focus-visible:ring-ring/40 sm:h-8",
+                "hover:bg-accent/70 hover:text-foreground",
+                outside && "text-muted-foreground/35",
+                isToday && "border-primary/45",
+                selectedMiddle && "bg-primary/10 text-foreground",
+                (selectedStart || selectedEnd) &&
+                  "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground",
+                disabled &&
+                  "pointer-events-none text-muted-foreground/20 opacity-50"
+              )}
+              onClick={() => onSelectDay(date)}
+            >
+              {date.getDate()}
+            </button>
+          )
+        })}
+      </div>
+    </div>
   )
 })
 
@@ -1013,10 +1243,55 @@ function startOfLocalMonth(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth())
 }
 
-function dateRangeDisplayMonth(
-  range: { from: Date | undefined; to?: Date } | undefined
+function startOfLocalWeek(date: Date): Date {
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  start.setDate(start.getDate() - start.getDay())
+  return start
+}
+
+function addLocalDays(date: Date, days: number): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days)
+}
+
+function dateRangeDisplayWeek(
+  range: ActivityDateRangeValue,
+  fallback: Date
 ): Date {
-  return startOfLocalMonth(range?.to ?? range?.from ?? new Date())
+  return startOfLocalWeek(
+    startOfLocalMonth(range?.to ?? range?.from ?? fallback)
+  )
+}
+
+function localCalendarDays(start: Date, count: number): Array<Date> {
+  return Array.from({ length: count }, (_, index) => addLocalDays(start, index))
+}
+
+function mostVisibleMonth(days: Array<Date>): Date {
+  const middle = days[Math.floor(days.length / 2)] ?? new Date()
+  const middleMonth = startOfLocalMonth(middle)
+  const counts = new Map<number, { count: number; month: Date }>()
+
+  for (const day of days) {
+    const month = startOfLocalMonth(day)
+    const key = month.getFullYear() * 12 + month.getMonth()
+    const current = counts.get(key)
+    counts.set(key, { count: (current?.count ?? 0) + 1, month })
+  }
+
+  let visible = { count: 0, month: middleMonth }
+  for (const candidate of counts.values()) {
+    const candidateIsMiddle = isSameLocalMonth(candidate.month, middleMonth)
+    const visibleIsMiddle = isSameLocalMonth(visible.month, middleMonth)
+    if (
+      candidate.count > visible.count ||
+      (candidate.count === visible.count &&
+        candidateIsMiddle &&
+        !visibleIsMiddle)
+    ) {
+      visible = candidate
+    }
+  }
+  return visible.month
 }
 
 function dateRangeMatchesRecent(
@@ -1031,12 +1306,41 @@ function dateRangeMatchesRecent(
   )
 }
 
-function isSameLocalDay(left: Date, right: Date): boolean {
+function isSameLocalDay(left: Date, right?: Date): boolean {
+  if (!right) return false
   return (
     left.getFullYear() === right.getFullYear() &&
     left.getMonth() === right.getMonth() &&
     left.getDate() === right.getDate()
   )
+}
+
+function isSameLocalMonth(left: Date, right: Date): boolean {
+  return (
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth()
+  )
+}
+
+function localDayValue(date: Date): number {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+}
+
+function isLocalDayAfter(left: Date, right: Date): boolean {
+  return localDayValue(left) > localDayValue(right)
+}
+
+function isLocalDayBefore(left: Date, right: Date): boolean {
+  return localDayValue(left) < localDayValue(right)
+}
+
+function isLocalDayWithinRange(
+  date: Date,
+  range: ActivityDateRangeValue
+): boolean {
+  if (!range?.from || !range.to) return false
+  const value = localDayValue(date)
+  return value > localDayValue(range.from) && value < localDayValue(range.to)
 }
 
 function formatShortDate(date: Date): string {
