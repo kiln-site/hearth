@@ -22,6 +22,7 @@ Before editing files for a substantial task:
 ## Work
 
 - Use Vite+ (`vp`) and existing Effect patterns; never edit `.repos/effect`.
+- Keep `.agents/skills/kiln-cli/SKILL.md` in sync with CLI changes.
 - Add only critical deterministic tests; prefer browser validation during
   development.
 - This project uses Sentry.io for errors, traces, session replays, and more.
