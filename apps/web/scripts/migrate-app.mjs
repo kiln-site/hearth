@@ -24,9 +24,22 @@ try {
   await ensureInstanceOwnershipSchema(connection)
   await ensureTailscaleNetworkSchema(connection)
   await ensureDatabaseAccessSchema(connection)
+  await ensureBackupSchema(connection)
   console.log("Kiln application tables are up to date")
 } finally {
   await connection.end()
+}
+
+async function ensureBackupSchema(database) {
+  const [reservedBytesColumns] = await database.query(
+    `SHOW COLUMNS FROM ${databaseTable("backup_task")} LIKE 'reserved_bytes'`
+  )
+  if (reservedBytesColumns.length === 0) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup_task")}
+       ADD COLUMN reserved_bytes BIGINT UNSIGNED NULL AFTER bytes_total`
+    )
+  }
 }
 
 async function ensureInstanceOwnershipSchema(database) {

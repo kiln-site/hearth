@@ -7,6 +7,8 @@ import * as Sentry from "@sentry/node"
 import { Effect, Semaphore } from "effect"
 
 import {
+  backupTaskIdSchema,
+  backupTaskInputSchema,
   relayConsoleCommandSchema,
   relayConsoleCompletionInputSchema,
   relayConsoleShareInputSchema,
@@ -47,6 +49,7 @@ import type {
 } from "@workspace/contracts"
 
 import { BrickCatalog } from "./bricks.js"
+import { BackupManager } from "./backups.js"
 import { attachBrowserSocket } from "./browser-socket.js"
 import {
   discoverRelayAdvertisedHost,
@@ -233,6 +236,14 @@ const snapshotHub = new RelaySnapshotHub(relaySnapshot)
 // Keep one shared snapshot sampler active so crash recovery does not depend on
 // a Hearth control connection. Interactive readers reuse the same cached loop.
 snapshotHub.subscribe(() => undefined, false)
+const backupManager = await runRelayEffect(
+  "relay.startup.backups",
+  BackupManager.make({
+    config,
+    findInstance: (instanceId) => docker.findInstance(instanceId),
+  })
+)
+const backupFiber = forkRelayEffect("relay.backups.worker", backupManager.run())
 
 async function loadStartupWebRoutes() {
   const { initialized, persisted } = await runRelayEffect(
@@ -476,6 +487,7 @@ const sftpServer = await Effect.runPromise(
     Effect.onError(() =>
       Effect.sync(() => {
         tailscaleFirewallFiber.interruptUnsafe()
+        backupFiber.interruptUnsafe()
         lifecycle.close()
         snapshotHub.close()
       }).pipe(
@@ -697,6 +709,7 @@ function shutdownRelay(signal: NodeJS.Signals): Promise<void> {
         console.log(`Received ${signal}; shutting down relay`)
         tailscaleFirewallFiber.interruptUnsafe()
         tlsRefreshFiber.interruptUnsafe()
+        backupFiber.interruptUnsafe()
         lifecycle.close()
         snapshotHub.close()
       })
@@ -1045,6 +1058,33 @@ async function executeControlRequest(
       return databases.importDump(
         relayDatabaseDumpSchema.parse(request.payload)
       )
+    case "backup.task.enqueue":
+      return runRelayEffect(
+        "relay.backups.enqueue",
+        backupManager.enqueue(backupTaskInputSchema.parse(request.payload))
+      )
+    case "backup.task.get":
+      return runRelayEffect(
+        "relay.backups.get",
+        backupManager.get(
+          backupTaskIdSchema.parse(requiredString(payload, "taskId"))
+        )
+      )
+    case "backup.task.list": {
+      const updatedAfter = payload.updatedAfter
+      if (
+        updatedAfter !== undefined &&
+        (!Number.isSafeInteger(updatedAfter) || Number(updatedAfter) < 0)
+      ) {
+        throw new Error("updatedAfter must be a non-negative integer")
+      }
+      return runRelayEffect(
+        "relay.backups.list",
+        backupManager.list(
+          updatedAfter === undefined ? undefined : Number(updatedAfter)
+        )
+      )
+    }
     case "instance.create": {
       if (!config.canProvisionInstances) {
         throw new Error("New server provisioning is disabled on this Relay")

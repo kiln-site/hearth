@@ -21,6 +21,21 @@ export class FilePinLimitError extends Schema.TaggedErrorClass<FilePinLimitError
   }
 }
 
+export class BackupLimitError extends Schema.TaggedErrorClass<BackupLimitError>()(
+  "BackupLimitError",
+  {
+    kind: Schema.Literals(["quantity", "size"]),
+    limit: Schema.Number,
+    used: Schema.Number,
+  }
+) {
+  override get message() {
+    return this.kind === "quantity"
+      ? `This resource has reached its ${this.limit} backup limit`
+      : "This resource does not have enough backup storage remaining"
+  }
+}
+
 export class CacheError extends Schema.TaggedErrorClass<CacheError>()(
   "CacheError",
   {
@@ -140,6 +155,7 @@ export class TailscaleOrchestrationError extends Schema.TaggedErrorClass<Tailsca
 
 export type AppError =
   | AuthenticationError
+  | BackupLimitError
   | CacheError
   | CliAccessError
   | CredentialError

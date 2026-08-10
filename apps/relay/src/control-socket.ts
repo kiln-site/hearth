@@ -729,7 +729,8 @@ export function isAuditedOperation(operation: RelayControlOperation): boolean {
     operation === "database.credentials.rotate" ||
     operation === "database.network.write" ||
     operation === "database.dump.export" ||
-    operation === "database.dump.import"
+    operation === "database.dump.import" ||
+    operation === "backup.task.enqueue"
   )
 }
 
@@ -896,6 +897,16 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
       return "database.dump.export"
     case "database.dump.import":
       return "database.dump.import"
+    case "backup.task.enqueue": {
+      const kind = objectString(request.payload, "kind")
+      if (kind === "create") return "backup.create"
+      if (kind === "restore") return "backup.restore"
+      if (kind === "delete") return "backup.delete"
+      return null
+    }
+    case "backup.task.get":
+    case "backup.task.list":
+      return "backup.read"
     case "instance.create":
     case "instance.startup.write":
       return "instance.create"

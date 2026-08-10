@@ -18,6 +18,7 @@ import type {
 } from "@workspace/contracts"
 
 vi.mock("@/lib/relay-registry", () => ({
+  listPersistedRelays: vi.fn(async () => []),
   loadRelayCredentials: vi.fn(),
 }))
 vi.mock("@/lib/sftp-authorization", () => ({

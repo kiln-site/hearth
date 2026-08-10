@@ -289,6 +289,7 @@ CREATE TABLE IF NOT EXISTS kiln_backup_task (
   status ENUM('queued', 'running', 'succeeded', 'failed', 'cancelled') NOT NULL,
   bytes_completed BIGINT UNSIGNED NOT NULL DEFAULT 0,
   bytes_total BIGINT UNSIGNED NULL,
+  reserved_bytes BIGINT UNSIGNED NULL,
   error TEXT NULL,
   requested_by VARCHAR(36) NULL,
   started_at TIMESTAMP(3) NULL,

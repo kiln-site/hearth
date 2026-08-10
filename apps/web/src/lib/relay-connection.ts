@@ -699,6 +699,8 @@ class RelayConnection {
   }
 
   #setState(status: RelayConnectionStatus, lastError: string | null): void {
+    const becameAuthenticated =
+      status === "authenticated" && this.#state.status !== "authenticated"
     this.#state = { lastError, status, updatedAt: Date.now() }
     Sentry.addBreadcrumb({
       category: "relay.connection",
@@ -706,6 +708,26 @@ class RelayConnection {
       level: status === "unreachable" ? "warning" : "info",
       message: status,
     })
+    if (becameAuthenticated) {
+      forkAppEffect(
+        "backups.reconcileOnConnect",
+        Effect.tryPromise({
+          try: async () => {
+            const { reconcileBackupsAfterRelayConnect } =
+              await import("@/lib/backup-reconciliation")
+            await reconcileBackupsAfterRelayConnect(this.#relay.id)
+          },
+          catch: (cause) => cause,
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning(
+              "Backup reconciliation after Relay connect failed",
+              { cause, relayId: this.#relay.id }
+            )
+          )
+        )
+      )
+    }
   }
 
   #scheduleReconnect(): void {

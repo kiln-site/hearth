@@ -108,6 +108,9 @@ importers:
       effect:
         specifier: 4.0.0-beta.99
         version: 4.0.0-beta.99
+      minimatch:
+        specifier: 10.2.5
+        version: 10.2.5
       reflect-metadata:
         specifier: 0.2.2
         version: 0.2.2
