@@ -1262,11 +1262,28 @@ const ActivityWeekCalendar = React.memo(function ActivityWeekCalendar({
     [maximumDate]
   )
   const today = React.useMemo(() => new Date(), [])
+  const tabbableDayValue = React.useMemo(() => {
+    const preferredDate = [
+      store.getBoundaryDate("from"),
+      store.getBoundaryDate("to"),
+      today,
+    ].find(
+      (candidate) =>
+        candidate &&
+        !isLocalDayAfter(candidate, maximumDate) &&
+        days.some((date) => isSameLocalDay(date, candidate))
+    )
+    const fallbackDate = days.find(
+      (date) => !isLocalDayAfter(date, maximumDate)
+    )
+    return localDayValue(preferredDate ?? fallbackDate ?? days[0])
+  }, [days, maximumDate, store, today])
 
   return (
     <div
       ref={calendarRef}
       role="group"
+      data-activity-calendar
       className="touch-pan-y overscroll-contain px-2 pt-1.5 pb-2 sm:pt-2 sm:pb-2.5"
       aria-label="Date range calendar. Scroll to move by week."
     >
@@ -1318,15 +1335,25 @@ const ActivityWeekCalendar = React.memo(function ActivityWeekCalendar({
         aria-label={activityCalendarMonth.format(displayMonth)}
         className="grid grid-cols-7 gap-y-0.5 overflow-hidden sm:gap-y-1"
       >
-        {days.map((date) => (
-          <ActivityCalendarDay
-            date={date}
-            disabled={isLocalDayAfter(date, maximumDate)}
-            isToday={isSameLocalDay(date, today)}
-            key={date.getTime()}
-            outside={!isSameLocalMonth(date, displayMonth)}
-            store={store}
-          />
+        {Array.from({ length: 6 }, (_, weekIndex) => (
+          <div
+            role="row"
+            className="contents"
+            key={days[weekIndex * 7]?.getTime()}
+          >
+            {days.slice(weekIndex * 7, weekIndex * 7 + 7).map((date) => (
+              <ActivityCalendarDay
+                date={date}
+                disabled={isLocalDayAfter(date, maximumDate)}
+                isToday={isSameLocalDay(date, today)}
+                key={date.getTime()}
+                maximumDate={maximumDate}
+                outside={!isSameLocalMonth(date, displayMonth)}
+                store={store}
+                tabbable={localDayValue(date) === tabbableDayValue}
+              />
+            ))}
+          </div>
         ))}
       </div>
     </div>
@@ -1337,14 +1364,18 @@ const ActivityCalendarDay = React.memo(function ActivityCalendarDay({
   date,
   disabled,
   isToday,
+  maximumDate,
   outside,
   store,
+  tabbable,
 }: {
   date: Date
   disabled: boolean
   isToday: boolean
+  maximumDate: Date
   outside: boolean
   store: ActivityDatePickerStore
+  tabbable: boolean
 }) {
   const subscribe = React.useCallback(
     (listener: () => void) => store.subscribeDay(date, listener),
@@ -1362,6 +1393,41 @@ const ActivityCalendarDay = React.memo(function ActivityCalendarDay({
   const selectedEndpoint =
     (selection & (activityDaySelectedStart | activityDaySelectedEnd)) !== 0
   const selectedMiddle = (selection & activityDaySelectedMiddle) !== 0
+  const handleKeyDown = React.useCallback(
+    (event: React.KeyboardEvent<HTMLButtonElement>) => {
+      if (event.altKey || event.ctrlKey || event.metaKey) return
+      const offset =
+        event.key === "ArrowLeft"
+          ? -1
+          : event.key === "ArrowRight"
+            ? 1
+            : event.key === "ArrowUp"
+              ? -7
+              : event.key === "ArrowDown"
+                ? 7
+                : event.key === "Home"
+                  ? -date.getDay()
+                  : event.key === "End"
+                    ? 6 - date.getDay()
+                    : undefined
+      if (offset === undefined) return
+
+      event.preventDefault()
+      const targetDate = addLocalDays(date, offset)
+      if (isLocalDayAfter(targetDate, maximumDate)) return
+      const calendar = event.currentTarget.closest<HTMLElement>(
+        "[data-activity-calendar]"
+      )
+      if (!calendar) return
+      if (focusActivityCalendarDay(calendar, targetDate)) return
+
+      store.shiftWeeks(offset < 0 ? -1 : 1)
+      window.setTimeout(() => {
+        focusActivityCalendarDay(calendar, targetDate)
+      }, 0)
+    },
+    [date, maximumDate, store]
+  )
 
   return (
     <button
@@ -1369,7 +1435,9 @@ const ActivityCalendarDay = React.memo(function ActivityCalendarDay({
       role="gridcell"
       aria-label={activityCalendarDay.format(date)}
       aria-selected={selection !== 0}
+      data-activity-calendar-day={localDayValue(date)}
       disabled={disabled}
+      tabIndex={tabbable ? 0 : -1}
       className={cn(
         "relative isolate grid h-7 min-w-0 place-items-center border border-transparent font-mono text-[10px] font-medium transition-colors outline-none focus-visible:z-10 focus-visible:border-ring/75 focus-visible:ring-2 focus-visible:ring-ring/40 sm:h-8",
         "hover:bg-accent/70 hover:text-foreground",
@@ -1380,12 +1448,37 @@ const ActivityCalendarDay = React.memo(function ActivityCalendarDay({
           "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground",
         disabled && "pointer-events-none text-muted-foreground/20 opacity-50"
       )}
+      onFocus={setActivityCalendarTabStop}
+      onKeyDown={handleKeyDown}
       onClick={() => store.selectDay(date)}
     >
       {date.getDate()}
     </button>
   )
 })
+
+function setActivityCalendarTabStop(
+  event: React.FocusEvent<HTMLButtonElement>
+): void {
+  const calendar = event.currentTarget.closest<HTMLElement>(
+    "[data-activity-calendar]"
+  )
+  if (!calendar) return
+  for (const button of calendar.querySelectorAll<HTMLButtonElement>(
+    "button[data-activity-calendar-day]"
+  )) {
+    button.tabIndex = button === event.currentTarget ? 0 : -1
+  }
+}
+
+function focusActivityCalendarDay(calendar: HTMLElement, date: Date): boolean {
+  const target = calendar.querySelector<HTMLButtonElement>(
+    `button[data-activity-calendar-day="${localDayValue(date)}"]`
+  )
+  if (!target || target.disabled) return false
+  target.focus()
+  return true
+}
 
 const ActivityStatus = React.memo(function ActivityStatus({
   data,
@@ -1870,7 +1963,11 @@ function filterActivity(
   query: string
 ): Array<ActivityEntry> {
   const normalized = query.trim().toLowerCase()
+  const from = filters.from ? Date.parse(filters.from) : undefined
+  const to = filters.to ? Date.parse(filters.to) : undefined
   return entries.filter((entry) => {
+    if (from !== undefined && entry.occurredAt < from) return false
+    if (to !== undefined && entry.occurredAt > to) return false
     if (filters.type && entry.type !== filters.type) return false
     if (filters.user && entry.actor.id !== filters.user) return false
     if (filters.relay && entry.relay.id !== filters.relay) return false
