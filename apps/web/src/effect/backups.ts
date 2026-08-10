@@ -3,6 +3,7 @@ import { Effect } from "effect"
 
 import type {
   BackupCreateTaskInput,
+  BackupTaskStatus,
   RelayBackupTask,
 } from "@workspace/contracts"
 
@@ -57,7 +58,16 @@ interface DispatchableBackupRow extends RowDataPacket {
 }
 
 interface KnownBackupTaskRow extends RowDataPacket {
+  bytes_completed: number | string
   id: string
+  relay_updated_at_ms: number | string | null
+  status: BackupTaskStatus
+}
+
+interface BackupTaskReconcileState {
+  bytesCompleted: number
+  relayUpdatedAt: number | null
+  status: BackupTaskStatus
 }
 
 export interface BackupCatalogRecord {
@@ -202,19 +212,40 @@ export const reconcileBackupTaskEffect = Effect.fn("backups.reconcile")(
     yield* database.transaction("backup_reconcile", (transaction) =>
       Effect.gen(function* () {
         const knownTasks = yield* transaction.queryRows<KnownBackupTaskRow>(
-          `SELECT task.id
+          `SELECT task.id, task.status, task.bytes_completed,
+                  task.relay_updated_at_ms
              FROM ${databaseTable("backup_task")} task
              JOIN ${databaseTable("backup")} backup ON backup.id = task.backup_id
             WHERE task.id = ? AND task.backup_id = ?
             FOR UPDATE`,
           [task.taskId, task.backupId]
         )
-        if (!knownTasks[0]) return
+        const knownTask = knownTasks[0]
+        if (!knownTask) return
+        if (
+          !shouldApplyRelayBackupTaskSnapshot(
+            {
+              bytesCompleted: safeDatabaseNumber(
+                knownTask.bytes_completed,
+                "backup task progress"
+              ),
+              relayUpdatedAt: nullableDatabaseNumber(
+                knownTask.relay_updated_at_ms,
+                "Relay backup task update time"
+              ),
+              status: knownTask.status,
+            },
+            task
+          )
+        ) {
+          return
+        }
         yield* transaction.execute(
           `UPDATE ${databaseTable("backup_task")}
               SET status = ?, bytes_completed = ?, bytes_total = ?, error = ?,
                   started_at = FROM_UNIXTIME(? / 1000),
-                  finished_at = FROM_UNIXTIME(? / 1000)
+                  finished_at = FROM_UNIXTIME(? / 1000),
+                  relay_updated_at_ms = ?
             WHERE id = ? AND backup_id = ?`,
           [
             task.status,
@@ -223,6 +254,7 @@ export const reconcileBackupTaskEffect = Effect.fn("backups.reconcile")(
             task.error,
             task.startedAt,
             task.finishedAt,
+            task.updatedAt,
             task.taskId,
             task.backupId,
           ]
@@ -452,6 +484,46 @@ export function backupReservation(input: {
         : remaining === null
           ? input.requestedMaxBytes
           : Math.min(input.requestedMaxBytes, remaining),
+  }
+}
+
+export function shouldApplyRelayBackupTaskSnapshot(
+  current: BackupTaskReconcileState,
+  incoming: Pick<RelayBackupTask, "bytesCompleted" | "status" | "updatedAt">
+): boolean {
+  if (
+    isTerminalBackupTaskStatus(current.status) &&
+    !isTerminalBackupTaskStatus(incoming.status)
+  ) {
+    return false
+  }
+  if (current.relayUpdatedAt === null) return true
+  if (incoming.updatedAt !== current.relayUpdatedAt) {
+    return incoming.updatedAt > current.relayUpdatedAt
+  }
+  if (incoming.status === current.status) {
+    return incoming.bytesCompleted >= current.bytesCompleted
+  }
+  return (
+    backupTaskStatusOrder(incoming.status) >
+    backupTaskStatusOrder(current.status)
+  )
+}
+
+function isTerminalBackupTaskStatus(status: BackupTaskStatus): boolean {
+  return status === "cancelled" || status === "failed" || status === "succeeded"
+}
+
+function backupTaskStatusOrder(status: BackupTaskStatus): number {
+  switch (status) {
+    case "queued":
+      return 0
+    case "running":
+      return 1
+    case "cancelled":
+    case "failed":
+    case "succeeded":
+      return 2
   }
 }
 

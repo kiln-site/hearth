@@ -31,13 +31,20 @@ try {
 }
 
 async function ensureBackupSchema(database) {
-  const [reservedBytesColumns] = await database.query(
-    `SHOW COLUMNS FROM ${databaseTable("backup_task")} LIKE 'reserved_bytes'`
+  const [taskColumns] = await database.query(
+    `SHOW COLUMNS FROM ${databaseTable("backup_task")}`
   )
-  if (reservedBytesColumns.length === 0) {
+  const taskColumnNames = new Set(taskColumns.map((column) => column.Field))
+  if (!taskColumnNames.has("reserved_bytes")) {
     await database.query(
       `ALTER TABLE ${databaseTable("backup_task")}
        ADD COLUMN reserved_bytes BIGINT UNSIGNED NULL AFTER bytes_total`
+    )
+  }
+  if (!taskColumnNames.has("relay_updated_at_ms")) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup_task")}
+       ADD COLUMN relay_updated_at_ms BIGINT UNSIGNED NULL AFTER reserved_bytes`
     )
   }
 }
