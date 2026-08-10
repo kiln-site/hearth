@@ -41,16 +41,13 @@ import type { AccessPermission } from "@/lib/permissions"
 import { roleHasPermission } from "@/lib/permissions"
 import { invalidateRelayCache, relayCachePolicy } from "@/lib/relay-client"
 import { relayRpc } from "@/lib/relay-connection"
+import { deleteInstanceWithFinalBackup } from "@/lib/final-instance-deletion"
 import {
   listPersistedRelaysEffect,
   type PersistedRelay,
 } from "@/lib/relay-registry"
 import { getActivityForUser } from "@/server/activity-data.server"
-import {
-  deleteInstanceDomainEffect,
-  provisionInstanceDomainBestEffort,
-} from "@/server/domains.server"
-import { finalizeInstanceDeletionEffect } from "@/server/instance-deletion-cleanup"
+import { provisionInstanceDomainBestEffort } from "@/server/domains.server"
 
 const CLI_RELAY_LONG_OPERATION_TIMEOUT_MS = 180_000
 
@@ -327,18 +324,16 @@ export const deleteCliServerEffect = Effect.fn("cli.api.servers.delete")(
       )
     }
     const relay = yield* authorizeTarget(principal, input, "instance.delete")
-    yield* deleteInstanceDomainEffect(relay.id, input.instanceId)
-    const result = yield* relayRpcEffect(
-      relay,
-      "instance.delete",
-      { deleteData: true, instanceId: input.instanceId },
-      principal,
-      360_000
-    )
-    const deleted = z
-      .object({ deleted: z.literal(true), instanceId: z.string() })
-      .parse(result)
-    yield* finalizeInstanceDeletionEffect(relay.id, input.instanceId)
+    yield* Effect.tryPromise({
+      try: () =>
+        deleteInstanceWithFinalBackup({
+          instanceId: input.instanceId,
+          relay,
+          requestedBy: principal.user.id,
+        }),
+      catch: (cause) => cause,
+    })
+    const deleted = { deleted: true as const, instanceId: input.instanceId }
     return { ...deleted, relayId: relay.id }
   }
 )

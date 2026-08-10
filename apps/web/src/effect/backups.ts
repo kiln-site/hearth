@@ -4,6 +4,7 @@ import { Effect } from "effect"
 import type {
   BackupCreateTaskInput,
   BackupDeleteTaskInput,
+  BackupRestoreTaskInput,
   BackupTaskStatus,
   RelayBackupTask,
 } from "@workspace/contracts"
@@ -40,6 +41,7 @@ interface BackupRow extends RowDataPacket {
   bytes: number | string | null
   checksum_sha256: string | null
   completed_at_ms: number | string | null
+  created_by: string | null
   created_at_ms: number | string
   filename: string | null
   id: string
@@ -61,6 +63,8 @@ interface DispatchableBackupRow extends RowDataPacket {
   artifact_kind: "archive"
   backup_id: string
   backup_mode: "full"
+  bytes: number | string | null
+  checksum_sha256: string | null
   exclude_patterns: unknown
   object_key: string | null
   reason: BackupCreateTaskInput["reason"]
@@ -69,7 +73,7 @@ interface DispatchableBackupRow extends RowDataPacket {
   target_id: string
   target_kind: "instance"
   task_id: string
-  task_kind: "create" | "delete"
+  task_kind: "create" | "delete" | "restore"
 }
 
 interface KnownBackupTaskRow extends RowDataPacket {
@@ -85,12 +89,35 @@ interface BackupTaskReconcileState {
   status: BackupTaskStatus
 }
 
+interface FinalInstanceDeletionRow extends RowDataPacket {
+  backup_id: string
+  backup_status: BackupRow["status"]
+  error: string | null
+  relay_id: string
+  requested_by: string
+  status: "backing_up" | "completed" | "deleting" | "failed"
+  target_id: string
+  task_error: string | null
+}
+
+export interface FinalInstanceDeletion {
+  backupId: string
+  backupStatus: BackupRow["status"]
+  error: string | null
+  relayId: string
+  requestedBy: string
+  status: FinalInstanceDeletionRow["status"]
+  targetId: string
+  taskError: string | null
+}
+
 export interface BackupCatalogRecord {
   artifactKind: BackupRow["artifact_kind"]
   backupMode: BackupRow["backup_mode"]
   bytes: number | null
   checksumSha256: string | null
   completedAt: string | null
+  createdBy: string | null
   createdAt: string
   filename: string | null
   id: string
@@ -126,13 +153,26 @@ export interface BackupDeleteDispatch extends Omit<
   storageId: string | null
 }
 
-export type BackupDispatch = BackupCreateDispatch | BackupDeleteDispatch
+export interface BackupRestoreDispatch extends Omit<
+  BackupRestoreTaskInput,
+  "source"
+> {
+  kind: "restore"
+  objectKey: string | null
+  storageId: string | null
+}
+
+export type BackupDispatch =
+  | BackupCreateDispatch
+  | BackupDeleteDispatch
+  | BackupRestoreDispatch
 
 export const reserveInstanceBackupEffect = Effect.fn("backups.reserve")(
   function* (input: {
     backupId: string
     createdBy: string
     name: string
+    reason?: BackupCreateTaskInput["reason"]
     relayId: string
     requestedMaxBytes: number | null
     storageId?: string | null
@@ -158,6 +198,28 @@ export const reserveInstanceBackupEffect = Effect.fn("backups.reserve")(
         )
         const policy = policies[0]
         if (!policy) return yield* Effect.die("Backup policy was not created")
+        if (input.reason === "final_delete") {
+          const activeRestores =
+            yield* transaction.queryRows<KnownBackupTaskRow>(
+              `SELECT task.id
+                 FROM ${databaseTable("backup_task")} task
+                 JOIN ${databaseTable("backup")} backup ON backup.id = task.backup_id
+                WHERE backup.relay_id = ?
+                  AND backup.target_kind = 'instance'
+                  AND backup.target_id = ?
+                  AND task.task_kind = 'restore'
+                  AND task.status IN ('queued', 'running')
+                LIMIT 1`,
+              [input.relayId, input.targetId]
+            )
+          if (activeRestores[0]) {
+            return yield* BackupStorageError.make({
+              code: "restore_in_progress",
+              operation: "backup.finalDelete",
+              reason: "Wait for the active restore before deleting this server",
+            })
+          }
+        }
         const storageId =
           input.storageId === undefined ? policy.storage_id : input.storageId
         const storage = storageId
@@ -245,13 +307,14 @@ export const reserveInstanceBackupEffect = Effect.fn("backups.reserve")(
           `INSERT INTO ${databaseTable("backup")}
             (id, relay_id, target_kind, target_id, storage_id, artifact_kind,
              backup_mode, reason, status, name, object_key, warnings, created_by)
-           VALUES (?, ?, 'instance', ?, ?, 'archive', 'full', 'manual',
+           VALUES (?, ?, 'instance', ?, ?, 'archive', 'full', ?,
                    'queued', ?, ?, JSON_ARRAY(), ?)`,
           [
             input.backupId,
             input.relayId,
             input.targetId,
             storageId,
+            input.reason ?? "manual",
             input.name,
             objectKey,
             input.createdBy,
@@ -263,6 +326,14 @@ export const reserveInstanceBackupEffect = Effect.fn("backups.reserve")(
            VALUES (?, ?, 'create', 'queued', ?, ?)`,
           [input.taskId, input.backupId, reservation.maxBytes, input.createdBy]
         )
+        if (input.reason === "final_delete") {
+          yield* transaction.execute(
+            `INSERT INTO ${databaseTable("backup_final_delete")}
+              (relay_id, target_id, backup_id, requested_by, status)
+             VALUES (?, ?, ?, ?, 'backing_up')`,
+            [input.relayId, input.targetId, input.backupId, input.createdBy]
+          )
+        }
         return {
           artifactKind: "archive",
           backupId: input.backupId,
@@ -270,7 +341,7 @@ export const reserveInstanceBackupEffect = Effect.fn("backups.reserve")(
           kind: "create",
           maxBytes: reservation.maxBytes,
           mode: "full",
-          reason: "manual",
+          reason: input.reason ?? "manual",
           objectKey,
           storageId,
           target: { id: input.targetId, kind: "instance" },
@@ -413,7 +484,8 @@ export const listBackupCatalogEffect = Effect.fn("backups.list")(function* () {
     `SELECT backup.id, backup.relay_id, backup.target_kind, backup.target_id,
             backup.artifact_kind, backup.backup_mode, backup.reason,
             backup.status, backup.name, backup.filename, backup.bytes,
-            backup.checksum_sha256, backup.warnings, backup.storage_id,
+            backup.checksum_sha256, backup.warnings, backup.created_by,
+            backup.storage_id,
             backup.object_key,
             ROUND(UNIX_TIMESTAMP(backup.completed_at) * 1000) AS completed_at_ms,
             ROUND(UNIX_TIMESTAMP(backup.created_at) * 1000) AS created_at_ms,
@@ -436,6 +508,7 @@ export const listBackupCatalogEffect = Effect.fn("backups.list")(function* () {
     bytes: nullableDatabaseNumber(row.bytes, "backup bytes"),
     checksumSha256: row.checksum_sha256,
     completedAt: timestampIso(row.completed_at_ms, "backup completed at"),
+    createdBy: row.created_by,
     createdAt: requiredTimestampIso(row.created_at_ms, "backup created at"),
     filename: row.filename,
     id: row.id,
@@ -458,17 +531,30 @@ export const listDispatchableBackupTasksEffect = Effect.fn(
   "backups.dispatchable"
 )(function* (relayId: string) {
   const database = yield* Database
+  yield* database.execute(
+    "backup_dependency_failures",
+    `UPDATE ${databaseTable("backup_task")} dependent
+       JOIN ${databaseTable("backup_task")} dependency
+         ON dependency.id = dependent.depends_on_task_id
+        SET dependent.status = 'failed',
+            dependent.error = 'The pre-restore safety backup did not complete',
+            dependent.finished_at = CURRENT_TIMESTAMP(3)
+      WHERE dependent.status = 'queued'
+        AND dependent.task_kind = 'restore'
+        AND dependency.status IN ('failed', 'cancelled')`
+  )
   const rows = yield* database.queryRows<DispatchableBackupRow>(
     "backup_dispatchable_list",
     `SELECT backup.id AS backup_id, backup.target_kind, backup.target_id,
             backup.artifact_kind, backup.backup_mode, backup.reason,
+            backup.bytes, backup.checksum_sha256,
             task.id AS task_id, task.task_kind, task.reserved_bytes,
             backup.storage_id, backup.object_key,
             COALESCE(policy.exclude_patterns, JSON_ARRAY()) AS exclude_patterns
        FROM ${databaseTable("backup")} backup
        JOIN ${databaseTable("backup_task")} task
          ON task.backup_id = backup.id
-        AND task.task_kind IN ('create', 'delete')
+        AND task.task_kind IN ('create', 'restore', 'delete')
        LEFT JOIN ${databaseTable("backup_policy")} policy
          ON policy.relay_id = backup.relay_id
         AND policy.target_kind = backup.target_kind
@@ -478,12 +564,37 @@ export const listDispatchableBackupTasksEffect = Effect.fn(
         AND backup.artifact_kind = 'archive'
         AND backup.backup_mode = 'full'
         AND ((task.task_kind = 'create' AND backup.status = 'queued')
+          OR (task.task_kind = 'restore' AND backup.status = 'available')
           OR (task.task_kind = 'delete' AND backup.status = 'deleting'))
         AND task.status = 'queued'
+        AND (task.depends_on_task_id IS NULL OR EXISTS (
+          SELECT 1
+            FROM ${databaseTable("backup_task")} dependency
+           WHERE dependency.id = task.depends_on_task_id
+             AND dependency.status = 'succeeded'
+        ))
       ORDER BY task.created_at ASC, task.id ASC`,
     [relayId]
   )
   return rows.map((row): BackupDispatch => {
+    if (row.task_kind === "restore") {
+      const bytes = nullableDatabaseNumber(row.bytes, "backup bytes")
+      if (bytes === null || !row.checksum_sha256) {
+        throw new Error(
+          "Available backup is missing restore integrity metadata"
+        )
+      }
+      return {
+        backupId: row.backup_id,
+        bytes,
+        checksumSha256: row.checksum_sha256,
+        kind: "restore",
+        objectKey: row.object_key,
+        storageId: row.storage_id,
+        target: { id: row.target_id, kind: row.target_kind },
+        taskId: row.task_id,
+      }
+    }
     if (row.task_kind === "delete") {
       return {
         backupId: row.backup_id,
@@ -513,6 +624,128 @@ export const listDispatchableBackupTasksEffect = Effect.fn(
   })
 })
 
+export const reserveBackupRestoreEffect = Effect.fn("backups.reserveRestore")(
+  function* (input: {
+    backupId: string
+    dependsOnTaskId: string | null
+    requestedBy: string
+    taskId: string
+  }) {
+    const database = yield* Database
+    return yield* database.transaction(
+      "backup_reserve_restore",
+      (transaction) =>
+        Effect.gen(function* () {
+          const rows = yield* transaction.queryRows<BackupRow>(
+            `SELECT backup.id, backup.relay_id, backup.target_kind,
+                    backup.target_id, backup.storage_id, backup.object_key,
+                    backup.bytes, backup.checksum_sha256
+               FROM ${databaseTable("backup")} backup
+              WHERE backup.id = ? AND backup.status = 'available'
+                AND backup.target_kind = 'instance'
+                AND backup.artifact_kind = 'archive'
+                AND backup.backup_mode = 'full'
+                AND NOT EXISTS (
+                  SELECT 1
+                    FROM ${databaseTable("backup_task")} active_task
+                   WHERE active_task.backup_id = backup.id
+                     AND active_task.task_kind IN ('restore', 'delete')
+                     AND active_task.status IN ('queued', 'running')
+                )
+              FOR UPDATE`,
+            [input.backupId]
+          )
+          const backup = rows[0]
+          const bytes = backup
+            ? nullableDatabaseNumber(backup.bytes, "backup bytes")
+            : null
+          if (!backup || bytes === null || !backup.checksum_sha256) {
+            return yield* BackupStorageError.make({
+              code: "backup_unavailable",
+              operation: "backup.restore",
+              reason: "Only complete instance backups can be restored",
+            })
+          }
+          yield* transaction.queryRows<RowDataPacket>(
+            `SELECT relay_id
+               FROM ${databaseTable("backup_policy")}
+              WHERE relay_id = ? AND target_kind = 'instance' AND target_id = ?
+              FOR UPDATE`,
+            [backup.relay_id, backup.target_id]
+          )
+          const conflictingTasks =
+            yield* transaction.queryRows<KnownBackupTaskRow>(
+              `SELECT task.id
+                 FROM ${databaseTable("backup_task")} task
+                 JOIN ${databaseTable("backup")} active_backup
+                   ON active_backup.id = task.backup_id
+                WHERE active_backup.relay_id = ?
+                  AND active_backup.target_kind = 'instance'
+                  AND active_backup.target_id = ?
+                  AND task.task_kind = 'restore'
+                  AND task.status IN ('queued', 'running')
+                LIMIT 1`,
+              [backup.relay_id, backup.target_id]
+            )
+          const finalDeletions = yield* transaction.queryRows<RowDataPacket>(
+            `SELECT target_id
+                 FROM ${databaseTable("backup_final_delete")}
+                WHERE relay_id = ? AND target_id = ?
+                  AND status IN ('backing_up', 'deleting')
+                LIMIT 1`,
+            [backup.relay_id, backup.target_id]
+          )
+          if (conflictingTasks[0] || finalDeletions[0]) {
+            return yield* BackupStorageError.make({
+              code: "restore_in_progress",
+              operation: "backup.restore",
+              reason:
+                "Another restore or final server deletion is already in progress",
+            })
+          }
+          if (input.dependsOnTaskId) {
+            const dependencies =
+              yield* transaction.queryRows<KnownBackupTaskRow>(
+                `SELECT id
+                 FROM ${databaseTable("backup_task")}
+                WHERE id = ? AND task_kind = 'create'
+                LIMIT 1`,
+                [input.dependsOnTaskId]
+              )
+            if (!dependencies[0]) {
+              return yield* BackupStorageError.make({
+                code: "invalid_restore_dependency",
+                operation: "backup.restore",
+                reason: "The pre-restore safety backup was not reserved",
+              })
+            }
+          }
+          yield* transaction.execute(
+            `INSERT INTO ${databaseTable("backup_task")}
+              (id, backup_id, task_kind, status, depends_on_task_id, requested_by)
+             VALUES (?, ?, 'restore', 'queued', ?, ?)`,
+            [
+              input.taskId,
+              input.backupId,
+              input.dependsOnTaskId,
+              input.requestedBy,
+            ]
+          )
+          return {
+            backupId: input.backupId,
+            bytes,
+            checksumSha256: backup.checksum_sha256,
+            kind: "restore",
+            objectKey: backup.object_key,
+            storageId: backup.storage_id,
+            target: { id: backup.target_id, kind: backup.target_kind },
+            taskId: input.taskId,
+          } satisfies BackupRestoreDispatch
+        })
+    )
+  }
+)
+
 export const reserveBackupDeleteEffect = Effect.fn("backups.reserveDelete")(
   function* (input: { backupId: string; requestedBy: string; taskId: string }) {
     const database = yield* Database
@@ -523,6 +756,13 @@ export const reserveBackupDeleteEffect = Effect.fn("backups.reserveDelete")(
                   backup.target_id, backup.storage_id, backup.object_key
              FROM ${databaseTable("backup")} backup
             WHERE backup.id = ? AND backup.status = 'available'
+              AND NOT EXISTS (
+                SELECT 1
+                  FROM ${databaseTable("backup_task")} active_task
+                 WHERE active_task.backup_id = backup.id
+                   AND active_task.task_kind = 'restore'
+                   AND active_task.status IN ('queued', 'running')
+              )
             FOR UPDATE`,
           [input.backupId]
         )
@@ -605,6 +845,100 @@ export const updateBackupExcludesEffect = Effect.fn("backups.updateExcludes")(
     )
   }
 )
+
+export const getFinalInstanceDeletionEffect = Effect.fn(
+  "backups.finalDelete.get"
+)(function* (relayId: string, targetId: string) {
+  const database = yield* Database
+  const rows = yield* database.queryRows<FinalInstanceDeletionRow>(
+    "backup_final_delete_get",
+    `${finalInstanceDeletionSelect}
+      WHERE final_delete.relay_id = ? AND final_delete.target_id = ?
+      LIMIT 1`,
+    [relayId, targetId]
+  )
+  return rows[0] ? toFinalInstanceDeletion(rows[0]) : null
+})
+
+export const listPendingFinalInstanceDeletionsEffect = Effect.fn(
+  "backups.finalDelete.listPending"
+)(function* (relayId: string) {
+  const database = yield* Database
+  const rows = yield* database.queryRows<FinalInstanceDeletionRow>(
+    "backup_final_delete_list_pending",
+    `${finalInstanceDeletionSelect}
+      WHERE final_delete.relay_id = ?
+        AND final_delete.status IN ('backing_up', 'deleting')
+      ORDER BY final_delete.created_at ASC, final_delete.target_id ASC`,
+    [relayId]
+  )
+  return rows.map(toFinalInstanceDeletion)
+})
+
+export const clearFailedFinalInstanceDeletionEffect = Effect.fn(
+  "backups.finalDelete.clearFailed"
+)(function* (relayId: string, targetId: string) {
+  const database = yield* Database
+  const result = yield* database.execute(
+    "backup_final_delete_clear_failed",
+    `DELETE FROM ${databaseTable("backup_final_delete")}
+      WHERE relay_id = ? AND target_id = ? AND status = 'failed'`,
+    [relayId, targetId]
+  )
+  return result.affectedRows > 0
+})
+
+export const updateFinalInstanceDeletionEffect = Effect.fn(
+  "backups.finalDelete.update"
+)(function* (input: {
+  error: string | null
+  from: ReadonlyArray<FinalInstanceDeletion["status"]>
+  relayId: string
+  status: FinalInstanceDeletion["status"]
+  targetId: string
+}) {
+  const database = yield* Database
+  const placeholders = input.from.map(() => "?").join(", ")
+  const result = yield* database.execute(
+    "backup_final_delete_update",
+    `UPDATE ${databaseTable("backup_final_delete")}
+        SET status = ?, error = ?
+      WHERE relay_id = ? AND target_id = ?
+        AND status IN (${placeholders})`,
+    [input.status, input.error, input.relayId, input.targetId, ...input.from]
+  )
+  return result.affectedRows > 0
+})
+
+const finalInstanceDeletionSelect = `SELECT final_delete.relay_id,
+       final_delete.target_id, final_delete.backup_id,
+       final_delete.requested_by, final_delete.status, final_delete.error,
+       backup.status AS backup_status,
+       create_task.error AS task_error
+  FROM ${databaseTable("backup_final_delete")} final_delete
+  JOIN ${databaseTable("backup")} backup ON backup.id = final_delete.backup_id
+  JOIN ${databaseTable("backup_task")} create_task ON create_task.id = (
+    SELECT task.id
+      FROM ${databaseTable("backup_task")} task
+     WHERE task.backup_id = backup.id AND task.task_kind = 'create'
+     ORDER BY task.created_at DESC, task.id DESC
+     LIMIT 1
+  )`
+
+function toFinalInstanceDeletion(
+  row: FinalInstanceDeletionRow
+): FinalInstanceDeletion {
+  return {
+    backupId: row.backup_id,
+    backupStatus: row.backup_status,
+    error: row.error,
+    relayId: row.relay_id,
+    requestedBy: row.requested_by,
+    status: row.status,
+    targetId: row.target_id,
+    taskError: row.task_error,
+  }
+}
 
 export function effectiveBackupLimit(
   userLimit: number | null,

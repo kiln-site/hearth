@@ -48,10 +48,9 @@ import {
 import { runAppEffect } from "@/effect/runtime"
 import {
   applyManagedDomainAddressesEffect,
-  deleteInstanceDomainEffect,
   provisionInstanceDomainBestEffort,
 } from "@/server/domains.server"
-import { finalizeInstanceDeletionEffect } from "@/server/instance-deletion-cleanup"
+import { deleteInstanceWithFinalBackup } from "@/lib/final-instance-deletion"
 import {
   cachedRelayFallbackJsonEffect,
   cachedRelayJsonEffect,
@@ -300,24 +299,18 @@ export const deleteInstance = createServerFn({ method: "POST" })
     const { requireAccountPassword } = await import("@/lib/auth-password")
     await requireAccountPassword(user, data.password)
 
-    await runAppEffect(
-      "domains.instance.delete",
-      deleteInstanceDomainEffect(relay.id, data.instanceId)
-    )
-    const deleted = deleteInstanceResultSchema.parse(
-      await relayRequestRaw(
-        relay,
-        `/v1/instances/${encodeURIComponent(data.instanceId)}?deleteData=true`,
-        { method: "DELETE" },
-        relayControlDeadlineMs("instance.delete"),
-        user.id
-      )
-    )
-    await runAppEffect(
-      "instances.delete.finalize",
-      finalizeInstanceDeletionEffect(relay.id, data.instanceId)
-    )
-    return { ...deleted, relayId: relay.id }
+    await deleteInstanceWithFinalBackup({
+      instanceId: data.instanceId,
+      relay,
+      requestedBy: user.id,
+    })
+    return {
+      ...deleteInstanceResultSchema.parse({
+        deleted: true,
+        instanceId: data.instanceId,
+      }),
+      relayId: relay.id,
+    }
   })
 
 export const sendRelayConsoleCommand = createServerFn({ method: "POST" })

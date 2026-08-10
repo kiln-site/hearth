@@ -30,6 +30,20 @@ export const backupObjectKeySchema = z
 export const backupIdSchema = z.uuid()
 export const backupTaskIdSchema = z.uuid()
 
+export const backupChecksumSha256Schema = z.string().regex(/^[a-f0-9]{64}$/u)
+
+export const backupFilenameSchema = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine(
+    (value) =>
+      !value.includes("/") &&
+      !value.includes("\\") &&
+      !hasUnsafeControlCharacter(value),
+    { message: "Backup filenames must be a single safe path segment" }
+  )
+
 export const backupTargetKindSchema = z.enum([
   "instance",
   "database",
@@ -118,6 +132,7 @@ export const backupLocalSourceSchema = z
 
 export const backupRemoteSourceSchema = z
   .object({
+    allowPrivateNetwork: z.boolean().default(false),
     downloadUrl: backupHttpsUrlSchema,
     headers: z.record(z.string(), z.string()).default({}),
     kind: z.literal("remote"),
@@ -127,6 +142,8 @@ export const backupRemoteSourceSchema = z
 export const backupRestoreTaskInputSchema = z
   .object({
     backupId: backupIdSchema,
+    bytes: z.number().int().nonnegative(),
+    checksumSha256: backupChecksumSha256Schema,
     source: z.discriminatedUnion("kind", [
       backupLocalSourceSchema,
       backupRemoteSourceSchema,
@@ -159,19 +176,37 @@ export const backupTaskInputSchema = z.discriminatedUnion("kind", [
 export const backupCreateTaskResultSchema = z
   .object({
     bytes: z.number().int().nonnegative(),
-    checksumSha256: z.string().regex(/^[a-f0-9]{64}$/u),
-    filename: z
-      .string()
-      .min(1)
-      .max(255)
-      .refine(
-        (value) =>
-          !value.includes("/") &&
-          !value.includes("\\") &&
-          !hasUnsafeControlCharacter(value),
-        { message: "Backup filenames must be a single safe path segment" }
-      ),
+    checksumSha256: backupChecksumSha256Schema,
+    filename: backupFilenameSchema,
     warnings: z.array(z.string().max(1_024)).max(1_000),
+  })
+  .strict()
+
+export const backupArchiveManifestSchema = z
+  .object({
+    artifactKind: z.literal("archive"),
+    backupId: backupIdSchema,
+    createdAt: z.string().datetime(),
+    formatVersion: z.literal(1),
+    mode: z.literal("full"),
+    target: backupTargetSchema.refine((target) => target.kind === "instance", {
+      message: "Archive manifests require an instance target",
+    }),
+  })
+  .strict()
+
+export const backupDownloadCapabilityPayloadSchema = z
+  .object({
+    action: z.literal("backup.download"),
+    audience: z.string().min(1).max(120),
+    backupId: backupIdSchema,
+    capabilityId: z.uuid(),
+    expiresAt: z.number().int().positive(),
+    filename: backupFilenameSchema,
+    issuedAt: z.number().int().positive(),
+    issuer: z.string().min(1).max(120),
+    subject: z.string().min(1).max(120),
+    version: z.literal(1),
   })
   .strict()
 
@@ -238,6 +273,7 @@ export const relayBackupTaskSchema = z
   })
 
 export type BackupArtifactKind = z.infer<typeof backupArtifactKindSchema>
+export type BackupArchiveManifest = z.infer<typeof backupArchiveManifestSchema>
 export type BackupCreateTaskInput = z.infer<typeof backupCreateTaskInputSchema>
 export type BackupCreateTaskResult = z.infer<
   typeof backupCreateTaskResultSchema

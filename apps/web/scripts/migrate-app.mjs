@@ -47,6 +47,16 @@ async function ensureBackupSchema(database) {
        ADD COLUMN relay_updated_at_ms BIGINT UNSIGNED NULL AFTER reserved_bytes`
     )
   }
+  const [dependencyColumns] = await database.query(
+    `SHOW COLUMNS FROM ${databaseTable("backup_task")} LIKE 'depends_on_task_id'`
+  )
+  if (dependencyColumns.length === 0) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup_task")}
+       ADD COLUMN depends_on_task_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER reserved_bytes,
+       ADD KEY ${databaseTable("backup_task_dependency_idx")} (depends_on_task_id)`
+    )
+  }
   const [privateNetworkColumns] = await database.query(
     `SHOW COLUMNS FROM ${databaseTable("backup_storage")} LIKE 'allow_private_network'`
   )

@@ -268,6 +268,31 @@ export function signS3BackupDownload(
   )
 }
 
+export function signS3BackupRestore(
+  credential: S3BackupCredential,
+  objectKey: string
+) {
+  return withS3Client(credential, (client) =>
+    s3Request("storage.signRestore", () =>
+      getSignedUrl(
+        client,
+        new GetObjectCommand({
+          Bucket: credential.bucket,
+          Key: objectKey,
+        }),
+        { expiresIn: PRESIGNED_UPLOAD_SECONDS }
+      )
+    ).pipe(
+      Effect.map((downloadUrl) => ({
+        allowPrivateNetwork: credential.allowPrivateNetwork,
+        downloadUrl,
+        headers: {},
+        kind: "remote" as const,
+      }))
+    )
+  )
+}
+
 function withS3Client<TResult, TError, TRequirements>(
   credential: S3BackupCredential,
   use: (client: S3Client) => Effect.Effect<TResult, TError, TRequirements>

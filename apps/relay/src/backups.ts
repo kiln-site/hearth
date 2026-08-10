@@ -25,6 +25,7 @@ import { minimatch } from "minimatch"
 import ZipStream from "zip-stream"
 
 import type {
+  BackupArchiveManifest,
   BackupCreateTaskInput,
   BackupCreateTaskResult,
   BackupDeleteTaskInput,
@@ -37,6 +38,10 @@ import { RelayBackupError } from "./effect/errors.js"
 import { promiseEffect } from "./effect/promise.js"
 import { RelayStateStore } from "./effect/state.js"
 import { isPublicRemoteAddress, secureRemoteLookup } from "./source-policy.js"
+import {
+  recoverInterruptedRestores,
+  restorePortableInstanceBackup,
+} from "./backup-restore.js"
 
 const MAX_BACKUP_ENTRIES = 100_000
 const ZIP_OVERHEAD_RESERVE_BYTES = 64 * 1024 * 1024
@@ -49,6 +54,8 @@ const DEFAULT_EXCLUDES = [
   "**/session.lock",
   "*.pid",
   "**/*.pid",
+  ".kiln-backup",
+  ".kiln-backup/**",
 ] as const
 
 type BackupProgress = {
@@ -78,6 +85,7 @@ export class BackupManager {
   readonly #findInstance: (
     instanceId: string
   ) => Promise<RelayInstanceConfig | null>
+  readonly #isInstanceStopped: (instanceId: string) => Promise<boolean>
   readonly #state: RelayStateStore["Service"]
   readonly #wake: Queue.Queue<void>
 
@@ -85,12 +93,14 @@ export class BackupManager {
     config: RelayConfig
     createArchive: CreateArchive
     findInstance: (instanceId: string) => Promise<RelayInstanceConfig | null>
+    isInstanceStopped: (instanceId: string) => Promise<boolean>
     state: RelayStateStore["Service"]
     wake: Queue.Queue<void>
   }) {
     this.#createArchive = options.createArchive
     this.#config = options.config
     this.#findInstance = options.findInstance
+    this.#isInstanceStopped = options.isInstanceStopped
     this.#state = options.state
     this.#wake = options.wake
   }
@@ -99,6 +109,7 @@ export class BackupManager {
     config: RelayConfig
     createArchive?: CreateArchive
     findInstance: (instanceId: string) => Promise<RelayInstanceConfig | null>
+    isInstanceStopped: (instanceId: string) => Promise<boolean>
   }) {
     return Effect.gen(function* () {
       const state = yield* RelayStateStore
@@ -115,9 +126,20 @@ export class BackupManager {
               progress
             )),
         findInstance: options.findInstance,
+        isInstanceStopped: options.isInstanceStopped,
         state,
         wake,
       })
+      const recovered = yield* Effect.tryPromise(() =>
+        recoverInterruptedRestores(options.config)
+      )
+      for (const taskId of recovered) {
+        yield* state.completeBackupTask(
+          taskId,
+          { warnings: ["Restore completed during Relay recovery"] },
+          Date.now()
+        )
+      }
       yield* state.requeueInterruptedBackupTasks(Date.now())
       yield* Queue.offer(wake, undefined)
       return manager
@@ -185,11 +207,78 @@ export class BackupManager {
   #execute(task: RelayBackupTask) {
     return Effect.gen({ self: this }, function* () {
       if (task.input.kind === "restore") {
-        return yield* backupFailure(
-          "unsupported_task",
-          "execute",
-          "restore backup tasks are not available yet"
+        const input = task.input
+        if (input.target.kind !== "instance") {
+          return yield* backupFailure(
+            "unsupported_restore",
+            "restore",
+            "This Relay currently supports instance archive restores"
+          )
+        }
+        const instance = yield* Effect.tryPromise({
+          try: () => this.#findInstance(input.target.id),
+          catch: (cause) =>
+            RelayBackupError.make({
+              code: "instance_lookup_failed",
+              operation: "restore.lookup",
+              reason: "The restore target could not be loaded",
+              cause,
+            }),
+        })
+        if (!instance) {
+          return yield* backupFailure(
+            "instance_not_found",
+            "restore.lookup",
+            "The restore target no longer exists on this Relay"
+          )
+        }
+        const stopped = yield* Effect.tryPromise({
+          try: () => this.#isInstanceStopped(input.target.id),
+          catch: (cause) =>
+            RelayBackupError.make({
+              code: "instance_state_failed",
+              operation: "restore.preflight",
+              reason: "The Relay could not verify the server power state",
+              cause,
+            }),
+        })
+        if (!stopped) {
+          return yield* backupFailure(
+            "instance_running",
+            "restore.preflight",
+            "Stop the server before restoring a backup"
+          )
+        }
+        const result = yield* Effect.tryPromise({
+          try: () =>
+            restorePortableInstanceBackup(
+              this.#config,
+              { ...input, kind: "restore" },
+              instance
+            ),
+          catch: (cause) =>
+            cause instanceof RelayBackupError
+              ? cause
+              : RelayBackupError.make({
+                  code: "restore_failed",
+                  operation: "restore",
+                  reason: backupErrorMessage(cause),
+                  cause,
+                }),
+        })
+        const completed = yield* this.#state.completeBackupTask(
+          task.taskId,
+          result,
+          Date.now()
         )
+        if (!completed) {
+          return yield* backupFailure(
+            "task_state_changed",
+            "restore.complete",
+            "The backup task was no longer running when restore completed"
+          )
+        }
+        return
       }
       if (task.input.kind === "delete") {
         const result = yield* deleteBackupArtifact(this.#config, task.input)
@@ -349,7 +438,15 @@ export async function createPortableInstanceBackup(
             temporary,
             collected.entries,
             maximumBytes,
-            progress
+            progress,
+            {
+              artifactKind: "archive",
+              backupId: input.backupId,
+              createdAt: new Date().toISOString(),
+              formatVersion: 1,
+              mode: "full",
+              target: input.target,
+            }
           )
           warnings = [...collected.warnings, ...written.warnings]
           if (written.changed.length > 0 && attempt === 0) {
@@ -645,7 +742,8 @@ function writeBackupArchive(
   destination: string,
   entries: ReadonlyArray<ArchiveEntry>,
   maxBytes: number | null,
-  progress: BackupProgress
+  progress: BackupProgress,
+  manifest: BackupArchiveManifest
 ): Promise<{
   bytes: number
   changed: Array<string>
@@ -734,7 +832,18 @@ function writeBackupArchive(
       if (settled) return
       const entry = entries[index]
       if (!entry) {
-        archive.finalize()
+        archive.entry(
+          Buffer.from(`${JSON.stringify(manifest)}\n`),
+          {
+            date: new Date(manifest.createdAt),
+            mode: 0o100600,
+            name: ".kiln-backup/manifest.json",
+          },
+          (cause) => {
+            if (cause) failed(cause)
+            else archive.finalize()
+          }
+        )
         return
       }
       const openedResult = await Effect.runPromise(

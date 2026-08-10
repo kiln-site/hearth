@@ -49,6 +49,7 @@ import type {
 } from "@workspace/contracts"
 
 import { BrickCatalog } from "./bricks.js"
+import { BackupDownloadServer } from "./backup-download.js"
 import { BackupManager } from "./backups.js"
 import { attachBrowserSocket } from "./browser-socket.js"
 import {
@@ -241,9 +242,24 @@ const backupManager = await runRelayEffect(
   BackupManager.make({
     config,
     findInstance: (instanceId) => docker.findInstance(instanceId),
+    isInstanceStopped: async (instanceId) => {
+      const instance = (await docker.inspectInstances()).find(
+        (candidate) => candidate.id === instanceId
+      )
+      return (
+        instance?.observedState === "stopped" &&
+        instance.desiredState === "stopped"
+      )
+    },
   })
 )
 const backupFiber = forkRelayEffect("relay.backups.worker", backupManager.run())
+const backupDownloads = new BackupDownloadServer({
+  config,
+  identity: relayIdentity,
+  runEffect: (effect) => runRelayEffect("relay.backups.download", effect),
+  state: startup.state,
+})
 
 async function loadStartupWebRoutes() {
   const { initialized, persisted } = await runRelayEffect(
@@ -406,6 +422,7 @@ const requestHandler = (
       if (trustProbe(request, response)) return
       if (bootstrapDiscovery(request, response)) return
       if (await pairingRequest(request, response)) return
+      if (await backupDownloads.handleRequest(request, response)) return
       if (await browserSocket.handleRequest(request, response)) return
       json(response, 426, {
         error: "Relay control operations require a WebSocket transport",

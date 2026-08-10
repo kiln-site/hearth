@@ -466,6 +466,8 @@ describe("Relay state", () => {
 
         const restore: BackupTaskInput = {
           backupId: first.backupId,
+          bytes: 100,
+          checksumSha256: "1".repeat(64),
           kind: "restore",
           source: { kind: "local" },
           target: first.target,

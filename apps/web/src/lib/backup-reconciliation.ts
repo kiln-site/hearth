@@ -12,9 +12,15 @@ import {
 import { loadBackupStorageCredentialEffect } from "@/effect/backup-storage"
 import { BackupStorageError } from "@/effect/errors"
 import { runAppEffect } from "@/effect/runtime"
-import { signS3BackupDelete, signS3BackupUpload } from "@/lib/backup-storage-s3"
+import {
+  signS3BackupDelete,
+  signS3BackupRestore,
+  signS3BackupUpload,
+} from "@/lib/backup-storage-s3"
 import { relayRpc } from "@/lib/relay-connection"
 import { listPersistedRelays, type PersistedRelay } from "@/lib/relay-registry"
+
+const finalDeletionTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 export async function reconcileBackupsAfterRelayConnect(
   relayId: string
@@ -47,6 +53,11 @@ export async function reconcileRelayBackups(
     if (relayTask && !relayTask.inputRefreshRequired) continue
     await dispatchBackupTask(relay, task, subject)
   }
+  const { processFinalInstanceDeletions } =
+    await import("@/lib/final-instance-deletion")
+  if (await processFinalInstanceDeletions(relay)) {
+    scheduleFinalDeletionReconciliation(relay)
+  }
 }
 
 export async function dispatchBackupTask(
@@ -76,6 +87,13 @@ const prepareBackupTaskEffect = Effect.fn("backups.prepareTask")(function* (
         "A local backup cannot have a remote object key"
       )
     }
+    if (input.kind === "restore") {
+      const { objectKey: _, storageId: __, ...task } = input
+      return {
+        ...task,
+        source: { kind: "local" as const },
+      } satisfies BackupTaskInput
+    }
     const { objectKey: _, storageId: __, ...task } = input
     return {
       ...task,
@@ -96,6 +114,11 @@ const prepareBackupTaskEffect = Effect.fn("backups.prepareTask")(function* (
     const { objectKey: _, storageId: __, ...task } = input
     return { ...task, destination } satisfies BackupTaskInput
   }
+  if (input.kind === "restore") {
+    const source = yield* signS3BackupRestore(storage, input.objectKey)
+    const { objectKey: _, storageId: __, ...task } = input
+    return { ...task, source } satisfies BackupTaskInput
+  }
   const destination = yield* signS3BackupDelete(storage, input.objectKey)
   const { objectKey: _, storageId: __, ...task } = input
   return { ...task, destination } satisfies BackupTaskInput
@@ -107,4 +130,29 @@ function invalidDestination(reason: string) {
     operation: "backup.dispatch",
     reason,
   })
+}
+
+function scheduleFinalDeletionReconciliation(relay: PersistedRelay): void {
+  if (finalDeletionTimers.has(relay.id)) return
+  const timer = setTimeout(() => {
+    finalDeletionTimers.delete(relay.id)
+    void Effect.runPromise(
+      Effect.tryPromise({
+        try: () => reconcileRelayBackups(relay),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() => {
+            console.error(
+              `Could not continue final deletion on Relay ${relay.id}`,
+              cause
+            )
+            scheduleFinalDeletionReconciliation(relay)
+          })
+        )
+      )
+    )
+  }, 1_000)
+  timer.unref()
+  finalDeletionTimers.set(relay.id, timer)
 }

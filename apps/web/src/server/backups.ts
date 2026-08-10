@@ -1,13 +1,18 @@
-import { randomUUID } from "node:crypto"
+import { randomUUID, sign } from "node:crypto"
 
 import { createServerFn } from "@tanstack/react-start"
 import { z } from "zod"
 
-import { relayIdSchema, relaySnapshotSchema } from "@workspace/contracts"
+import {
+  backupDownloadCapabilityPayloadSchema,
+  relayIdSchema,
+  relaySnapshotSchema,
+} from "@workspace/contracts"
 
 import {
   listBackupCatalogEffect,
   reserveBackupDeleteEffect,
+  reserveBackupRestoreEffect,
   reserveInstanceBackupEffect,
   updateBackupExcludesEffect,
   updateBackupLimitsEffect,
@@ -34,7 +39,11 @@ import {
   dispatchBackupTask,
   reconcileRelayBackups,
 } from "@/lib/backup-reconciliation"
-import { listPersistedRelays, type PersistedRelay } from "@/lib/relay-registry"
+import {
+  listPersistedRelays,
+  loadRelayCredentials,
+  type PersistedRelay,
+} from "@/lib/relay-registry"
 import { requireAuthenticatedUser } from "@/server/auth"
 
 const instanceBackupInputSchema = z.strictObject({
@@ -52,6 +61,11 @@ const instanceBackupInputSchema = z.strictObject({
 })
 
 const backupIdInputSchema = z.strictObject({ backupId: z.uuid() })
+
+const backupRestoreInputSchema = z.strictObject({
+  backupId: z.uuid(),
+  safetyBackup: z.boolean().default(true),
+})
 
 const backupLimitsInputSchema = z.strictObject({
   instanceId: z.string().min(1).max(120),
@@ -161,7 +175,7 @@ export const getBackups = createServerFn({ method: "GET" }).handler(
       .filter((backup) =>
         hasBackupPermission(user, grants, backup, "backup.read")
       )
-      .map(({ objectKey: _, ...backup }) => backup)
+      .map(({ createdBy: _, objectKey: __, ...backup }) => backup)
   }
 )
 
@@ -212,9 +226,13 @@ export const getBackupDownloadUrl = createServerFn({ method: "POST" })
     if (!hasBackupPermission(user, grants, backup, "backup.download")) {
       throw new Error("You do not have permission to download this backup")
     }
-    if (!backup.storageId || !backup.objectKey || !backup.filename) {
-      throw new Error("Local backup downloads are not available yet")
+    if (!backup.filename) throw new Error("Backup filename is unavailable")
+    if (!backup.storageId) {
+      if (backup.objectKey) throw new Error("Local backup metadata is invalid")
+      const relay = await requireBackupRelay(backup.relayId)
+      return signLocalBackupDownload(relay, backup, backup.filename, user.id)
     }
+    if (!backup.objectKey) throw new Error("Backup object key is unavailable")
     const storage = await runAppEffect(
       "backups.loadDownloadStorage",
       loadBackupStorageCredentialEffect(backup.storageId)
@@ -224,6 +242,86 @@ export const getBackupDownloadUrl = createServerFn({ method: "POST" })
       "backups.signDownload",
       signS3BackupDownload(storage, backup.objectKey, backup.filename)
     )
+  })
+
+export const restoreInstanceBackup = createServerFn({ method: "POST" })
+  .validator(backupRestoreInputSchema)
+  .handler(async ({ data }) => {
+    const user = await requireAuthenticatedUser()
+    const catalog = await runAppEffect(
+      "backups.listForRestore",
+      listBackupCatalogEffect()
+    )
+    const backup = catalog.find((candidate) => candidate.id === data.backupId)
+    if (
+      !backup ||
+      backup.status !== "available" ||
+      backup.targetKind !== "instance" ||
+      backup.artifactKind !== "archive" ||
+      backup.backupMode !== "full"
+    ) {
+      throw new Error("Backup is not available for an instance restore")
+    }
+    const grants = isPlatformAdmin(user) ? [] : await listUserGrants(user.id)
+    if (!hasBackupPermission(user, grants, backup, "backup.restore")) {
+      throw new Error("You do not have permission to restore this backup")
+    }
+    const relay = await requireBackupRelay(backup.relayId)
+    if (data.safetyBackup) {
+      await requireRelayPermission({
+        instanceId: backup.targetId,
+        permission: "backup.create",
+        relayId: relay.id,
+        user,
+      })
+    }
+    const snapshot = relaySnapshotSchema.parse(
+      await relayRpc(relay, "relay.snapshot", {}, 15_000, user.id)
+    )
+    const instance = snapshot.instances.find(
+      (candidate) => candidate.id === backup.targetId
+    )
+    if (!instance) throw new Error("Restore target was not found on this Relay")
+    if (
+      instance.observedState !== "stopped" ||
+      instance.desiredState !== "stopped"
+    ) {
+      throw new Error("Stop the server before restoring a backup")
+    }
+
+    const safety = data.safetyBackup
+      ? await runAppEffect(
+          "backups.reserveSafety",
+          reserveInstanceBackupEffect({
+            backupId: randomUUID(),
+            createdBy: user.id,
+            name: `Before restoring ${backup.name}`.slice(0, 120),
+            reason: "pre_restore",
+            relayId: relay.id,
+            requestedMaxBytes: null,
+            targetId: backup.targetId,
+            taskId: randomUUID(),
+          })
+        )
+      : null
+    const restore = await runAppEffect(
+      "backups.reserveRestore",
+      reserveBackupRestoreEffect({
+        backupId: backup.id,
+        dependsOnTaskId: safety?.taskId ?? null,
+        requestedBy: user.id,
+        taskId: randomUUID(),
+      })
+    )
+    const firstTask = safety ?? restore
+    const dispatched = await Promise.allSettled([
+      dispatchBackupTask(relay, firstTask, user.id),
+    ])
+    return {
+      relayAccepted: dispatched[0]?.status === "fulfilled",
+      restoreTaskId: restore.taskId,
+      safetyBackupId: safety?.backupId ?? null,
+    }
   })
 
 export const updateInstanceBackupLimits = createServerFn({ method: "POST" })
@@ -291,6 +389,7 @@ function hasBackupPermission(
   permission: AccessPermission
 ): boolean {
   if (isPlatformAdmin(user)) return true
+  if (backup.createdBy === user.id) return true
   return grants.some(
     (grant) =>
       grant.relayId === backup.relayId &&
@@ -303,4 +402,42 @@ function hasBackupPermission(
           grant.resourceType === "database" &&
           grant.resourceId === backup.targetId))
   )
+}
+
+async function signLocalBackupDownload(
+  relay: PersistedRelay,
+  backup: BackupCatalogRecord,
+  filename: string,
+  subject: string
+) {
+  if (relay.role === "custom" && !relay.actions.includes("backup.download")) {
+    throw new Error("This Hearth client cannot download Relay backups")
+  }
+  const credentials = await loadRelayCredentials(relay.id)
+  const now = Date.now()
+  const expiresAt = now + 5 * 60_000
+  const payload = backupDownloadCapabilityPayloadSchema.parse({
+    action: "backup.download",
+    audience: relay.id,
+    backupId: backup.id,
+    capabilityId: randomUUID(),
+    expiresAt,
+    filename,
+    issuedAt: now,
+    issuer: credentials.clientId,
+    subject,
+    version: 1,
+  })
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url")
+  const signature = sign(
+    null,
+    Buffer.from(encoded),
+    credentials.clientPrivateKeyPem
+  ).toString("base64url")
+  const url = new URL(
+    `/v1/browser/backups/${encodeURIComponent(backup.id)}`,
+    relay.browserOrigin
+  )
+  url.searchParams.set("token", `${encoded}.${signature}`)
+  return { expiresAt: new Date(expiresAt).toISOString(), url: url.toString() }
 }
