@@ -1,5 +1,5 @@
 import * as React from "react"
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
+import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { ensuringPromise, forkPromise } from "@/effect/promise"
@@ -68,6 +68,7 @@ export interface ActivityFilters {
 }
 
 interface ActivityPageProps {
+  initialData: ActivityData
   filterStore: ActivityFiltersStore
   onFiltersChange: (change: Partial<ActivityFilters>) => void
 }
@@ -77,19 +78,201 @@ export type ActivityFiltersStore = ReturnType<typeof createActivityFiltersStore>
 export function createActivityFiltersStore(initialFilters: ActivityFilters) {
   let filters = initialFilters
   const listeners = new Set<() => void>()
+  const activeCountListeners = new Set<() => void>()
+  const dateListeners = new Set<() => void>()
+  const fieldListeners = new Map<keyof ActivityFilters, Set<() => void>>()
+
+  const subscribeToSet = (
+    targetListeners: Set<() => void>,
+    listener: () => void
+  ) => {
+    targetListeners.add(listener)
+    return () => {
+      targetListeners.delete(listener)
+    }
+  }
 
   return {
+    getActiveCountSnapshot: () => activityFilterCount(filters),
+    getFieldSnapshot: <Key extends keyof ActivityFilters>(key: Key) =>
+      filters[key],
     getSnapshot: () => filters,
     setFilters: (nextFilters: ActivityFilters) => {
       if (filters === nextFilters) return
+      const previousFilters = filters
       filters = nextFilters
+
+      for (const [key, targetListeners] of fieldListeners) {
+        if (previousFilters[key] !== nextFilters[key]) {
+          for (const listener of targetListeners) listener()
+        }
+      }
+      if (
+        previousFilters.from !== nextFilters.from ||
+        previousFilters.to !== nextFilters.to
+      ) {
+        for (const listener of dateListeners) listener()
+      }
+      if (
+        activityFilterCount(previousFilters) !==
+        activityFilterCount(nextFilters)
+      ) {
+        for (const listener of activeCountListeners) listener()
+      }
       for (const listener of listeners) listener()
     },
-    subscribe: (listener: () => void) => {
+    subscribe: (listener: () => void) => subscribeToSet(listeners, listener),
+    subscribeActiveCount: (listener: () => void) =>
+      subscribeToSet(activeCountListeners, listener),
+    subscribeDate: (listener: () => void) =>
+      subscribeToSet(dateListeners, listener),
+    subscribeField: (key: keyof ActivityFilters, listener: () => void) => {
+      const targetListeners = fieldListeners.get(key) ?? new Set<() => void>()
+      targetListeners.add(listener)
+      fieldListeners.set(key, targetListeners)
+      return () => {
+        targetListeners.delete(listener)
+        if (targetListeners.size === 0) fieldListeners.delete(key)
+      }
+    },
+  }
+}
+
+type ActivityDataStore = ReturnType<typeof createActivityDataStore>
+
+function createActivityDataStore(initialData: ActivityData) {
+  let data = initialData
+  let actors = activityActors(initialData)
+  let actorsVersion = 0
+  let relayVersion = 0
+  let serverVersion = 0
+  let statusVersion = 0
+  const actorsListeners = new Set<() => void>()
+  const relayListeners = new Set<() => void>()
+  const serverListeners = new Set<() => void>()
+  const statusListeners = new Set<() => void>()
+  const subscribe = (listeners: Set<() => void>, listener: () => void) => {
+    listeners.add(listener)
+    return () => listeners.delete(listener)
+  }
+
+  return {
+    getActors: () => actors,
+    getActorsSnapshot: () => actorsVersion,
+    getData: () => data,
+    getRelaySnapshot: () => relayVersion,
+    getServerSnapshot: () => serverVersion,
+    getStatusSnapshot: () => statusVersion,
+    setData: (nextData: ActivityData) => {
+      if (data === nextData) return
+      const previousData = data
+      const nextActors = activityActors(nextData)
+      const actorsChanged = !activityActorArraysEqual(actors, nextActors)
+      const relaysChanged = !activityRelayArraysEqual(
+        previousData.relays,
+        nextData.relays
+      )
+      const serversChanged = !activityServerArraysEqual(
+        previousData.servers,
+        nextData.servers
+      )
+      const statusChanged =
+        relaysChanged ||
+        !stringArraysEqual(
+          previousData.truncatedRelayIds,
+          nextData.truncatedRelayIds
+        )
+
+      data = nextData
+      actors = nextActors
+      if (actorsChanged) {
+        actorsVersion += 1
+        for (const listener of actorsListeners) listener()
+      }
+      if (relaysChanged || serversChanged) {
+        relayVersion += 1
+        for (const listener of relayListeners) listener()
+      }
+      if (serversChanged || relaysChanged) {
+        serverVersion += 1
+        for (const listener of serverListeners) listener()
+      }
+      if (statusChanged) {
+        statusVersion += 1
+        for (const listener of statusListeners) listener()
+      }
+    },
+    subscribeActors: (listener: () => void) =>
+      subscribe(actorsListeners, listener),
+    subscribeRelay: (listener: () => void) =>
+      subscribe(relayListeners, listener),
+    subscribeServer: (listener: () => void) =>
+      subscribe(serverListeners, listener),
+    subscribeStatus: (listener: () => void) =>
+      subscribe(statusListeners, listener),
+  }
+}
+
+type ActivityResultsStore = ReturnType<typeof createActivityResultsStore>
+
+function createActivityResultsStore(
+  initialData: ActivityData,
+  initialFilters: ActivityFilters
+) {
+  let entries = filterActivity(
+    initialData.entries,
+    initialFilters,
+    initialFilters.q ?? ""
+  )
+  let entriesById = new Map(entries.map((entry) => [entry.id, entry]))
+  let filtered = activityFilterCount(initialFilters) > 0
+  let listVersion = 0
+  const entryVersions = new Map<string, number>()
+  const listListeners = new Set<() => void>()
+  const entryListeners = new Map<string, Set<() => void>>()
+
+  return {
+    getEntries: () => entries,
+    getEntry: (id: string) => entriesById.get(id),
+    getEntrySnapshot: (id: string) => entryVersions.get(id) ?? 0,
+    getFiltered: () => filtered,
+    getListSnapshot: () => listVersion,
+    setResult: (data: ActivityData, filters: ActivityFilters) => {
+      const nextEntries = filterActivity(data.entries, filters, filters.q ?? "")
+      const nextFiltered = activityFilterCount(filters) > 0
+      const listChanged =
+        !activityEntryIdArraysEqual(entries, nextEntries) ||
+        (entries.length === 0 && filtered !== nextFiltered)
+      const previousEntries = new Map(entries.map((entry) => [entry.id, entry]))
+
+      entries = nextEntries
+      entriesById = new Map(nextEntries.map((entry) => [entry.id, entry]))
+      filtered = nextFiltered
+      for (const entry of nextEntries) {
+        const previousEntry = previousEntries.get(entry.id)
+        if (previousEntry && activityEntriesEqual(previousEntry, entry)) {
+          continue
+        }
+        entryVersions.set(entry.id, (entryVersions.get(entry.id) ?? 0) + 1)
+        for (const listener of entryListeners.get(entry.id) ?? []) listener()
+      }
+      if (listChanged) {
+        listVersion += 1
+        for (const listener of listListeners) listener()
+      }
+    },
+    subscribeEntry: (id: string, listener: () => void) => {
+      const listeners = entryListeners.get(id) ?? new Set<() => void>()
       listeners.add(listener)
+      entryListeners.set(id, listeners)
       return () => {
         listeners.delete(listener)
+        if (listeners.size === 0) entryListeners.delete(id)
       }
+    },
+    subscribeList: (listener: () => void) => {
+      listListeners.add(listener)
+      return () => listListeners.delete(listener)
     },
   }
 }
@@ -145,213 +328,377 @@ const minimumActivitySyncFeedbackMs = 500
 const activityTableBottomPadding = 12
 
 export const ActivityPage = React.memo(function ActivityPage({
+  initialData,
   filterStore,
   onFiltersChange,
 }: ActivityPageProps) {
+  const [dataStore] = React.useState(() => createActivityDataStore(initialData))
+  const [resultsStore] = React.useState(() =>
+    createActivityResultsStore(initialData, filterStore.getSnapshot())
+  )
   return (
     <div className="mx-auto flex h-full min-h-[34rem] w-full max-w-[90rem] flex-col px-3 pt-3 pb-3 sm:px-5 sm:pt-5 sm:pb-5">
       <ActivityPageContent
+        dataStore={dataStore}
         filterStore={filterStore}
         onFiltersChange={onFiltersChange}
+        resultsStore={resultsStore}
       />
     </div>
   )
 })
 
+interface ActivityPageContentProps {
+  dataStore: ActivityDataStore
+  filterStore: ActivityFiltersStore
+  onFiltersChange: (change: Partial<ActivityFilters>) => void
+  resultsStore: ActivityResultsStore
+}
+
 const ActivityPageContent = React.memo(function ActivityPageContent({
+  dataStore,
   filterStore,
   onFiltersChange,
-}: ActivityPageProps) {
-  const filters = React.useSyncExternalStore(
-    filterStore.subscribe,
-    filterStore.getSnapshot,
-    filterStore.getSnapshot
-  )
-  const { data } = useSuspenseQuery(
-    activityQueryOptions(filters.from, filters.to)
-  )
-
-  const actors = React.useMemo(() => activityActors(data), [data])
-  const entries = React.useMemo(
-    () => filterActivity(data.entries, filters, filters.q ?? ""),
-    [data.entries, filters]
-  )
-  const activeFilterCount = [
-    filters.q,
-    filters.type,
-    filters.user,
-    filters.relay,
-    filters.server,
-    filters.source,
-    filters.from,
-    filters.to,
-  ].filter(Boolean).length
-
+  resultsStore,
+}: ActivityPageContentProps) {
   return (
     <>
-      <ActivityServerFilter
-        data={data}
-        filters={filters}
+      <ActivityDataBridge
+        dataStore={dataStore}
+        filterStore={filterStore}
+        resultsStore={resultsStore}
+      />
+      <ActivityServerFilterController
+        dataStore={dataStore}
+        filterStore={filterStore}
         onFiltersChange={onFiltersChange}
       />
 
       <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card/45 [contain:paint]">
         <ActivityFiltersToolbar
-          actors={actors}
-          data={data}
+          dataStore={dataStore}
           filterStore={filterStore}
-          filters={filters}
-          activeFilterCount={activeFilterCount}
           onFiltersChange={onFiltersChange}
         />
 
-        <ActivityStatus data={data} />
-        <ActivityResults entries={entries} filtered={activeFilterCount > 0} />
+        <ActivityStatusController dataStore={dataStore} />
+        <ActivityResults resultsStore={resultsStore} />
       </section>
     </>
   )
 })
 
 interface ActivityFiltersToolbarProps {
-  activeFilterCount: number
-  actors: Array<ActivityEntry["actor"]>
-  data: ActivityData
+  dataStore: ActivityDataStore
   filterStore: ActivityFiltersStore
-  filters: ActivityFilters
   onFiltersChange: (change: Partial<ActivityFilters>) => void
 }
 
 const ActivityFiltersToolbar = React.memo(function ActivityFiltersToolbar({
-  activeFilterCount,
-  actors,
-  data,
+  dataStore,
   filterStore,
-  filters,
   onFiltersChange,
 }: ActivityFiltersToolbarProps) {
   return (
     <div className="border-b bg-background/15 p-3">
       <div className="flex flex-wrap items-center gap-2">
         <ActivitySyncButtonController filterStore={filterStore} />
-        <ActivitySearch
-          key={filters.q ?? ""}
-          initialValue={filters.q ?? ""}
+        <ActivitySearchController
+          filterStore={filterStore}
           onFiltersChange={onFiltersChange}
         />
-
-        <ActivitySelect
-          ariaLabel="Filter activity by type"
-          icon={<ListFilter />}
-          value={filters.type ?? ""}
-          onChange={(value) =>
-            onFiltersChange({
-              type: isActivityType(value) ? value : undefined,
-            })
-          }
-        >
-          <option value="">All types</option>
-          {activityTypes.map((type) => (
-            <option key={type} value={type}>
-              {typeDetails[type].label}
-            </option>
-          ))}
-        </ActivitySelect>
-
-        <ActivitySelect
-          ariaLabel="Filter activity by source"
-          icon={<Bot />}
-          value={filters.source ?? ""}
-          onChange={(value) =>
-            onFiltersChange({
-              source: isActivitySource(value) ? value : undefined,
-            })
-          }
-        >
-          <option value="">All sources</option>
-          <option value="web">Web</option>
-          <option value="cli">CLI</option>
-        </ActivitySelect>
-
-        <ActivitySelect
-          ariaLabel="Filter activity by user"
-          icon={<UserRound />}
-          value={filters.user ?? ""}
-          onChange={(value) => onFiltersChange({ user: value || undefined })}
-        >
-          <option value="">All users</option>
-          {actors.map((actor) => (
-            <option key={actor.id} value={actor.id}>
-              {actor.name}
-            </option>
-          ))}
-        </ActivitySelect>
-
-        {data.relays.length > 1 ? (
-          <ActivitySelect
-            ariaLabel="Filter activity by Relay"
-            icon={<RadioTower />}
-            value={filters.relay ?? ""}
-            onChange={(value) =>
-              onFiltersChange({
-                relay: value || undefined,
-                server:
-                  filters.server &&
-                  data.servers.some(
-                    (server) =>
-                      server.id === filters.server &&
-                      (!value || server.relayId === value)
-                  )
-                    ? filters.server
-                    : undefined,
-              })
-            }
-          >
-            <option value="">All Relays</option>
-            {data.relays.map((relay) => (
-              <option key={relay.id} value={relay.id}>
-                {relay.name}
-              </option>
-            ))}
-          </ActivitySelect>
-        ) : null}
+        <ActivityTypeFilter
+          filterStore={filterStore}
+          onFiltersChange={onFiltersChange}
+        />
+        <ActivitySourceFilter
+          filterStore={filterStore}
+          onFiltersChange={onFiltersChange}
+        />
+        <ActivityUserFilter
+          dataStore={dataStore}
+          filterStore={filterStore}
+          onFiltersChange={onFiltersChange}
+        />
+        <ActivityRelayFilter
+          dataStore={dataStore}
+          filterStore={filterStore}
+          onFiltersChange={onFiltersChange}
+        />
 
         <ActivityDateRangeController
           filterStore={filterStore}
           onChange={onFiltersChange}
         />
-
-        {activeFilterCount > 0 ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            onClick={() =>
-              onFiltersChange({
-                from: undefined,
-                q: undefined,
-                relay: undefined,
-                server: undefined,
-                source: undefined,
-                to: undefined,
-                type: undefined,
-                user: undefined,
-              })
-            }
-          >
-            <X />
-            Clear {activeFilterCount}
-          </Button>
-        ) : null}
+        <ActivityClearFilters
+          filterStore={filterStore}
+          onFiltersChange={onFiltersChange}
+        />
       </div>
     </div>
   )
-}, areActivityFiltersToolbarPropsEqual)
+})
+
+const ActivitySearchController = React.memo(function ActivitySearchController({
+  filterStore,
+  onFiltersChange,
+}: {
+  filterStore: ActivityFiltersStore
+  onFiltersChange: (change: Partial<ActivityFilters>) => void
+}) {
+  const query = useActivityFilterValue(filterStore, "q") ?? ""
+  return (
+    <ActivitySearch
+      key={query}
+      initialValue={query}
+      onFiltersChange={onFiltersChange}
+    />
+  )
+})
+
+const ActivityDataBridge = React.memo(function ActivityDataBridge({
+  dataStore,
+  filterStore,
+  resultsStore,
+}: {
+  dataStore: ActivityDataStore
+  filterStore: ActivityFiltersStore
+  resultsStore: ActivityResultsStore
+}) {
+  const filters = React.useSyncExternalStore(
+    filterStore.subscribe,
+    filterStore.getSnapshot,
+    filterStore.getSnapshot
+  )
+  const data = useActivityData(filterStore)
+  React.useLayoutEffect(() => {
+    if (!data) return
+    dataStore.setData(data)
+    resultsStore.setResult(data, filters)
+  }, [data, dataStore, filters, resultsStore])
+  return null
+})
+
+const ActivityTypeFilter = React.memo(function ActivityTypeFilter({
+  filterStore,
+  onFiltersChange,
+}: {
+  filterStore: ActivityFiltersStore
+  onFiltersChange: (change: Partial<ActivityFilters>) => void
+}) {
+  const value = useActivityFilterValue(filterStore, "type") ?? ""
+  const update = React.useCallback(
+    (nextValue: string) =>
+      onFiltersChange({
+        type: isActivityType(nextValue) ? nextValue : undefined,
+      }),
+    [onFiltersChange]
+  )
+  return (
+    <ActivitySelect
+      ariaLabel="Filter activity by type"
+      icon={<ListFilter />}
+      value={value}
+      onChange={update}
+    >
+      <option value="">All types</option>
+      {activityTypes.map((type) => (
+        <option key={type} value={type}>
+          {typeDetails[type].label}
+        </option>
+      ))}
+    </ActivitySelect>
+  )
+})
+
+const ActivitySourceFilter = React.memo(function ActivitySourceFilter({
+  filterStore,
+  onFiltersChange,
+}: {
+  filterStore: ActivityFiltersStore
+  onFiltersChange: (change: Partial<ActivityFilters>) => void
+}) {
+  const value = useActivityFilterValue(filterStore, "source") ?? ""
+  const update = React.useCallback(
+    (nextValue: string) =>
+      onFiltersChange({
+        source: isActivitySource(nextValue) ? nextValue : undefined,
+      }),
+    [onFiltersChange]
+  )
+  return (
+    <ActivitySelect
+      ariaLabel="Filter activity by source"
+      icon={<Bot />}
+      value={value}
+      onChange={update}
+    >
+      <option value="">All sources</option>
+      <option value="web">Web</option>
+      <option value="cli">CLI</option>
+    </ActivitySelect>
+  )
+})
+
+const ActivityUserFilter = React.memo(function ActivityUserFilter({
+  dataStore,
+  filterStore,
+  onFiltersChange,
+}: {
+  dataStore: ActivityDataStore
+  filterStore: ActivityFiltersStore
+  onFiltersChange: (change: Partial<ActivityFilters>) => void
+}) {
+  React.useSyncExternalStore(
+    dataStore.subscribeActors,
+    dataStore.getActorsSnapshot,
+    dataStore.getActorsSnapshot
+  )
+  const value = useActivityFilterValue(filterStore, "user") ?? ""
+  const actors = dataStore.getActors()
+  const update = React.useCallback(
+    (nextValue: string) => onFiltersChange({ user: nextValue || undefined }),
+    [onFiltersChange]
+  )
+  return (
+    <ActivitySelect
+      ariaLabel="Filter activity by user"
+      icon={<UserRound />}
+      value={value}
+      onChange={update}
+    >
+      <option value="">All users</option>
+      {actors.map((actor) => (
+        <option key={actor.id} value={actor.id}>
+          {actor.name}
+        </option>
+      ))}
+    </ActivitySelect>
+  )
+})
+
+const ActivityRelayFilter = React.memo(function ActivityRelayFilter({
+  dataStore,
+  filterStore,
+  onFiltersChange,
+}: {
+  dataStore: ActivityDataStore
+  filterStore: ActivityFiltersStore
+  onFiltersChange: (change: Partial<ActivityFilters>) => void
+}) {
+  React.useSyncExternalStore(
+    dataStore.subscribeRelay,
+    dataStore.getRelaySnapshot,
+    dataStore.getRelaySnapshot
+  )
+  const data = dataStore.getData()
+  const relay = useActivityFilterValue(filterStore, "relay")
+  const server = useActivityFilterValue(filterStore, "server")
+  const update = React.useCallback(
+    (nextValue: string) =>
+      onFiltersChange({
+        relay: nextValue || undefined,
+        server:
+          server &&
+          data.servers.some(
+            (candidate) =>
+              candidate.id === server &&
+              (!nextValue || candidate.relayId === nextValue)
+          )
+            ? server
+            : undefined,
+      }),
+    [data.servers, onFiltersChange, server]
+  )
+
+  if (data.relays.length <= 1) return null
+  return (
+    <ActivitySelect
+      ariaLabel="Filter activity by Relay"
+      icon={<RadioTower />}
+      value={relay ?? ""}
+      onChange={update}
+    >
+      <option value="">All Relays</option>
+      {data.relays.map((candidate) => (
+        <option key={candidate.id} value={candidate.id}>
+          {candidate.name}
+        </option>
+      ))}
+    </ActivitySelect>
+  )
+})
+
+const ActivityClearFilters = React.memo(function ActivityClearFilters({
+  filterStore,
+  onFiltersChange,
+}: {
+  filterStore: ActivityFiltersStore
+  onFiltersChange: (change: Partial<ActivityFilters>) => void
+}) {
+  const activeFilterCount = React.useSyncExternalStore(
+    filterStore.subscribeActiveCount,
+    filterStore.getActiveCountSnapshot,
+    filterStore.getActiveCountSnapshot
+  )
+  if (activeFilterCount === 0) return null
+  return (
+    <Button
+      type="button"
+      size="sm"
+      variant="ghost"
+      onClick={() =>
+        onFiltersChange({
+          from: undefined,
+          q: undefined,
+          relay: undefined,
+          server: undefined,
+          source: undefined,
+          to: undefined,
+          type: undefined,
+          user: undefined,
+        })
+      }
+    >
+      <X />
+      Clear {activeFilterCount}
+    </Button>
+  )
+})
 
 interface ActivityServerFilterProps {
   data: ActivityData
   filters: ActivityFilters
   onFiltersChange: (change: Partial<ActivityFilters>) => void
 }
+
+const ActivityServerFilterController = React.memo(
+  function ActivityServerFilterController({
+    dataStore,
+    filterStore,
+    onFiltersChange,
+  }: {
+    dataStore: ActivityDataStore
+    filterStore: ActivityFiltersStore
+    onFiltersChange: (change: Partial<ActivityFilters>) => void
+  }) {
+    React.useSyncExternalStore(
+      dataStore.subscribeServer,
+      dataStore.getServerSnapshot,
+      dataStore.getServerSnapshot
+    )
+    const data = dataStore.getData()
+    const relay = useActivityFilterValue(filterStore, "relay")
+    const server = useActivityFilterValue(filterStore, "server")
+    return (
+      <ActivityServerFilter
+        data={data}
+        filters={{ relay, server }}
+        onFiltersChange={onFiltersChange}
+      />
+    )
+  }
+)
 
 const ActivityServerFilter = React.memo(function ActivityServerFilter({
   data,
@@ -1064,13 +1411,31 @@ const ActivityStatus = React.memo(function ActivityStatus({
   )
 }, areActivityStatusPropsEqual)
 
-function ActivityResults({
-  entries,
-  filtered,
+const ActivityStatusController = React.memo(function ActivityStatusController({
+  dataStore,
 }: {
-  entries: Array<ActivityEntry>
-  filtered: boolean
+  dataStore: ActivityDataStore
 }) {
+  React.useSyncExternalStore(
+    dataStore.subscribeStatus,
+    dataStore.getStatusSnapshot,
+    dataStore.getStatusSnapshot
+  )
+  return <ActivityStatus data={dataStore.getData()} />
+})
+
+const ActivityResults = React.memo(function ActivityResults({
+  resultsStore,
+}: {
+  resultsStore: ActivityResultsStore
+}) {
+  React.useSyncExternalStore(
+    resultsStore.subscribeList,
+    resultsStore.getListSnapshot,
+    resultsStore.getListSnapshot
+  )
+  const entries = resultsStore.getEntries()
+  const filtered = resultsStore.getFiltered()
   const parentRef = React.useRef<HTMLDivElement>(null)
   const rowVirtualizer = useVirtualizer({
     count: entries.length,
@@ -1129,11 +1494,12 @@ function ActivityResults({
             const entry = entries[virtualRow.index]
             if (!entry) return null
             return (
-              <ActivityRow
+              <ActivityRowController
                 key={entry.id}
-                entry={entry}
+                id={entry.id}
                 index={virtualRow.index}
                 measureElement={rowVirtualizer.measureElement}
+                resultsStore={resultsStore}
                 start={virtualRow.start}
               />
             )
@@ -1142,7 +1508,40 @@ function ActivityResults({
       </div>
     </div>
   )
-}
+})
+
+const ActivityRowController = React.memo(function ActivityRowController({
+  id,
+  index,
+  measureElement,
+  resultsStore,
+  start,
+}: {
+  id: string
+  index: number
+  measureElement: (node: Element | null) => void
+  resultsStore: ActivityResultsStore
+  start: number
+}) {
+  const subscribe = React.useCallback(
+    (listener: () => void) => resultsStore.subscribeEntry(id, listener),
+    [id, resultsStore]
+  )
+  const getSnapshot = React.useCallback(
+    () => resultsStore.getEntrySnapshot(id),
+    [id, resultsStore]
+  )
+  React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  const entry = resultsStore.getEntry(id)
+  return entry ? (
+    <ActivityRow
+      entry={entry}
+      index={index}
+      measureElement={measureElement}
+      start={start}
+    />
+  ) : null
+})
 
 interface ActivityRowProps {
   entry: ActivityEntry
@@ -1279,6 +1678,45 @@ function activityActors(data: ActivityData): Array<ActivityEntry["actor"]> {
   ].sort((left, right) => left.name.localeCompare(right.name))
 }
 
+function activityFilterCount(filters: ActivityFilters): number {
+  return [
+    filters.q,
+    filters.type,
+    filters.user,
+    filters.relay,
+    filters.server,
+    filters.source,
+    filters.from,
+    filters.to,
+  ].filter(Boolean).length
+}
+
+function useActivityFilterValue<Key extends keyof ActivityFilters>(
+  filterStore: ActivityFiltersStore,
+  key: Key
+): ActivityFilters[Key] {
+  const subscribe = React.useCallback(
+    (listener: () => void) => filterStore.subscribeField(key, listener),
+    [filterStore, key]
+  )
+  const getSnapshot = React.useCallback(
+    () => filterStore.getFieldSnapshot(key),
+    [filterStore, key]
+  )
+  return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
+function useActivityData(
+  filterStore: ActivityFiltersStore
+): ActivityData | undefined {
+  const { from, to } = useActivityDateFilters(filterStore)
+  const { data } = useQuery({
+    ...activityQueryOptions(from, to),
+    placeholderData: keepPreviousData,
+  })
+  return data
+}
+
 function useActivityDateFilters(filterStore: ActivityFiltersStore): {
   from?: string
   to?: string
@@ -1287,29 +1725,13 @@ function useActivityDateFilters(filterStore: ActivityFiltersStore): {
     const filters = filterStore.getSnapshot()
     return `${filters.from ?? ""}\u0000${filters.to ?? ""}`
   }, [filterStore])
-  React.useSyncExternalStore(filterStore.subscribe, getSnapshot, getSnapshot)
+  React.useSyncExternalStore(
+    filterStore.subscribeDate,
+    getSnapshot,
+    getSnapshot
+  )
   const { from, to } = filterStore.getSnapshot()
   return { from, to }
-}
-
-function areActivityFiltersToolbarPropsEqual(
-  previous: ActivityFiltersToolbarProps,
-  next: ActivityFiltersToolbarProps
-): boolean {
-  return (
-    previous.activeFilterCount === next.activeFilterCount &&
-    previous.filterStore === next.filterStore &&
-    previous.onFiltersChange === next.onFiltersChange &&
-    previous.filters.q === next.filters.q &&
-    previous.filters.relay === next.filters.relay &&
-    previous.filters.server === next.filters.server &&
-    previous.filters.source === next.filters.source &&
-    previous.filters.type === next.filters.type &&
-    previous.filters.user === next.filters.user &&
-    activityActorArraysEqual(previous.actors, next.actors) &&
-    activityRelayArraysEqual(previous.data.relays, next.data.relays) &&
-    activityServerArraysEqual(previous.data.servers, next.data.servers)
-  )
 }
 
 function areActivityServerFilterPropsEqual(
@@ -1342,11 +1764,18 @@ function areActivityRowPropsEqual(
   previous: ActivityRowProps,
   next: ActivityRowProps
 ): boolean {
-  const previousEntry = previous.entry
-  const nextEntry = next.entry
   return (
     previous.index === next.index &&
     previous.start === next.start &&
+    activityEntriesEqual(previous.entry, next.entry)
+  )
+}
+
+function activityEntriesEqual(
+  previousEntry: ActivityEntry,
+  nextEntry: ActivityEntry
+): boolean {
+  return (
     previousEntry.id === nextEntry.id &&
     previousEntry.label === nextEntry.label &&
     previousEntry.occurredAt === nextEntry.occurredAt &&
@@ -1362,6 +1791,13 @@ function areActivityRowPropsEqual(
     previousEntry.server?.id === nextEntry.server?.id &&
     previousEntry.server?.name === nextEntry.server?.name
   )
+}
+
+function activityEntryIdArraysEqual(
+  previous: Array<ActivityEntry>,
+  next: Array<ActivityEntry>
+): boolean {
+  return arraysEqual(previous, next, (left, right) => left.id === right.id)
 }
 
 function activityActorArraysEqual(
