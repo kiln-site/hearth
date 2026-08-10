@@ -123,7 +123,8 @@ kiln servers create <relay-id> https://example.com/custom-brick.yml \
 ```
 
 Server creation requires a full-access CLI credential and platform
-administrator access. `--no-start` leaves the new server stopped.
+administrator access. Disk quotas must be at least `0.1GiB`, matching the
+Relay allocation minimum. `--no-start` leaves the new server stopped.
 
 Permanently delete a server and its data only after verifying the full target:
 

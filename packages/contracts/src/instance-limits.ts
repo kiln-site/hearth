@@ -1,0 +1,1 @@
+export const MINIMUM_INSTANCE_DISK_LIMIT_BYTES = Math.round(0.1 * 1024 ** 3)

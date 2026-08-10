@@ -1,4 +1,9 @@
 import { describe, expect, it } from "vite-plus/test"
+import {
+  cliCreateServerRequestSchema,
+  cliUpdateServerStartupRequestSchema,
+  MINIMUM_INSTANCE_DISK_LIMIT_BYTES,
+} from "@workspace/contracts"
 
 import {
   parseDiskBytes,
@@ -11,7 +16,32 @@ describe("CLI startup inputs", () => {
   it("parses explicit decimal and binary disk units", () => {
     expect(parseDiskBytes("25GiB")).toBe(25 * 1_024 ** 3)
     expect(parseDiskBytes("10GB")).toBe(10 * 1_000 ** 3)
+    expect(parseDiskBytes("0.1GiB")).toBe(MINIMUM_INSTANCE_DISK_LIMIT_BYTES)
     expect(() => parseDiskBytes("25")).toThrow("positive size with a unit")
+    expect(() => parseDiskBytes("100MiB")).toThrow("at least 0.1GiB")
+  })
+
+  it("enforces the Relay disk minimum at CLI API boundaries", () => {
+    const diskLimitBytes = MINIMUM_INSTANCE_DISK_LIMIT_BYTES - 1
+    expect(
+      cliCreateServerRequestSchema.safeParse({
+        brick: "paper",
+        diskLimitBytes,
+        name: "Survival",
+        relayId: "r".repeat(43),
+        start: true,
+        variables: {},
+      }).success
+    ).toBe(false)
+    expect(
+      cliUpdateServerStartupRequestSchema.safeParse({
+        diskLimitBytes,
+        instanceId: "a".repeat(40),
+        relayId: "r".repeat(43),
+        start: true,
+        variables: {},
+      }).success
+    ).toBe(false)
   })
 
   it("normalizes memory for Brick variables", () => {

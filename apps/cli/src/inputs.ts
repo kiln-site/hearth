@@ -1,5 +1,6 @@
 import { basename } from "node:path"
 
+import { MINIMUM_INSTANCE_DISK_LIMIT_BYTES } from "@workspace/contracts"
 import { Result } from "effect"
 
 import { commandError } from "./errors.js"
@@ -36,6 +37,9 @@ export function parseDiskBytes(value: string | undefined): number | undefined {
     throw invalidInput(
       "--disk must be a positive size with a unit, such as 25GiB."
     )
+  }
+  if (bytes < MINIMUM_INSTANCE_DISK_LIMIT_BYTES) {
+    throw invalidInput("--disk must be at least 0.1GiB.")
   }
   return bytes
 }

@@ -1,9 +1,12 @@
 import { z } from "zod"
 
+import { MINIMUM_INSTANCE_DISK_LIMIT_BYTES } from "./instance-limits.js"
+
 export * from "./relay-protocol.js"
 export * from "./release-version.js"
 export * from "./minecraft-java.js"
 export * from "./cli.js"
+export * from "./instance-limits.js"
 
 export const relayIdSchema = z.string().regex(/^[A-Za-z\d_-]{43}$/u)
 
@@ -285,7 +288,6 @@ export const brickRecipeSchema = z
 export const brickSourceSchema = z.string().trim().url().max(2_048)
 export const relayInstanceNameSchema = z.string().trim().min(1).max(120)
 export const DEFAULT_INSTANCE_DISK_LIMIT_BYTES = 25 * 1024 ** 3
-export const MINIMUM_INSTANCE_DISK_LIMIT_BYTES = Math.round(0.1 * 1024 ** 3)
 export const RELAY_NODE_DISK_RESERVE_BYTES = 10 * 1024 ** 3
 
 const relayDiskLimitBytesSchema = z

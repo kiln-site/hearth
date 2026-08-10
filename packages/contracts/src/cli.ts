@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { MINIMUM_INSTANCE_DISK_LIMIT_BYTES } from "./instance-limits.js"
+
 export const cliAccessModes = ["full_access", "read_only"] as const
 export const cliAccessModeSchema = z.enum(cliAccessModes)
 
@@ -109,6 +111,11 @@ const cliBrickVariableValueSchema = z.union([
   z.boolean(),
 ])
 
+const cliDiskLimitBytesSchema = z
+  .number()
+  .int()
+  .min(MINIMUM_INSTANCE_DISK_LIMIT_BYTES)
+
 export const cliBrickReferenceSchema = z.union([
   z.string().regex(/^[a-z0-9][a-z0-9.-]{0,63}$/u),
   z
@@ -217,7 +224,7 @@ export const cliServerInfoResponseSchema = z
 export const cliCreateServerRequestSchema = z
   .object({
     brick: cliBrickReferenceSchema,
-    diskLimitBytes: z.number().int().positive(),
+    diskLimitBytes: cliDiskLimitBytesSchema,
     name: z.string().trim().min(1).max(120),
     relayId: z.string().regex(/^[A-Za-z\d_-]{43}$/u),
     start: z.boolean().default(true),
@@ -230,7 +237,7 @@ export const cliCreateServerRequestSchema = z
 export const cliUpdateServerStartupRequestSchema = cliTargetSchema
   .extend({
     brick: cliBrickReferenceSchema.optional(),
-    diskLimitBytes: z.number().int().positive().optional(),
+    diskLimitBytes: cliDiskLimitBytesSchema.optional(),
     start: z.boolean().default(true),
     variables: z
       .record(z.string().min(1).max(120), cliBrickVariableValueSchema)

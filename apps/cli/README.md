@@ -70,6 +70,8 @@ kiln files upload <relay-id>:<instance-id> https://example.com/example.jar plugi
 kiln server delete <relay-id>:<instance-id> --confirm <relay-id>:<instance-id>
 ```
 
+Disk quotas must be at least `0.1GiB`, matching the Relay allocation minimum.
+
 Uploads and downloads use the Relay SFTP endpoint and verify its advertised
 SSH host-key fingerprint. HTTPS upload sources are downloaded directly by the
 Relay through the authenticated control channel and reject private or reserved

@@ -930,7 +930,7 @@ Options:
       --brick <id|url> Change the Brick recipe
       --confirm <server>
                        Confirm a destructive server deletion
-      --disk <size>    Set disk quota, for example 25GiB
+      --disk <size>    Set disk quota (minimum 0.1GiB), for example 25GiB
   -f, --follow        Follow server logs
       --game-version <version>
                        Set the Brick's version variable

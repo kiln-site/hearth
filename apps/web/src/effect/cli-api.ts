@@ -263,7 +263,7 @@ export const createCliServerEffect = Effect.fn("cli.api.servers.create")(
     yield* Effect.tryPromise({
       try: () => provisionInstanceDomainBestEffort(instance, relay.id),
       catch: () => undefined,
-    })
+    }).pipe(Effect.ignore)
     return cliServerMutationResponseSchema.parse({
       relayId: relay.id,
       server: cliServerMetadata(instance),
@@ -310,7 +310,7 @@ export const updateCliServerStartupEffect = Effect.fn(
   yield* Effect.tryPromise({
     try: () => provisionInstanceDomainBestEffort(updated, relay.id),
     catch: () => undefined,
-  })
+  }).pipe(Effect.ignore)
   return cliServerMutationResponseSchema.parse({
     relayId: relay.id,
     server: cliServerMetadata(updated),
