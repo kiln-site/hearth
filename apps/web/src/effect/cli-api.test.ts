@@ -9,7 +9,10 @@ vi.hoisted(() => {
   process.env.DB_USERNAME ??= "test"
 })
 
-import { collectAvailableCliRelaySnapshotsEffect } from "@/effect/cli-api"
+import {
+  cliSftpConnectionResponse,
+  collectAvailableCliRelaySnapshotsEffect,
+} from "@/effect/cli-api"
 import { CliAccessError } from "@/effect/errors"
 
 describe("CLI server listing", () => {
@@ -37,4 +40,27 @@ describe("CLI server listing", () => {
         assert.deepEqual(snapshots, [{ id: "healthy-relay" }])
       })
   )
+})
+
+describe("CLI SFTP connection", () => {
+  it("omits Relay-only SFTP fields from the CLI response", () => {
+    const response = cliSftpConnectionResponse(
+      {
+        developmentAuthentication: false,
+        host: "relay.example.com",
+        hostKeyFingerprint: "SHA256:relay-fingerprint",
+        port: 2022,
+      },
+      "bedf06fe944ceb0a573a14da5a38703068a00e5a",
+      "operator@example.com"
+    )
+
+    assert.deepEqual(response, {
+      host: "relay.example.com",
+      hostKeyFingerprint: "SHA256:relay-fingerprint",
+      port: 2022,
+      root: "/bedf06fe944ceb0a573a14da5a38703068a00e5a",
+      username: "operator@example.com",
+    })
+  })
 })

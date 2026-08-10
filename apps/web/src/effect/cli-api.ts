@@ -30,6 +30,10 @@ import {
 
 const CLI_RELAY_LONG_OPERATION_TIMEOUT_MS = 180_000
 
+type RelaySftpConnection = NonNullable<
+  z.infer<typeof relaySnapshotSchema>["relay"]
+>["sftp"]
+
 export const collectAvailableCliRelaySnapshotsEffect = Effect.fn(
   "cli.api.servers.collectAvailableRelays"
 )(function* <TSnapshot>(
@@ -261,12 +265,26 @@ export const getCliSftpConnectionEffect = Effect.fn("cli.api.sftp")(function* (
       retryable: false,
     })
   }
-  return cliSftpResponseSchema.parse({
-    ...snapshot.relay.sftp,
-    root: `/${input.instanceId}`,
-    username: principal.user.email,
-  })
+  return cliSftpConnectionResponse(
+    snapshot.relay.sftp,
+    input.instanceId,
+    principal.user.email
+  )
 })
+
+export function cliSftpConnectionResponse(
+  connection: RelaySftpConnection,
+  instanceId: string,
+  username: string
+) {
+  return cliSftpResponseSchema.parse({
+    host: connection.host,
+    hostKeyFingerprint: connection.hostKeyFingerprint,
+    port: connection.port,
+    root: `/${instanceId}`,
+    username,
+  })
+}
 
 const authorizeTarget = Effect.fn("cli.api.target.authorize")(function* (
   principal: CliPrincipal,
