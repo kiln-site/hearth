@@ -43,7 +43,7 @@ function HoverCardContent({
         {...props}
       >
         {children}
-        <HoverCardPrimitive.Arrow className="z-50 fill-popover stroke-accent-border/30 [&>polygon]:[stroke-dasharray:0_30_36.1_0]" />
+        <HoverCardPrimitive.Arrow className="z-50 fill-[color-mix(in_oklab,var(--surface-overlay)_70%,transparent)] stroke-accent-border/30 [&>polygon]:[stroke-dasharray:0_30_36.1_0]" />
       </HoverCardPrimitive.Content>
     </HoverCardPrimitive.Portal>
   )

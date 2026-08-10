@@ -77,11 +77,6 @@
   --text-strong: hsl(var(--accent-hue) 8% 92%);
   --text-subtle: hsl(var(--accent-hue) 10% 64%);
   --accent-border: hsl(var(--accent-hue) var(--accent-saturation) 56%);
-  --surface-gradient: linear-gradient(
-    180deg,
-    hsl(var(--accent-hue) 12% 12% / 0.72),
-    hsl(var(--accent-hue) 9% 9% / 0.94)
-  );
   --ambient-gradient:
     radial-gradient(
       circle at 78% -18%,
@@ -155,11 +150,6 @@
   --text-strong: hsl(var(--accent-hue) 16% 12%);
   --text-subtle: hsl(var(--accent-hue) 12% 38%);
   --accent-border: hsl(var(--accent-hue) var(--accent-saturation) 42%);
-  --surface-gradient: linear-gradient(
-    180deg,
-    hsl(var(--accent-hue) 24% 100% / 0.92),
-    hsl(var(--accent-hue) 16% 96% / 0.94)
-  );
   --ambient-gradient:
     radial-gradient(
       circle at 78% -18%,
