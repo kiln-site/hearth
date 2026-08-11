@@ -20,7 +20,7 @@ import {
 import { relayRpc } from "@/lib/relay-connection"
 import { listPersistedRelays, type PersistedRelay } from "@/lib/relay-registry"
 
-const finalDeletionTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const reconciliationTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 export async function reconcileBackupsAfterRelayConnect(
   relayId: string
@@ -55,8 +55,13 @@ export async function reconcileRelayBackups(
   }
   const { processFinalInstanceDeletions } =
     await import("@/lib/final-instance-deletion")
-  if (await processFinalInstanceDeletions(relay)) {
-    scheduleFinalDeletionReconciliation(relay)
+  const hasPendingFinalDeletion = await processFinalInstanceDeletions(relay)
+  if (
+    hasPendingFinalDeletion ||
+    dispatchable.length > 0 ||
+    tasks.some((task) => task.status === "queued" || task.status === "running")
+  ) {
+    scheduleBackupReconciliation(relay, subject)
   }
 }
 
@@ -132,27 +137,30 @@ function invalidDestination(reason: string) {
   })
 }
 
-function scheduleFinalDeletionReconciliation(relay: PersistedRelay): void {
-  if (finalDeletionTimers.has(relay.id)) return
+export function scheduleBackupReconciliation(
+  relay: PersistedRelay,
+  subject?: string
+): void {
+  if (reconciliationTimers.has(relay.id)) return
   const timer = setTimeout(() => {
-    finalDeletionTimers.delete(relay.id)
+    reconciliationTimers.delete(relay.id)
     void Effect.runPromise(
       Effect.tryPromise({
-        try: () => reconcileRelayBackups(relay),
+        try: () => reconcileRelayBackups(relay, subject),
         catch: (cause) => cause,
       }).pipe(
         Effect.catch((cause) =>
           Effect.sync(() => {
             console.error(
-              `Could not continue final deletion on Relay ${relay.id}`,
+              `Could not continue backup reconciliation on Relay ${relay.id}`,
               cause
             )
-            scheduleFinalDeletionReconciliation(relay)
+            scheduleBackupReconciliation(relay, subject)
           })
         )
       )
     )
   }, 1_000)
   timer.unref()
-  finalDeletionTimers.set(relay.id, timer)
+  reconciliationTimers.set(relay.id, timer)
 }

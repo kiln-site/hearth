@@ -106,6 +106,58 @@ describe("backup limits", () => {
     )
     expect(usageQuery).toContain("backup.status IN ('available', 'deleting')")
   })
+
+  it("bypasses user limits for final-deletion backups but keeps admin caps", async () => {
+    let reservedBytes: unknown
+    const databaseLayer = Layer.succeed(Database)({
+      execute: () => Effect.die("Unexpected standalone database write"),
+      queryRows: () => Effect.die("Unexpected standalone database query"),
+      transaction: (_operation, run) =>
+        run({
+          execute: (sql, values) =>
+            Effect.sync(() => {
+              if (sql.includes("INSERT INTO") && sql.includes("backup_task")) {
+                reservedBytes = values?.[2]
+              }
+              return emptyResult
+            }),
+          queryRows: <TRow extends RowDataPacket>(sql: string) =>
+            Effect.sync(() => {
+              const rows = sql.includes("backup_policy")
+                ? [
+                    {
+                      admin_quantity_limit: 2,
+                      admin_size_limit_bytes: 2_048,
+                      exclude_patterns: [],
+                      quantity_limit: 0,
+                      size_limit_bytes: 0,
+                      storage_id: null,
+                    },
+                  ]
+                : sql.includes("task.task_kind = 'restore'")
+                  ? []
+                  : [{ quantity_used: 1, size_used: 1_024 }]
+              return rows as unknown as ReadonlyArray<TRow>
+            }),
+        }),
+    })
+
+    const reservation = await Effect.runPromise(
+      reserveInstanceBackupEffect({
+        backupId: "final-backup",
+        createdBy: "user-one",
+        name: "Final backup",
+        reason: "final_delete",
+        relayId: "relay-one",
+        requestedMaxBytes: null,
+        targetId: "instance-one",
+        taskId: "final-task",
+      }).pipe(Effect.provide(databaseLayer))
+    )
+
+    expect(reservation.maxBytes).toBe(1_024)
+    expect(reservedBytes).toBe(1_024)
+  })
 })
 
 describe("backup reconciliation", () => {

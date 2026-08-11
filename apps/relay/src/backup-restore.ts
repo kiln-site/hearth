@@ -62,7 +62,8 @@ export async function restorePortableInstanceBackup(
   const instanceRoot = resolve(configuredRoot, instance.directory)
   requireContained(configuredRoot, instanceRoot, "restore.path")
   const paths = restorePaths(config, instance.directory, input.taskId)
-  const journal: RestoreJournal = {
+  let warnings: Array<string> = []
+  let journal: RestoreJournal = {
     instanceDirectory: instance.directory,
     phase: "extracting",
     taskId: input.taskId,
@@ -83,27 +84,30 @@ export async function restorePortableInstanceBackup(
             ? backupArchivePath(config, input.backupId)
             : await downloadRestoreArchive(paths.archive, input)
         await verifyBackupArchive(archive, input.bytes, input.checksumSha256)
-        const warnings = await extractBackupArchive(
+        warnings = await extractBackupArchive(
           archive,
           paths.staging,
           input,
           instance
         )
 
-        await writeRestoreJournal(paths.journal, {
+        journal = {
           ...journal,
           phase: "prepared",
-        })
+        }
+        await writeRestoreJournal(paths.journal, journal)
         await rename(paths.instance, paths.rollback)
-        await writeRestoreJournal(paths.journal, {
+        journal = {
           ...journal,
           phase: "moved_original",
-        })
+        }
+        await writeRestoreJournal(paths.journal, journal)
         await rename(paths.staging, paths.instance)
-        await writeRestoreJournal(paths.journal, {
+        journal = {
           ...journal,
           phase: "installed",
-        })
+        }
+        await writeRestoreJournal(paths.journal, journal)
         await rm(paths.rollback, { force: true, recursive: true })
         await rm(paths.archive, { force: true })
         await unlink(paths.journal)
@@ -111,8 +115,14 @@ export async function restorePortableInstanceBackup(
       },
       catch: (cause) => cause,
     }).pipe(
-      Effect.tapError(() =>
-        Effect.tryPromise(() => settleRestoreJournal(config, journal, false))
+      Effect.catch((cause) =>
+        Effect.tryPromise(() =>
+          settleRestoreJournal(config, journal, false)
+        ).pipe(
+          Effect.flatMap((completed) =>
+            completed ? Effect.succeed({ warnings }) : Effect.fail(cause)
+          )
+        )
       )
     )
   )
@@ -455,7 +465,22 @@ async function settleRestoreJournal(
     pathExists(paths.staging),
   ])
   let completed = false
-  if (preferComplete && !instanceExists && rollbackExists && stagingExists) {
+  if (journal.phase === "installed" && instanceExists) {
+    await rm(paths.rollback, { force: true, recursive: true })
+    await rm(paths.staging, { force: true, recursive: true })
+    completed = true
+  } else if (journal.phase === "installed" && stagingExists) {
+    await rename(paths.staging, paths.instance)
+    await rm(paths.rollback, { force: true, recursive: true })
+    completed = true
+  } else if (journal.phase === "installed" && rollbackExists) {
+    await rename(paths.rollback, paths.instance)
+  } else if (
+    preferComplete &&
+    !instanceExists &&
+    rollbackExists &&
+    stagingExists
+  ) {
     await rename(paths.staging, paths.instance)
     await rm(paths.rollback, { force: true, recursive: true })
     completed = true

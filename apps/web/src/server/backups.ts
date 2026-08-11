@@ -28,16 +28,14 @@ import {
   isPlatformAdmin,
   listUserGrants,
   requireRelayPermission,
-  type AccessGrant,
 } from "@/lib/access-control"
-import type { AuthenticatedUser } from "@/lib/auth-session"
-import type { AccessPermission } from "@/lib/permissions"
-import { roleHasPermission } from "@/lib/permissions"
+import { hasBackupPermission } from "@/lib/backup-access"
 import { relayRpc } from "@/lib/relay-connection"
 import { signS3BackupDownload } from "@/lib/backup-storage-s3"
 import {
   dispatchBackupTask,
   reconcileRelayBackups,
+  scheduleBackupReconciliation,
 } from "@/lib/backup-reconciliation"
 import {
   listPersistedRelays,
@@ -317,6 +315,9 @@ export const restoreInstanceBackup = createServerFn({ method: "POST" })
     const dispatched = await Promise.allSettled([
       dispatchBackupTask(relay, firstTask, user.id),
     ])
+    if (safety && dispatched[0]?.status === "fulfilled") {
+      scheduleBackupReconciliation(relay, user.id)
+    }
     return {
       relayAccepted: dispatched[0]?.status === "fulfilled",
       restoreTaskId: restore.taskId,
@@ -380,28 +381,6 @@ async function requireBackupRelay(relayId: string): Promise<PersistedRelay> {
   )
   if (!relay) throw new Error("Relay is not available")
   return relay
-}
-
-function hasBackupPermission(
-  user: AuthenticatedUser,
-  grants: ReadonlyArray<AccessGrant>,
-  backup: BackupCatalogRecord,
-  permission: AccessPermission
-): boolean {
-  if (isPlatformAdmin(user)) return true
-  if (backup.createdBy === user.id) return true
-  return grants.some(
-    (grant) =>
-      grant.relayId === backup.relayId &&
-      roleHasPermission(grant.role, permission) &&
-      (grant.resourceType === "relay" ||
-        (backup.targetKind === "instance" &&
-          grant.resourceType === "instance" &&
-          grant.resourceId === backup.targetId) ||
-        (backup.targetKind === "database" &&
-          grant.resourceType === "database" &&
-          grant.resourceId === backup.targetId))
-  )
 }
 
 async function signLocalBackupDownload(

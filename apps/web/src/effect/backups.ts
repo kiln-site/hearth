@@ -284,12 +284,21 @@ export const reserveInstanceBackupEffect = Effect.fn("backups.reserve")(
           usage?.size_used ?? 0,
           "backup size"
         )
+        const userQuantityLimit =
+          input.reason === "final_delete" ? null : policy.quantity_limit
+        const userSizeLimit =
+          input.reason === "final_delete"
+            ? null
+            : nullableDatabaseNumber(
+                policy.size_limit_bytes,
+                "backup size limit"
+              )
         const quantityLimit = effectiveBackupLimit(
-          policy.quantity_limit,
+          userQuantityLimit,
           policy.admin_quantity_limit
         )
         const sizeLimit = effectiveBackupLimit(
-          nullableDatabaseNumber(policy.size_limit_bytes, "backup size limit"),
+          userSizeLimit,
           nullableDatabaseNumber(
             policy.admin_size_limit_bytes,
             "admin backup size limit"
