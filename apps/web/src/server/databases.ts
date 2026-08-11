@@ -140,6 +140,7 @@ export const getManagedDatabaseDirectory = createServerFn({
         name: record.name,
         relayId: record.relayId,
         relayName,
+        supportsImportExport: record.supportsImportExport,
       },
     ]
   })

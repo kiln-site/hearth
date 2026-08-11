@@ -1805,6 +1805,7 @@ function availableCreateTargets({
     }
   }
   for (const database of databases) {
+    if (!database.supportsImportExport) continue
     if (
       canCreateForResource(
         capabilities,

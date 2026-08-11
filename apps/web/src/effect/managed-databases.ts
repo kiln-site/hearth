@@ -2,7 +2,10 @@ import type { RowDataPacket } from "mysql2/promise"
 import { Effect } from "effect"
 
 import type { DatabaseEngine } from "@workspace/contracts"
-import { databaseEngineSchema } from "@workspace/contracts"
+import {
+  databaseEngineSchema,
+  databaseEngineSupportsLogicalBackups,
+} from "@workspace/contracts"
 
 import { decryptWithKeyring, encryptWithKeyring } from "../../keyring.mjs"
 import { Database } from "@/effect/database"
@@ -33,6 +36,7 @@ interface ManagedDatabaseIdRow extends RowDataPacket {
 
 interface ManagedDatabaseDirectoryRow extends RowDataPacket {
   database_id: string
+  engine: string
   name: string
   relay_id: string
 }
@@ -51,6 +55,7 @@ export interface ManagedDatabaseDirectoryRecord {
   databaseId: string
   name: string
   relayId: string
+  supportsImportExport: boolean
 }
 
 export const listManagedDatabaseRecordsEffect = Effect.fn(
@@ -73,15 +78,19 @@ export const listManagedDatabaseDirectoryEffect = Effect.fn(
   const database = yield* Database
   const rows = yield* database.queryRows<ManagedDatabaseDirectoryRow>(
     "managed_databases_directory",
-    `SELECT database_id, relay_id, name
+    `SELECT database_id, relay_id, name, engine
        FROM ${databaseTable("database")}
       ORDER BY name ASC, created_at ASC`
   )
-  return rows.map((row) => ({
-    databaseId: row.database_id,
-    name: row.name,
-    relayId: row.relay_id,
-  }))
+  return rows.map((row) => {
+    const engine = databaseEngineSchema.parse(row.engine)
+    return {
+      databaseId: row.database_id,
+      name: row.name,
+      relayId: row.relay_id,
+      supportsImportExport: databaseEngineSupportsLogicalBackups(engine),
+    }
+  })
 })
 
 export const managedDatabaseNameExistsEffect = Effect.fn(
