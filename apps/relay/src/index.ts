@@ -806,7 +806,7 @@ function shutdownRelay(signal: NodeJS.Signals): Promise<void> {
 }
 
 async function relaySnapshot() {
-  const [node, instances, storedNames, pendingPrimaryPorts] =
+  const [node, instances, storedNames, pendingPrimaryPorts, sftpPublication] =
     await Effect.runPromise(
       Effect.all(
         [
@@ -824,6 +824,7 @@ async function relaySnapshot() {
               startup.state.listPendingPrimaryPorts()
             )
           ),
+          relayOperation(() => docker.relaySftpPublication(sftpServer.port)),
         ] as const,
         { concurrency: 4 }
       )
@@ -845,7 +846,8 @@ async function relaySnapshot() {
         developmentAuthentication: config.sftpDevAuthentication,
         host: config.advertisedHost,
         hostKeyFingerprint: sftpServer.hostKeyFingerprint,
-        port: sftpServer.port,
+        port: sftpPublication.port,
+        publication: sftpPublication.status,
       },
       tls: activeTls
         ? {

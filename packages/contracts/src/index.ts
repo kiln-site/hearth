@@ -1004,6 +1004,21 @@ export const relayNodeSchema = z.object({
   connectedAt: z.string().datetime(),
 })
 
+export const relaySftpPublicationStatusSchema = z.enum([
+  "published",
+  "not_published",
+  "loopback_only",
+  "unknown",
+])
+
+export const relaySftpSnapshotSchema = z.object({
+  developmentAuthentication: z.boolean(),
+  host: z.string().min(1).max(253),
+  hostKeyFingerprint: z.string().startsWith("SHA256:"),
+  port: z.number().int().min(1).max(65_535),
+  publication: relaySftpPublicationStatusSchema.default("unknown"),
+})
+
 export const relaySnapshotSchema = z.object({
   node: relayNodeSchema,
   instances: z.array(relayInstanceSchema),
@@ -1011,12 +1026,7 @@ export const relaySnapshotSchema = z.object({
     .object({
       id: relayIdSchema,
       name: z.string().min(1).max(120),
-      sftp: z.object({
-        developmentAuthentication: z.boolean(),
-        host: z.string().min(1).max(253),
-        hostKeyFingerprint: z.string().startsWith("SHA256:"),
-        port: z.number().int().min(1).max(65_535),
-      }),
+      sftp: relaySftpSnapshotSchema,
       tls: z
         .object({
           expiresAt: z.number().int().positive(),
@@ -1391,6 +1401,9 @@ export type RelayInstanceCustomRouteLabel = z.infer<
 export type RelayInstance = z.infer<typeof relayInstanceSchema>
 export type RelayNode = z.infer<typeof relayNodeSchema>
 export type RelaySnapshot = z.infer<typeof relaySnapshotSchema>
+export type RelaySftpPublicationStatus = z.infer<
+  typeof relaySftpPublicationStatusSchema
+>
 export type RelayFileTree = z.infer<typeof relayFileTreeSchema>
 export type RelayFileContent = z.infer<typeof relayFileContentSchema>
 export type RelaySaveFileInput = z.infer<typeof relaySaveFileInputSchema>

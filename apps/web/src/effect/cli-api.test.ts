@@ -23,6 +23,7 @@ import {
   cliDatabaseSupportsLogicalBackups,
   cliPowerResponse,
   cliSftpConnectionResponse,
+  cliSftpUnavailableMessage,
   collectAvailableCliRelaySnapshotsEffect,
   relayRemoteUploadInput,
   safeCliBrickSource,
@@ -64,6 +65,7 @@ describe("CLI SFTP connection", () => {
         host: "relay.example.com",
         hostKeyFingerprint: "SHA256:relay-fingerprint",
         port: 2022,
+        publication: "published",
       },
       "bedf06fe944ceb0a573a14da5a38703068a00e5a",
       "operator@example.com"
@@ -76,6 +78,41 @@ describe("CLI SFTP connection", () => {
       root: "/bedf06fe944ceb0a573a14da5a38703068a00e5a",
       username: "operator@example.com",
     })
+  })
+
+  it("explains proven Docker publication failures concisely", () => {
+    assert.strictEqual(
+      cliSftpUnavailableMessage({
+        developmentAuthentication: false,
+        host: "relay.example.com",
+        hostKeyFingerprint: "SHA256:relay-fingerprint",
+        port: 2022,
+        publication: "not_published",
+      }),
+      "Relay SFTP port 2022/tcp is not published by Docker. Publish the port and retry."
+    )
+    assert.strictEqual(
+      cliSftpUnavailableMessage({
+        developmentAuthentication: false,
+        host: "relay.example.com",
+        hostKeyFingerprint: "SHA256:relay-fingerprint",
+        port: 32_022,
+        publication: "loopback_only",
+      }),
+      "Relay SFTP port 32022/tcp is bound to loopback only. Publish it on a reachable host address and retry."
+    )
+  })
+
+  it("keeps standalone and rootless Relay SFTP usable when publication is unknown", () => {
+    assert.isNull(
+      cliSftpUnavailableMessage({
+        developmentAuthentication: false,
+        host: "relay.example.com",
+        hostKeyFingerprint: "SHA256:relay-fingerprint",
+        port: 2022,
+        publication: "unknown",
+      })
+    )
   })
 })
 

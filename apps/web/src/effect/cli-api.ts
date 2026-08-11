@@ -973,12 +973,32 @@ export const getCliSftpConnectionEffect = Effect.fn("cli.api.sftp")(function* (
       retryable: false,
     })
   }
+  const unavailableMessage = cliSftpUnavailableMessage(snapshot.relay.sftp)
+  if (unavailableMessage) {
+    return yield* CliAccessError.make({
+      code: "sftp_unavailable",
+      message: unavailableMessage,
+      retryable: false,
+    })
+  }
   return cliSftpConnectionResponse(
     snapshot.relay.sftp,
     input.instanceId,
     principal.user.email
   )
 })
+
+export function cliSftpUnavailableMessage(
+  connection: RelaySftpConnection
+): string | null {
+  if (connection.publication === "not_published") {
+    return `Relay SFTP port ${connection.port}/tcp is not published by Docker. Publish the port and retry.`
+  }
+  if (connection.publication === "loopback_only") {
+    return `Relay SFTP port ${connection.port}/tcp is bound to loopback only. Publish it on a reachable host address and retry.`
+  }
+  return null
+}
 
 export function cliSftpConnectionResponse(
   connection: RelaySftpConnection,

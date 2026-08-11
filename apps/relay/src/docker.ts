@@ -8,7 +8,8 @@ import { hostname } from "node:os"
 import { basename, relative, resolve } from "node:path"
 import { Cause, Effect, Option, Queue, Result, Semaphore, Stream } from "effect"
 
-import { command } from "./command.js"
+import { command, commandEffect } from "./command.js"
+import type { CommandResult } from "./command.js"
 import type { BrickCatalog } from "./bricks.js"
 import { directoryApparentSizeEffect } from "./disk-usage.js"
 import { ensuringPromise } from "./effect/promise.js"
@@ -24,6 +25,7 @@ import type {
   RelayInstance,
   RelayInstancePortProtocol,
   RelayInstanceResources,
+  RelaySftpPublicationStatus,
 } from "@workspace/contracts"
 import {
   builtinTailscaleBrickId,
@@ -181,6 +183,138 @@ export interface DockerPublishedPort {
 export interface DockerPortConfiguration {
   bindings: DockerPortBindings
   labels: Readonly<Record<string, string>>
+}
+
+export interface RelaySftpPublication {
+  port: number
+  status: RelaySftpPublicationStatus
+}
+
+type DockerCommandEffect = (
+  executable: string,
+  arguments_: Array<string>,
+  options?: { timeout?: number }
+) => Effect.Effect<CommandResult, unknown>
+
+export function relaySftpPublicationFromBindings(
+  bindings: DockerPortBindings,
+  containerPort: number
+): RelaySftpPublication {
+  const candidates = (bindings[`${containerPort}/tcp`] ?? []).flatMap(
+    (candidate) => {
+      const port = Number(candidate.HostPort)
+      return Number.isInteger(port) && port >= 1 && port <= 65_535
+        ? [{ hostIp: candidate.HostIp ?? "", port }]
+        : []
+    }
+  )
+  if (candidates.length === 0) {
+    return { port: containerPort, status: "not_published" }
+  }
+  const publiclyBound = candidates.find(
+    (candidate) => !isLoopbackAddress(candidate.hostIp)
+  )
+  if (publiclyBound) {
+    return { port: publiclyBound.port, status: "published" }
+  }
+  return { port: candidates[0]?.port ?? containerPort, status: "loopback_only" }
+}
+
+export const inspectRelaySftpPublicationEffect = Effect.fn(
+  "relay.sftp.publication.inspect"
+)(function* (
+  containerPort: number,
+  containerName: string = hostname(),
+  inspect: DockerCommandEffect = commandEffect
+) {
+  return yield* inspect(
+    "docker",
+    ["inspect", "--format", "{{json .HostConfig}}", containerName],
+    { timeout: 2_500 }
+  ).pipe(
+    Effect.flatMap((result) =>
+      Effect.try({
+        try: () => decodeDockerSftpInspect(result.stdout),
+        catch: (cause) => cause,
+      })
+    ),
+    Effect.map((inspected) =>
+      inspected.networkMode === "host"
+        ? unknownRelaySftpPublication(containerPort)
+        : relaySftpPublicationFromBindings(inspected.bindings, containerPort)
+    ),
+    Effect.catch(() =>
+      Effect.succeed(unknownRelaySftpPublication(containerPort))
+    )
+  )
+})
+
+function unknownRelaySftpPublication(port: number): RelaySftpPublication {
+  return { port, status: "unknown" }
+}
+
+function decodeDockerSftpInspect(input: string): {
+  bindings: DockerPortBindings
+  networkMode: string
+} {
+  const parsed: unknown = JSON.parse(input)
+  if (!isUnknownRecord(parsed)) throw new Error("Invalid Docker port bindings")
+  const networkMode = parsed.NetworkMode
+  if (typeof networkMode !== "string") {
+    throw new Error("Invalid Docker network mode")
+  }
+  const portBindings = parsed.PortBindings
+  if (portBindings === null || portBindings === undefined) {
+    return { bindings: {}, networkMode }
+  }
+  if (!isUnknownRecord(portBindings)) {
+    throw new Error("Invalid Docker port bindings")
+  }
+
+  const bindings: DockerPortBindings = {}
+  for (const [port, candidates] of Object.entries(portBindings)) {
+    if (candidates === null) {
+      bindings[port] = null
+      continue
+    }
+    if (!Array.isArray(candidates)) {
+      throw new Error("Invalid Docker port binding candidates")
+    }
+    bindings[port] = candidates.map((candidate) => {
+      if (!isUnknownRecord(candidate)) {
+        throw new Error("Invalid Docker port binding")
+      }
+      const hostIp = candidate.HostIp
+      const hostPort = candidate.HostPort
+      if (hostIp !== undefined && typeof hostIp !== "string") {
+        throw new Error("Invalid Docker host IP")
+      }
+      if (hostPort !== undefined && typeof hostPort !== "string") {
+        throw new Error("Invalid Docker host port")
+      }
+      return {
+        ...(hostIp === undefined ? {} : { HostIp: hostIp }),
+        ...(hostPort === undefined ? {} : { HostPort: hostPort }),
+      }
+    })
+  }
+  return { bindings, networkMode }
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function isLoopbackAddress(host: string): boolean {
+  const normalized = host
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/gu, "")
+  return (
+    normalized === "::1" ||
+    normalized.startsWith("127.") ||
+    normalized.startsWith("::ffff:127.")
+  )
 }
 
 export function dockerPublishedPort(
@@ -398,6 +532,7 @@ export class DockerDriver {
   >()
   readonly #diskUsageSemaphore = Semaphore.makeUnsafe(1)
   #relayStartedAt: Promise<string | null> | undefined
+  #relaySftpPublication: Promise<RelaySftpPublication> | undefined
   readonly #resourceCache = new Map<string, ResourceCacheEntry>()
   readonly #resourceHistory = new Map<string, Array<RelayInstanceResources>>()
 
@@ -1360,6 +1495,13 @@ export class DockerDriver {
   relayStartedAt(): Promise<string | null> {
     this.#relayStartedAt ??= this.#inspectRelayStartedAt()
     return this.#relayStartedAt
+  }
+
+  relaySftpPublication(port: number): Promise<RelaySftpPublication> {
+    this.#relaySftpPublication ??= runEffect(
+      inspectRelaySftpPublicationEffect(port)
+    )
+    return this.#relaySftpPublication
   }
 
   async #inspectRelayStartedAt(): Promise<string | null> {

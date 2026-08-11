@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 const commandMock = vi.hoisted(() => vi.fn())
 
-vi.mock("./command.js", () => ({ command: commandMock }))
+vi.mock("./command.js", () => ({
+  command: commandMock,
+  commandEffect: vi.fn(),
+}))
 
 import {
   containerPortListening,
