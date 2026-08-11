@@ -16,6 +16,7 @@ import {
   selectInstanceContainerRunning,
   selectInstanceRelayConnected,
   selectInstanceRuntime,
+  selectInstanceStateReason,
   selectInstanceSettings,
   selectInstanceWorkspaceInstance,
   selectRouteInstances,
@@ -362,5 +363,24 @@ describe("Relay render selectors", () => {
       relayInstanceRouteIdentifier([first, collision], first)
     ).toBeUndefined()
     expect(findFirstCanonicalRelayInstance([first, collision])).toBeUndefined()
+  })
+
+  it("isolates lifecycle reasons from stable workspace metadata", () => {
+    const before = snapshotWithCpu(1)
+    const after = snapshotWithCpu(1)
+    const current = after.instances[0]
+    if (!current) throw new Error("Expected an instance fixture")
+    after.instances[0] = {
+      ...current,
+      stateReason: { code: "waiting_for_readiness" },
+    }
+
+    expect(selectInstanceWorkspaceInstance(instance.id)(after)).toEqual(
+      selectInstanceWorkspaceInstance(instance.id)(before)
+    )
+    expect(selectInstanceStateReason(instance.id)(before)).toBeNull()
+    expect(selectInstanceStateReason(instance.id)(after)).toEqual({
+      code: "waiting_for_readiness",
+    })
   })
 })

@@ -1,17 +1,16 @@
 import { describe, expect, it } from "vite-plus/test"
-
-import { formatServerStateReason } from "./server-state-reason.js"
+import { formatRelayInstanceStateReason } from "@workspace/contracts"
 
 describe("server state reasons", () => {
   it("keeps readiness feedback concise", () => {
-    expect(formatServerStateReason({ code: "waiting_for_readiness" })).toBe(
-      "Waiting for the configured server port to accept connections."
-    )
+    expect(
+      formatRelayInstanceStateReason({ code: "waiting_for_readiness" })
+    ).toBe("Waiting for the configured server port to accept connections.")
   })
 
   it("includes process evidence for automatic recovery", () => {
     expect(
-      formatServerStateReason({
+      formatRelayInstanceStateReason({
         code: "automatic_recovery",
         exitCode: 137,
         phase: "restarting",

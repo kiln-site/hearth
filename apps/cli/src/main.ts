@@ -28,6 +28,7 @@ import {
   cliServersResponseSchema,
   cliSftpResponseSchema,
   DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
+  formatRelayInstanceStateReason,
   relayIdSchema,
   relayFileContentSchema,
   relayFileTreeSchema,
@@ -66,7 +67,6 @@ import { formatBytes, writeLine, writeTable, writeText } from "./output.js"
 import { formatPowerResponse } from "./power.js"
 import { downloadSftpFileEffect, uploadSftpFileEffect } from "./sftp.js"
 import { runCliProgram } from "./runtime.js"
-import { formatServerStateReason } from "./server-state-reason.js"
 import release from "../../../release.json" with { type: "json" }
 
 const VERSION = process.env.KILN_VERSION?.trim() || release.releaseLine
@@ -909,7 +909,7 @@ function writeServerInfo(
   writeLine(`Relay: ${result.relay.name}`)
   writeLine(`State: ${server.observedState} (desired ${server.desiredState})`)
   if (server.stateReason) {
-    writeLine(`Reason: ${formatServerStateReason(server.stateReason)}`)
+    writeLine(`Reason: ${formatRelayInstanceStateReason(server.stateReason)}`)
   }
   writeLine(`Game: ${server.game}`)
   writeLine(`Implementation: ${server.implementation} ${server.version}`)

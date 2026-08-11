@@ -2,12 +2,14 @@ import * as React from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { Effect, Result } from "effect"
-import type {
-  RelayConsole,
-  RelayConsoleLevel,
-  RelayConsoleLine,
-  RelayConsoleSegment,
-  RelayObservedState,
+import {
+  formatRelayInstanceStateReason,
+  type RelayConsole,
+  type RelayConsoleLevel,
+  type RelayConsoleLine,
+  type RelayConsoleSegment,
+  type RelayInstanceStateReason,
+  type RelayObservedState,
 } from "@workspace/contracts"
 import {
   ArrowDown,
@@ -86,6 +88,7 @@ import {
 import {
   selectInstanceContainerRunning,
   selectInstanceRelayConnected,
+  selectInstanceStateReason,
 } from "@/lib/relay-selectors"
 import {
   selectInstanceRuntime,
@@ -439,6 +442,10 @@ const ConsoleToolbar = React.memo(function ConsoleToolbar({
           uiStore={uiStore}
         />
       ) : null}
+      <ConsoleRuntimeReason
+        instanceId={instance.id}
+        relayId={instance.relayId}
+      />
       <div className="ml-auto flex items-center gap-1.5">
         <ConsoleShareButton
           canShare={canShare}
@@ -454,6 +461,45 @@ const ConsoleToolbar = React.memo(function ConsoleToolbar({
     </div>
   )
 })
+
+const ConsoleRuntimeReason = React.memo(function ConsoleRuntimeReason({
+  instanceId,
+  relayId,
+}: {
+  instanceId: string
+  relayId: string
+}) {
+  const selectReason = React.useMemo(
+    () => selectInstanceStateReason(instanceId, relayId),
+    [instanceId, relayId]
+  )
+  const { data: reason } = useQuery({
+    ...relaySnapshotQueryOptions(),
+    select: selectReason,
+  })
+  return reason ? <ConsoleRuntimeReasonContent reason={reason} /> : null
+})
+
+function ConsoleRuntimeReasonContent({
+  reason,
+}: {
+  reason: RelayInstanceStateReason
+}) {
+  const message = formatRelayInstanceStateReason(reason)
+  return (
+    <ConsoleTooltip content={message}>
+      <span
+        aria-label={`Server state reason: ${message}`}
+        className="flex max-w-64 min-w-0 shrink items-center gap-1.5 text-[10px] font-medium text-amber-300 outline-none sm:text-xs"
+        role="status"
+        tabIndex={0}
+      >
+        <TriangleAlert className="size-3.5 shrink-0" />
+        <span className="hidden truncate xl:inline">{message}</span>
+      </span>
+    </ConsoleTooltip>
+  )
+}
 
 function ConsoleSearchControl({ uiStore }: { uiStore: ConsoleUiStore }) {
   const query = React.useSyncExternalStore(
