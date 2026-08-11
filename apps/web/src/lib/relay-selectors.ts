@@ -69,7 +69,6 @@ export type InstanceRuntime = Pick<
   | "recovery"
   | "resources"
   | "startedAt"
-  | "stateReason"
 > & { relayId: string }
 
 export type InstanceSettingsInstance = Pick<
@@ -234,7 +233,6 @@ export function selectInstanceRuntime(instanceId: string, relayId?: string) {
           relayId: instance.relayId,
           resources: instance.resources,
           startedAt: instance.startedAt,
-          stateReason: instance.stateReason,
         }
       : null
   }
