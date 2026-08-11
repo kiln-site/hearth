@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test"
 import { Effect, Layer } from "effect"
 import type { ResultSetHeader, RowDataPacket } from "mysql2/promise"
+import type { RelayBackupTask } from "@workspace/contracts"
 
 import { Database } from "@/effect/database"
 import { BackupLimitError } from "@/effect/errors"
@@ -8,6 +9,7 @@ import {
   backupReservation,
   effectiveBackupLimit,
   reserveInstanceBackupEffect,
+  reconcileBackupTaskEffect,
   shouldApplyRelayBackupTaskSnapshot,
 } from "@/effect/backups"
 
@@ -161,6 +163,91 @@ describe("backup limits", () => {
 })
 
 describe("backup reconciliation", () => {
+  it("keeps artifacts available when their deletion fails", async () => {
+    const writes: Array<{ sql: string; values?: ReadonlyArray<unknown> }> = []
+    const databaseLayer = Layer.succeed(Database)({
+      execute: () => Effect.die("Unexpected standalone database write"),
+      queryRows: () => Effect.die("Unexpected standalone database query"),
+      transaction: (_operation, run) =>
+        run({
+          execute: (sql, values) =>
+            Effect.sync(() => {
+              writes.push({ sql, values })
+              return emptyResult
+            }),
+          queryRows: <TRow extends RowDataPacket>(sql: string) =>
+            Effect.succeed(
+              (sql.includes("FOR UPDATE")
+                ? [
+                    {
+                      bytes_completed: 0,
+                      id: "task-one",
+                      relay_updated_at_ms: 100,
+                      status: "running",
+                    },
+                  ]
+                : [{ id: "artifact-failed" }]) as unknown as ReadonlyArray<TRow>
+            ),
+        }),
+    })
+    const task = {
+      backupId: "backup-one",
+      bytesCompleted: 0,
+      bytesTotal: null,
+      createdAt: 50,
+      error: null,
+      finishedAt: 200,
+      input: {
+        backupId: "backup-one",
+        destination: {
+          artifactId: "00000000-0000-4000-8000-000000000001",
+          kind: "local",
+        },
+        kind: "delete",
+        target: { id: "instance-one", kind: "instance" },
+        taskId: "task-one",
+      },
+      inputRefreshRequired: false,
+      kind: "delete",
+      result: {
+        artifacts: [
+          {
+            artifactId: "00000000-0000-4000-8000-000000000001",
+            error: "Temporary S3 delete failure",
+            status: "failed",
+          },
+          {
+            artifactId: "00000000-0000-4000-8000-000000000002",
+            error: null,
+            status: "deleted",
+          },
+        ],
+        warnings: [],
+      },
+      startedAt: 100,
+      status: "succeeded",
+      taskId: "task-one",
+      updatedAt: 200,
+    } satisfies RelayBackupTask
+
+    await Effect.runPromise(
+      reconcileBackupTaskEffect(task).pipe(Effect.provide(databaseLayer))
+    )
+
+    const artifactWrites = writes.filter(
+      ({ sql }) => sql.includes("backup_artifact") && sql.includes("error = ?")
+    )
+    expect(artifactWrites.map(({ values }) => values?.slice(0, 3))).toEqual([
+      ["available", "Temporary S3 delete failure", "available"],
+      ["deleted", null, "deleted"],
+    ])
+    const backupWrite = writes.find(
+      ({ sql }) =>
+        !sql.includes("backup_artifact") && sql.includes("deleted_at = CASE")
+    )
+    expect(backupWrite?.values?.slice(0, 2)).toEqual(["available", "available"])
+  })
+
   it("rejects stale Relay snapshots after a task has completed", () => {
     const completed = {
       bytesCompleted: 256,
