@@ -539,10 +539,7 @@ function authenticateSocket(
         Effect.sync(() => {
           if (!controller.signal.aborted) {
             Sentry.captureException(cause, {
-              tags: {
-                "kiln.operation": request.operation,
-                "kiln.transport": "control-socket",
-              },
+              tags: relayControlFailureTags(request),
             })
           }
           sendError(
@@ -1045,4 +1042,14 @@ export function relayControlErrorMessage(cause: unknown): string {
     .filter(Boolean)
     .at(-1)
   return detail && detail.length <= 240 ? detail : "Relay operation failed"
+}
+
+export function relayControlFailureTags(
+  request: Pick<RelayControlRequest, "id" | "operation">
+) {
+  return {
+    "kiln.operation": request.operation,
+    "kiln.request_id": request.id,
+    "kiln.transport": "control-socket",
+  }
 }

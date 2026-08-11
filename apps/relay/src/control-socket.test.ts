@@ -23,6 +23,7 @@ import {
   auditDetailsForRequest,
   isAuditedOperation,
   relayControlErrorMessage,
+  relayControlFailureTags,
 } from "./control-socket.js"
 import { fingerprint } from "./effect/identity.js"
 import { RelayStateStore } from "./effect/state.js"
@@ -68,6 +69,19 @@ describe("Relay control timeouts", () => {
 })
 
 describe("Relay control errors", () => {
+  it("correlates application failure telemetry with the request", () => {
+    expect(
+      relayControlFailureTags({
+        id: "3df56ba5-b2c1-45ee-bab7-386fbb9223c7",
+        operation: "instance.console.write",
+      })
+    ).toEqual({
+      "kiln.operation": "instance.console.write",
+      "kiln.request_id": "3df56ba5-b2c1-45ee-bab7-386fbb9223c7",
+      "kiln.transport": "control-socket",
+    })
+  })
+
   it("returns a safe final command detail when the full message is too long", () => {
     const command = `docker network create ${"hearth-feature-".repeat(16)}`
     expect(
