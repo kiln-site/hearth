@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto"
 
 import { createServerFn } from "@tanstack/react-start"
 import {
+  databaseEngineSupportsLogicalBackups,
   databaseEngineSchema,
   databaseIdSchema,
   relayDatabaseNameSchema,
@@ -31,7 +32,10 @@ import {
 } from "@/lib/access-control"
 import type { AccessGrant } from "@/lib/access-control"
 import type { AuthenticatedUser } from "@/lib/auth-session"
-import { deleteDatabaseWithFinalBackup } from "@/lib/final-database-deletion"
+import {
+  deleteDatabaseWithoutFinalBackup,
+  deleteDatabaseWithFinalBackup,
+} from "@/lib/final-database-deletion"
 import { accessPermissions, roleHasPermission } from "@/lib/permissions"
 import type { AccessPermission } from "@/lib/permissions"
 import type { PersistedRelay } from "@/lib/relay-registry"
@@ -66,27 +70,27 @@ const databaseEngineDetails = {
   mariadb: {
     image: "mariadb:11.8",
     internalPort: 3306,
-    supportsImportExport: true,
+    supportsImportExport: databaseEngineSupportsLogicalBackups("mariadb"),
   },
   mysql: {
     image: "mysql:8.4",
     internalPort: 3306,
-    supportsImportExport: true,
+    supportsImportExport: databaseEngineSupportsLogicalBackups("mysql"),
   },
   postgres: {
     image: "postgres:17",
     internalPort: 5432,
-    supportsImportExport: true,
+    supportsImportExport: databaseEngineSupportsLogicalBackups("postgres"),
   },
   redis: {
     image: "redis:8",
     internalPort: 6379,
-    supportsImportExport: false,
+    supportsImportExport: databaseEngineSupportsLogicalBackups("redis"),
   },
   valkey: {
     image: "valkey/valkey:8",
     internalPort: 6379,
-    supportsImportExport: false,
+    supportsImportExport: databaseEngineSupportsLogicalBackups("valkey"),
   },
 } satisfies Record<
   ReturnType<typeof databaseEngineSchema.parse>,
@@ -547,11 +551,26 @@ export const deleteManagedDatabase = createServerFn({ method: "POST" })
   .validator(databaseInputSchema)
   .handler(async ({ data }) => {
     const { relay, user } = await authorizedDatabase(data, "database.delete")
-    await deleteDatabaseWithFinalBackup({
+    const database = (
+      await runAppEffect(
+        "managedDatabases.deleteTarget",
+        listManagedDatabaseRecordsEffect()
+      )
+    ).find(
+      (record) =>
+        record.relayId === relay.id && record.databaseId === data.databaseId
+    )
+    if (!database) throw new Error("Database not found on this Relay")
+    const deletion = {
       databaseId: data.databaseId,
       relay,
       requestedBy: user.id,
-    })
+    }
+    if (databaseEngineSupportsLogicalBackups(database.engine)) {
+      await deleteDatabaseWithFinalBackup(deletion)
+    } else {
+      await deleteDatabaseWithoutFinalBackup(deletion)
+    }
     return { deleted: true }
   })
 

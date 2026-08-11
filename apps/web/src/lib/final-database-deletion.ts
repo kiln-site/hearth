@@ -49,6 +49,18 @@ export async function deleteDatabaseWithFinalBackup(input: {
   )
 }
 
+export async function deleteDatabaseWithoutFinalBackup(input: {
+  databaseId: string
+  relay: PersistedRelay
+  requestedBy: string
+}): Promise<void> {
+  await deleteDatabaseOnRelay(input.relay, input.databaseId, input.requestedBy)
+  await runAppEffect(
+    "managedDatabases.directDelete",
+    deleteManagedDatabaseRecordEffect(input.relay.id, input.databaseId)
+  )
+}
+
 export async function processFinalDatabaseDeletions(
   relay: PersistedRelay
 ): Promise<boolean> {
@@ -172,6 +184,19 @@ async function deleteFinalizedDatabase(
   relay: PersistedRelay,
   deletion: FinalDatabaseDeletion
 ): Promise<void> {
+  await deleteDatabaseOnRelay(relay, deletion.targetId, deletion.requestedBy)
+  await runAppEffect(
+    "managedDatabases.finalDelete",
+    deleteManagedDatabaseRecordEffect(relay.id, deletion.targetId)
+  )
+  await updateFinalDeletion(deletion, "completed", ["deleting"], null)
+}
+
+async function deleteDatabaseOnRelay(
+  relay: PersistedRelay,
+  databaseId: string,
+  requestedBy: string
+): Promise<void> {
   const removed = await Effect.runPromise(
     Effect.result(
       Effect.tryPromise({
@@ -179,9 +204,9 @@ async function deleteFinalizedDatabase(
           relayRpc(
             relay,
             "database.delete",
-            { databaseId: deletion.targetId, deleteData: true },
+            { databaseId, deleteData: true },
             180_000,
-            deletion.requestedBy
+            requestedBy
           ),
         catch: (cause) => cause,
       })
@@ -190,20 +215,13 @@ async function deleteFinalizedDatabase(
   if (Result.isFailure(removed)) {
     const databases = z
       .array(relayManagedDatabaseSchema)
-      .parse(
-        await relayRpc(relay, "database.list", {}, 15_000, deletion.requestedBy)
-      )
-    if (databases.some((database) => database.id === deletion.targetId)) {
+      .parse(await relayRpc(relay, "database.list", {}, 15_000, requestedBy))
+    if (databases.some((database) => database.id === databaseId)) {
       throw removed.failure
     }
   } else {
     deleteResultSchema.parse(removed.success)
   }
-  await runAppEffect(
-    "managedDatabases.finalDelete",
-    deleteManagedDatabaseRecordEffect(relay.id, deletion.targetId)
-  )
-  await updateFinalDeletion(deletion, "completed", ["deleting"], null)
 }
 
 function finalDatabaseDeletion(relayId: string, databaseId: string) {

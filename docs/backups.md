@@ -139,8 +139,9 @@ consistency. Filesystem snapshot adapters (ZFS/Btrfs/LVM) can be added later.
 Managed MySQL, MariaDB, and PostgreSQL databases stay running. Relay executes
 the engine's logical dump tool into a `.dmp` stream and compresses it as
 `.dmp.gz`; restore feeds the decompressed dump to the matching engine client.
-Redis and Valkey require an engine snapshot followed by compression and are
-reported as database dump artifacts even though their inner payload is RDB.
+Redis and Valkey backups are deferred until Kiln supports engine snapshots and
+compression. Their deletion therefore proceeds without a final backup instead
+of reserving a logical dump that Relay cannot create.
 
 A platform bundle contains a logical Hearth database dump plus a versioned
 manifest describing the installation and Relay registrations. Secret-bearing

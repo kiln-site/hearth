@@ -13,6 +13,7 @@ import type {
   RelayRotateDatabaseCredentials,
 } from "@workspace/contracts"
 import {
+  databaseEngineSupportsLogicalBackups,
   databaseEngineSchema,
   relayManagedDatabaseSchema,
 } from "@workspace/contracts"
@@ -32,7 +33,6 @@ interface DatabaseEngineSpec {
   dataMount: string
   image: string
   internalPort: number
-  supportsImportExport: boolean
 }
 
 const engineSpecs: Record<DatabaseEngine, DatabaseEngineSpec> = {
@@ -40,19 +40,16 @@ const engineSpecs: Record<DatabaseEngine, DatabaseEngineSpec> = {
     dataMount: "/var/lib/mysql",
     image: "mysql:8.4",
     internalPort: 3306,
-    supportsImportExport: true,
   },
   mariadb: {
     dataMount: "/var/lib/mysql",
     image: "mariadb:11.8",
     internalPort: 3306,
-    supportsImportExport: true,
   },
   postgres: {
     dataMount: "/var/lib/postgresql/data",
     image: "postgres:17",
     internalPort: 5432,
-    supportsImportExport: true,
   },
   redis: {
     command: [
@@ -65,7 +62,6 @@ const engineSpecs: Record<DatabaseEngine, DatabaseEngineSpec> = {
     dataMount: "/data",
     image: "redis:8",
     internalPort: 6379,
-    supportsImportExport: false,
   },
   valkey: {
     command: [
@@ -78,7 +74,6 @@ const engineSpecs: Record<DatabaseEngine, DatabaseEngineSpec> = {
     dataMount: "/data",
     image: "valkey/valkey:8",
     internalPort: 6379,
-    supportsImportExport: false,
   },
 }
 
@@ -105,7 +100,10 @@ interface AttachedContainerInspect {
 }
 
 export function databaseEngineSpec(engine: DatabaseEngine) {
-  return engineSpecs[engine]
+  return {
+    ...engineSpecs[engine],
+    supportsImportExport: databaseEngineSupportsLogicalBackups(engine),
+  }
 }
 
 export function databaseRecoveryLabels(
@@ -154,7 +152,7 @@ export class DatabaseDriver {
 
   async backupTarget(id: string): Promise<RelayManagedDatabase> {
     const database = await this.#required(id)
-    if (!database.supportsImportExport) {
+    if (!databaseEngineSupportsLogicalBackups(database.engine)) {
       throw new Error(
         `${database.engine} logical backups are not supported yet`
       )
@@ -392,7 +390,7 @@ export class DatabaseDriver {
 
   async exportDump(input: RelayDatabaseExport) {
     const database = await this.#required(input.databaseId)
-    if (!database.supportsImportExport) {
+    if (!databaseEngineSupportsLogicalBackups(database.engine)) {
       throw new Error(`${database.engine} dump export is not supported yet`)
     }
     const result = await runProcess(
@@ -419,7 +417,7 @@ export class DatabaseDriver {
 
   async importDump(input: RelayDatabaseDump) {
     const database = await this.#required(input.databaseId)
-    if (!database.supportsImportExport) {
+    if (!databaseEngineSupportsLogicalBackups(database.engine)) {
       throw new Error(`${database.engine} dump import is not supported yet`)
     }
     if (Buffer.byteLength(input.content) > MAX_DUMP_BYTES) {
@@ -526,7 +524,7 @@ export class DatabaseDriver {
       observedState,
       shortId: id.slice(0, 8),
       status,
-      supportsImportExport: engineSpecs[engine].supportsImportExport,
+      supportsImportExport: databaseEngineSupportsLogicalBackups(engine),
     })
   }
 

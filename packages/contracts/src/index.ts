@@ -1291,6 +1291,13 @@ export const brickCatalogDocumentSchema = z
 
 export type RelayDesiredState = z.infer<typeof relayDesiredStateSchema>
 export type DatabaseEngine = z.infer<typeof databaseEngineSchema>
+
+export function databaseEngineSupportsLogicalBackups(
+  engine: DatabaseEngine
+): boolean {
+  return engine === "mysql" || engine === "mariadb" || engine === "postgres"
+}
+
 export type RelayManagedDatabase = z.infer<typeof relayManagedDatabaseSchema>
 export type RelayCreateDatabase = z.infer<typeof relayCreateDatabaseSchema>
 export type RelayDatabaseAction = z.infer<typeof relayDatabaseActionSchema>

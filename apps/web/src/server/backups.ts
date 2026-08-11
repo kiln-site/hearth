@@ -5,6 +5,7 @@ import { z } from "zod"
 
 import {
   backupDownloadCapabilityPayloadSchema,
+  databaseEngineSupportsLogicalBackups,
   relayIdSchema,
   relaySnapshotSchema,
 } from "@workspace/contracts"
@@ -173,13 +174,17 @@ export const createDatabaseBackup = createServerFn({ method: "POST" })
       "backups.databaseTarget",
       listManagedDatabaseRecordsEffect()
     )
-    if (
-      !records.some(
-        (record) =>
-          record.relayId === relay.id && record.databaseId === data.databaseId
-      )
-    ) {
+    const database = records.find(
+      (record) =>
+        record.relayId === relay.id && record.databaseId === data.databaseId
+    )
+    if (!database) {
       throw new Error("Database not found on this Relay")
+    }
+    if (!databaseEngineSupportsLogicalBackups(database.engine)) {
+      throw new Error(
+        `${database.engine} logical backups are not supported yet`
+      )
     }
     if (data.storageId) {
       const storage = await runAppEffect(
@@ -476,6 +481,9 @@ export const restoreDatabaseBackup = createServerFn({ method: "POST" })
     const dispatched = await Promise.allSettled([
       dispatchBackupTask(relay, safety ?? restore, user.id),
     ])
+    if (safety && dispatched[0]?.status === "fulfilled") {
+      scheduleBackupReconciliation(relay, user.id)
+    }
     return {
       relayAccepted: dispatched[0]?.status === "fulfilled",
       restoreTaskId: restore.taskId,

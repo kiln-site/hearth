@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
+import { databaseEngineSupportsLogicalBackups } from "@workspace/contracts"
+
 import type { command as commandFunction } from "./command.js"
 
 const commandMock = vi.hoisted(() => vi.fn<typeof commandFunction>())
@@ -20,6 +22,14 @@ beforeEach(() => {
 })
 
 describe("managed database recovery metadata", () => {
+  it("only enables logical backups for SQL engines", () => {
+    expect(databaseEngineSupportsLogicalBackups("mysql")).toBe(true)
+    expect(databaseEngineSupportsLogicalBackups("mariadb")).toBe(true)
+    expect(databaseEngineSupportsLogicalBackups("postgres")).toBe(true)
+    expect(databaseEngineSupportsLogicalBackups("redis")).toBe(false)
+    expect(databaseEngineSupportsLogicalBackups("valkey")).toBe(false)
+  })
+
   it("uses supported official images and private internal ports", () => {
     expect(databaseEngineSpec("mysql")).toMatchObject({
       image: "mysql:8.4",
