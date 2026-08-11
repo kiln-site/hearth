@@ -18,6 +18,7 @@ vi.hoisted(() => {
 
 import {
   cliActivityResponse,
+  cliDatabaseSupportsLogicalBackups,
   cliSftpConnectionResponse,
   collectAvailableCliRelaySnapshotsEffect,
   relayRemoteUploadInput,
@@ -76,6 +77,12 @@ describe("CLI SFTP connection", () => {
 })
 
 describe("CLI response and URL boundaries", () => {
+  it("only offers databases with logical backup support", () => {
+    assert.isTrue(cliDatabaseSupportsLogicalBackups({ engine: "postgres" }))
+    assert.isFalse(cliDatabaseSupportsLogicalBackups({ engine: "redis" }))
+    assert.isFalse(cliDatabaseSupportsLogicalBackups({ engine: "valkey" }))
+  })
+
   it("removes Hearth-only fields before returning activity", () => {
     const response = cliActivityResponse(
       [

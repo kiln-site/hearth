@@ -28,6 +28,7 @@ import {
   cliServerMutationResponseSchema,
   cliSftpResponseSchema,
   cliUpdateServerStartupRequestSchema,
+  databaseEngineSupportsLogicalBackups,
   relayCatalogSchema,
   relayConsoleCommandResultSchema,
   relayConsoleSchema,
@@ -73,6 +74,7 @@ import { relayRpc } from "@/lib/relay-connection"
 import {
   dispatchBackupTask,
   reconcileRelayBackups,
+  scheduleBackupReconciliation,
 } from "@/lib/backup-reconciliation"
 import { deleteInstanceWithFinalBackup } from "@/lib/final-instance-deletion"
 import { kilnInstallationId } from "@/lib/environment"
@@ -346,6 +348,7 @@ export const listCliBackupTargetsEffect = Effect.fn("cli.api.backups.targets")(
       ...records
         .filter(
           (record) =>
+            cliDatabaseSupportsLogicalBackups(record) &&
             enabledRelayIds.has(record.relayId) &&
             (isPlatformAdmin(principal.user) ||
               grants.some(
@@ -438,8 +441,7 @@ export const restoreCliBackupEffect = Effect.fn("cli.api.backups.restore")(
       backup.status !== "available" ||
       backup.backupMode !== "full" ||
       (backup.targetKind !== "instance" && backup.targetKind !== "database") ||
-      (backup.targetKind === "instance" &&
-        backup.artifactKind !== "archive") ||
+      (backup.targetKind === "instance" && backup.artifactKind !== "archive") ||
       (backup.targetKind === "database" &&
         backup.artifactKind !== "database_dump")
     ) {
@@ -525,6 +527,9 @@ export const restoreCliBackupEffect = Effect.fn("cli.api.backups.restore")(
       relay,
       safety ?? restore
     )
+    if (safety && relayAccepted) {
+      scheduleBackupReconciliation(relay, cliRelaySubject(principal))
+    }
     return cliRestoreBackupResponseSchema.parse({
       relayAccepted,
       restoreTaskId: restore.taskId,
@@ -1010,16 +1015,26 @@ const authorizeCliBackupCreateTarget = Effect.fn(
     listManagedDatabaseRecordsEffect(),
     "Hearth could not inspect managed databases."
   )
-  if (
-    !records.some(
-      (record) =>
-        record.relayId === relay.id && record.databaseId === input.targetId
-    )
-  ) {
+  const database = records.find(
+    (record) =>
+      record.relayId === relay.id && record.databaseId === input.targetId
+  )
+  if (!database) {
     return yield* cliNotFound("The requested database was not found.")
+  }
+  if (!cliDatabaseSupportsLogicalBackups(database)) {
+    return yield* cliConflict(
+      `${database.engine} logical backups are not supported yet`
+    )
   }
   return relay
 })
+
+export function cliDatabaseSupportsLogicalBackups(database: {
+  engine: Parameters<typeof databaseEngineSupportsLogicalBackups>[0]
+}): boolean {
+  return databaseEngineSupportsLogicalBackups(database.engine)
+}
 
 const validateCliBackupStorage = Effect.fn("cli.api.backups.storage.authorize")(
   function* (
