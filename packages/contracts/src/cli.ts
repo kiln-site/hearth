@@ -428,8 +428,23 @@ export const cliRemoteFileUploadResponseSchema = z
   })
   .strict()
 
+export const cliPowerActionSchema = z.enum(["start", "stop", "restart", "kill"])
+
 export const cliPowerRequestSchema = cliTargetSchema
-  .extend({ action: z.enum(["start", "stop", "restart", "kill"]) })
+  .extend({ action: cliPowerActionSchema })
+  .strict()
+
+export const cliPowerResponseSchema = z
+  .object({
+    action: cliPowerActionSchema,
+    instance: cliServerInfoResponseSchema.shape.server.pick({
+      desiredState: true,
+      id: true,
+      name: true,
+      observedState: true,
+    }),
+    relayId: cliTargetSchema.shape.relayId,
+  })
   .strict()
 
 export const cliConsoleRequestSchema = cliTargetSchema
@@ -501,5 +516,6 @@ export type CliDeviceTokenResponse = z.infer<
   typeof cliDeviceTokenResponseSchema
 >
 export type CliErrorCode = z.infer<typeof cliErrorCodeSchema>
+export type CliPowerResponse = z.infer<typeof cliPowerResponseSchema>
 export type CliServer = z.infer<typeof cliServerSchema>
 export type CliSftpResponse = z.infer<typeof cliSftpResponseSchema>

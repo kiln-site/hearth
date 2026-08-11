@@ -5,6 +5,7 @@ import {
   cliBrickReferenceSchema,
   cliBackupDownloadResponseSchema,
   cliCreateBackupRequestSchema,
+  cliPowerResponseSchema,
   cliRemoteFileUploadRequestSchema,
   cliServerInfoResponseSchema,
 } from "@workspace/contracts"
@@ -19,6 +20,7 @@ vi.hoisted(() => {
 import {
   cliActivityResponse,
   cliDatabaseSupportsLogicalBackups,
+  cliPowerResponse,
   cliSftpConnectionResponse,
   collectAvailableCliRelaySnapshotsEffect,
   relayRemoteUploadInput,
@@ -77,6 +79,32 @@ describe("CLI SFTP connection", () => {
 })
 
 describe("CLI response and URL boundaries", () => {
+  it("serializes power actions through the shared CLI response contract", () => {
+    const webResponse = cliPowerResponse(
+      "start",
+      {
+        desiredState: "running",
+        id: "a".repeat(40),
+        name: "Survival",
+        observedState: "starting",
+      },
+      "r".repeat(43)
+    )
+    const serializedResponse: unknown = JSON.parse(JSON.stringify(webResponse))
+    const cliResponse = cliPowerResponseSchema.parse(serializedResponse)
+
+    assert.deepEqual(cliResponse, {
+      action: "start",
+      instance: {
+        desiredState: "running",
+        id: "a".repeat(40),
+        name: "Survival",
+        observedState: "starting",
+      },
+      relayId: "r".repeat(43),
+    })
+  })
+
   it("only offers databases with logical backup support", () => {
     assert.isTrue(cliDatabaseSupportsLogicalBackups({ engine: "postgres" }))
     assert.isFalse(cliDatabaseSupportsLogicalBackups({ engine: "redis" }))

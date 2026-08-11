@@ -16,6 +16,8 @@ import {
   cliDeleteServerResponseSchema,
   cliDeviceCodeResponseSchema,
   cliDeviceTokenResponseSchema,
+  cliPowerActionSchema,
+  cliPowerResponseSchema,
   cliRelayInfoResponseSchema,
   cliRelaysResponseSchema,
   cliRemoteFileUploadResponseSchema,
@@ -67,17 +69,12 @@ import {
   writeTable,
   writeText,
 } from "./output.js"
+import { formatPowerResponse } from "./power.js"
 import { downloadSftpFileEffect, uploadSftpFileEffect } from "./sftp.js"
 import release from "../../../release.json" with { type: "json" }
 
 const VERSION = process.env.KILN_VERSION?.trim() || release.releaseLine
 
-const powerResponseSchema = z.object({
-  instance: z
-    .object({ id: z.string(), name: z.string(), state: z.string() })
-    .passthrough(),
-  relayId: z.string(),
-})
 const whoamiSchema = z.object({
   credential: z.object({
     id: z.uuid(),
@@ -490,9 +487,7 @@ const runCommandEffect = Effect.fn("cli.command")(function* (
   if (group === "server" && action === "power") {
     const [serverReference, powerAction] = rest
     const target = yield* parseServerReferenceEffect(serverReference)
-    const parsedAction = z
-      .enum(["start", "stop", "restart", "kill"])
-      .safeParse(powerAction)
+    const parsedAction = cliPowerActionSchema.safeParse(powerAction)
     if (!parsedAction.success) {
       return yield* invalidUsage(
         "Usage: kiln server power <relayId:instanceId> <start|stop|restart|kill>"
@@ -501,14 +496,14 @@ const runCommandEffect = Effect.fn("cli.command")(function* (
     const result = yield* apiJsonEffect(
       session,
       "/api/cli/v1/power",
-      powerResponseSchema,
+      cliPowerResponseSchema,
       jsonRequest(
         "POST",
         { ...target, action: parsedAction.data },
         CLI_LONG_OPERATION_TIMEOUT_MS
       )
     )
-    writeLine(`${result.instance.name} is ${result.instance.state}.`)
+    writeLine(formatPowerResponse(result))
     return
   }
   if (group === "server" && action === "console") {
