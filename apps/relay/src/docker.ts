@@ -55,6 +55,7 @@ import {
 import {
   INSTANCE_STARTUP_READINESS_TIMEOUT_MS,
   INSTANCE_STOP_TIMEOUT_SECONDS,
+  instanceStateReason,
   observedInstancePowerState,
   type InstancePowerAction,
   type InstancePowerTransition,
@@ -743,6 +744,12 @@ export class DockerDriver {
         containerId: container.Id.slice(0, 12),
         desiredState,
         observedState: powerState.observedState,
+        stateReason: instanceStateReason(
+          container.State,
+          powerState.observedState,
+          readiness.get(config.id),
+          recoveryState?.recovery
+        ),
         recovery: recoveryState?.recovery ?? null,
         startedAt: container.State.Running ? container.State.StartedAt : null,
         readyAt:

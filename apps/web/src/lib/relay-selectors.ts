@@ -63,7 +63,13 @@ export type InstanceWorkspaceInstance = Pick<
 
 export type InstanceRuntime = Pick<
   RelayInstance,
-  "id" | "observedState" | "readyAt" | "recovery" | "resources" | "startedAt"
+  | "id"
+  | "observedState"
+  | "readyAt"
+  | "recovery"
+  | "resources"
+  | "startedAt"
+  | "stateReason"
 > & { relayId: string }
 
 export type InstanceSettingsInstance = Pick<
@@ -228,6 +234,7 @@ export function selectInstanceRuntime(instanceId: string, relayId?: string) {
           relayId: instance.relayId,
           resources: instance.resources,
           startedAt: instance.startedAt,
+          stateReason: instance.stateReason,
         }
       : null
   }

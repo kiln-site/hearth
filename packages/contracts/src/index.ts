@@ -1,12 +1,14 @@
 import { z } from "zod"
 
 import { MINIMUM_INSTANCE_DISK_LIMIT_BYTES } from "./instance-limits.js"
+import { relayInstanceStateReasonSchema } from "./instance-state-reason.js"
 
 export * from "./relay-protocol.js"
 export * from "./release-version.js"
 export * from "./minecraft-java.js"
 export * from "./cli.js"
 export * from "./instance-limits.js"
+export * from "./instance-state-reason.js"
 export * from "./backups.js"
 
 export const relayIdSchema = z.string().regex(/^[A-Za-z\d_-]{43}$/u)
@@ -900,6 +902,7 @@ export const relayInstanceSchema = z.object({
   directory: z.string().min(1),
   desiredState: relayDesiredStateSchema,
   observedState: relayObservedStateSchema,
+  stateReason: relayInstanceStateReasonSchema.nullable().default(null),
   recovery: relayInstanceRecoverySchema.nullable().default(null),
   startedAt: z.string().datetime().nullable().default(null),
   readyAt: z.string().datetime().nullable().default(null),

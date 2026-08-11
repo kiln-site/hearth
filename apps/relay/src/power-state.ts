@@ -1,4 +1,8 @@
-import type { RelayObservedState } from "@workspace/contracts"
+import type {
+  RelayInstanceRecovery,
+  RelayInstanceStateReason,
+  RelayObservedState,
+} from "@workspace/contracts"
 
 export const INSTANCE_STARTUP_STABILITY_MS = 15_000
 export const INSTANCE_STARTUP_READINESS_TIMEOUT_MS = 120_000
@@ -96,6 +100,40 @@ export function observedInstancePowerState(
   return runningFor >= INSTANCE_STARTUP_STABILITY_MS
     ? { observedState: "running", transitionComplete: true }
     : { observedState: "starting", transitionComplete: false }
+}
+
+export function instanceStateReason(
+  state: ContainerPowerState,
+  observedState: RelayObservedState,
+  ready?: boolean,
+  recovery?: RelayInstanceRecovery | null
+): RelayInstanceStateReason | null {
+  if (recovery) {
+    return {
+      code: "automatic_recovery",
+      exitCode: recovery.exitCode,
+      phase: recovery.phase,
+      reason: recovery.reason,
+    }
+  }
+  if (state.Restarting || state.Status === "restarting") {
+    return { code: "container_restarting" }
+  }
+  if (state.Health?.Status === "unhealthy") {
+    return { code: "health_check_failed" }
+  }
+  if (state.Health?.Status === "starting") {
+    return { code: "health_check_starting" }
+  }
+  if (observedState === "starting" && ready === false) {
+    return { code: "waiting_for_readiness" }
+  }
+  if (observedState !== "failed") return null
+  if (state.OOMKilled) return { code: "out_of_memory" }
+  if (state.ExitCode !== 0 && state.ExitCode !== 143) {
+    return { code: "process_exit", exitCode: state.ExitCode }
+  }
+  return { code: "unknown" }
 }
 
 function observedContainerState(

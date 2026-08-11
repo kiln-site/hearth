@@ -1376,6 +1376,7 @@ function cliServerMetadata(instance: z.infer<typeof relayInstanceSchema>) {
     memoryLimitBytes: instance.limits.memoryBytes,
     name: instance.name,
     observedState: instance.observedState,
+    stateReason: instance.stateReason,
     publicAddress:
       instance.publicHost && instance.publicPort
         ? `${instance.publicHost}:${instance.publicPort}`

@@ -310,6 +310,12 @@ describe("CLI response and URL boundaries", () => {
         memoryLimitBytes: 1024,
         name: "Survival",
         observedState: "running",
+        stateReason: {
+          code: "automatic_recovery",
+          exitCode: 137,
+          phase: "restarting",
+          reason: "process_exit",
+        },
         publicAddress: "play.example.com:25565",
         readyAt: null,
         resources: null,
@@ -318,7 +324,13 @@ describe("CLI response and URL boundaries", () => {
         version: "1.21.11",
       },
     }
-    assert.isTrue(cliServerInfoResponseSchema.safeParse(response).success)
+    const serialized = cliServerInfoResponseSchema.parse(response)
+    assert.deepStrictEqual(serialized.server.stateReason, {
+      code: "automatic_recovery",
+      exitCode: 137,
+      phase: "restarting",
+      reason: "process_exit",
+    })
     assert.isFalse(
       cliServerInfoResponseSchema.safeParse({
         ...response,

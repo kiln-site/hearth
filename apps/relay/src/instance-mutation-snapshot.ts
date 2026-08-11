@@ -17,6 +17,7 @@ function provisioningInstance(instance: RelayInstance): RelayInstance {
     ...instance,
     containerId: null,
     observedState: "provisioning",
+    stateReason: null,
     readyAt: null,
     recovery: null,
     resources: null,

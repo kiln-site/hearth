@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test"
 import {
   INSTANCE_STARTUP_READINESS_TIMEOUT_MS,
   INSTANCE_STARTUP_STABILITY_MS,
+  instanceStateReason,
   observedInstancePowerState,
   type ContainerPowerState,
   type InstancePowerTransition,
@@ -98,16 +99,19 @@ describe("instance power state", () => {
   })
 
   it("waits for a declared service port without depending on console text", () => {
-    expect(
-      observedInstancePowerState(
-        containerState(),
-        transition(),
-        startedAtMs + INSTANCE_STARTUP_STABILITY_MS * 2,
-        false
-      )
-    ).toEqual({
+    const state = containerState()
+    const observed = observedInstancePowerState(
+      state,
+      transition(),
+      startedAtMs + INSTANCE_STARTUP_STABILITY_MS * 2,
+      false
+    )
+    expect(observed).toEqual({
       observedState: "starting",
       transitionComplete: false,
+    })
+    expect(instanceStateReason(state, observed.observedState, false)).toEqual({
+      code: "waiting_for_readiness",
     })
     expect(
       observedInstancePowerState(
@@ -205,5 +209,63 @@ describe("instance power state", () => {
         startedAtMs + 2_000
       ).observedState
     ).toBe("starting")
+  })
+
+  it("reports unhealthy health-check evidence", () => {
+    const state = containerState({ Health: { Status: "unhealthy" } })
+    const observed = observedInstancePowerState(
+      state,
+      transition(),
+      startedAtMs + 1
+    )
+
+    expect(instanceStateReason(state, observed.observedState)).toEqual({
+      code: "health_check_failed",
+    })
+  })
+
+  it("reports Docker and managed recovery phases separately", () => {
+    const state = containerState({ Restarting: true, Status: "restarting" })
+    expect(instanceStateReason(state, "starting")).toEqual({
+      code: "container_restarting",
+    })
+    expect(
+      instanceStateReason(state, "starting", undefined, {
+        attempt: 2,
+        exitCode: 1,
+        maxAttempts: 3,
+        nextAttemptAt: null,
+        oomKilled: false,
+        phase: "restarting",
+        reason: "process_exit",
+        runtimeMs: 4_000,
+      })
+    ).toEqual({
+      code: "automatic_recovery",
+      exitCode: 1,
+      phase: "restarting",
+      reason: "process_exit",
+    })
+  })
+
+  it("reports OOM and nonzero exit evidence", () => {
+    expect(
+      instanceStateReason(
+        containerState({ OOMKilled: true, Running: false }),
+        "failed"
+      )
+    ).toEqual({ code: "out_of_memory" })
+    expect(
+      instanceStateReason(
+        containerState({ ExitCode: 42, Running: false }),
+        "failed"
+      )
+    ).toEqual({ code: "process_exit", exitCode: 42 })
+  })
+
+  it("marks a failure without container evidence as unknown", () => {
+    expect(instanceStateReason(containerState(), "failed")).toEqual({
+      code: "unknown",
+    })
   })
 })
