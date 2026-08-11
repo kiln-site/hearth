@@ -994,9 +994,6 @@ export function cliSftpUnavailableMessage(
   if (connection.publication === "not_published") {
     return `Relay SFTP port ${connection.port}/tcp is not published by Docker. Publish the port and retry.`
   }
-  if (connection.publication === "loopback_only") {
-    return `Relay SFTP port ${connection.port}/tcp is bound to loopback only. Publish it on a reachable host address and retry.`
-  }
   return null
 }
 

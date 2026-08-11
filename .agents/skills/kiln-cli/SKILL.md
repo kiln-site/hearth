@@ -351,10 +351,12 @@ Use this sequence to isolate the layer:
 
 Interpret the result narrowly:
 
-- If `sftp_unavailable` says the Relay port is not published or is bound to
-  loopback, treat that as a Docker publication check, not a firewall test.
-  Publish the reported TCP port on a host address reachable from Hearth and
-  the CLI, then retry.
+- If `sftp_unavailable` says the Relay port is not published, Docker inspection
+  proved that no host mapping exists. Publish the reported TCP port and retry.
+- A loopback-only publication can work when the CLI runs on the Relay host. If
+  the CLI runs elsewhere and the handshake times out, publish the port on a
+  reachable host address; do not describe the loopback binding as universally
+  unavailable or as proof of a firewall problem.
 - If list and read work but upload and download fail, focus on the SFTP
   bootstrap response, Relay SFTP reachability, authentication, or host-key
   verification. General file reads do not use the same transfer path.
