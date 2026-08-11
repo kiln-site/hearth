@@ -28,6 +28,7 @@ import { RelayUnavailableError } from "@/effect/errors"
 import { forkAppEffect, runAppEffect } from "@/effect/runtime"
 import type { RelayCredentials } from "@/lib/relay-registry"
 import { resolveSftpAuthorization } from "@/lib/sftp-authorization"
+import { relayControlFailureError } from "@/lib/relay-control-errors"
 
 export { relayControlEndpoint }
 export type { RelayEndpoint }
@@ -511,7 +512,7 @@ class RelayConnection {
       const pending = this.#pending.get(message.replyTo)
       if (!pending) return
       this.#pending.delete(message.replyTo)
-      pending.resume(relayConnectionFailure(message.message))
+      pending.resume(Effect.fail(relayControlFailureError(message)))
       return
     }
     if (message.type === "cancel") {

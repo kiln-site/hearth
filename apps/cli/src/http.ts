@@ -143,11 +143,19 @@ function requestEffect<TValue, TError, TRequirements>(
             ? use(response).pipe(
                 Effect.mapError((cause) => cause as CliCommandError | TError)
               )
-            : decodeResponseJson(response).pipe(
+            : decodeErrorResponseJson(response).pipe(
                 Effect.flatMap((body) => {
                   const parsed = cliErrorResponseSchema.safeParse(body)
+                  const fallback = fallbackHttpError(response.status)
                   return Effect.fail(
                     commandError({
+                      ...(parsed.success
+                        ? parsed.data.error.cause
+                          ? { cause: new Error(parsed.data.error.cause) }
+                          : {}
+                        : fallback.cause
+                          ? { cause: fallback.cause }
+                          : {}),
                       code: parsed.success
                         ? parsed.data.error.code
                         : `http_${response.status}`,
@@ -159,8 +167,13 @@ function requestEffect<TValue, TError, TRequirements>(
                             : 1,
                       message: parsed.success
                         ? parsed.data.error.message
-                        : `Hearth returned HTTP ${response.status}.`,
-                      retryable: parsed.success && parsed.data.error.retryable,
+                        : fallback.message,
+                      ...(parsed.success && parsed.data.error.requestId
+                        ? { requestId: parsed.data.error.requestId }
+                        : {}),
+                      retryable: parsed.success
+                        ? parsed.data.error.retryable
+                        : fallback.retryable,
                     })
                   )
                 })
@@ -170,6 +183,35 @@ function requestEffect<TValue, TError, TRequirements>(
       ),
     (abortScope) => Effect.sync(() => abortScope.close())
   ) as Effect.Effect<TValue, CliCommandError | TError, TRequirements>
+}
+
+function decodeErrorResponseJson(response: Response) {
+  return decodeResponseJson(response).pipe(
+    Effect.match({
+      onFailure: () => undefined,
+      onSuccess: (body) => body,
+    })
+  )
+}
+
+function fallbackHttpError(status: number): {
+  cause?: Error
+  message: string
+  retryable: boolean
+} {
+  if (status === 502) {
+    return {
+      cause: new Error(
+        "No Kiln error details were returned; the request may have failed at Hearth's proxy."
+      ),
+      message: "The request returned HTTP 502.",
+      retryable: true,
+    }
+  }
+  return {
+    message: `Hearth returned HTTP ${status}.`,
+    retryable: false,
+  }
 }
 
 function requestAbortScope(

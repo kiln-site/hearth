@@ -58,7 +58,7 @@ import {
   loadBackupStorageCredentialEffect,
   loadBackupStorageEffect,
 } from "@/effect/backup-storage"
-import { CliAccessError } from "@/effect/errors"
+import { CliAccessError, RelayUnavailableError } from "@/effect/errors"
 import {
   allowedInstanceIdsEffect,
   isPlatformAdmin,
@@ -856,7 +856,9 @@ export const sendCliConsoleCommandEffect = Effect.fn("cli.api.console.write")(
       relay,
       "instance.console.write",
       { command: input.command, instanceId: input.instanceId },
-      principal
+      principal,
+      undefined,
+      cliConsoleRelayFailure
     )
     return relayConsoleCommandResultSchema.parse(result)
   }
@@ -1421,7 +1423,8 @@ function relayRpcEffect(
   operation: Parameters<typeof relayRpc>[1],
   payload: unknown,
   principal: CliPrincipal,
-  timeoutMs?: number
+  timeoutMs?: number,
+  onFailure: (cause: unknown) => CliAccessError = relayUnavailableFailure
 ) {
   return Effect.tryPromise({
     try: () =>
@@ -1432,16 +1435,33 @@ function relayRpcEffect(
         timeoutMs,
         cliRelaySubject(principal)
       ),
-    catch: (cause) =>
-      CliAccessError.make({
-        code: "relay_unavailable",
-        message:
-          cause instanceof Error
-            ? cause.message
-            : "Hearth could not reach the Relay.",
-        retryable: true,
-        cause,
-      }),
+    catch: onFailure,
+  })
+}
+
+function relayUnavailableFailure(cause: unknown): CliAccessError {
+  return CliAccessError.make({
+    code: "relay_unavailable",
+    message:
+      cause instanceof Error
+        ? cause.message
+        : "Hearth could not reach the Relay.",
+    retryable: true,
+    cause,
+  })
+}
+
+export function cliConsoleRelayFailure(cause: unknown): CliAccessError {
+  if (!(cause instanceof RelayUnavailableError) || !cause.code) {
+    return relayUnavailableFailure(cause)
+  }
+  return CliAccessError.make({
+    code: "relay_operation_failed",
+    detail: cause.message,
+    message: "Relay could not send the console command.",
+    ...(cause.requestId ? { requestId: cause.requestId } : {}),
+    retryable: cause.retryable ?? false,
+    cause,
   })
 }
 

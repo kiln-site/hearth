@@ -70,6 +70,7 @@ export const cliErrorCodes = [
   "invalid_request",
   "not_found",
   "rate_limited",
+  "relay_operation_failed",
   "relay_unavailable",
   "sftp_unavailable",
   "slow_down",
@@ -81,7 +82,9 @@ export const cliErrorResponseSchema = z
   .object({
     error: z.object({
       code: cliErrorCodeSchema,
+      cause: z.string().trim().min(1).max(240).optional(),
       message: z.string().min(1),
+      requestId: z.uuid().optional(),
       retryable: z.boolean(),
     }),
   })

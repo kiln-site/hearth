@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test"
 
 import { relayControlEndpoint } from "@/lib/relay-control-endpoint"
+import { relayControlFailureError } from "@/lib/relay-control-errors"
 
 const relay = {
   hostname: "relay.feature.orb.local",
@@ -60,5 +61,25 @@ describe("Relay control endpoint", () => {
         }
       )
     ).toEqual({ ...relay, hostname: "relay.remote.example" })
+  })
+})
+
+describe("Relay control failures", () => {
+  it("preserves Relay failure provenance for the caller", () => {
+    const requestId = "3df56ba5-b2c1-45ee-bab7-386fbb9223c7"
+    const error = relayControlFailureError({
+      code: "operation_failed",
+      id: "c7c9796a-af8d-459a-bd94-816a40071df2",
+      message: "Survival is not running",
+      replyTo: requestId,
+      retryable: false,
+      type: "error",
+      v: 1,
+    })
+
+    expect(error.code).toBe("operation_failed")
+    expect(error.message).toBe("Survival is not running")
+    expect(error.requestId).toBe(requestId)
+    expect(error.retryable).toBe(false)
   })
 })

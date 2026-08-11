@@ -76,6 +76,30 @@ describe("CLI output", () => {
     })
   })
 
+  it("renders a Relay correlation ID separately from the cause", () => {
+    expect(
+      renderErrorCause(
+        Cause.fail(
+          commandError({
+            cause: new Error("Survival is not running"),
+            code: "relay_operation_failed",
+            message: "Relay could not send the console command.",
+            requestId: "3df56ba5-b2c1-45ee-bab7-386fbb9223c7",
+          })
+        )
+      )
+    ).toEqual({
+      exitCode: 1,
+      output: [
+        "Error: Relay could not send the console command.",
+        "Code: relay_operation_failed",
+        "Request: 3df56ba5-b2c1-45ee-bab7-386fbb9223c7",
+        "Cause: Survival is not running",
+        "",
+      ].join("\n"),
+    })
+  })
+
   it("identifies invalid response fields without dumping the response", () => {
     const decoded = z
       .object({ instance: z.object({ state: z.string() }) })

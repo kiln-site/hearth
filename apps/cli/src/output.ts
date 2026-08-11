@@ -33,6 +33,7 @@ export function renderErrorCause(
     (detail) => detail !== error.message
   )
   const lines = [`Error: ${error.message}`, `Code: ${error.code}`]
+  if (error.requestId) lines.push(`Request: ${error.requestId}`)
   details.forEach((detail, index) => {
     lines.push(`${index === 0 ? "Cause" : "Caused by"}: ${detail}`)
   })

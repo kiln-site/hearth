@@ -88,6 +88,7 @@ export class CliAccessError extends Schema.TaggedErrorClass<CliAccessError>()(
       "invalid_request",
       "not_found",
       "rate_limited",
+      "relay_operation_failed",
       "relay_unavailable",
       "sftp_unavailable",
       "slow_down",
@@ -95,6 +96,8 @@ export class CliAccessError extends Schema.TaggedErrorClass<CliAccessError>()(
     ]),
     message: Schema.String,
     retryable: Schema.Boolean,
+    detail: Schema.optional(Schema.String),
+    requestId: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   }
 ) {}
@@ -111,6 +114,9 @@ export class RelayUnavailableError extends Schema.TaggedErrorClass<RelayUnavaila
   "RelayUnavailableError",
   {
     message: Schema.String,
+    code: Schema.optional(Schema.String),
+    requestId: Schema.optional(Schema.String),
+    retryable: Schema.optional(Schema.Boolean),
     cause: Schema.optional(Schema.Defect()),
   }
 ) {}

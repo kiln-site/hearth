@@ -193,7 +193,11 @@ describe("Relay control socket", () => {
       publicKeyEncoding: { format: "pem", type: "spki" },
     })
     const client: RelayClientRecord = {
-      actions: ["instance.network.write", "relay.read"],
+      actions: [
+        "instance.console.write",
+        "instance.network.write",
+        "relay.read",
+      ],
       createdAt: Date.now(),
       id: fingerprint(hearthKeys.publicKey),
       invitationId: "test-invitation",
@@ -264,6 +268,9 @@ describe("Relay control socket", () => {
     let pushSnapshot: ((snapshot: unknown) => void) | undefined
     const control = attachControlSocket({
       execute: async (request, _client, signal) => {
+        if (request.operation === "instance.console.write") {
+          throw new Error("Survival is not running")
+        }
         if (
           request.payload === "finish-at-timeout" ||
           request.payload === "wait-for-timeout"
@@ -331,6 +338,29 @@ describe("Relay control socket", () => {
       )
       expect((await inbox.next()).type).toBe("auth.ready")
       expect((await inbox.next()).type).toBe("event")
+
+      const consoleRequestId = randomBytes(12).toString("hex")
+      socket.send(
+        JSON.stringify({
+          deadline: Date.now() + 5_000,
+          id: consoleRequestId,
+          operation: "instance.console.write",
+          payload: {
+            command: "stop",
+            instanceId: "a".repeat(40),
+          },
+          type: "request",
+          v: 1,
+        })
+      )
+      const consoleFailure = await inbox.next()
+      expect(consoleFailure.type).toBe("error")
+      if (consoleFailure.type === "error") {
+        expect(consoleFailure.code).toBe("operation_failed")
+        expect(consoleFailure.message).toBe("Survival is not running")
+        expect(consoleFailure.replyTo).toBe(consoleRequestId)
+        expect(consoleFailure.retryable).toBe(false)
+      }
 
       const reverseResult = control.requestClients(
         "sftp.authorization.resolve",
@@ -487,6 +517,8 @@ describe("Relay control socket", () => {
       if (relayNetworking.type === "error") {
         expect(relayNetworking.code).toBe("forbidden")
       }
+
+      expect(audits).toHaveLength(0)
 
       socket.send(
         JSON.stringify({

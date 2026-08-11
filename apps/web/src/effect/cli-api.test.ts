@@ -24,11 +24,35 @@ import {
   cliPowerResponse,
   cliSftpConnectionResponse,
   cliSftpUnavailableMessage,
+  cliConsoleRelayFailure,
   collectAvailableCliRelaySnapshotsEffect,
   relayRemoteUploadInput,
   safeCliBrickSource,
 } from "@/effect/cli-api"
-import { CliAccessError } from "@/effect/errors"
+import { CliAccessError, RelayUnavailableError } from "@/effect/errors"
+
+describe("CLI console failures", () => {
+  it("keeps the Relay cause and correlation ID concise", () => {
+    const requestId = "3df56ba5-b2c1-45ee-bab7-386fbb9223c7"
+    const error = cliConsoleRelayFailure(
+      RelayUnavailableError.make({
+        code: "operation_failed",
+        message: "Survival is not running",
+        requestId,
+        retryable: false,
+      })
+    )
+
+    assert.strictEqual(error.code, "relay_operation_failed")
+    assert.strictEqual(
+      error.message,
+      "Relay could not send the console command."
+    )
+    assert.strictEqual(error.detail, "Survival is not running")
+    assert.strictEqual(error.requestId, requestId)
+    assert.isFalse(error.retryable)
+  })
+})
 
 describe("CLI server listing", () => {
   it.effect(

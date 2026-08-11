@@ -77,10 +77,12 @@ export const relayFetchEffect = Effect.fn("relay.fetch")(function* (
         }
       ),
     catch: (cause) =>
-      RelayUnavailableError.make({
-        message: `Could not reach Relay: ${errorMessage(cause)}`,
-        cause,
-      }),
+      cause instanceof RelayUnavailableError
+        ? cause
+        : RelayUnavailableError.make({
+            message: `Could not reach Relay: ${errorMessage(cause)}`,
+            cause,
+          }),
   })
 
   if (!response.ok) {

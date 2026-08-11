@@ -168,4 +168,77 @@ describe("CLI HTTP requests", () => {
       assert.isTrue(requestSignal?.aborted ?? false)
     })
   })
+
+  it.effect("preserves structured Relay console failure details", () => {
+    const requestId = "3df56ba5-b2c1-45ee-bab7-386fbb9223c7"
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                cause: "Survival is not running",
+                code: "relay_operation_failed",
+                message: "Relay could not send the console command.",
+                requestId,
+                retryable: false,
+              },
+            }),
+            {
+              headers: { "Content-Type": "application/json" },
+              status: 502,
+            }
+          )
+      )
+    )
+
+    return Effect.gen(function* () {
+      const error = yield* apiJsonEffect(
+        session,
+        "/api/cli/v1/console",
+        z.object({ accepted: z.boolean() })
+      ).pipe(Effect.flip)
+
+      assert.strictEqual(error.code, "relay_operation_failed")
+      assert.strictEqual(
+        error.message,
+        "Relay could not send the console command."
+      )
+      assert.strictEqual(error.requestId, requestId)
+      assert.instanceOf(error.cause, Error)
+      assert.strictEqual(error.cause.message, "Survival is not running")
+      assert.isFalse(error.retryable)
+    })
+  })
+
+  it.effect(
+    "identifies a 502 without Kiln error details as a proxy path",
+    () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response("Bad Gateway", {
+              headers: { "Content-Type": "text/plain" },
+              status: 502,
+            })
+        )
+      )
+
+      return Effect.gen(function* () {
+        const error = yield* apiJsonEffect(
+          session,
+          "/api/cli/v1/console",
+          z.object({ accepted: z.boolean() })
+        ).pipe(Effect.flip)
+
+        assert.strictEqual(error.code, "http_502")
+        assert.strictEqual(error.message, "The request returned HTTP 502.")
+        assert.instanceOf(error.cause, Error)
+        assert.include(error.cause.message, "Hearth's proxy")
+        assert.isTrue(error.retryable)
+      })
+    }
+  )
 })

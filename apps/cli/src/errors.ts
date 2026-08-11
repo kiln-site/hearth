@@ -7,6 +7,7 @@ export class CliCommandError extends Schema.TaggedErrorClass<CliCommandError>()(
     message: Schema.String,
     retryable: Schema.Boolean,
     exitCode: Schema.Number,
+    requestId: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   }
 ) {}
@@ -16,6 +17,7 @@ export function commandError(input: {
   code: string
   exitCode?: number
   message: string
+  requestId?: string
   retryable?: boolean
 }): CliCommandError {
   return CliCommandError.make({
@@ -23,6 +25,7 @@ export function commandError(input: {
     message: input.message,
     retryable: input.retryable ?? false,
     exitCode: input.exitCode ?? 1,
+    ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
     ...(input.cause === undefined ? {} : { cause: input.cause }),
   })
 }

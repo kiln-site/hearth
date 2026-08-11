@@ -18,7 +18,9 @@ export function cliFailureResponse(cause: unknown): Response {
       {
         error: {
           code: cause.code,
+          ...(cause.detail ? { cause: cause.detail } : {}),
           message: cause.message,
+          ...(cause.requestId ? { requestId: cause.requestId } : {}),
           retryable: cause.retryable,
         },
       },
@@ -43,6 +45,7 @@ function statusForCliError(code: CliAccessError["code"]): number {
   if (code === "not_found") return 404
   if (code === "conflict") return 409
   if (code === "rate_limited" || code === "slow_down") return 429
+  if (code === "relay_operation_failed") return 502
   if (code === "relay_unavailable") return 502
   if (code === "sftp_unavailable") return 503
   if (code === "unexpected_error") return 500
