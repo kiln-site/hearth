@@ -809,7 +809,16 @@ export function cliPowerResponse(
   >,
   relayId: string
 ) {
-  return cliPowerResponseSchema.parse({ action, instance, relayId })
+  return cliPowerResponseSchema.parse({
+    action,
+    instance: {
+      desiredState: instance.desiredState,
+      id: instance.id,
+      name: instance.name,
+      observedState: instance.observedState,
+    },
+    relayId,
+  })
 }
 
 export const performCliPowerActionEffect = Effect.fn("cli.api.power")(
