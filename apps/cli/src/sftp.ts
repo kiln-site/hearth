@@ -88,30 +88,43 @@ function withSftp<TResult>(
   ) => Effect.Effect<TResult, ReturnType<typeof sftpError>>
 ) {
   return Effect.acquireUseRelease(
-    connectEffect(session, connection),
+    Effect.interruptible(connectEffect(session, connection)),
     (client) =>
-      openSftpEffect(client).pipe(Effect.flatMap((sftp) => use(sftp))),
+      openSftpEffect(client).pipe(
+        Effect.flatMap((sftp) =>
+          use(sftp).pipe(Effect.ensuring(Effect.sync(() => sftp.end())))
+        )
+      ),
     (client) => Effect.sync(() => client.end())
   )
 }
 
 function connectEffect(session: KilnSession, connection: CliSftpResponse) {
-  return Effect.callback<Client, ReturnType<typeof sftpError>>((resume) => {
+  return Effect.callback<Client, ReturnType<typeof sftpError>>((resume, _) => {
     const client = new Client()
     let settled = false
+    const ready = () => {
+      if (settled) return
+      settled = true
+      removePendingListeners()
+      client.on("error", ignoreError)
+      resume(Effect.succeed(client))
+    }
     const fail = (cause: Error) => {
       if (settled) return
       settled = true
+      removePendingListeners()
+      client.on("error", ignoreError)
+      client.destroy()
       resume(Effect.fail(sftpError("connect", cause)))
     }
-    client.once("error", fail)
-    client.once("ready", () => {
-      if (settled) return
-      settled = true
+    const ignoreError = () => undefined
+    const removePendingListeners = () => {
       client.off("error", fail)
-      client.on("error", () => undefined)
-      resume(Effect.succeed(client))
-    })
+      client.off("ready", ready)
+    }
+    client.once("error", fail)
+    client.once("ready", ready)
     client.connect({
       host: connection.host,
       port: connection.port,
@@ -122,13 +135,19 @@ function connectEffect(session: KilnSession, connection: CliSftpResponse) {
       keepaliveInterval: 10_000,
       readyTimeout: 15_000,
     })
-    return Effect.sync(() => client.end())
+    return Effect.sync(() => {
+      if (settled) return
+      settled = true
+      removePendingListeners()
+      client.on("error", ignoreError)
+      client.destroy()
+    })
   })
 }
 
 function openSftpEffect(client: Client) {
   return Effect.callback<SFTPWrapper, ReturnType<typeof sftpError>>(
-    (resume) => {
+    (resume, _) => {
       client.sftp((cause, sftp) =>
         cause
           ? resume(Effect.fail(sftpError("open session", cause)))
@@ -142,7 +161,7 @@ function sftpOperation(
   operation: string,
   run: (done: (cause?: Error | null) => void) => void
 ) {
-  return Effect.callback<void, ReturnType<typeof sftpError>>((resume) => {
+  return Effect.callback<void, ReturnType<typeof sftpError>>((resume, _) => {
     run((cause) =>
       cause
         ? resume(Effect.fail(sftpError(operation, cause)))

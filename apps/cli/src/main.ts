@@ -62,15 +62,10 @@ import {
   parseVariableAssignments,
   remoteFileBasename,
 } from "./inputs.js"
-import {
-  formatBytes,
-  reportErrorCauseEffect,
-  writeLine,
-  writeTable,
-  writeText,
-} from "./output.js"
+import { formatBytes, writeLine, writeTable, writeText } from "./output.js"
 import { formatPowerResponse } from "./power.js"
 import { downloadSftpFileEffect, uploadSftpFileEffect } from "./sftp.js"
+import { runCliProgram } from "./runtime.js"
 import release from "../../../release.json" with { type: "json" }
 
 const VERSION = process.env.KILN_VERSION?.trim() || release.releaseLine
@@ -1178,4 +1173,4 @@ Environment:
 `)
 }
 
-Effect.runFork(program.pipe(Effect.catchCause(reportErrorCauseEffect)))
+runCliProgram(program)

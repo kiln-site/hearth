@@ -25,6 +25,10 @@ available; do not stop at providing command examples.
   complete token value.
 - Do not silently switch a command between production Kiln and a self-hosted
   Hearth URL. Confirm the active target with `kiln whoami`.
+- Interrupting the CLI closes local HTTP and SFTP work, but it does not roll
+  back a mutation that Hearth or a Relay already accepted. After interrupting
+  a power, console, file-write, or other mutation, read the affected resource
+  before deciding whether to retry.
 
 ## Preflight
 

@@ -87,13 +87,17 @@ export const publicResponseEffect = Effect.fn("cli.http.publicResponse")(
 function requestEffect(url: string, init: CliRequestInit) {
   const { timeoutMs = 30_000, ...requestInit } = init
   return Effect.tryPromise({
-    try: () =>
-      fetch(url, {
-        ...requestInit,
-        signal:
-          requestInit.signal ??
-          (timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs)),
-      }),
+    try: (effectSignal) =>
+      withRequestAbortSignal(
+        effectSignal,
+        requestInit.signal,
+        timeoutMs,
+        (signal) =>
+          fetch(url, {
+            ...requestInit,
+            signal,
+          })
+      ),
     catch: (cause) =>
       commandError({
         cause,
@@ -130,6 +134,53 @@ function requestEffect(url: string, init: CliRequestInit) {
           )
     )
   )
+}
+
+function withRequestAbortSignal<TResult>(
+  effectSignal: AbortSignal,
+  callerSignal: AbortSignal | null | undefined,
+  timeoutMs: number | null,
+  run: (signal: AbortSignal) => PromiseLike<TResult>
+): Promise<TResult> {
+  const controller = new AbortController()
+  const cleanups: Array<() => void> = []
+
+  const follow = (signal: AbortSignal) => {
+    if (controller.signal.aborted) return
+    if (signal.aborted) {
+      controller.abort(signal.reason)
+      return
+    }
+    const onAbort = () => controller.abort(signal.reason)
+    signal.addEventListener("abort", onAbort, { once: true })
+    cleanups.push(() => signal.removeEventListener("abort", onAbort))
+  }
+
+  follow(effectSignal)
+  if (
+    callerSignal !== effectSignal &&
+    callerSignal !== undefined &&
+    callerSignal !== null
+  ) {
+    follow(callerSignal)
+  }
+
+  if (timeoutMs !== null && !controller.signal.aborted) {
+    const timeout = setTimeout(
+      () =>
+        controller.abort(
+          new DOMException("The operation timed out.", "TimeoutError")
+        ),
+      timeoutMs
+    )
+    cleanups.push(() => clearTimeout(timeout))
+  }
+
+  return Promise.resolve()
+    .then(() => run(controller.signal))
+    .finally(() => {
+      cleanups.forEach((cleanup) => cleanup())
+    })
 }
 
 function decodeResponseJson(response: Response) {
