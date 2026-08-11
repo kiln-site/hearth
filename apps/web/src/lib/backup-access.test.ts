@@ -40,6 +40,39 @@ const backup: BackupCatalogRecord = {
 }
 
 describe("backup access", () => {
+  it("keeps platform bundles exclusive to platform admins", () => {
+    const platformBackup: BackupCatalogRecord = {
+      ...backup,
+      artifactKind: "platform_bundle",
+      targetId: "kiln",
+      targetKind: "platform",
+    }
+    const relayGrant: AccessGrant = {
+      id: "relay-grant",
+      relayId: backup.relayId,
+      resourceId: backup.relayId,
+      resourceType: "relay",
+      role: "operator",
+    }
+    const admin: AuthenticatedUser = { ...user, id: "admin", role: "admin" }
+
+    expect(
+      hasBackupPermission(user, [relayGrant], platformBackup, "backup.read")
+    ).toBe(false)
+    expect(
+      hasBackupPermission(user, [relayGrant], platformBackup, "backup.download")
+    ).toBe(false)
+    expect(
+      hasBackupPermission(user, [relayGrant], platformBackup, "backup.restore")
+    ).toBe(false)
+    expect(
+      hasBackupPermission(user, [relayGrant], platformBackup, "backup.delete")
+    ).toBe(false)
+    expect(
+      hasBackupPermission(admin, [], platformBackup, "backup.download")
+    ).toBe(true)
+  })
+
   it("keeps creator download access without granting restore or delete", () => {
     expect(hasBackupPermission(user, [], backup, "backup.read")).toBe(true)
     expect(hasBackupPermission(user, [], backup, "backup.download")).toBe(true)

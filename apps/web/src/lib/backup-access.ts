@@ -12,6 +12,7 @@ export function hasBackupPermission(
   permission: AccessPermission
 ): boolean {
   if (isPlatformAdmin(user)) return true
+  if (backup.targetKind === "platform") return false
   if (
     (permission === "backup.read" || permission === "backup.download") &&
     backup.createdBy === user.id
