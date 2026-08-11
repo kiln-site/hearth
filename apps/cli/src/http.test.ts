@@ -1,9 +1,14 @@
 import { assert, describe, it } from "@effect/vitest"
 import { Deferred, Effect, Fiber } from "effect"
 import { afterEach, vi } from "vite-plus/test"
+import { z } from "zod"
 
 import type { KilnSession } from "./config.js"
-import { apiResponseEffect, CLI_LONG_OPERATION_TIMEOUT_MS } from "./http.js"
+import {
+  apiJsonEffect,
+  apiResponseEffect,
+  CLI_LONG_OPERATION_TIMEOUT_MS,
+} from "./http.js"
 
 const session: KilnSession = {
   profile: "test",
@@ -24,9 +29,14 @@ describe("CLI HTTP requests", () => {
     vi.stubGlobal("fetch", fetchMock)
 
     return Effect.gen(function* () {
-      yield* apiResponseEffect(session, "/api/cli/v1/logs", {
-        timeoutMs: null,
-      })
+      yield* apiResponseEffect(
+        session,
+        "/api/cli/v1/logs",
+        {
+          timeoutMs: null,
+        },
+        (response) => Effect.succeed(response)
+      )
 
       const [, init] = fetchMock.mock.calls[0] ?? []
       assert.instanceOf(init?.signal, AbortSignal)
@@ -62,10 +72,15 @@ describe("CLI HTTP requests", () => {
 
     return Effect.gen(function* () {
       const fiber = yield* Effect.forkChild(
-        apiResponseEffect(session, "/api/cli/v1/power", {
-          signal: caller.signal,
-          timeoutMs: CLI_LONG_OPERATION_TIMEOUT_MS,
-        }).pipe(Effect.exit)
+        apiResponseEffect(
+          session,
+          "/api/cli/v1/power",
+          {
+            signal: caller.signal,
+            timeoutMs: CLI_LONG_OPERATION_TIMEOUT_MS,
+          },
+          (response) => Effect.succeed(response)
+        ).pipe(Effect.exit)
       )
       yield* Effect.yieldNow
 
@@ -107,13 +122,49 @@ describe("CLI HTTP requests", () => {
         )
       )
       const fiber = yield* Effect.forkChild(
-        apiResponseEffect(session, "/api/cli/v1/logs", {
-          timeoutMs: null,
-        })
+        apiResponseEffect(
+          session,
+          "/api/cli/v1/logs",
+          {
+            timeoutMs: null,
+          },
+          (response) => Effect.succeed(response)
+        )
       )
       yield* Deferred.await(started)
       yield* Fiber.interrupt(fiber)
 
+      assert.isTrue(requestSignal?.aborted ?? false)
+    })
+  })
+
+  it.effect("keeps the deadline active while decoding a response body", () => {
+    let requestSignal: AbortSignal | undefined
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        requestSignal = init?.signal ?? undefined
+        const body = new ReadableStream<Uint8Array>({
+          start() {
+            // Hold the headers open while the JSON body remains stalled.
+          },
+        })
+        return new Response(body, {
+          headers: { "Content-Type": "application/json" },
+        })
+      })
+    )
+
+    return Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(
+        apiJsonEffect(
+          session,
+          "/api/cli/v1/stalled",
+          z.object({ ok: z.boolean() })
+        )
+      )
+      yield* Effect.yieldNow
+      yield* Fiber.interrupt(fiber)
       assert.isTrue(requestSignal?.aborted ?? false)
     })
   })
