@@ -242,6 +242,14 @@ interface CreateTarget {
 
 const activeStatuses = new Set(["queued", "running", "deleting"])
 const mobileBackupLayoutQuery = "(max-width: 767px)"
+const backupSelectionBlockingOverlaySelector = [
+  '[data-slot="combobox-content"][data-open]',
+  '[data-slot="dialog-content"][data-open]',
+  '[data-slot="dropdown-menu-content"][data-state="open"]',
+  '[data-slot="dropdown-menu-sub-content"][data-state="open"]',
+  '[data-slot="popover-content"][data-state="open"]',
+  '[data-slot="sheet-content"][data-open]',
+].join(",")
 const backupStatusFilterOptions: ReadonlyArray<{
   label: string
   value: BackupFilters["status"]
@@ -311,18 +319,6 @@ export const BackupsPage = React.memo(function BackupsPage({
   )
   const [dialogStore] = React.useState(createBackupDialogStore)
   const [selectionStore] = React.useState(createBackupSelectionStore)
-
-  React.useEffect(() => {
-    selectionStore.retain(
-      new Set(
-        backups.flatMap((backup) =>
-          backup.status !== "deleted" && !backupIsActive(backup)
-            ? [backup.id]
-            : []
-        )
-      )
-    )
-  }, [backups, selectionStore])
 
   const scopeOptions = React.useMemo(
     () =>
@@ -414,6 +410,24 @@ export const BackupsPage = React.memo(function BackupsPage({
       }),
     [backups, filters.status, selectedServer]
   )
+  React.useLayoutEffect(() => {
+    const retainVisibleSelection = () => {
+      const normalizedSearch = searchStore.getSnapshot().trim().toLowerCase()
+      selectionStore.retain(
+        new Set(
+          filteredBackups.flatMap((backup) =>
+            !backupIsActive(backup) &&
+            backupMatchesSearch(backup, normalizedSearch)
+              ? [backup.id]
+              : []
+          )
+        )
+      )
+    }
+
+    retainVisibleSelection()
+    return searchStore.subscribe(retainVisibleSelection)
+  }, [filteredBackups, searchStore, selectionStore])
   const createTargets = React.useMemo(
     () =>
       availableCreateTargets({
@@ -965,11 +979,7 @@ const BackupMobileList = React.memo(function BackupMobileList({
   const normalizedSearch = search.trim().toLowerCase()
   const visible = React.useMemo(
     () =>
-      backups.filter(
-        (backup) =>
-          normalizedSearch.length === 0 ||
-          backupSearchText(backup).toLowerCase().includes(normalizedSearch)
-      ),
+      backups.filter((backup) => backupMatchesSearch(backup, normalizedSearch)),
     [backups, normalizedSearch]
   )
 
@@ -1085,8 +1095,7 @@ const BackupFilteredSelectAllCheckbox = React.memo(
       () =>
         backups.flatMap((backup) =>
           !backupIsActive(backup) &&
-          (normalizedSearch.length === 0 ||
-            backupSearchText(backup).toLowerCase().includes(normalizedSearch))
+          backupMatchesSearch(backup, normalizedSearch)
             ? [backup.id]
             : []
         ),
@@ -1386,6 +1395,19 @@ const BackupBulkActionMenu = React.memo(function BackupBulkActionMenu({
     getHasSelectionSnapshot,
     () => false
   )
+
+  React.useEffect(() => {
+    if (!hasSelection) return
+
+    const clearSelectionOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return
+      if (document.querySelector(backupSelectionBlockingOverlaySelector)) return
+      store.clear()
+    }
+
+    window.addEventListener("keydown", clearSelectionOnEscape)
+    return () => window.removeEventListener("keydown", clearSelectionOnEscape)
+  }, [hasSelection, store])
 
   if (!hasSelection) return null
 
@@ -3967,6 +3989,16 @@ function backupSearchText(backup: Backup): string {
   ]
     .filter(Boolean)
     .join(" ")
+}
+
+function backupMatchesSearch(
+  backup: Backup,
+  normalizedSearch: string
+): boolean {
+  return (
+    normalizedSearch.length === 0 ||
+    backupSearchText(backup).toLowerCase().includes(normalizedSearch)
+  )
 }
 
 function shortRelativeBackupTime(timestamp: number): string | null {
