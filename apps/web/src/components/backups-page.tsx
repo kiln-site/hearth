@@ -5,7 +5,7 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query"
-import { ensuringPromise, forkPromise } from "@/effect/promise"
+import { ensuringPromise, forkPromise, settlePromises } from "@/effect/promise"
 import { Link } from "@tanstack/react-router"
 import {
   Archive,
@@ -111,6 +111,13 @@ import type { getManagedDatabaseDirectory } from "@/server/databases"
 import type { getRelaySnapshot } from "@/server/relay"
 
 type Backup = Awaited<ReturnType<typeof getBackups>>[number]
+type BackupBulkDeleteOutcome =
+  | {
+      backup: Backup
+      result: Awaited<ReturnType<typeof deleteBackup>>
+      status: "deleted"
+    }
+  | { backup: Backup; message: string; status: "failed" }
 type BackupStorage = Awaited<ReturnType<typeof getBackupStorage>>[number]
 type InstanceBackupPolicy = Awaited<ReturnType<typeof getInstanceBackupPolicy>>
 type BackupAvailabilityDestination = {
@@ -152,8 +159,10 @@ type BackupDialogState =
   | { backup: Backup; kind: "download" }
   | { backup: Backup; kind: "restore" }
 type BackupDialogStore = ReturnType<typeof createBackupDialogStore>
+type BackupSelectionStore = ReturnType<typeof createBackupSelectionStore>
 
 const closedBackupDialog = { kind: "closed" } as const
+const emptyBackupSelection: ReadonlySet<string> = new Set()
 const minimumBackupSyncFeedbackMs = 1000
 
 function createBackupDialogStore() {
@@ -175,6 +184,49 @@ function createBackupDialogStore() {
     subscribe: (listener: () => void) => {
       listeners.add(listener)
       return () => listeners.delete(listener)
+    },
+  }
+}
+
+function createBackupSelectionStore() {
+  let selected: ReadonlySet<string> = emptyBackupSelection
+  const listeners = new Set<() => void>()
+
+  function publish(next: ReadonlySet<string>) {
+    if (next === selected) return
+    selected = next
+    for (const listener of listeners) listener()
+  }
+
+  return {
+    clear: () => {
+      if (selected.size > 0) publish(emptyBackupSelection)
+    },
+    deselect: (backupIds: ReadonlyArray<string>) => {
+      const next = new Set(selected)
+      for (const backupId of backupIds) next.delete(backupId)
+      if (next.size !== selected.size) publish(next)
+    },
+    getServerSnapshot: () => emptyBackupSelection,
+    getSnapshot: () => selected,
+    retain: (backupIds: ReadonlySet<string>) => {
+      const next = new Set([...selected].filter((id) => backupIds.has(id)))
+      if (next.size !== selected.size) publish(next)
+    },
+    select: (backupIds: ReadonlyArray<string>) => {
+      const next = new Set(selected)
+      for (const backupId of backupIds) next.add(backupId)
+      if (next.size !== selected.size) publish(next)
+    },
+    subscribe: (listener: () => void) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    toggle: (backupId: string) => {
+      const next = new Set(selected)
+      if (next.has(backupId)) next.delete(backupId)
+      else next.add(backupId)
+      publish(next)
     },
   }
 }
@@ -258,6 +310,19 @@ export const BackupsPage = React.memo(function BackupsPage({
     accessCapabilitiesQueryOptions()
   )
   const [dialogStore] = React.useState(createBackupDialogStore)
+  const [selectionStore] = React.useState(createBackupSelectionStore)
+
+  React.useEffect(() => {
+    selectionStore.retain(
+      new Set(
+        backups.flatMap((backup) =>
+          backup.status !== "deleted" && !backupIsActive(backup)
+            ? [backup.id]
+            : []
+        )
+      )
+    )
+  }, [backups, selectionStore])
 
   const scopeOptions = React.useMemo(
     () =>
@@ -406,7 +471,7 @@ export const BackupsPage = React.memo(function BackupsPage({
         onSelect={selectServer}
       />
 
-      <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card/45 [contain:paint]">
+      <section className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card/45 [contain:paint]">
         <BackupToolbar
           canCreate={createTargets.length > 0}
           dialogStore={dialogStore}
@@ -424,9 +489,11 @@ export const BackupsPage = React.memo(function BackupsPage({
             filtered={Boolean(selectedServer || filters.status)}
             relayNames={relayNames}
             searchStore={searchStore}
+            selectionStore={selectionStore}
             targetNames={targetNames}
           />
         </div>
+        <BackupBulkActions backups={backups} selectionStore={selectionStore} />
       </section>
 
       <BackupDialogHost
@@ -745,6 +812,7 @@ const BackupTable = React.memo(function BackupTable({
   filtered,
   relayNames,
   searchStore,
+  selectionStore,
   targetNames,
 }: {
   backups: Array<Backup>
@@ -755,6 +823,7 @@ const BackupTable = React.memo(function BackupTable({
   filtered: boolean
   relayNames: ReadonlyMap<string, string>
   searchStore: BackupSearchStore
+  selectionStore: BackupSelectionStore
   targetNames: ReadonlyMap<string, string>
 }) {
   const mobileLayout = React.useSyncExternalStore(
@@ -771,6 +840,7 @@ const BackupTable = React.memo(function BackupTable({
         destinations={destinations}
         dialogStore={dialogStore}
         relayName={relayNames.get(backup.relayId) ?? backup.relayId}
+        selectionStore={selectionStore}
         targetAvailable={
           backup.targetKind === "platform"
             ? relayNames.has(backup.relayId)
@@ -787,6 +857,7 @@ const BackupTable = React.memo(function BackupTable({
       destinations,
       dialogStore,
       relayNames,
+      selectionStore,
       targetNames,
     ]
   )
@@ -800,6 +871,7 @@ const BackupTable = React.memo(function BackupTable({
         destinations={destinations}
         dialogStore={dialogStore}
         relayName={relayNames.get(backup.relayId) ?? backup.relayId}
+        selectionStore={selectionStore}
         targetAvailable={
           backup.targetKind === "platform"
             ? relayNames.has(backup.relayId)
@@ -816,6 +888,7 @@ const BackupTable = React.memo(function BackupTable({
       destinations,
       dialogStore,
       relayNames,
+      selectionStore,
       targetNames,
     ]
   )
@@ -848,12 +921,19 @@ const BackupTable = React.memo(function BackupTable({
           renderEmpty={renderEmpty}
           renderRow={renderMobileRow}
           searchStore={searchStore}
+          selectionStore={selectionStore}
         />
       ) : (
         <WorkspaceDataTable
           getRowKey={backupRowKey}
           getSearchText={backupSearchText}
-          head={<BackupTableHead />}
+          head={
+            <BackupTableHead
+              backups={backups}
+              searchStore={searchStore}
+              selectionStore={selectionStore}
+            />
+          }
           items={backups}
           renderEmpty={renderEmpty}
           renderRow={renderRow}
@@ -869,11 +949,13 @@ const BackupMobileList = React.memo(function BackupMobileList({
   renderEmpty,
   renderRow,
   searchStore,
+  selectionStore,
 }: {
   backups: Array<Backup>
   renderEmpty: (searchActive: boolean) => React.ReactNode
   renderRow: (backup: Backup) => React.ReactNode
   searchStore: BackupSearchStore
+  selectionStore: BackupSelectionStore
 }) {
   const search = React.useSyncExternalStore(
     searchStore.subscribe,
@@ -893,13 +975,130 @@ const BackupMobileList = React.memo(function BackupMobileList({
 
   if (visible.length === 0) return renderEmpty(normalizedSearch.length > 0)
   return (
-    <div className="divide-y divide-border/70">{visible.map(renderRow)}</div>
+    <div>
+      <BackupMobileSelectAll backups={visible} store={selectionStore} />
+      <div className="divide-y divide-border/70">{visible.map(renderRow)}</div>
+    </div>
   )
 })
 
-const BackupTableHead = React.memo(function BackupTableHead() {
+const BackupMobileSelectAll = React.memo(function BackupMobileSelectAll({
+  backups,
+  store,
+}: {
+  backups: Array<Backup>
+  store: BackupSelectionStore
+}) {
+  const selected = React.useSyncExternalStore(
+    store.subscribe,
+    store.getSnapshot,
+    store.getServerSnapshot
+  )
+  const inputRef = React.useRef<HTMLInputElement>(null)
+  const backupIds = React.useMemo(
+    () =>
+      backups.flatMap((backup) => (backupIsActive(backup) ? [] : [backup.id])),
+    [backups]
+  )
+  const selectedCount = backupIds.reduce(
+    (count, backupId) => count + Number(selected.has(backupId)),
+    0
+  )
+  const allSelected = backupIds.length > 0 && selectedCount === backupIds.length
+
+  React.useLayoutEffect(() => {
+    if (!inputRef.current) return
+    inputRef.current.indeterminate = selectedCount > 0 && !allSelected
+  }, [allSelected, selectedCount])
+
+  return (
+    <div className="flex h-10 items-center justify-between border-b bg-muted/10 px-3">
+      <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <input
+          ref={inputRef}
+          aria-label="Select all visible backups"
+          checked={allSelected}
+          className="size-4 rounded-[3px] border-input accent-primary"
+          disabled={backupIds.length === 0}
+          type="checkbox"
+          onChange={() => {
+            if (allSelected) store.deselect(backupIds)
+            else store.select(backupIds)
+          }}
+        />
+        Select visible
+      </label>
+      <span className="font-mono text-[0.625rem] text-muted-foreground">
+        {backups.length} {backups.length === 1 ? "backup" : "backups"}
+      </span>
+    </div>
+  )
+})
+
+const BackupTableHead = React.memo(function BackupTableHead({
+  backups,
+  searchStore,
+  selectionStore,
+}: {
+  backups: Array<Backup>
+  searchStore: BackupSearchStore
+  selectionStore: BackupSelectionStore
+}) {
+  const search = React.useSyncExternalStore(
+    searchStore.subscribe,
+    searchStore.getSnapshot,
+    searchStore.getServerSnapshot
+  )
+  const selected = React.useSyncExternalStore(
+    selectionStore.subscribe,
+    selectionStore.getSnapshot,
+    selectionStore.getServerSnapshot
+  )
+  const selectAllRef = React.useRef<HTMLInputElement>(null)
+  const normalizedSearch = search.trim().toLowerCase()
+  const visibleBackupIds = React.useMemo(
+    () =>
+      backups.flatMap((backup) =>
+        !backupIsActive(backup) &&
+        (normalizedSearch.length === 0 ||
+          backupSearchText(backup).toLowerCase().includes(normalizedSearch))
+          ? [backup.id]
+          : []
+      ),
+    [backups, normalizedSearch]
+  )
+  const selectedVisibleCount = visibleBackupIds.reduce(
+    (count, backupId) => count + Number(selected.has(backupId)),
+    0
+  )
+  const allVisibleSelected =
+    visibleBackupIds.length > 0 &&
+    selectedVisibleCount === visibleBackupIds.length
+
+  React.useLayoutEffect(() => {
+    if (!selectAllRef.current) return
+    selectAllRef.current.indeterminate =
+      selectedVisibleCount > 0 && !allVisibleSelected
+  }, [allVisibleSelected, selectedVisibleCount])
+
   return (
     <WorkspaceTableHead className="sticky top-0 z-20 bg-background/95 shadow-[0_1px_0_var(--border)] backdrop-blur">
+      <WorkspaceTableHeading className="w-10 px-2">
+        <label className="grid size-7 place-items-center">
+          <input
+            ref={selectAllRef}
+            aria-label="Select all visible backups"
+            checked={allVisibleSelected}
+            className="size-4 rounded-[3px] border-input accent-primary"
+            disabled={visibleBackupIds.length === 0}
+            type="checkbox"
+            onChange={() => {
+              if (allVisibleSelected) selectionStore.deselect(visibleBackupIds)
+              else selectionStore.select(visibleBackupIds)
+            }}
+          />
+        </label>
+      </WorkspaceTableHeading>
       <WorkspaceTableHeading className="w-[26%] min-w-0">
         Backup
       </WorkspaceTableHeading>
@@ -929,6 +1128,7 @@ const BackupTableRow = React.memo(function BackupTableRow({
   destinations,
   dialogStore,
   relayName,
+  selectionStore,
   targetAvailable,
   targetName,
 }: {
@@ -938,6 +1138,7 @@ const BackupTableRow = React.memo(function BackupTableRow({
   destinations: ReadonlyArray<BackupAvailabilityDestination>
   dialogStore: BackupDialogStore
   relayName: string
+  selectionStore: BackupSelectionStore
   targetAvailable: boolean
   targetName: string
 }) {
@@ -945,6 +1146,9 @@ const BackupTableRow = React.memo(function BackupTableRow({
 
   return (
     <tr className="group transition-colors hover:bg-muted/20 has-checked:bg-primary/[0.07]">
+      <WorkspaceTableCell className="h-auto px-2 py-2.5">
+        <BackupSelectionCheckbox backup={backup} store={selectionStore} />
+      </WorkspaceTableCell>
       <WorkspaceTableCell className="h-auto py-2.5">
         <div className="min-w-0">
           <BackupNameEditor
@@ -1003,6 +1207,7 @@ const BackupMobileRow = React.memo(function BackupMobileRow({
   destinations,
   dialogStore,
   relayName,
+  selectionStore,
   targetAvailable,
   targetName,
 }: {
@@ -1012,22 +1217,31 @@ const BackupMobileRow = React.memo(function BackupMobileRow({
   destinations: ReadonlyArray<BackupAvailabilityDestination>
   dialogStore: BackupDialogStore
   relayName: string
+  selectionStore: BackupSelectionStore
   targetAvailable: boolean
   targetName: string
 }) {
   const target = backupTargetPresentation(backup, relayName, targetName)
   return (
-    <article aria-label={backup.name} className="min-w-0 p-3">
-      <BackupNameEditor
-        backupId={backup.id}
-        editable={canCreate}
-        name={backup.name}
-      />
-      {backup.taskError ? (
-        <p className="mt-1 line-clamp-2 text-[0.625rem] text-destructive">
-          {backup.taskError}
-        </p>
-      ) : null}
+    <article
+      aria-label={backup.name}
+      className="min-w-0 p-3 transition-colors has-checked:bg-primary/[0.07]"
+    >
+      <div className="flex min-w-0 items-start gap-2.5">
+        <BackupSelectionCheckbox backup={backup} store={selectionStore} />
+        <div className="min-w-0 flex-1">
+          <BackupNameEditor
+            backupId={backup.id}
+            editable={canCreate}
+            name={backup.name}
+          />
+          {backup.taskError ? (
+            <p className="mt-1 line-clamp-2 text-[0.625rem] text-destructive">
+              {backup.taskError}
+            </p>
+          ) : null}
+        </div>
+      </div>
       <div className="mt-2.5 overflow-hidden rounded-lg border bg-background/45 px-3 py-2.5">
         <BackupTargetLink
           available={targetAvailable}
@@ -1060,6 +1274,253 @@ const BackupMobileRow = React.memo(function BackupMobileRow({
         />
       </div>
     </article>
+  )
+})
+
+const BackupSelectionCheckbox = React.memo(function BackupSelectionCheckbox({
+  backup,
+  store,
+}: {
+  backup: Backup
+  store: BackupSelectionStore
+}) {
+  const getSelectedSnapshot = React.useCallback(
+    () => store.getSnapshot().has(backup.id),
+    [backup.id, store]
+  )
+  const selected = React.useSyncExternalStore(
+    store.subscribe,
+    getSelectedSnapshot,
+    () => false
+  )
+  const disabled = backupIsActive(backup)
+
+  return (
+    <label
+      className="grid size-7 shrink-0 place-items-center"
+      title={disabled ? "Wait for active backup work to finish" : undefined}
+    >
+      <input
+        aria-label={`Select ${backup.name}`}
+        checked={selected}
+        className="size-4 rounded-[3px] border-input accent-primary"
+        disabled={disabled}
+        type="checkbox"
+        onChange={() => store.toggle(backup.id)}
+      />
+    </label>
+  )
+})
+
+const BackupBulkActions = React.memo(function BackupBulkActions({
+  backups,
+  selectionStore,
+}: {
+  backups: Array<Backup>
+  selectionStore: BackupSelectionStore
+}) {
+  const queryClient = useQueryClient()
+  const selected = React.useSyncExternalStore(
+    selectionStore.subscribe,
+    selectionStore.getSnapshot,
+    selectionStore.getServerSnapshot
+  )
+  const [confirmOpen, setConfirmOpen] = React.useState(false)
+  const [confirmationBackups, setConfirmationBackups] = React.useState<
+    Array<Backup>
+  >([])
+  const selectedBackups = React.useMemo(
+    () => backups.filter((backup) => selected.has(backup.id)),
+    [backups, selected]
+  )
+  const remove = useMutation({
+    mutationFn: async (targets: Array<Backup>) => {
+      const settlements = await settlePromises(
+        targets,
+        (backup) => deleteBackup({ data: { backupId: backup.id } }),
+        4
+      )
+      return settlements.map(
+        (settlement): BackupBulkDeleteOutcome =>
+          settlement.status === "fulfilled"
+            ? {
+                backup: settlement.input,
+                result: settlement.value,
+                status: "deleted",
+              }
+            : {
+                backup: settlement.input,
+                message:
+                  settlement.reason instanceof Error
+                    ? settlement.reason.message
+                    : "Could not delete this backup",
+                status: "failed",
+              }
+      )
+    },
+    onSuccess: async (outcomes) => {
+      const deleted = outcomes.filter((outcome) => outcome.status === "deleted")
+      const failed = outcomes.filter((outcome) => outcome.status === "failed")
+      const deferred = deleted.filter(
+        (outcome) => !outcome.result.relayAccepted
+      )
+
+      if (failed.length === 0) {
+        setConfirmOpen(false)
+        setConfirmationBackups([])
+      } else {
+        setConfirmationBackups(failed.map((outcome) => outcome.backup))
+      }
+      if (deleted.length > 0) {
+        selectionStore.deselect(deleted.map((outcome) => outcome.backup.id))
+      }
+      await queryClient.invalidateQueries({ queryKey: queryKeys.backups.all })
+
+      if (failed.length > 0) {
+        showToast({
+          message:
+            deleted.length > 0
+              ? `${deleted.length} deleted; ${failed.length} could not be deleted`
+              : `${failed.length} backups could not be deleted`,
+          type: "error",
+        })
+        return
+      }
+      showToast({
+        message:
+          deferred.length > 0
+            ? `${deleted.length} backups scheduled; ${deferred.length} will resume when Relay reconnects`
+            : `${deleted.length} ${deleted.length === 1 ? "backup" : "backups"} queued for deletion`,
+        type: deferred.length > 0 ? "warning" : "success",
+      })
+    },
+  })
+  const failedOutcomes = (remove.data ?? []).filter(
+    (outcome) => outcome.status === "failed"
+  )
+
+  if (selectedBackups.length === 0 && !confirmOpen) return null
+
+  return (
+    <>
+      {selectedBackups.length > 0 ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-3 z-30 flex justify-center px-3">
+          <div className="pointer-events-auto flex max-w-full animate-in items-center gap-1.5 rounded-xl border border-accent-border/30 bg-[color-mix(in_oklab,var(--surface-overlay)_88%,transparent)] p-1.5 pl-3 text-popover-foreground shadow-2xl shadow-black/45 backdrop-blur-xl fade-in-0 slide-in-from-bottom-2">
+            <span
+              aria-live="polite"
+              className="mr-1 text-sm font-semibold whitespace-nowrap"
+            >
+              {selectedBackups.length} selected
+            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label="Clear backup selection"
+                  disabled={remove.isPending}
+                  size="icon-xs"
+                  type="button"
+                  variant="ghost"
+                  onClick={selectionStore.clear}
+                >
+                  <X />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">Clear selection</TooltipContent>
+            </Tooltip>
+            <span aria-hidden className="mx-0.5 h-5 w-px bg-border" />
+            <Button
+              className="shrink-0"
+              disabled={remove.isPending}
+              size="sm"
+              type="button"
+              variant="destructive"
+              onClick={() => {
+                remove.reset()
+                setConfirmationBackups(selectedBackups)
+                setConfirmOpen(true)
+              }}
+            >
+              <Trash2 /> Delete
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      <Dialog
+        open={confirmOpen}
+        onOpenChange={(open) => {
+          if (remove.isPending) return
+          setConfirmOpen(open)
+          if (!open) {
+            remove.reset()
+            setConfirmationBackups([])
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Delete {confirmationBackups.length}{" "}
+              {confirmationBackups.length === 1 ? "backup" : "backups"}?
+            </DialogTitle>
+            <DialogDescription>
+              Every selected backup and all of its stored artifacts will be
+              permanently removed. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-44 overflow-y-auto rounded-lg border bg-muted/15 px-3 py-2">
+            <ul className="divide-y divide-border/60 text-sm">
+              {confirmationBackups.map((backup) => (
+                <li
+                  key={backup.id}
+                  className="flex min-w-0 py-2 first:pt-0 last:pb-0"
+                >
+                  <span className="truncate font-medium">{backup.name}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          {failedOutcomes.length > 0 ? (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+              {failedOutcomes.map((outcome) => (
+                <p key={outcome.backup.id}>
+                  <span className="font-semibold">{outcome.backup.name}:</span>{" "}
+                  {outcome.message}
+                </p>
+              ))}
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button
+              disabled={remove.isPending}
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setConfirmOpen(false)
+                setConfirmationBackups([])
+                remove.reset()
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={remove.isPending || confirmationBackups.length === 0}
+              type="button"
+              variant="destructive"
+              onClick={() => remove.mutate(confirmationBackups)}
+            >
+              {remove.isPending ? (
+                <LoaderCircle className="animate-spin" />
+              ) : (
+                <Trash2 />
+              )}
+              Delete {confirmationBackups.length}{" "}
+              {confirmationBackups.length === 1 ? "backup" : "backups"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 })
 

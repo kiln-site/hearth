@@ -1,5 +1,9 @@
 import { Effect } from "effect"
 
+export type PromiseSettlement<TInput, TResult> =
+  | { input: TInput; status: "fulfilled"; value: TResult }
+  | { input: TInput; reason: unknown; status: "rejected" }
+
 export function promiseEffect<TResult>(
   run: () => PromiseLike<TResult>
 ): Effect.Effect<TResult, unknown> {
@@ -56,6 +60,34 @@ export function ensuringPromise<TResult>(
           Effect.orDie
         )
       )
+    )
+  )
+}
+
+export function settlePromises<TInput, TResult>(
+  inputs: ReadonlyArray<TInput>,
+  run: (input: TInput) => PromiseLike<TResult>,
+  concurrency = 4
+): Promise<Array<PromiseSettlement<TInput, TResult>>> {
+  return Effect.runPromise(
+    Effect.forEach(
+      inputs,
+      (input) =>
+        promiseEffect(() => run(input)).pipe(
+          Effect.match({
+            onFailure: (reason): PromiseSettlement<TInput, TResult> => ({
+              input,
+              reason,
+              status: "rejected",
+            }),
+            onSuccess: (value): PromiseSettlement<TInput, TResult> => ({
+              input,
+              status: "fulfilled",
+              value,
+            }),
+          })
+        ),
+      { concurrency }
     )
   )
 }
