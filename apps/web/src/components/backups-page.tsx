@@ -1355,7 +1355,7 @@ const BackupSelectionCount = React.memo(function BackupSelectionCount({
   return (
     <span
       aria-live="polite"
-      className="mr-1 inline-flex items-center gap-1.5 text-sm font-semibold whitespace-nowrap"
+      className="mr-1 inline-flex items-center gap-2 text-sm font-semibold whitespace-nowrap"
     >
       <span className="grid rounded-sm border border-border bg-muted/50 px-1.5 py-0.5 text-xs tabular-nums">
         <span aria-hidden className="invisible col-start-1 row-start-1">
