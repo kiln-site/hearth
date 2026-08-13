@@ -1346,7 +1346,7 @@ const BackupSelectionCheckbox = React.memo(function BackupSelectionCheckbox({
   )
 })
 
-const BackupSelectionCount = React.memo(function BackupSelectionCount({
+const BackupSelectionAmount = React.memo(function BackupSelectionAmount({
   store,
 }: {
   store: BackupSelectionStore
@@ -1361,20 +1361,7 @@ const BackupSelectionCount = React.memo(function BackupSelectionCount({
     () => 0
   )
 
-  return (
-    <span
-      aria-live="polite"
-      className="mr-1 inline-flex items-center gap-2 text-sm font-semibold whitespace-nowrap"
-    >
-      <span className="grid rounded-sm border border-border bg-muted/50 px-1.5 py-0.5 text-xs tabular-nums">
-        <span aria-hidden className="invisible col-start-1 row-start-1">
-          999
-        </span>
-        <span className="col-start-1 row-start-1 text-center">{count}</span>
-      </span>
-      <span>Selected</span>
-    </span>
-  )
+  return <span className="col-start-1 row-start-1 text-center">{count}</span>
 })
 
 const BackupBulkActionMenu = React.memo(function BackupBulkActionMenu({
@@ -1414,7 +1401,18 @@ const BackupBulkActionMenu = React.memo(function BackupBulkActionMenu({
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-3 z-30 flex justify-center px-3">
       <div className="pointer-events-auto flex max-w-full animate-in items-center gap-1.5 rounded-xl border border-accent-border/30 bg-[color-mix(in_oklab,var(--surface-overlay)_88%,transparent)] p-1.5 pl-3 text-popover-foreground shadow-2xl shadow-black/45 backdrop-blur-xl fade-in-0 slide-in-from-bottom-2">
-        <BackupSelectionCount store={store} />
+        <span
+          aria-live="polite"
+          className="mr-1 inline-flex items-center gap-2 text-sm font-semibold whitespace-nowrap"
+        >
+          <span className="grid rounded-sm border border-border bg-muted/50 px-1.5 py-0.5 text-xs tabular-nums">
+            <span aria-hidden className="invisible col-start-1 row-start-1">
+              999
+            </span>
+            <BackupSelectionAmount store={store} />
+          </span>
+          <span>Selected</span>
+        </span>
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
