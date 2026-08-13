@@ -15,6 +15,7 @@ import {
 } from "@/effect/backups"
 import { deleteManagedDatabaseRecordEffect } from "@/effect/managed-databases"
 import { runAppEffect } from "@/effect/runtime"
+import { timestampedBackupName } from "@/lib/backup-name"
 import { relayRpc } from "@/lib/relay-connection"
 import type { PersistedRelay } from "@/lib/relay-registry"
 
@@ -114,7 +115,7 @@ async function ensureFinalDatabaseDeletion(input: {
             reserveDatabaseBackupEffect({
               backupId: randomUUID(),
               createdBy: input.requestedBy,
-              name: "Final database backup before deletion",
+              name: timestampedBackupName("final"),
               reason: "final_delete",
               relayId: input.relay.id,
               requestedMaxBytes: null,

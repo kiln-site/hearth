@@ -19,6 +19,7 @@ import {
 import { runAppEffect } from "@/effect/runtime"
 import { deleteInstanceDomainEffect } from "@/server/domains.server"
 import { finalizeInstanceDeletionEffect } from "@/server/instance-deletion-cleanup"
+import { timestampedBackupName } from "@/lib/backup-name"
 import { relayRpc } from "@/lib/relay-connection"
 import type { PersistedRelay } from "@/lib/relay-registry"
 
@@ -52,7 +53,7 @@ export async function ensureFinalInstanceDeletion(input: {
             reserveInstanceBackupEffect({
               backupId: randomUUID(),
               createdBy: input.requestedBy,
-              name: "Final backup before deletion",
+              name: timestampedBackupName("final"),
               reason: "final_delete",
               relayId: input.relay.id,
               requestedMaxBytes: null,

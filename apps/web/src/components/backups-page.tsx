@@ -61,6 +61,7 @@ import {
 
 import { ServerScopePicker } from "@/components/server-scope-picker"
 import type { ServerPickerOption } from "@/components/server-picker-list"
+import { timestampedBackupName } from "@/lib/backup-name"
 import { relayInstanceRouteId } from "@/lib/relay-fleet"
 import {
   readFileDownloadPreferences,
@@ -1982,7 +1983,7 @@ function CreateBackupDialog({
   targets: Array<CreateTarget>
 }) {
   const queryClient = useQueryClient()
-  const [name, setName] = React.useState("Manual backup")
+  const [name, setName] = React.useState(() => timestampedBackupName("manual"))
   const [targetKeyValue, setTargetKeyValue] = React.useState(
     () =>
       targets.find((target) => target.key === initialTargetKey)?.key ??
