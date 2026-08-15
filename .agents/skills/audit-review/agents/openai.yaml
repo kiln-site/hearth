@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit Review"
+  short_description: "Audit pull-request review findings"
+  default_prompt: "Use $audit-review to audit this pull-request review."
