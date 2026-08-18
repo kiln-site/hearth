@@ -180,6 +180,15 @@ test("relay mode accepts a Relay hostname without a Hearth hostname", () => {
   assert.equal(environment.KILN_HEARTH_INTERNAL_URL, "")
 })
 
+test("accepts public-ip as the Relay game host", () => {
+  const directory = mkdtempSync(join(tmpdir(), "kiln-installer-public-ip-"))
+  const result = runInstaller(directory, "kiln", {
+    KILN_RELAY_GAME_HOST: "public-ip",
+  })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(dotenv(directory).KILN_RELAY_GAME_HOST, "public-ip")
+})
+
 test("rejects unsupported modes", () => {
   const directory = mkdtempSync(join(tmpdir(), "kiln-installer-invalid-"))
   const mode = runInstaller(directory, "everything")
@@ -201,4 +210,14 @@ test("installer script parses and contains no destructive volume operations", ()
   assert.match(source, /docker pull "\$TRAEFIK_IMAGE"/u)
   assert.match(source, /docker network disconnect -f kiln-relay-edge/u)
   assert.match(source, /docker ps --filter "publish=\$\{port\}"/u)
+  assert.match(
+    source,
+    /update_persisted_proxy_settings\(\) \{[\s\S]*?docker volume inspect[\s\S]*?docker run --rm/u
+  )
+  assert.doesNotMatch(source, /mode_changed/u)
+  assert.match(source, /SELECT browser_origin, client_id FROM kiln_relay/u)
+  assert.match(source, /output\.indexOf\("\["\)/u)
+  assert.match(source, /client\.id === clientId/u)
+  assert.match(source, /client\.lastSeenAt >= startedAt/u)
+  assert.match(source, /' -- "\$client_id" "https:\/\/\$\{HEARTH_HOST\}"/u)
 })

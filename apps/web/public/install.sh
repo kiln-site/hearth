@@ -397,7 +397,8 @@ prepare_directory() {
   GAME_PORT_RANGE="${GAME_PORT_RANGE:-30000-39999}"
   publish_address="${publish_address:-127.0.0.1}"
   sftp_publish_address="${sftp_publish_address:-0.0.0.0}"
-  valid_hostname "$GAME_HOST" || die "Invalid game-server hostname '$GAME_HOST'."
+  [[ "$GAME_HOST" == "public-ip" ]] || valid_hostname "$GAME_HOST" ||
+    die "Invalid game-server hostname '$GAME_HOST'."
   valid_port "$RELAY_PORT" || die "KILN_RELAY_PORT must be between 1 and 65535."
   valid_port "$SFTP_PORT" || die "KILN_RELAY_SFTP_PORT must be between 1 and 65535."
   valid_game_port_range "$GAME_PORT_RANGE" ||
@@ -635,14 +636,8 @@ ensure_relay_edge_network() {
 }
 
 update_persisted_proxy_settings() {
-  local previous="$1"
-  local mode_changed=false
-  [[ -n "$previous" && "$previous" != "$PROXY" ]] && mode_changed=true
-  [[ "$mode_changed" == "true" || "$ACME_EMAIL_REQUESTED" == "true" ]] || return 0
   docker volume inspect kiln-relay-data >/dev/null 2>&1 || return 0
-  if [[ "$mode_changed" == "true" ]]; then
-    log "Changing the persisted Relay edge from $previous to $PROXY."
-  fi
+  log "Synchronizing the persisted Relay edge with the installer topology."
   compose stop relay >/dev/null 2>&1 || true
   docker run --rm --entrypoint /nodejs/bin/node \
     --volume kiln-relay-data:/data \
@@ -652,8 +647,7 @@ update_persisted_proxy_settings() {
 }
 
 detach_relay_edge_dependents() {
-  local previous="$1"
-  [[ "$previous" == "traefik" && "$PROXY" != "traefik" ]] || return 0
+  [[ "$PROXY" != "traefik" ]] || return 0
   docker network inspect kiln-relay-edge >/dev/null 2>&1 || return 0
   local container
   while IFS= read -r container; do
@@ -700,16 +694,54 @@ wait_for_url() {
   die "Timed out waiting for $url (expected HTTP $expected). Check DNS, ports 80/443, and the proxy logs."
 }
 
-relay_has_hearth_client() {
-  local clients
-  clients="$(compose exec -T relay kiln-relay hearth list 2>/dev/null || true)"
-  [[ "$clients" == *"https://${HEARTH_HOST}"* ]]
+hearth_relay_client_id() {
+  local rows browser_origin client_id matched=""
+  rows="$(
+    compose exec -T mysql sh -ec \
+      'exec mysql --batch --skip-column-names --user="$MYSQL_USER" --password="$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT browser_origin, client_id FROM kiln_relay WHERE enabled = TRUE"' \
+      2>/dev/null || true
+  )"
+  while IFS=$'\t' read -r browser_origin client_id; do
+    [[ "$browser_origin" == "https://${RELAY_HOST}" ]] || continue
+    [[ "$client_id" =~ ^[A-Za-z0-9_-]{43}$ ]] || return 1
+    [[ -z "$matched" ]] || return 1
+    matched="$client_id"
+  done <<<"$rows"
+  [[ -n "$matched" ]] || return 1
+  printf '%s' "$matched"
+}
+
+relay_has_current_hearth_client() {
+  local started_at="$1"
+  local client_id
+  client_id="$(hearth_relay_client_id)" || return 1
+  compose exec -T relay /nodejs/bin/node -e '
+const { execFileSync } = require("node:child_process")
+const output = execFileSync("/usr/local/bin/kiln-relay", ["hearth", "list"], {
+  encoding: "utf8",
+})
+const jsonStart = output.indexOf("[")
+if (jsonStart === -1) process.exit(1)
+const clients = JSON.parse(output.slice(jsonStart))
+const clientId = process.argv[1]
+const origin = process.argv[2]
+const startedAt = Number(process.argv[3])
+const current = clients.some(
+  (client) =>
+    client.id === clientId &&
+    client.origins.includes(origin) &&
+    typeof client.lastSeenAt === "number" &&
+    client.lastSeenAt >= startedAt
+)
+process.exit(current ? 0 : 1)
+' -- "$client_id" "https://${HEARTH_HOST}" "$started_at" >/dev/null 2>&1
 }
 
 wait_for_automatic_pairing() {
+  local started_at="$1"
   local deadline=$((SECONDS + 60))
   while ((SECONDS < deadline)); do
-    relay_has_hearth_client && return
+    relay_has_current_hearth_client "$started_at" && return
     sleep 2
   done
 
@@ -718,10 +750,10 @@ wait_for_automatic_pairing() {
   wait_for_container kiln-hearth
   deadline=$((SECONDS + 60))
   while ((SECONDS < deadline)); do
-    relay_has_hearth_client && return
+    relay_has_current_hearth_client "$started_at" && return
     sleep 2
   done
-  die "Hearth is healthy but did not pair with its Relay. Rerun the installer to retry."
+  die "Hearth is healthy but its current client identity did not connect to Relay. Rerun the installer to retry."
 }
 
 check_dns() {
@@ -749,7 +781,6 @@ assert_proxy_ports_available() {
 }
 
 deploy() {
-  local previous_proxy="$1"
   compose config --quiet
   assert_proxy_ports_available
   ensure_relay_edge_network
@@ -765,8 +796,8 @@ deploy() {
       docker pull "$TRAEFIK_IMAGE"
     fi
   fi
-  detach_relay_edge_dependents "$previous_proxy"
-  update_persisted_proxy_settings "$previous_proxy"
+  detach_relay_edge_dependents
+  update_persisted_proxy_settings
 
   log "Recreating Relay and its dependencies without removing data."
   if [[ "$MODE" == "relay" ]]; then
@@ -785,10 +816,12 @@ deploy() {
   fi
 
   log "Starting Hearth after the Relay edge is ready."
+  local pairing_started_at
+  pairing_started_at="$(( $(date +%s) * 1000 ))"
   compose up -d --force-recreate hearth
   wait_for_container kiln-hearth
   wait_for_url "https://${HEARTH_HOST}/api/health" 200
-  wait_for_automatic_pairing
+  wait_for_automatic_pairing "$pairing_started_at"
 }
 
 summary() {
@@ -831,7 +864,7 @@ main() {
   if [[ "$MODE" != "relay" ]]; then
     check_dns "$HEARTH_HOST"
   fi
-  deploy "$previous_proxy"
+  deploy
   summary
 }
 
