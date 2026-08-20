@@ -37,8 +37,11 @@ explicit `--proxy auto` after the mode argument.
 
 Bundled Traefik requires ports 80 and 443. Stop any existing web proxy before
 explicitly switching from Coolify to bundled Traefik; the installer refuses to
-replace an active listener. Installed Hearth and Relay hostnames are preserved
-on repair because changing them also requires a Relay-client origin migration.
+replace an active listener. Hostnames become immutable after the installer has
+verified the public topology. Generated configuration from a failed first
+attempt or dry run remains provisional, so its hostnames can be corrected.
+Changing a completed installation still requires a Relay-client origin
+migration and is rejected before containers are changed.
 
 ## Repairs and reinstalls
 

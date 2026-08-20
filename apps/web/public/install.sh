@@ -6,6 +6,7 @@ INSTALL_DIR="${KILN_INSTALL_DIR:-/opt/kiln}"
 ENV_FILE="${INSTALL_DIR}/.env"
 COMPOSE_FILE="${INSTALL_DIR}/compose.yaml"
 PROXY_COMPOSE_FILE="${INSTALL_DIR}/compose.proxy.yaml"
+INSTALL_MARKER_FILE="${INSTALL_DIR}/.installed"
 DRY_RUN="${KILN_INSTALL_DRY_RUN:-false}"
 SKIP_PULL="${KILN_INSTALL_SKIP_PULL:-false}"
 MODE=""
@@ -291,10 +292,10 @@ resolve_hosts() {
   valid_hostname "$HEARTH_HOST" || die "Invalid Hearth hostname '$HEARTH_HOST'."
   valid_hostname "$RELAY_HOST" || die "Invalid Relay hostname '$RELAY_HOST'."
   [[ "$HEARTH_HOST" != "$RELAY_HOST" ]] || die "Hearth and Relay need different hostnames."
-  if [[ -n "$saved_hearth" && "$HEARTH_HOST" != "$saved_hearth" ]]; then
+  if [[ -f "$INSTALL_MARKER_FILE" && -n "$saved_hearth" && "$HEARTH_HOST" != "$saved_hearth" ]]; then
     die "Changing an installed Hearth hostname is not yet supported because it requires rotating the Relay client origin. Keep $saved_hearth or perform a documented migration."
   fi
-  if [[ -n "$saved_relay" && "$RELAY_HOST" != "$saved_relay" ]]; then
+  if [[ -f "$INSTALL_MARKER_FILE" && -n "$saved_relay" && "$RELAY_HOST" != "$saved_relay" ]]; then
     die "Changing an installed Relay hostname is not yet supported. Keep $saved_relay or perform a documented migration."
   fi
 }
@@ -329,6 +330,7 @@ prepare_directory() {
   [[ ! -L "$INSTALL_DIR" ]] || die "$INSTALL_DIR must not be a symbolic link."
   install -d -m 700 "$INSTALL_DIR"
   [[ ! -L "$ENV_FILE" ]] || die "$ENV_FILE must not be a symbolic link."
+  [[ ! -L "$INSTALL_MARKER_FILE" ]] || die "$INSTALL_MARKER_FILE must not be a symbolic link."
   local env_work
   env_work="$(mktemp "${INSTALL_DIR}/.env.XXXXXX")"
   TEMP_FILES+=("$env_work")
@@ -376,7 +378,17 @@ prepare_directory() {
   fi
   set_env KILN_RELAY_HOST "$RELAY_HOST" "$env_work"
   set_env KILN_RELAY_PUBLIC_URL "https://${RELAY_HOST}" "$env_work"
-  [[ -n "$GAME_HOST" ]] || GAME_HOST="$(read_env KILN_RELAY_GAME_HOST)"
+  if [[ -z "$GAME_HOST" ]]; then
+    local saved_game_host saved_relay_host
+    saved_game_host="$(read_env KILN_RELAY_GAME_HOST)"
+    saved_relay_host="$(read_env KILN_RELAY_HOST)"
+    if [[ ! -f "$INSTALL_MARKER_FILE" ]] &&
+      [[ -n "$saved_relay_host" && "$saved_game_host" == "$saved_relay_host" ]]; then
+      GAME_HOST="$RELAY_HOST"
+    else
+      GAME_HOST="$saved_game_host"
+    fi
+  fi
   [[ -n "$GAME_HOST" ]] || GAME_HOST="$RELAY_HOST"
   ACME_EMAIL="${ACME_EMAIL:-$(read_env KILN_RELAY_ACME_EMAIL)}"
   RELAY_PORT="${KILN_RELAY_PORT:-$(read_env KILN_RELAY_PORT)}"
@@ -785,6 +797,16 @@ check_dns() {
   fi
 }
 
+mark_installation_complete() {
+  [[ ! -L "$INSTALL_MARKER_FILE" ]] || die "$INSTALL_MARKER_FILE must not be a symbolic link."
+  local marker_work
+  marker_work="$(mktemp "${INSTALL_DIR}/.installed.XXXXXX")"
+  TEMP_FILES+=("$marker_work")
+  printf 'Kiln installer topology committed\n' >"$marker_work"
+  chmod 600 "$marker_work"
+  mv -f "$marker_work" "$INSTALL_MARKER_FILE"
+}
+
 assert_proxy_ports_available() {
   [[ "$PROXY" == "traefik" ]] || return 0
   local port owner owners
@@ -887,6 +909,7 @@ main() {
     check_dns "$HEARTH_HOST"
   fi
   deploy
+  mark_installation_complete
   summary
 }
 

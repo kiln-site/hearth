@@ -151,11 +151,24 @@ test("rejects unsafe runtime values", () => {
   }
 })
 
-test("rejects hostname changes on an existing paired topology", () => {
+test("allows hostname corrections before the public topology is committed", () => {
   const directory = mkdtempSync(join(tmpdir(), "kiln-installer-host-change-"))
   assert.equal(runInstaller(directory, "kiln").status, 0)
-  const result = runInstaller(directory, "kiln", {
+  const corrected = runInstaller(directory, "kiln", {
     KILN_DOMAIN: "new.example.com",
+  })
+  assert.equal(corrected.status, 0, corrected.stderr)
+  assert.equal(dotenv(directory).KILN_HEARTH_HOST, "hearth.new.example.com")
+  assert.equal(dotenv(directory).KILN_RELAY_HOST, "relay.new.example.com")
+  assert.equal(dotenv(directory).KILN_RELAY_GAME_HOST, "relay.new.example.com")
+})
+
+test("rejects hostname changes after the public topology is committed", () => {
+  const directory = mkdtempSync(join(tmpdir(), "kiln-installer-host-lock-"))
+  assert.equal(runInstaller(directory, "kiln").status, 0)
+  writeFileSync(join(directory, ".installed"), "committed\n")
+  const result = runInstaller(directory, "kiln", {
+    KILN_DOMAIN: "another.example.com",
   })
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /Changing an installed Hearth hostname/u)
@@ -341,5 +354,9 @@ test("installer script parses and contains no destructive volume operations", ()
   assert.match(
     source,
     /-n "\$backup_key" && -n "\$installation_id"[\s\S]*?refusing to replace its identity or secrets/u
+  )
+  assert.match(
+    source,
+    /deploy\n  mark_installation_complete\n  summary/u
   )
 })
