@@ -91,10 +91,18 @@ kiln files write <relay-id>:<instance-id> server.properties ./server.properties
 kiln files download <relay-id>:<instance-id> logs/latest.log ./latest.log
 kiln files upload <relay-id>:<instance-id> ./plugins/example.jar plugins/example.jar
 kiln files upload <relay-id>:<instance-id> https://example.com/example.jar plugins/example.jar
+kiln backups list --limit 200
+kiln backups create server <relay-id>:<instance-id> --name "Before update"
+kiln backups create server <relay-id>:<instance-id> --storage <destination-uuid>
+kiln backups create server <relay-id>:<instance-id> --mode full
+kiln backup download <backup-id>
 kiln server delete <relay-id>:<instance-id> --confirm <relay-id>:<instance-id>
 ```
 
 Disk quotas must be at least `0.1GiB`, matching the Relay allocation minimum.
+Server backups default to incremental restic snapshots and accept exactly one
+Relay-local or S3-compatible destination. Full archives can use multiple
+destinations.
 
 Uploads and downloads use the Relay SFTP endpoint and verify its advertised
 SSH host-key fingerprint. HTTPS upload sources are downloaded directly by the

@@ -54,6 +54,13 @@ import {
 } from "@workspace/ui/components/dropdown-menu"
 import { Input } from "@workspace/ui/components/input"
 import { Progress } from "@workspace/ui/components/progress"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@workspace/ui/components/select"
 import { showToast } from "@workspace/ui/components/sonner"
 import { Switch } from "@workspace/ui/components/switch"
 import { Textarea } from "@workspace/ui/components/textarea"
@@ -576,7 +583,7 @@ export const BackupsPage = React.memo(function BackupsPage({
     (): Array<BackupAvailabilityDestination> => [
       { enabled: true, id: null, name: "Local", ownerUserId: null },
       ...storage.map((destination) => ({
-        enabled: destination.enabled,
+        enabled: destination.enabled && !destination.deleting,
         id: destination.id,
         name: destination.name,
         ownerUserId: destination.ownerUserId,
@@ -1386,11 +1393,16 @@ const BackupTableRow = React.memo(function BackupTableRow({
       </WorkspaceTableCell>
       <WorkspaceTableCell className="h-auto py-2.5">
         <div className="min-w-0">
-          <BackupNameEditor
-            backupId={backup.id}
-            editable={canCreate}
-            name={backup.name}
-          />
+          <div className="flex min-w-0 items-center gap-1.5">
+            <div className="min-w-0 flex-1">
+              <BackupNameEditor
+                backupId={backup.id}
+                editable={canCreate}
+                name={backup.name}
+              />
+            </div>
+            <BackupModeBadge mode={backup.backupMode} />
+          </div>
           <BackupAvailabilityTags
             backup={backup}
             canCopy={canCreate}
@@ -1476,11 +1488,16 @@ const BackupMobileRow = React.memo(function BackupMobileRow({
       <div className="flex min-w-0 items-start gap-2.5">
         <BackupSelectionCheckbox backup={backup} store={selectionStore} />
         <div className="min-w-0 flex-1">
-          <BackupNameEditor
-            backupId={backup.id}
-            editable={canCreate}
-            name={backup.name}
-          />
+          <div className="flex min-w-0 items-center gap-1.5">
+            <div className="min-w-0 flex-1">
+              <BackupNameEditor
+                backupId={backup.id}
+                editable={canCreate}
+                name={backup.name}
+              />
+            </div>
+            <BackupModeBadge mode={backup.backupMode} />
+          </div>
         </div>
       </div>
       <div className="mt-2.5 overflow-hidden rounded-lg border bg-background/45 px-3 py-2.5">
@@ -2798,19 +2815,31 @@ function DownloadBackupDialog({
     )
   )
   const signDownload = useMutation({
-    mutationFn: (mode: "download" | "link") =>
-      getBackupDownloadUrl({
-        data: {
-          artifactId,
-          backupId: backup.id,
-          expiresInSeconds: mode === "download" ? 300 : expiresInSeconds,
-          preview: shouldPreviewBackupDownload(
-            mode,
-            readFileDownloadPreferences().previewBackupDownloads
-          ),
-        },
-      }),
+    mutationFn: async (mode: "download" | "link") => {
+      let poll = false
+      for (;;) {
+        const result = await getBackupDownloadUrl({
+          data: {
+            artifactId,
+            backupId: backup.id,
+            expiresInSeconds: mode === "download" ? 300 : expiresInSeconds,
+            poll,
+            preview: shouldPreviewBackupDownload(
+              mode,
+              readFileDownloadPreferences().previewBackupDownloads
+            ),
+          },
+        })
+        poll = true
+        if (!("url" in result)) {
+          await new Promise((resolve) => setTimeout(resolve, 1_000))
+          continue
+        }
+        return result
+      }
+    },
     onSuccess: (result, mode) => {
+      if (!("url" in result)) return
       if (mode === "link") {
         setShared(result)
         return
@@ -2835,31 +2864,44 @@ function DownloadBackupDialog({
           <DialogDescription>
             Choose an available copy, then download it or create a temporary
             signed URL.
+            {backup.artifactKind === "restic_snapshot"
+              ? " Incremental snapshots are exported to a zip first."
+              : ""}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
+          {signDownload.isPending &&
+          backup.artifactKind === "restic_snapshot" ? (
+            <p className="text-xs text-muted-foreground">Preparing export…</p>
+          ) : null}
           <label className="block">
             <span className="mb-2 block text-xs font-medium">Source</span>
-            <select
-              aria-label="Backup download source"
-              className="h-10 w-full rounded-lg border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+            <Select
               value={artifactId}
-              onChange={(event) => {
-                setArtifactId(event.currentTarget.value)
+              onValueChange={(value) => {
+                setArtifactId(value)
                 setShared(null)
               }}
             >
-              {availableArtifacts.map((candidate) => (
-                <option key={candidate.id} value={candidate.id}>
-                  {candidate.storageId
-                    ? `${storageNames.get(candidate.storageId) ?? "S3"} · S3`
-                    : "Local Relay"}
-                  {candidate.bytes === null
-                    ? ""
-                    : ` · ${formatBytes(candidate.bytes)}`}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger
+                aria-label="Backup download source"
+                className="h-10 w-full px-3 [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="w-max min-w-(--radix-select-trigger-width)">
+                {availableArtifacts.map((candidate) => (
+                  <SelectItem key={candidate.id} value={candidate.id}>
+                    {candidate.storageId
+                      ? `${storageNames.get(candidate.storageId) ?? "S3"} · S3`
+                      : "Local Relay"}
+                    {candidate.bytes === null
+                      ? ""
+                      : ` · ${formatBytes(candidate.bytes)}`}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </label>
 
           <div className="grid grid-cols-2 gap-3 rounded-lg border bg-muted/15 p-3">
@@ -2902,20 +2944,24 @@ function DownloadBackupDialog({
                   setShared(null)
                 }}
               />
-              <select
-                aria-label="Temporary URL duration unit"
-                className="h-9 rounded-lg border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+              <Select
                 value={expiryUnit}
-                onChange={(event) => {
-                  setExpiryUnit(
-                    event.currentTarget.value === "hours" ? "hours" : "minutes"
-                  )
+                onValueChange={(value) => {
+                  setExpiryUnit(value === "hours" ? "hours" : "minutes")
                   setShared(null)
                 }}
               >
-                <option value="minutes">Minutes</option>
-                <option value="hours">Hours</option>
-              </select>
+                <SelectTrigger
+                  aria-label="Temporary URL duration unit"
+                  className="h-8 shrink-0 px-3 whitespace-nowrap"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="minutes">Minutes</SelectItem>
+                  <SelectItem value="hours">Hours</SelectItem>
+                </SelectContent>
+              </Select>
               <Button
                 disabled={!artifact || signDownload.isPending}
                 type="button"
@@ -3066,19 +3112,34 @@ function CreateBackupDialog({
   const [destinationKeys, setDestinationKeys] = React.useState<Array<string>>([
     "default",
   ])
+  const [mode, setMode] = React.useState<"full" | "incremental">("incremental")
   const target = targets.find((candidate) => candidate.key === targetKeyValue)
+  const incremental = target?.kind === "instance" && mode === "incremental"
   const availableStorage = React.useMemo(
     () =>
       storage.filter(
         (destination) =>
           destination.enabled &&
+          !destination.deleting &&
           (target?.kind !== "platform" || destination.ownerUserId === null)
       ),
     [storage, target?.kind]
   )
+  const destinationKeysInUse = React.useMemo(() => {
+    const allowed = new Set([
+      "default",
+      "local",
+      ...availableStorage.map((destination) => destination.id),
+    ])
+    const next = destinationKeys.filter((destination) =>
+      allowed.has(destination)
+    )
+    const usable = next.length > 0 ? next : ["default"]
+    return incremental ? [usable[0] ?? "default"] : usable
+  }, [availableStorage, destinationKeys, incremental])
   const selectedDestinations = React.useMemo(
-    () => new Set(destinationKeys),
-    [destinationKeys]
+    () => new Set(destinationKeysInUse),
+    [destinationKeysInUse]
   )
   const create = useMutation({
     mutationFn: async () => {
@@ -3090,14 +3151,18 @@ function CreateBackupDialog({
         ...(selectedDestinations.has("default")
           ? {}
           : {
-              storageIds: destinationKeys.map((destination) =>
+              storageIds: destinationKeysInUse.map((destination) =>
                 destination === "local" ? null : destination
               ),
             }),
       }
       if (target.kind === "instance") {
         return createInstanceBackup({
-          data: { ...data, instanceId: target.id },
+          data: {
+            ...data,
+            instanceId: target.id,
+            mode: incremental ? "incremental" : "full",
+          },
         })
       }
       if (target.kind === "database") {
@@ -3119,20 +3184,12 @@ function CreateBackupDialog({
     },
   })
 
-  React.useEffect(() => {
-    const allowed = new Set([
-      "default",
-      "local",
-      ...availableStorage.map((destination) => destination.id),
-    ])
-    setDestinationKeys((current) => {
-      const next = current.filter((destination) => allowed.has(destination))
-      return next.length > 0 ? next : ["default"]
-    })
-  }, [availableStorage])
-
   const toggleDestination = (destination: string, checked: boolean) => {
     setDestinationKeys((current) => {
+      if (incremental) {
+        if (!checked) return ["default"]
+        return [destination]
+      }
       if (destination === "default") {
         return checked ? ["default"] : ["local"]
       }
@@ -3167,20 +3224,55 @@ function CreateBackupDialog({
           </label>
           <label className="block">
             <span className="mb-2 block text-xs font-medium">Target</span>
-            <select
-              aria-label="Backup target"
-              className="h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+            <Select
+              disabled={targets.length === 0}
               value={targetKeyValue}
-              onChange={(event) => setTargetKeyValue(event.currentTarget.value)}
+              onValueChange={setTargetKeyValue}
             >
-              {targets.map((option) => (
-                <option key={option.key} value={option.key}>
-                  {targetKindLabel(option.kind)} · {option.name} ·{" "}
-                  {option.relayName}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger
+                aria-label="Backup target"
+                className="h-8 w-full [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:flex-1 [&_[data-slot=select-value]]:truncate [&_[data-slot=select-value]]:text-left"
+              >
+                <SelectValue placeholder="No targets available" />
+              </SelectTrigger>
+              <SelectContent className="w-max max-w-[calc(100vw-2rem)] min-w-(--radix-select-trigger-width)">
+                {targets.map((option) => (
+                  <SelectItem key={option.key} value={option.key}>
+                    {targetKindLabel(option.kind)} · {option.name} ·{" "}
+                    {option.relayName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </label>
+          {target?.kind === "instance" ? (
+            <fieldset>
+              <legend className="mb-2 text-xs font-medium">Mode</legend>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <BackupDestinationChoice
+                  checked={mode === "incremental"}
+                  description="Deduplicated snapshots on this Relay or S3"
+                  icon={Archive}
+                  label="Incremental"
+                  onCheckedChange={(checked) => {
+                    if (checked) {
+                      setMode("incremental")
+                      setDestinationKeys((current) => [current[0] ?? "default"])
+                    }
+                  }}
+                />
+                <BackupDestinationChoice
+                  checked={mode === "full"}
+                  description="Portable zip archive"
+                  icon={HardDrive}
+                  label="Full archive"
+                  onCheckedChange={(checked) => {
+                    if (checked) setMode("full")
+                  }}
+                />
+              </div>
+            </fieldset>
+          ) : null}
           <fieldset>
             <legend className="mb-2 text-xs font-medium">Destinations</legend>
             <div className="grid gap-2 sm:grid-cols-2">
@@ -3216,11 +3308,13 @@ function CreateBackupDialog({
               ))}
             </div>
             <span className="mt-1.5 block text-[0.625rem] text-muted-foreground">
-              {target?.kind === "platform"
-                ? "Platform bundles can use Relay-local and platform-owned S3 destinations."
-                : target?.kind === "instance"
-                  ? "Choose one or more copies. Default uses this server’s preferred destination."
-                  : "Choose one or more copies. Default uses Relay-local storage."}
+              {incremental
+                ? "Choose one destination. Incremental snapshots can stay on this Relay or use S3."
+                : target?.kind === "platform"
+                  ? "Platform bundles can use Relay-local and platform-owned S3 destinations."
+                  : target?.kind === "instance"
+                    ? "Choose one or more copies. Default uses this server’s preferred destination."
+                    : "Choose one or more copies. Default uses Relay-local storage."}
             </span>
           </fieldset>
           {create.error ? (
@@ -3327,12 +3421,25 @@ function InstanceBackupSettingsEditor({
   const [adminSizeLimit, setAdminSizeLimit] = React.useState(() =>
     bytesToGiBInput(policy.adminSizeLimitBytes)
   )
-  const [storageId, setStorageId] = React.useState(policy.storageId ?? "local")
-  const [exclude, setExclude] = React.useState(() => policy.exclude.join("\n"))
   const enabledStorage = React.useMemo(
-    () => storage.filter((destination) => destination.enabled),
+    () =>
+      storage.filter(
+        (destination) => destination.enabled && !destination.deleting
+      ),
     [storage]
   )
+  const [storageId, setStorageId] = React.useState(() =>
+    policy.storageId &&
+    storage.some(
+      (destination) =>
+        destination.id === policy.storageId &&
+        destination.enabled &&
+        !destination.deleting
+    )
+      ? policy.storageId
+      : "local"
+  )
+  const [exclude, setExclude] = React.useState(() => policy.exclude.join("\n"))
   const save = useMutation({
     mutationFn: async () => {
       const operations: Array<Promise<unknown>> = [
@@ -3449,19 +3556,22 @@ function InstanceBackupSettingsEditor({
           <span className="mb-2 block text-xs font-medium">
             Preferred destination
           </span>
-          <select
-            aria-label="Preferred backup destination"
-            className="h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-            value={storageId}
-            onChange={(event) => setStorageId(event.currentTarget.value)}
-          >
-            <option value="local">Local Relay storage</option>
-            {enabledStorage.map((destination) => (
-              <option key={destination.id} value={destination.id}>
-                {destination.name} · S3
-              </option>
-            ))}
-          </select>
+          <Select value={storageId} onValueChange={setStorageId}>
+            <SelectTrigger
+              aria-label="Preferred backup destination"
+              className="h-9 w-full [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="w-max min-w-(--radix-select-trigger-width)">
+              <SelectItem value="local">Local Relay storage</SelectItem>
+              {enabledStorage.map((destination) => (
+                <SelectItem key={destination.id} value={destination.id}>
+                  {destination.name} · S3
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </label>
         <label className="block sm:col-span-2">
           <span className="mb-2 block text-xs font-medium">
@@ -3558,6 +3668,7 @@ function BackupStorageDialog({
                 {storage.map((destination) => {
                   const canManage =
                     isPlatformAdmin || destination.ownerUserId === currentUserId
+                  const retryDelete = destination.deleting
                   return (
                     <div
                       key={destination.id}
@@ -3576,7 +3687,9 @@ function BackupStorageDialog({
                               ? "Platform"
                               : "Personal"}
                           </Badge>
-                          {!destination.enabled ? (
+                          {destination.deleting ? (
+                            <Badge variant="outline">Deleting</Badge>
+                          ) : !destination.enabled ? (
                             <Badge variant="outline">Disabled</Badge>
                           ) : null}
                         </span>
@@ -3586,6 +3699,11 @@ function BackupStorageDialog({
                             ? ` / ${destination.objectPrefix}`
                             : ""}
                         </span>
+                        {destination.lastError ? (
+                          <span className="mt-1 block text-[0.625rem] leading-4 text-destructive">
+                            {destination.lastError}
+                          </span>
+                        ) : null}
                       </span>
                       {canManage ? (
                         <div className="flex shrink-0 items-center gap-1">
@@ -3593,14 +3711,26 @@ function BackupStorageDialog({
                             disabled={false}
                             icon={Pencil}
                             label={`Edit ${destination.name}`}
-                            tooltip="Edit destination"
+                            tooltip={
+                              destination.deleting
+                                ? "Update credentials to retry delete"
+                                : "Edit destination"
+                            }
                             onClick={() => setEditor(destination)}
                           />
                           <BackupActionButton
                             disabled={false}
                             icon={Trash2}
-                            label={`Delete ${destination.name}`}
-                            tooltip="Delete destination"
+                            label={
+                              retryDelete
+                                ? `Retry deleting ${destination.name}`
+                                : `Delete ${destination.name}`
+                            }
+                            tooltip={
+                              retryDelete
+                                ? "Retry destination delete"
+                                : "Delete destination"
+                            }
                             onClick={() => setDeleteCandidate(destination)}
                           />
                         </div>
@@ -3665,6 +3795,7 @@ function BackupStorageEditor({
   )
   const [enabled, setEnabled] = React.useState(existing?.enabled ?? true)
   const [platform, setPlatform] = React.useState(existing?.ownerUserId === null)
+  const locationLocked = Boolean(existing?.deleting)
   const save = useMutation({
     mutationFn: () =>
       saveBackupStorage({
@@ -3724,13 +3855,15 @@ function BackupStorageEditor({
           </DialogTitle>
         </div>
         <DialogDescription>
-          Credentials are encrypted by Hearth and verified before they are
-          saved. Existing secrets are never sent back to the browser.
+          {locationLocked
+            ? "This destination is still deleting. Update credentials, save, then retry the prefix purge. Location fields stay locked."
+            : "Credentials are encrypted by Hearth and verified before they are saved. Existing secrets are never sent back to the browser."}
         </DialogDescription>
       </DialogHeader>
       <div className="grid gap-4 sm:grid-cols-2">
         <StorageTextField label="Name" value={name} onChange={setName} />
         <StorageTextField
+          disabled={locationLocked}
           label="Region"
           placeholder="us-east-1"
           value={region}
@@ -3738,14 +3871,21 @@ function BackupStorageEditor({
         />
         <div className="sm:col-span-2">
           <StorageTextField
+            disabled={locationLocked}
             label="Endpoint"
             placeholder="https://s3.example.com"
             value={endpoint}
             onChange={setEndpoint}
           />
         </div>
-        <StorageTextField label="Bucket" value={bucket} onChange={setBucket} />
         <StorageTextField
+          disabled={locationLocked}
+          label="Bucket"
+          value={bucket}
+          onChange={setBucket}
+        />
+        <StorageTextField
+          disabled={locationLocked}
           label="Object prefix"
           placeholder="kiln/backups"
           value={objectPrefix}
@@ -3777,6 +3917,7 @@ function BackupStorageEditor({
         <StorageSwitch
           checked={forcePathStyle}
           description="Use endpoint/bucket/object addressing."
+          disabled={locationLocked}
           label="Path-style URLs"
           onCheckedChange={setForcePathStyle}
         />
@@ -3824,6 +3965,7 @@ function BackupStorageEditor({
 
 function StorageTextField({
   autoComplete,
+  disabled = false,
   label,
   onChange,
   placeholder,
@@ -3831,6 +3973,7 @@ function StorageTextField({
   value,
 }: {
   autoComplete?: string
+  disabled?: boolean
   label: string
   onChange: (value: string) => void
   placeholder?: string
@@ -3843,6 +3986,7 @@ function StorageTextField({
       <Input
         aria-label={label}
         autoComplete={autoComplete}
+        disabled={disabled}
         placeholder={placeholder}
         type={type}
         value={value}
@@ -3893,12 +4037,15 @@ function DeleteBackupStorageDialog({
   open: boolean
 }) {
   const queryClient = useQueryClient()
+  const retry = destination.deleting
   const remove = useMutation({
     mutationFn: () => deleteBackupStorage({ data: { id: destination.id } }),
-    onSuccess: async () => {
+    onSettled: async () => {
       await queryClient.invalidateQueries({
         queryKey: queryKeys.backups.storage,
       })
+    },
+    onSuccess: () => {
       showToast({
         message: `${destination.name} deleted`,
         type: "success",
@@ -3911,12 +4058,18 @@ function DeleteBackupStorageDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Delete destination?</DialogTitle>
+          <DialogTitle>
+            {retry ? "Retry destination delete?" : "Delete destination?"}
+          </DialogTitle>
           <DialogDescription>
-            “{destination.name}” can only be deleted when no retained backups
-            reference it. Objects already in the bucket are not removed.
+            {retry
+              ? `“${destination.name}” is still marked deleting. Retry purges remaining S3 prefixes, then removes the destination.`
+              : `“${destination.name}” can only be deleted when no retained backups reference it. Incremental restic prefixes in this destination are purged; full-archive objects already in the bucket stay.`}
           </DialogDescription>
         </DialogHeader>
+        {destination.lastError ? (
+          <p className="text-xs text-destructive">{destination.lastError}</p>
+        ) : null}
         {remove.error ? (
           <p className="text-xs text-destructive">{remove.error.message}</p>
         ) : null}
@@ -3939,7 +4092,7 @@ function DeleteBackupStorageDialog({
             ) : (
               <Trash2 />
             )}
-            Delete destination
+            {retry ? "Retry delete" : "Delete destination"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -4291,6 +4444,18 @@ function backupMatchesStatusFilter(
   return !active && !failed && backup.status === "available"
 }
 
+const BackupModeBadge = React.memo(function BackupModeBadge({
+  mode,
+}: {
+  mode: Backup["backupMode"]
+}) {
+  return (
+    <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[0.625rem]">
+      {mode === "incremental" ? "Incremental" : "Full"}
+    </Badge>
+  )
+})
+
 function backupTargetName(
   backup: Backup,
   targetNames: ReadonlyMap<string, string>
@@ -4333,12 +4498,21 @@ function backupAvailabilityTags(
   backup: Backup,
   destinations: ReadonlyArray<BackupAvailabilityDestination>
 ): Array<BackupAvailabilityTagView> {
+  const incremental = backup.artifactKind === "restic_snapshot"
+  const incrementalStorageIds = new Set(
+    backup.artifacts.map((artifact) => artifact.storageId)
+  )
+  const visibleDestinations = incremental
+    ? destinations.filter((destination) =>
+        incrementalStorageIds.has(destination.id)
+      )
+    : destinations
   const uploadPercent = backupTaskUploadProgressPercent(backup)
   const artifactsByStorage = new Map<string, Backup["artifacts"][number]>()
   for (const artifact of backup.artifacts) {
     artifactsByStorage.set(artifact.storageId ?? "local", artifact)
   }
-  const tags: Array<BackupAvailabilityTagView> = destinations.map(
+  const tags: Array<BackupAvailabilityTagView> = visibleDestinations.map(
     (destination) => {
       const key = destination.id ?? "local"
       const kind = destination.id ? "remote" : "local"
@@ -4381,10 +4555,10 @@ function backupAvailabilityTags(
           : null,
     })
   }
-  const s3Enabled =
+  const s3Configured =
     destinations.some((destination) => destination.id !== null) ||
     backup.artifacts.some((artifact) => artifact.storageId !== null)
-  if (!s3Enabled) {
+  if (!incremental && !s3Configured) {
     tags.push({
       error: null,
       key: "s3",
@@ -4452,6 +4626,9 @@ function backupCopyDisabledReason(
   extraDestinations: ReadonlyArray<BackupAvailabilityDestination>
 ): string | null {
   if (!canCopy) return "You do not have permission to copy this backup"
+  if (backup.artifactKind === "restic_snapshot") {
+    return "Incremental snapshots cannot be copied to S3"
+  }
   const hasAvailableFile = backup.artifacts.some(
     (artifact) => artifact.status === "available"
   )

@@ -13,6 +13,7 @@ import { getBackups, getInstanceBackupPolicy } from "@/server/backups"
 import { getBackupStorage } from "@/server/backup-storage"
 import {
   getBrickCatalog,
+  getBrickVersions,
   getInstanceRecipe,
   getInstanceStartup,
 } from "@/server/bricks"
@@ -66,6 +67,8 @@ export const queryKeys = {
     storage: ["backups", "storage"] as const,
   },
   bricks: ["bricks", "catalog"] as const,
+  brickVersions: (type: string, variant: string) =>
+    ["bricks", "versions", type, variant] as const,
   domains: {
     instance: (relayId: string, instanceId: string) =>
       ["domains", "instances", relayId, instanceId] as const,
@@ -348,6 +351,14 @@ export function brickCatalogQueryOptions() {
   return queryOptions({
     queryKey: queryKeys.bricks,
     queryFn: () => getBrickCatalog(),
+  })
+}
+
+export function brickVersionsQueryOptions(type: string, variant: string) {
+  return queryOptions({
+    queryKey: queryKeys.brickVersions(type, variant),
+    queryFn: () => getBrickVersions({ data: { type, variant } }),
+    staleTime: 30 * 60 * 1000,
   })
 }
 

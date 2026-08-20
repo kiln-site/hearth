@@ -2,21 +2,14 @@ import { z } from "zod"
 import { Effect } from "effect"
 
 import { relayBackupTaskSchema } from "@workspace/contracts"
-import type { BackupTaskInput } from "@workspace/contracts"
 
 import {
   listDispatchableBackupTasksEffect,
   reconcileBackupTaskEffect,
   type BackupDispatch,
 } from "@/effect/backups"
-import { loadBackupStorageCredentialEffect } from "@/effect/backup-storage"
-import { BackupStorageError } from "@/effect/errors"
 import { runAppEffect } from "@/effect/runtime"
-import {
-  signS3BackupDelete,
-  signS3BackupRestore,
-  signS3BackupUpload,
-} from "@/lib/backup-storage-s3"
+import { prepareBackupTaskEffect } from "@/lib/backup-task-prepare"
 import { relayRpc } from "@/lib/relay-connection"
 import { listPersistedRelays, type PersistedRelay } from "@/lib/relay-registry"
 
@@ -89,95 +82,7 @@ export async function dispatchBackupTask(
   )
 }
 
-const prepareBackupTaskEffect = Effect.fn("backups.prepareTask")(function* (
-  input: BackupDispatch
-) {
-  if (input.kind === "create" || input.kind === "delete") {
-    if (input.artifacts.length === 0) {
-      return yield* invalidDestination("The backup has no stored artifacts")
-    }
-    const destinations: Array<
-      Extract<BackupTaskInput, { kind: typeof input.kind }>["destination"]
-    > = []
-    for (const artifact of input.artifacts) {
-      if (artifact.storageId === null) {
-        if (artifact.objectKey !== null) {
-          return yield* invalidDestination(
-            "A local backup cannot have a remote object key"
-          )
-        }
-        destinations.push({ artifactId: artifact.artifactId, kind: "local" })
-        continue
-      }
-      if (!artifact.objectKey) {
-        return yield* invalidDestination(
-          "An S3 backup is missing its remote object key"
-        )
-      }
-      const storage = yield* loadBackupStorageCredentialEffect(
-        artifact.storageId
-      )
-      if (!storage || (input.kind === "create" && !storage.enabled)) {
-        return yield* invalidDestination(
-          "The backup destination is unavailable"
-        )
-      }
-      destinations.push(
-        input.kind === "create"
-          ? {
-              ...(yield* signS3BackupUpload(storage, artifact.objectKey)),
-              artifactId: artifact.artifactId,
-            }
-          : {
-              ...(yield* signS3BackupDelete(storage, artifact.objectKey)),
-              artifactId: artifact.artifactId,
-            }
-      )
-    }
-    const [destination, ...replicas] = destinations
-    if (!destination) {
-      return yield* invalidDestination("The backup has no stored artifacts")
-    }
-    const { artifacts: _, ...task } = input
-    return {
-      ...task,
-      destination,
-      replicas,
-    } as BackupTaskInput
-  }
-  if (input.storageId === null) {
-    if (input.objectKey !== null) {
-      return yield* invalidDestination(
-        "A local backup cannot have a remote object key"
-      )
-    }
-    const { artifactId: _, objectKey: __, storageId: ___, ...task } = input
-    return {
-      ...task,
-      source: { kind: "local" as const },
-    } satisfies BackupTaskInput
-  }
-  if (!input.objectKey) {
-    return yield* invalidDestination(
-      "An S3 backup is missing its remote object key"
-    )
-  }
-  const storage = yield* loadBackupStorageCredentialEffect(input.storageId)
-  if (!storage) {
-    return yield* invalidDestination("The backup destination is unavailable")
-  }
-  const source = yield* signS3BackupRestore(storage, input.objectKey)
-  const { artifactId: _, objectKey: __, storageId: ___, ...task } = input
-  return { ...task, source } satisfies BackupTaskInput
-})
-
-function invalidDestination(reason: string) {
-  return BackupStorageError.make({
-    code: "invalid_backup_destination",
-    operation: "backup.dispatch",
-    reason,
-  })
-}
+export { prepareBackupTaskEffect }
 
 export function scheduleBackupReconciliation(
   relay: PersistedRelay,

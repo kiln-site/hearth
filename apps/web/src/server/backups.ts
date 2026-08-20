@@ -18,12 +18,14 @@ import {
   renameBackupEffect,
   reserveBackupCopyEffect,
   reserveBackupDeleteEffect,
+  reserveBackupExportEffect,
   reserveBackupRestoreEffect,
   reserveDatabaseBackupEffect,
   reserveInstanceBackupEffect,
   reservePlatformBackupEffect,
   updateBackupExcludesEffect,
   updateBackupLimitsEffect,
+  type BackupCatalogRecord,
 } from "@/effect/backups"
 import { listManagedDatabaseRecordsEffect } from "@/effect/managed-databases"
 import {
@@ -51,6 +53,7 @@ import {
 } from "@/lib/backup-reconciliation"
 import { listPersistedRelays, type PersistedRelay } from "@/lib/relay-registry"
 import { requireAuthenticatedUser } from "@/server/auth"
+import type { AuthenticatedUser } from "@/lib/auth-session"
 
 const instanceBackupInputSchema = z.strictObject({
   instanceId: z.string().min(1).max(120),
@@ -61,6 +64,7 @@ const instanceBackupInputSchema = z.strictObject({
     .max(Number.MAX_SAFE_INTEGER)
     .nullable()
     .optional(),
+  mode: z.enum(["full", "incremental"]).optional(),
   name: z.string().trim().min(1).max(120),
   relayId: relayIdSchema,
   storageId: z.uuid().nullable().optional(),
@@ -117,6 +121,7 @@ const backupDownloadInputSchema = z.strictObject({
     .min(60)
     .max(7 * 24 * 60 * 60)
     .default(300),
+  poll: z.boolean().default(false),
   preview: z.boolean().default(true),
 })
 
@@ -176,6 +181,7 @@ export const createInstanceBackup = createServerFn({ method: "POST" })
         backupId: randomUUID(),
         createdBy: user.id,
         name: data.name,
+        ...(data.mode === undefined ? {} : { mode: data.mode }),
         relayId: relay.id,
         requestedMaxBytes: data.maxBytes ?? null,
         ...(data.storageId === undefined ? {} : { storageId: data.storageId }),
@@ -473,6 +479,9 @@ export const copyBackupToDestination = createServerFn({ method: "POST" })
     if (!hasBackupPermission(user, grants, backup, "backup.create")) {
       throw new Error("You do not have permission to copy this backup")
     }
+    if (backup.artifactKind === "restic_snapshot") {
+      throw new Error("Incremental snapshots cannot be copied to S3")
+    }
     await validateRequestedStorage(
       { storageId: data.storageId },
       user.id,
@@ -519,6 +528,15 @@ export const getBackupDownloadUrl = createServerFn({ method: "POST" })
     const grants = isPlatformAdmin(user) ? [] : await listUserGrants(user.id)
     if (!hasBackupPermission(user, grants, backup, "backup.download")) {
       throw new Error("You do not have permission to download this backup")
+    }
+    if (backup.artifactKind === "restic_snapshot") {
+      return resticBackupDownload({
+        backup,
+        expiresInSeconds: data.expiresInSeconds,
+        poll: data.poll,
+        preview: data.preview,
+        user,
+      })
     }
     const artifact = data.artifactId
       ? backup.artifacts.find((candidate) => candidate.id === data.artifactId)
@@ -604,8 +622,11 @@ export const restoreInstanceBackup = createServerFn({ method: "POST" })
       !backup ||
       backup.status !== "available" ||
       backup.targetKind !== "instance" ||
-      backup.artifactKind !== "archive" ||
-      backup.backupMode !== "full"
+      (backup.artifactKind !== "archive" &&
+        backup.artifactKind !== "restic_snapshot") ||
+      (backup.artifactKind === "archive" && backup.backupMode !== "full") ||
+      (backup.artifactKind === "restic_snapshot" &&
+        backup.backupMode !== "incremental")
     ) {
       throw new Error("Backup is not available for an instance restore")
     }
@@ -804,6 +825,72 @@ export const updateInstanceBackupExcludes = createServerFn({ method: "POST" })
     return { updated: true }
   })
 
+async function resticBackupDownload(input: {
+  backup: BackupCatalogRecord
+  expiresInSeconds: number
+  poll: boolean
+  preview: boolean
+  user: AuthenticatedUser
+}): Promise<
+  | { preparing: true; taskId: string }
+  | { expiresAt: string; url: string }
+> {
+  const reserved = await runAppEffect(
+    "backups.reserveExport",
+    reserveBackupExportEffect({
+      backupId: input.backup.id,
+      replaceFailed: !input.poll,
+      requestedBy: input.user.id,
+      requireFullTtl: !input.poll,
+      taskId: randomUUID(),
+      ttlMs: input.expiresInSeconds * 1_000,
+    })
+  )
+  if (reserved.kind === "dispatch") {
+    const relay = await requireBackupRelay(input.backup.relayId)
+    await dispatchBackupTask(relay, reserved.dispatch, input.user.id)
+    return { preparing: true, taskId: reserved.dispatch.taskId }
+  }
+  const remainingSeconds = Math.max(
+    1,
+    Math.min(
+      input.expiresInSeconds,
+      Math.floor((reserved.expiresAt - Date.now()) / 1_000)
+    )
+  )
+  const relay = await requireBackupRelay(input.backup.relayId)
+  const download = await signLocalBackupDownload(
+    relay,
+    input.backup,
+    reserved.filename,
+    input.user.id,
+    remainingSeconds
+  )
+  if (!input.preview) return download
+  const id = randomBytes(12).toString("base64url")
+  await runAppEffect(
+    "backups.downloadShares.createExport",
+    createBackupDownloadShareEffect({
+      artifactKind: input.backup.artifactKind,
+      backupId: input.backup.id,
+      backupName: input.backup.name,
+      bytes: input.backup.bytes,
+      checksumSha256: input.backup.checksumSha256,
+      createdAt: input.backup.createdAt,
+      downloadUrl: download.url,
+      expiresAt: download.expiresAt,
+      filename: reserved.filename,
+      sharedBy: input.user.name,
+      sourceName: relay.name,
+      targetId: input.backup.targetId,
+      targetKind: input.backup.targetKind,
+      tokenHash: createHash("sha256").update(id).digest("hex"),
+    })
+  )
+  const shareUrl = new URL(`/downloads/${id}`, kilnPublicUrl())
+  return { expiresAt: download.expiresAt, url: shareUrl.toString() }
+}
+
 async function validateRequestedStorage(
   input: {
     storageId?: string | null
@@ -825,6 +912,7 @@ async function validateRequestedStorage(
         if (
           !storage ||
           !storage.enabled ||
+          storage.deleting ||
           (platformOnly
             ? storage.ownerUserId !== null
             : storage.ownerUserId !== null && storage.ownerUserId !== userId)

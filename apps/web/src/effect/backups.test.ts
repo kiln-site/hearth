@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test"
+import { describe, expect, it, vi } from "vite-plus/test"
 import { Effect, Layer } from "effect"
 import type { ResultSetHeader, RowDataPacket } from "mysql2/promise"
 import type { RelayBackupTask } from "@workspace/contracts"
@@ -7,13 +7,48 @@ import { Database } from "@/effect/database"
 import { BackupLimitError, BackupStorageError } from "@/effect/errors"
 import {
   backupReservation,
+  canReuseBackupExport,
+  clampBackupExportTtlMs,
   effectiveBackupLimit,
+  purgeInstanceBackupRepositoriesEffect,
   renameBackupEffect,
   reserveBackupCopyEffect,
   reserveInstanceBackupEffect,
   reconcileBackupTaskEffect,
   shouldApplyRelayBackupTaskSnapshot,
 } from "@/effect/backups"
+import { deleteS3BackupPrefix } from "@/lib/backup-storage-s3"
+
+vi.mock("../../keyring.mjs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../keyring.mjs")>()
+  return {
+    ...actual,
+    decryptWithKeyring: (encoded: string) => ({
+      needsRotation: false,
+      plaintext: encoded.startsWith("enc:") ? encoded.slice(4) : encoded,
+      version: 1,
+    }),
+    encryptWithKeyring: (plaintext: string) => `enc:${plaintext}`,
+  }
+})
+
+vi.mock("@/lib/environment", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/environment")>()
+  return {
+    ...actual,
+    betterAuthSecrets: () => [{ version: 1, value: "x".repeat(32) }],
+    kilnInstallationId: () => "kiln.dev",
+  }
+})
+
+vi.mock("@/lib/backup-storage-s3", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/backup-storage-s3")>()
+  return {
+    ...actual,
+    deleteS3BackupPrefix: vi.fn(() => Effect.void),
+  }
+})
 
 const emptyResult: ResultSetHeader = {
   affectedRows: 0,
@@ -32,6 +67,52 @@ describe("backup limits", () => {
     expect(effectiveBackupLimit(10, null)).toBe(10)
     expect(effectiveBackupLimit(null, 8)).toBe(8)
     expect(effectiveBackupLimit(10, 8)).toBe(8)
+  })
+
+  it("clamps incremental export TTLs to the signed-URL bounds", () => {
+    expect(clampBackupExportTtlMs(1_000)).toBe(60_000)
+    expect(clampBackupExportTtlMs(15 * 60_000)).toBe(15 * 60_000)
+    expect(clampBackupExportTtlMs(30 * 24 * 60 * 60 * 1_000)).toBe(
+      7 * 24 * 60 * 60 * 1_000
+    )
+  })
+
+  it("reuses an unexpired export while polling even if remaining is under the requested TTL", () => {
+    expect(
+      canReuseBackupExport({
+        remainingMs: 15 * 60 * 60 * 1_000 - 1_500,
+        requestedTtlMs: 15 * 60 * 60 * 1_000,
+        requireFullTtl: false,
+      })
+    ).toBe(true)
+    expect(
+      canReuseBackupExport({
+        remainingMs: 15 * 60 * 60 * 1_000 - 1_500,
+        requestedTtlMs: 15 * 60 * 60 * 1_000,
+        requireFullTtl: true,
+      })
+    ).toBe(true)
+    expect(
+      canReuseBackupExport({
+        remainingMs: 60_000,
+        requestedTtlMs: 15 * 60 * 60 * 1_000,
+        requireFullTtl: true,
+      })
+    ).toBe(true)
+    expect(
+      canReuseBackupExport({
+        remainingMs: 59_000,
+        requestedTtlMs: 15 * 60 * 60 * 1_000,
+        requireFullTtl: true,
+      })
+    ).toBe(false)
+    expect(
+      canReuseBackupExport({
+        remainingMs: 0,
+        requestedTtlMs: 60_000,
+        requireFullTtl: false,
+      })
+    ).toBe(false)
   })
 
   it("reserves remaining bytes and rejects exhausted limits", () => {
@@ -96,6 +177,7 @@ describe("backup limits", () => {
       reserveInstanceBackupEffect({
         backupId: "backup-one",
         createdBy: "user-one",
+        mode: "full",
         name: "Backup one",
         relayId: "relay-one",
         requestedMaxBytes: null,
@@ -161,6 +243,369 @@ describe("backup limits", () => {
 
     expect(reservation.maxBytes).toBe(1_024)
     expect(reservedBytes).toBe(1_024)
+  })
+
+  it("rejects incremental backups that target more than one destination", async () => {
+    const databaseLayer = Layer.succeed(Database)({
+      execute: () => Effect.die("Unexpected standalone database write"),
+      queryRows: () => Effect.die("Unexpected standalone database query"),
+      transaction: (_operation, run) =>
+        run({
+          execute: () => Effect.succeed(emptyResult),
+          queryRows: <TRow extends RowDataPacket>(sql: string) =>
+            Effect.sync(() => {
+              const rows = sql.includes("backup_policy")
+                ? [
+                    {
+                      admin_quantity_limit: null,
+                      admin_size_limit_bytes: null,
+                      exclude_patterns: [],
+                      quantity_limit: 2,
+                      size_limit_bytes: 2_048,
+                      storage_id: null,
+                    },
+                  ]
+                : []
+              return rows as unknown as ReadonlyArray<TRow>
+            }),
+        }),
+    })
+
+    await expect(
+      Effect.runPromise(
+        reserveInstanceBackupEffect({
+          backupId: "backup-one",
+          createdBy: "user-one",
+          mode: "incremental",
+          name: "Backup one",
+          relayId: "relay-one",
+          requestedMaxBytes: null,
+          storageIds: [null, "11111111-1111-4111-8111-111111111111"],
+          targetId: "instance-one",
+          taskId: "task-one",
+        }).pipe(Effect.provide(databaseLayer))
+      )
+    ).rejects.toThrow("exactly one destination")
+  })
+
+  it("rejects incremental S3 destinations with unsafe bucket, region, or prefix", async () => {
+    await expect(
+      Effect.runPromise(
+        reserveInstanceBackupEffect({
+          backupId: "backup-one",
+          createdBy: "user-one",
+          mode: "incremental",
+          name: "Backup one",
+          relayId: "relay-one",
+          requestedMaxBytes: null,
+          storageIds: ["11111111-1111-4111-8111-111111111111"],
+          targetId: "instance-one",
+          taskId: "task-one",
+        }).pipe(
+          Effect.provide(
+            incrementalStorageLayer({
+              bucket: "Not_A_Bucket",
+              object_prefix: "team",
+              region: "us-east-1",
+            })
+          )
+        )
+      )
+    ).rejects.toThrow("bucket cannot be used for incremental backups")
+    await expect(
+      Effect.runPromise(
+        reserveInstanceBackupEffect({
+          backupId: "backup-two",
+          createdBy: "user-one",
+          mode: "incremental",
+          name: "Backup two",
+          relayId: "relay-one",
+          requestedMaxBytes: null,
+          storageIds: ["11111111-1111-4111-8111-111111111111"],
+          targetId: "instance-one",
+          taskId: "task-two",
+        }).pipe(
+          Effect.provide(
+            incrementalStorageLayer({
+              bucket: "kiln-backups",
+              object_prefix: "team",
+              region: "US_EAST_1",
+            })
+          )
+        )
+      )
+    ).rejects.toThrow("region cannot be used for incremental backups")
+    await expect(
+      Effect.runPromise(
+        reserveInstanceBackupEffect({
+          backupId: "backup-three",
+          createdBy: "user-one",
+          mode: "incremental",
+          name: "Backup three",
+          relayId: "relay-one",
+          requestedMaxBytes: null,
+          storageIds: ["11111111-1111-4111-8111-111111111111"],
+          targetId: "instance-one",
+          taskId: "task-three",
+        }).pipe(
+          Effect.provide(
+            incrementalStorageLayer({
+              bucket: "kiln-backups",
+              object_prefix: "team/foo bar",
+              region: "us-east-1",
+            })
+          )
+        )
+      )
+    ).rejects.toThrow("object prefix cannot be used for incremental backups")
+  })
+
+  it("reserves a single incremental S3 destination with a stored restic prefix", async () => {
+    const queries: Array<string> = []
+    const writes: Array<{ sql: string; values?: ReadonlyArray<unknown> }> = []
+    const storageId = "11111111-1111-4111-8111-111111111111"
+    const databaseLayer = Layer.succeed(Database)({
+      execute: () => Effect.die("Unexpected standalone database write"),
+      queryRows: () => Effect.die("Unexpected standalone database query"),
+      transaction: (_operation, run) =>
+        run({
+          execute: (sql, values) =>
+            Effect.sync(() => {
+              writes.push({ sql, values })
+              return emptyResult
+            }),
+          queryRows: <TRow extends RowDataPacket>(sql: string) =>
+            Effect.sync(() => {
+              queries.push(sql)
+              if (sql.includes("backup_policy")) {
+                return [
+                  {
+                    admin_quantity_limit: null,
+                    admin_size_limit_bytes: null,
+                    exclude_patterns: [],
+                    quantity_limit: 2,
+                    size_limit_bytes: 2_048,
+                    storage_id: storageId,
+                  },
+                ] as unknown as ReadonlyArray<TRow>
+              }
+              if (sql.includes("backup_storage")) {
+                return [
+                  {
+                    bucket: "kiln-backups",
+                    deleting: 0,
+                    enabled: 1,
+                    endpoint: "https://s3.example.com",
+                    id: storageId,
+                    object_prefix: "team",
+                    owner_user_id: null,
+                    region: "us-east-1",
+                  },
+                ] as unknown as ReadonlyArray<TRow>
+              }
+              if (sql.includes("backup_repository"))
+                return [] as unknown as ReadonlyArray<TRow>
+              return [
+                { quantity_used: 0, size_used: 0 },
+              ] as unknown as ReadonlyArray<TRow>
+            }),
+        }),
+    })
+
+    await Effect.runPromise(
+      reserveInstanceBackupEffect({
+        backupId: "backup-one",
+        createdBy: "user-one",
+        mode: "incremental",
+        name: "Backup one",
+        relayId: "relay-one",
+        requestedMaxBytes: null,
+        storageIds: [storageId],
+        targetId: "instance-one",
+        taskId: "task-one",
+      }).pipe(Effect.provide(databaseLayer))
+    )
+
+    const storageLock = queries.find((sql) => sql.includes("backup_storage"))
+    expect(storageLock).toContain("FOR UPDATE")
+    expect(storageLock).toContain("ORDER BY id")
+    const repositoryInsert = writes.find((write) =>
+      write.sql.includes("backup_repository")
+    )
+    expect(repositoryInsert?.values?.[4]).toBe(storageId)
+    expect(repositoryInsert?.values?.[5]).toBe(storageId)
+    expect(repositoryInsert?.values?.[6]).toBe(
+      `team/kiln/kiln.dev/relay-one/restic/instance/instance-one/${repositoryInsert?.values?.[0]}`
+    )
+    const backupInsert = writes.find(
+      (write) =>
+        write.sql.includes("INSERT INTO") && write.sql.includes("backup_mode")
+    )
+    expect(backupInsert?.values?.[5]).toBe("restic_snapshot")
+    expect(backupInsert?.values?.[6]).toBe("incremental")
+    expect(backupInsert?.values?.[9]).toBeNull()
+    const artifactInsert = writes.find((write) =>
+      write.sql.includes("backup_artifact")
+    )
+    expect(artifactInsert?.values?.[2]).toBe("restic")
+    expect(artifactInsert?.values?.[3]).toBe(storageId)
+    expect(artifactInsert?.values?.[4]).toBeNull()
+  })
+
+  it("keeps pre-restore safety backups as full archives", async () => {
+    let backupMode: unknown
+    let artifactKind: unknown
+    const databaseLayer = Layer.succeed(Database)({
+      execute: () => Effect.die("Unexpected standalone database write"),
+      queryRows: () => Effect.die("Unexpected standalone database query"),
+      transaction: (_operation, run) =>
+        run({
+          execute: (sql, values) =>
+            Effect.sync(() => {
+              if (sql.includes("INSERT INTO") && sql.includes("backup_mode")) {
+                artifactKind = values?.[5]
+                backupMode = values?.[6]
+              }
+              return emptyResult
+            }),
+          queryRows: <TRow extends RowDataPacket>(sql: string) =>
+            Effect.sync(() => {
+              const rows = sql.includes("backup_policy")
+                ? [
+                    {
+                      admin_quantity_limit: null,
+                      admin_size_limit_bytes: null,
+                      exclude_patterns: [],
+                      quantity_limit: 2,
+                      size_limit_bytes: 2_048,
+                      storage_id: null,
+                    },
+                  ]
+                : [{ quantity_used: 0, size_used: 0 }]
+              return rows as unknown as ReadonlyArray<TRow>
+            }),
+        }),
+    })
+
+    await Effect.runPromise(
+      reserveInstanceBackupEffect({
+        backupId: "safety-backup",
+        createdBy: "user-one",
+        mode: "incremental",
+        name: "Before restore",
+        reason: "pre_restore",
+        relayId: "relay-one",
+        requestedMaxBytes: null,
+        targetId: "instance-one",
+        taskId: "safety-task",
+      }).pipe(Effect.provide(databaseLayer))
+    )
+
+    expect(backupMode).toBe("full")
+    expect(artifactKind).toBe("archive")
+  })
+
+  it("rejects new backup reservations while final deletion is active", async () => {
+    const queries: Array<string> = []
+    const databaseLayer = Layer.succeed(Database)({
+      execute: () => Effect.die("Unexpected standalone database write"),
+      queryRows: () => Effect.die("Unexpected standalone database query"),
+      transaction: (_operation, run) =>
+        run({
+          execute: () => Effect.succeed(emptyResult),
+          queryRows: <TRow extends RowDataPacket>(sql: string) =>
+            Effect.sync(() => {
+              queries.push(sql)
+              if (sql.includes("backup_policy")) {
+                return [
+                  {
+                    admin_quantity_limit: null,
+                    admin_size_limit_bytes: null,
+                    exclude_patterns: [],
+                    quantity_limit: null,
+                    size_limit_bytes: null,
+                    storage_id: null,
+                  },
+                ] as unknown as ReadonlyArray<TRow>
+              }
+              if (sql.includes("backup_final_delete")) {
+                return [
+                  { backup_id: "final-backup" },
+                ] as unknown as ReadonlyArray<TRow>
+              }
+              return [] as unknown as ReadonlyArray<TRow>
+            }),
+        }),
+    })
+
+    await expect(
+      Effect.runPromise(
+        reserveInstanceBackupEffect({
+          backupId: "backup-one",
+          createdBy: "user-one",
+          mode: "incremental",
+          name: "Backup one",
+          relayId: "relay-one",
+          requestedMaxBytes: null,
+          targetId: "instance-one",
+          taskId: "task-one",
+        }).pipe(Effect.provide(databaseLayer))
+      )
+    ).rejects.toThrow("being permanently deleted")
+    expect(
+      queries.find((sql) => sql.includes("backup_final_delete"))
+    ).toContain("FOR UPDATE")
+  })
+})
+
+describe("final deletion repository purge", () => {
+  it("purges remote data before deleting the incremental catalog", async () => {
+    vi.mocked(deleteS3BackupPrefix).mockClear()
+    vi.mocked(deleteS3BackupPrefix).mockReturnValue(Effect.void)
+    const writes: Array<string> = []
+    await Effect.runPromise(
+      purgeInstanceBackupRepositoriesEffect("relay-one", "instance-one").pipe(
+        Effect.provide(
+          finalDeletionPurgeDatabase({
+            transactionWrites: writes,
+          })
+        )
+      )
+    )
+
+    expect(vi.mocked(deleteS3BackupPrefix)).toHaveBeenCalledOnce()
+    expect(writes[0]).toContain("SET status = 'deleted'")
+    expect(writes[1]).toContain("artifact.status = 'deleted'")
+    expect(writes[2]).toContain("SET repository_id = NULL")
+    expect(writes[3]).toContain("DELETE FROM")
+    expect(writes[3]).toContain("backup_repository")
+  })
+
+  it("retains the incremental catalog when remote purge fails", async () => {
+    vi.mocked(deleteS3BackupPrefix).mockClear()
+    vi.mocked(deleteS3BackupPrefix).mockReturnValueOnce(
+      Effect.fail(
+        BackupStorageError.make({
+          code: "s3_request_failed",
+          operation: "storage.deletePrefix",
+          reason: "purge failed",
+        })
+      )
+    )
+    const writes: Array<string> = []
+
+    await expect(
+      Effect.runPromise(
+        purgeInstanceBackupRepositoriesEffect("relay-one", "instance-one").pipe(
+          Effect.provide(
+            finalDeletionPurgeDatabase({
+              transactionWrites: writes,
+            })
+          )
+        )
+      )
+    ).rejects.toThrow("purge failed")
+    expect(writes).toEqual([])
   })
 })
 
@@ -474,6 +919,58 @@ describe("backup reconciliation", () => {
   })
 })
 
+function finalDeletionPurgeDatabase(input: {
+  transactionWrites: Array<string>
+}) {
+  return Layer.succeed(Database)({
+    execute: () => Effect.die("Unexpected standalone database write"),
+    queryRows: <TRow extends RowDataPacket>(operation: string) =>
+      Effect.sync(() => {
+        if (operation === "backup_instance_repositories") {
+          return [
+            {
+              id: "repository-one",
+              object_prefix: "team/restic/instance-one/repository-one",
+              storage_id: "storage-one",
+            },
+          ] as unknown as ReadonlyArray<TRow>
+        }
+        if (operation === "backup_storage_credential") {
+          return [
+            {
+              access_key_id_ciphertext: "enc:AKIAEXAMPLE",
+              allow_private_network: 1,
+              bucket: "kiln-backups",
+              created_at_ms: Date.parse("2026-01-01T00:00:00.000Z"),
+              deleting: 0,
+              enabled: 1,
+              endpoint: "https://s3.example.com",
+              force_path_style: 1,
+              id: "storage-one",
+              last_error: null,
+              last_verified_at_ms: null,
+              name: "s3",
+              object_prefix: "team",
+              owner_user_id: null,
+              region: "us-east-1",
+              secret_access_key_ciphertext: "enc:s3-secret",
+            },
+          ] as unknown as ReadonlyArray<TRow>
+        }
+        throw new Error(`Unexpected query ${operation}`)
+      }),
+    transaction: (_operation, run) =>
+      run({
+        execute: (sql) =>
+          Effect.sync(() => {
+            input.transactionWrites.push(sql)
+            return emptyResult
+          }),
+        queryRows: () => Effect.die("Unexpected transaction query"),
+      }),
+  })
+}
+
 describe("backup rename", () => {
   it("updates the backup name", async () => {
     const executed: Array<{ sql: string; values?: ReadonlyArray<unknown> }> = []
@@ -597,3 +1094,49 @@ describe("backup copy reservation", () => {
     ])
   })
 })
+
+function incrementalStorageLayer(storage: {
+  bucket: string
+  object_prefix: string
+  region: string
+}) {
+  const storageId = "11111111-1111-4111-8111-111111111111"
+  return Layer.succeed(Database)({
+    execute: () => Effect.die("Unexpected standalone database write"),
+    queryRows: () => Effect.die("Unexpected standalone database query"),
+    transaction: (_operation, run) =>
+      run({
+        execute: () => Effect.succeed(emptyResult),
+        queryRows: <TRow extends RowDataPacket>(sql: string) =>
+          Effect.sync(() => {
+            if (sql.includes("backup_policy")) {
+              return [
+                {
+                  admin_quantity_limit: null,
+                  admin_size_limit_bytes: null,
+                  exclude_patterns: [],
+                  quantity_limit: 2,
+                  size_limit_bytes: 2_048,
+                  storage_id: storageId,
+                },
+              ] as unknown as ReadonlyArray<TRow>
+            }
+            if (sql.includes("backup_storage")) {
+              return [
+                {
+                  bucket: storage.bucket,
+                  deleting: 0,
+                  enabled: 1,
+                  endpoint: "https://s3.example.com",
+                  id: storageId,
+                  object_prefix: storage.object_prefix,
+                  owner_user_id: null,
+                  region: storage.region,
+                },
+              ] as unknown as ReadonlyArray<TRow>
+            }
+            return [] as unknown as ReadonlyArray<TRow>
+          }),
+      }),
+  })
+}

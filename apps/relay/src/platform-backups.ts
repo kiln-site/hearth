@@ -18,7 +18,7 @@ import { Effect, Result } from "effect"
 import {
   backupArtifactFilename,
   type BackupCreateTaskInput,
-  type BackupCreateTaskResult,
+  type BackupArchiveCreateTaskResult,
 } from "@workspace/contracts"
 
 import { command } from "./command.js"
@@ -48,7 +48,7 @@ export async function createEncryptedPlatformBackup(
   destination: string,
   progress: { completed: number; total: number },
   signal: AbortSignal = new AbortController().signal
-): Promise<BackupCreateTaskResult> {
+): Promise<BackupArchiveCreateTaskResult> {
   signal.throwIfAborted()
   const installationId = requiredInstallationId(config, input.target.id)
   const recoveryKey = requiredRecoveryKey(config)

@@ -19,6 +19,7 @@ import {
   isCurrentInstanceOwnerGrant,
   isProtectedInstanceOwnerGrant,
   isPlatformAdmin,
+  isRelayCreator,
   listUserGrants,
   requireRelayPermission,
 } from "@/lib/access-control"
@@ -26,12 +27,14 @@ import { auditInstanceCreatorId } from "@/lib/activity"
 import { databasePool } from "@/lib/database"
 import { databaseTable } from "@/lib/database-config"
 import { emailDeliveryConfig, kilnPublicUrl } from "@/lib/environment"
+import { invitationDestination } from "@/lib/invitation-auth"
 import { accessRoles, isAccessRole, roleHasPermission } from "@/lib/permissions"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import { listPersistedRelays } from "@/lib/relay-registry"
 import { requireAuthenticatedUser } from "@/server/auth"
 
 const tokenSchema = z.object({ token: z.string().min(32).max(256) })
+const accessTypeSchema = z.enum(["platform_admin", "relay_creator", "scoped"])
 const relayResourceIdSchema = z.object({
   id: z.uuid(),
   relayId: relayIdSchema,
@@ -44,8 +47,9 @@ const instanceGrantSchema = instanceScopeSchema.extend({ id: z.uuid() })
 const transferInstanceOwnershipSchema = instanceScopeSchema.extend({
   userId: z.string().min(1).max(36),
 })
-const accessAssignmentSchema = z
+const scopedAccessAssignmentSchema = z
   .object({
+    accessType: z.literal("scoped"),
     databaseId: z
       .string()
       .regex(/^[a-f0-9]{40}$/u)
@@ -59,12 +63,31 @@ const accessAssignmentSchema = z
   .refine((value) => !(value.databaseId && value.instanceId), {
     message: "Choose one invitation scope",
   })
+const accessAssignmentSchema = z.discriminatedUnion("accessType", [
+  z.object({
+    accessType: z.literal("platform_admin"),
+    email: z.email().transform((value) => value.trim().toLowerCase()),
+  }),
+  z.object({
+    accessType: z.literal("relay_creator"),
+    email: z.email().transform((value) => value.trim().toLowerCase()),
+  }),
+  scopedAccessAssignmentSchema,
+])
 const updateGrantSchema = relayResourceIdSchema.extend({
   role: z.enum(accessRoles),
 })
+const revokeInvitationSchema = z.object({
+  id: z.uuid(),
+  relayId: relayIdSchema.nullable(),
+})
+const removePlatformAccessSchema = z.object({
+  userId: z.string().min(1).max(36),
+})
 
-type AccessAssignment = z.infer<typeof accessAssignmentSchema>
+type ScopedAccessAssignment = z.infer<typeof scopedAccessAssignmentSchema>
 type AccessScope = "database" | "instance" | "relay"
+type AccessNotificationScope = AccessScope | "platform"
 type AccessNotificationStatus = "disabled" | "failed" | "sent"
 
 interface DirectAccessResult {
@@ -82,6 +105,7 @@ interface InvitationAccessResult {
 }
 
 interface InvitationRow extends RowDataPacket {
+  access_type: z.infer<typeof accessTypeSchema>
   accepted_at: Date | null
   email: string
   expires_at: Date
@@ -89,9 +113,9 @@ interface InvitationRow extends RowDataPacket {
   database_id: string | null
   instance_id: string | null
   invited_by: string
-  relay_id: string
+  relay_id: string | null
   revoked_at: Date | null
-  role: (typeof accessRoles)[number]
+  role: (typeof accessRoles)[number] | null
 }
 
 interface AccessOverviewRow extends RowDataPacket {
@@ -106,13 +130,29 @@ interface AccessOverviewRow extends RowDataPacket {
 }
 
 interface PendingInvitationRow extends RowDataPacket {
+  access_type: z.infer<typeof accessTypeSchema>
   created_at: Date
   email: string
   expires_at: Date
   id: string
   database_id: string | null
   instance_id: string | null
-  role: (typeof accessRoles)[number]
+  relay_id: string | null
+  role: (typeof accessRoles)[number] | null
+}
+
+interface PlatformAccessUserRow extends RowDataPacket {
+  created_at: Date
+  email: string
+  id: string
+  name: string
+  role: "admin" | "relay_creator"
+}
+
+interface PlatformRoleUserRow extends RowDataPacket {
+  email: string
+  id: string
+  role: string | null
 }
 
 interface DatabaseResourceRow extends RowDataPacket {
@@ -137,6 +177,10 @@ interface ExistingAccessUserRow extends RowDataPacket {
   email: string
   id: string
   name: string
+  role: string | null
+}
+
+interface AccessUserRoleRow extends RowDataPacket {
   role: string | null
 }
 
@@ -186,6 +230,9 @@ export const getAccessCapabilities = createServerFn({ method: "GET" }).handler(
             roleHasPermission(grant.role, "access.manage")
         ),
       isPlatformAdmin: platformAdmin,
+      canManageRelays: platformAdmin || isRelayCreator(user),
+      canUpdateHearth: platformAdmin,
+      canUpdateRelays: platformAdmin || isRelayCreator(user),
       grants,
     }
   }
@@ -213,19 +260,65 @@ export const getAccessOverview = createServerFn({ method: "GET" }).handler(
     const manageableRelays = relayAccess.flatMap((entry) =>
       entry.manageable ? [entry.relay] : []
     )
-    if (manageableRelays.length === 0) {
+    if (!platformAdmin && manageableRelays.length === 0) {
       throw new Error("You do not have permission to manage Relay access")
     }
-    const sections = await Promise.all(
-      manageableRelays.map((relay) => relayAccessOverview(user, relay))
-    )
+    const [sections, platformInvitations, platformUsers] = await Promise.all([
+      Promise.all(
+        manageableRelays.map((relay) => relayAccessOverview(user, relay))
+      ),
+      platformAdmin
+        ? databasePool.query<Array<PendingInvitationRow>>(
+            `SELECT id, email, access_type, relay_id, instance_id, database_id,
+                    role, expires_at, created_at
+               FROM ${databaseTable("invitation")}
+              WHERE access_type <> 'scoped'
+                AND accepted_at IS NULL
+                AND revoked_at IS NULL
+                AND expires_at > CURRENT_TIMESTAMP(3)
+              ORDER BY created_at DESC`
+          )
+        : Promise.resolve([[]] as [Array<PendingInvitationRow>]),
+      platformAdmin
+        ? databasePool.query<Array<PlatformAccessUserRow>>(
+            `SELECT id, name, email, role, createdAt AS created_at
+               FROM ${databaseTable("user")}
+              WHERE role IN ('admin', 'relay_creator')
+              ORDER BY email ASC`
+          )
+        : Promise.resolve([[]] as [Array<PlatformAccessUserRow>]),
+    ])
     return {
       grants: sections.flatMap((section) => section.grants),
-      invitations: sections.flatMap((section) => section.invitations),
+      invitations: [
+        ...platformInvitations[0].map((invitation) => ({
+          accessType: invitation.access_type,
+          createdAt: invitation.created_at.toISOString(),
+          databaseId: null,
+          email: invitation.email,
+          expiresAt: invitation.expires_at.toISOString(),
+          id: invitation.id,
+          instanceId: null,
+          relayId: null,
+          relayName: "Kiln platform",
+          role: null,
+        })),
+        ...sections.flatMap((section) => section.invitations),
+      ],
       owners: sections.flatMap((section) => section.owners),
       ownerRelayIds: sections.flatMap((section) =>
         section.canManageOwners ? [section.relay.id] : []
       ),
+      platformUsers: platformUsers[0].map((platformUser) => ({
+        accessType:
+          platformUser.role === "admin"
+            ? ("platform_admin" as const)
+            : ("relay_creator" as const),
+        createdAt: platformUser.created_at.toISOString(),
+        email: platformUser.email,
+        id: platformUser.id,
+        name: platformUser.name,
+      })),
       relays: sections.map((section) => section.relay),
     }
   }
@@ -281,7 +374,7 @@ export const getInstanceUsers = createServerFn({ method: "GET" })
                 AND grant_row.resource_id = ?
               )
             )
-            AND COALESCE(auth_user.role, 'user') <> 'admin'
+            AND COALESCE(auth_user.role, 'user') NOT IN ('admin', 'relay_creator')
           ORDER BY grant_row.created_at ASC`,
         [relay.id, data.instanceId]
       ),
@@ -324,11 +417,13 @@ async function relayAccessOverview(
          FROM ${databaseTable("access_grant")} AS grant_row
          JOIN ${databaseTable("user")} AS auth_user ON auth_user.id = grant_row.user_id
         WHERE grant_row.relay_id = ?
+          AND COALESCE(auth_user.role, 'user') NOT IN ('admin', 'relay_creator')
         ORDER BY auth_user.name ASC, grant_row.created_at ASC`,
       [relay.id]
     ),
     databasePool.query<Array<PendingInvitationRow>>(
-      `SELECT id, email, instance_id, database_id, role, expires_at, created_at
+      `SELECT id, email, access_type, relay_id, instance_id, database_id, role,
+              expires_at, created_at
          FROM ${databaseTable("invitation")}
         WHERE relay_id = ?
           AND accepted_at IS NULL
@@ -345,6 +440,7 @@ async function relayAccessOverview(
            ON auth_user.id = instance_row.owner_id
         WHERE instance_row.relay_id = ?
           AND instance_row.owner_id IS NOT NULL
+          AND COALESCE(auth_user.role, 'user') NOT IN ('admin', 'relay_creator')
         ORDER BY auth_user.name ASC, instance_row.created_at ASC`,
       [relay.id]
     ),
@@ -411,6 +507,7 @@ async function relayAccessOverview(
       }
     }),
     invitations: invitations[0].map((invitation) => ({
+      accessType: invitation.access_type,
       createdAt: invitation.created_at.toISOString(),
       email: invitation.email,
       expiresAt: invitation.expires_at.toISOString(),
@@ -419,7 +516,7 @@ async function relayAccessOverview(
       instanceId: invitation.instance_id,
       relayId: relay.id,
       relayName: relay.name,
-      role: invitation.role,
+      role: invitation.role ?? "viewer",
     })),
     owners: ownerRows[0].map((owner) => ({
       createdAt: owner.created_at.toISOString(),
@@ -438,16 +535,25 @@ export const grantOrInviteAccess = createServerFn({ method: "POST" })
   .validator(accessAssignmentSchema)
   .handler(async ({ data }) => {
     const user = await requireAuthenticatedUser()
-    const relay = await requiredRelay(data.relayId)
-    await requireRelayPermission({
-      user,
-      relayId: relay.id,
-      permission: "access.invite",
-      databaseId: data.databaseId ?? undefined,
-      instanceId: data.instanceId ?? undefined,
-    })
+    const scoped = data.accessType === "scoped"
+    const relay = scoped ? await requiredRelay(data.relayId) : null
+    if (scoped && relay) {
+      await requireRelayPermission({
+        user,
+        relayId: relay.id,
+        permission: "access.invite",
+        databaseId: data.databaseId ?? undefined,
+        instanceId: data.instanceId ?? undefined,
+      })
+    } else if (!isPlatformAdmin(user)) {
+      throw new Error(
+        "Only a platform administrator can assign platform access"
+      )
+    }
     const requestedOwnerAccess =
-      data.role === "owner" ? await canManageOwners(user, relay.id) : null
+      scoped && data.role === "owner" && relay
+        ? await canManageOwners(user, relay.id)
+        : null
     if (requestedOwnerAccess === false) {
       throw new Error(
         "Only a Relay owner or platform admin can grant the owner role"
@@ -464,6 +570,79 @@ export const grantOrInviteAccess = createServerFn({ method: "POST" })
     )
     const existingUser = existingUsers[0]
     if (existingUser) {
+      if (
+        scoped &&
+        (existingUser.role === "admin" || existingUser.role === "relay_creator")
+      ) {
+        throw new Error(
+          "This user already has platform access. Change that access before assigning a scope."
+        )
+      }
+      if (
+        data.accessType === "relay_creator" &&
+        existingUser.role === "admin"
+      ) {
+        throw new Error(
+          "This user is already a platform administrator with broader access."
+        )
+      }
+      if (data.accessType === "relay_creator") {
+        const [existingGrants] = await databasePool.query<Array<RowDataPacket>>(
+          `SELECT id FROM ${databaseTable("access_grant")}
+            WHERE user_id = ? LIMIT 1`,
+          [existingUser.id]
+        )
+        if (existingGrants.length > 0) {
+          throw new Error(
+            "Remove this user's scoped access before enabling bring-your-own-Relay access."
+          )
+        }
+      }
+      if (!scoped) {
+        const platformRole =
+          data.accessType === "platform_admin" ? "admin" : "relay_creator"
+        await runAppEffect(
+          "access.platform.assign",
+          assignPlatformAccessEffect({
+            accessType: data.accessType,
+            actingUserId: user.id,
+            developmentBypass: user.isDevelopmentBypass,
+            userId: existingUser.id,
+          })
+        )
+        const notificationStatus = await runAppEffect(
+          "access.notifyExistingPlatformUser",
+          sendAccessGrantedNotification({
+            email: existingUser.email,
+            grantedBy: user.name,
+            idempotencySeed: `${existingUser.id}:platform:${platformRole}`,
+            resourceName: "Kiln",
+            role:
+              data.accessType === "platform_admin"
+                ? "platform administrator"
+                : "Relay creator",
+            scope: "platform",
+          }).pipe(
+            Effect.match({
+              onFailure: (cause): AccessNotificationStatus => {
+                console.error(
+                  `[Kiln access] Could not notify ${existingUser.email} about platform access`,
+                  cause
+                )
+                return "failed"
+              },
+              onSuccess: (status): AccessNotificationStatus => status,
+            })
+          )
+        )
+        return {
+          email: existingUser.email,
+          inviteUrl: null,
+          kind: "granted",
+          notificationStatus,
+        } satisfies DirectAccessResult
+      }
+      if (!relay) throw new Error("Relay not found")
       const scope = accessScope(data)
       if (scope.type === "instance") {
         await instanceOwnerId(relay, scope.id)
@@ -517,37 +696,71 @@ export const grantOrInviteAccess = createServerFn({ method: "POST" })
     const token = randomBytes(32).toString("base64url")
     const id = randomUUID()
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-    await databasePool.execute(
-      `UPDATE ${databaseTable("invitation")}
-          SET revoked_at = CURRENT_TIMESTAMP(3)
-        WHERE email = ? AND relay_id = ?
-          AND ((instance_id IS NULL AND ? IS NULL) OR instance_id = ?)
-          AND ((database_id IS NULL AND ? IS NULL) OR database_id = ?)
-          AND accepted_at IS NULL AND revoked_at IS NULL`,
-      [
-        data.email,
-        relay.id,
-        data.instanceId,
-        data.instanceId,
-        data.databaseId,
-        data.databaseId,
-      ]
-    )
-    await databasePool.execute(
-      `INSERT INTO ${databaseTable("invitation")}
-        (id, token_hash, email, relay_id, instance_id, database_id, role, invited_by, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        hashToken(token),
-        data.email,
-        relay.id,
-        data.instanceId,
-        data.databaseId,
-        data.role,
-        user.id,
-        expiresAt,
-      ]
+    await runAppEffect(
+      "access.invitation.create",
+      Effect.gen(function* () {
+        const database = yield* Database
+        return yield* database.transaction(
+          "access.invitation.create",
+          (transaction) =>
+            Effect.gen(function* () {
+              if (!scoped && !user.isDevelopmentBypass) {
+                const admins =
+                  yield* transaction.queryRows<PlatformRoleUserRow>(
+                    `SELECT id, email, role
+                       FROM ${databaseTable("user")}
+                      WHERE role = 'admin'
+                      ORDER BY id
+                      FOR UPDATE`
+                  )
+                if (!admins.some((admin) => admin.id === user.id)) {
+                  return yield* Effect.fail(
+                    new Error(
+                      "Only a platform administrator can assign platform access"
+                    )
+                  )
+                }
+              }
+              yield* transaction.execute(
+                `UPDATE ${databaseTable("invitation")}
+                    SET revoked_at = CURRENT_TIMESTAMP(3)
+                  WHERE email = ? AND access_type = ?
+                    AND ((relay_id IS NULL AND ? IS NULL) OR relay_id = ?)
+                    AND ((instance_id IS NULL AND ? IS NULL) OR instance_id = ?)
+                    AND ((database_id IS NULL AND ? IS NULL) OR database_id = ?)
+                    AND accepted_at IS NULL AND revoked_at IS NULL`,
+                [
+                  data.email,
+                  data.accessType,
+                  scoped ? data.relayId : null,
+                  scoped ? data.relayId : null,
+                  scoped ? data.instanceId : null,
+                  scoped ? data.instanceId : null,
+                  scoped ? data.databaseId : null,
+                  scoped ? data.databaseId : null,
+                ]
+              )
+              yield* transaction.execute(
+                `INSERT INTO ${databaseTable("invitation")}
+                  (id, token_hash, email, access_type, relay_id, instance_id, database_id,
+                   role, invited_by, expires_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                  id,
+                  hashToken(token),
+                  data.email,
+                  data.accessType,
+                  scoped ? data.relayId : null,
+                  scoped ? data.instanceId : null,
+                  scoped ? data.databaseId : null,
+                  scoped ? data.role : null,
+                  user.id,
+                  expiresAt,
+                ]
+              )
+            })
+        )
+      })
     )
 
     const inviteUrl = new URL("/invite", publicUrl())
@@ -559,17 +772,23 @@ export const grantOrInviteAccess = createServerFn({ method: "POST" })
         {
           from: delivery.from,
           to: [data.email],
-          subject: `You've been invited to ${data.resourceName} in Kiln`,
+          subject: `You've been invited to ${scoped ? data.resourceName : "Kiln"}`,
           react: AccessInvitationEmail({
             inviteUrl: inviteUrl.toString(),
             inviterName: user.name,
-            resourceName: data.resourceName,
-            role: data.role,
-            scope: data.databaseId
-              ? "database"
-              : data.instanceId
-                ? "instance"
-                : "relay",
+            resourceName: scoped ? data.resourceName : "Kiln",
+            role: scoped
+              ? data.role
+              : data.accessType === "platform_admin"
+                ? "platform administrator"
+                : "Relay creator",
+            scope: scoped
+              ? data.databaseId
+                ? "database"
+                : data.instanceId
+                  ? "instance"
+                  : "relay"
+              : "platform",
           }),
         },
         { idempotencyKey: `access-invitation/${id}` }
@@ -597,13 +816,31 @@ export const getInvitationPreview = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     const invitation = await readInvitation(data.token)
     if (!invitation || !isInvitationPending(invitation)) return null
-    const relay = await relayById(invitation.relay_id)
+    const [relay, userLookup] = await Promise.all([
+      invitation.relay_id ? relayById(invitation.relay_id) : null,
+      databasePool.query<Array<ExistingAccessUserRow>>(
+        `SELECT id FROM ${databaseTable("user")} WHERE email = ? LIMIT 1`,
+        [invitation.email]
+      ),
+    ])
     return {
+      accessType: invitation.access_type,
+      accountExists: userLookup[0].length > 0,
       email: invitation.email,
       databaseId: invitation.database_id,
       expiresAt: invitation.expires_at.toISOString(),
       instanceId: invitation.instance_id,
-      relayName: relay?.name ?? "Kiln Relay",
+      relayName:
+        invitation.access_type === "platform_admin"
+          ? "Kiln platform"
+          : invitation.access_type === "relay_creator"
+            ? "Your Relays"
+            : (relay?.name ?? "Kiln Relay"),
+      returnPath: invitationDestination({
+        accessType: invitation.access_type,
+        databaseId: invitation.database_id,
+        instanceId: invitation.instance_id,
+      }),
       role: invitation.role,
     }
   })
@@ -621,8 +858,8 @@ export const acceptAccessInvitation = createServerFn({ method: "POST" })
         return yield* database.transaction("access.invitation.accept", (tx) =>
           Effect.gen(function* () {
             const rows = yield* tx.queryRows<InvitationRow>(
-              `SELECT id, email, relay_id, instance_id, database_id, role, invited_by,
-                expires_at, accepted_at, revoked_at
+              `SELECT id, email, access_type, relay_id, instance_id, database_id,
+                role, invited_by, expires_at, accepted_at, revoked_at
            FROM ${databaseTable("invitation")} WHERE token_hash = ? FOR UPDATE`,
               [hashToken(data.token)]
             )
@@ -638,6 +875,67 @@ export const acceptAccessInvitation = createServerFn({ method: "POST" })
                   `Sign in as ${invitation.email} to accept this invitation`
                 )
               )
+            }
+            const currentUserRows = yield* tx.queryRows<AccessUserRoleRow>(
+              `SELECT role FROM ${databaseTable("user")}
+                WHERE id = ? LIMIT 1 FOR UPDATE`,
+              [user.id]
+            )
+            const currentRole = currentUserRows.at(0)?.role ?? "user"
+            if (invitation.access_type !== "scoped") {
+              if (
+                invitation.access_type === "relay_creator" &&
+                currentRole === "admin"
+              ) {
+                return yield* Effect.fail(
+                  new Error(
+                    "This account is already a platform administrator with broader access"
+                  )
+                )
+              }
+              if (invitation.access_type === "relay_creator") {
+                const existingGrants = yield* tx.queryRows<RowDataPacket>(
+                  `SELECT id FROM ${databaseTable("access_grant")}
+                    WHERE user_id = ? LIMIT 1 FOR UPDATE`,
+                  [user.id]
+                )
+                if (existingGrants.length > 0) {
+                  return yield* Effect.fail(
+                    new Error(
+                      "Remove this account's scoped access before accepting bring-your-own-Relay access"
+                    )
+                  )
+                }
+              }
+              const platformRole =
+                invitation.access_type === "platform_admin"
+                  ? "admin"
+                  : "relay_creator"
+              if (invitation.access_type === "platform_admin") {
+                yield* deleteObsoleteScopedGrants(tx, user.id)
+              }
+              yield* tx.execute(
+                `UPDATE ${databaseTable("user")} SET role = ? WHERE id = ?`,
+                [platformRole, user.id]
+              )
+              if (currentRole !== platformRole) {
+                yield* revokeUserCredentials(tx, user.id)
+              }
+              yield* tx.execute(
+                `UPDATE ${databaseTable("invitation")} SET accepted_at = CURRENT_TIMESTAMP(3) WHERE id = ?`,
+                [invitation.id]
+              )
+              return { accepted: true }
+            }
+            if (currentRole === "admin" || currentRole === "relay_creator") {
+              return yield* Effect.fail(
+                new Error(
+                  "This account already has platform access and cannot accept scoped access"
+                )
+              )
+            }
+            if (!invitation.relay_id || !invitation.role) {
+              return yield* Effect.fail(new Error("This invitation is invalid"))
             }
             if (invitation.database_id) {
               const databases = yield* tx.queryRows<DatabaseResourceRow>(
@@ -686,6 +984,25 @@ export const acceptAccessInvitation = createServerFn({ method: "POST" })
     )
   })
 
+export const removePlatformAccess = createServerFn({ method: "POST" })
+  .validator(removePlatformAccessSchema)
+  .handler(async ({ data }) => {
+    const user = await requireAuthenticatedUser()
+    if (!isPlatformAdmin(user)) {
+      throw new Error(
+        "Only a platform administrator can remove platform access"
+      )
+    }
+    return runAppEffect(
+      "access.platform.remove",
+      removePlatformAccessEffect({
+        actingUserId: user.id,
+        developmentBypass: user.isDevelopmentBypass,
+        targetUserId: data.userId,
+      })
+    )
+  })
+
 export const updateAccessGrant = createServerFn({ method: "POST" })
   .validator(updateGrantSchema)
   .handler(async ({ data }) => {
@@ -714,8 +1031,7 @@ export const updateAccessGrant = createServerFn({ method: "POST" })
               canManageOwners: ownerAccess,
               currentRole: grant.role,
               nextRole: data.role,
-              ownerId:
-                grant.resource_type === "instance" ? ownerId : null,
+              ownerId: grant.resource_type === "instance" ? ownerId : null,
               userId: grant.user_id,
             })
             if (roleChangeError) return yield* Effect.fail(roleChangeError)
@@ -924,9 +1240,22 @@ export const transferInstanceOwnership = createServerFn({ method: "POST" })
   })
 
 export const revokeAccessInvitation = createServerFn({ method: "POST" })
-  .validator(relayResourceIdSchema)
+  .validator(revokeInvitationSchema)
   .handler(async ({ data }) => {
     const user = await requireAuthenticatedUser()
+    if (!data.relayId) {
+      if (!isPlatformAdmin(user)) {
+        throw new Error(
+          "Only a platform administrator can revoke this invitation"
+        )
+      }
+      await databasePool.execute(
+        `UPDATE ${databaseTable("invitation")} SET revoked_at = CURRENT_TIMESTAMP(3)
+          WHERE id = ? AND relay_id IS NULL AND accepted_at IS NULL`,
+        [data.id]
+      )
+      return { revoked: true }
+    }
     const relay = await requiredRelay(data.relayId)
     await requireRelayPermission({
       user,
@@ -955,6 +1284,192 @@ export const revokeAccessInvitation = createServerFn({ method: "POST" })
     return { revoked: true }
   })
 
+export function assignPlatformAccessEffect(input: {
+  accessType: "platform_admin" | "relay_creator"
+  actingUserId: string
+  developmentBypass: boolean
+  userId: string
+}) {
+  return Effect.gen(function* () {
+    const database = yield* Database
+    return yield* database.transaction(
+      "access.platform.assign",
+      (transaction) =>
+        Effect.gen(function* () {
+          const admins = yield* transaction.queryRows<PlatformRoleUserRow>(
+            `SELECT id, email, role
+               FROM ${databaseTable("user")}
+              WHERE role = 'admin'
+              ORDER BY id
+              FOR UPDATE`
+          )
+          if (
+            !input.developmentBypass &&
+            !admins.some((admin) => admin.id === input.actingUserId)
+          ) {
+            return yield* Effect.fail(
+              new Error(
+                "Only a platform administrator can assign platform access"
+              )
+            )
+          }
+
+          const users = yield* transaction.queryRows<PlatformRoleUserRow>(
+            `SELECT id, email, role
+               FROM ${databaseTable("user")}
+              WHERE id = ? LIMIT 1 FOR UPDATE`,
+            [input.userId]
+          )
+          const target = users.at(0)
+          if (!target) return yield* Effect.fail(new Error("User not found"))
+          if (input.accessType === "relay_creator" && target.role === "admin") {
+            return yield* Effect.fail(
+              new Error(
+                "This user is already a platform administrator with broader access."
+              )
+            )
+          }
+
+          if (input.accessType === "relay_creator") {
+            const existingGrants = yield* transaction.queryRows<RowDataPacket>(
+              `SELECT id FROM ${databaseTable("access_grant")}
+                  WHERE user_id = ? LIMIT 1 FOR UPDATE`,
+              [input.userId]
+            )
+            if (existingGrants.length > 0) {
+              return yield* Effect.fail(
+                new Error(
+                  "Remove this user's scoped access before enabling bring-your-own-Relay access."
+                )
+              )
+            }
+          } else {
+            yield* deleteObsoleteScopedGrants(transaction, input.userId)
+          }
+
+          const platformRole =
+            input.accessType === "platform_admin" ? "admin" : "relay_creator"
+          yield* transaction.execute(
+            `UPDATE ${databaseTable("user")} SET role = ? WHERE id = ?`,
+            [platformRole, input.userId]
+          )
+          if (target.role !== platformRole) {
+            yield* revokeUserCredentials(transaction, input.userId)
+          }
+        })
+    )
+  })
+}
+
+export function removePlatformAccessEffect(input: {
+  actingUserId: string
+  developmentBypass: boolean
+  targetUserId: string
+}) {
+  return Effect.gen(function* () {
+    const database = yield* Database
+    return yield* database.transaction(
+      "access.platform.remove",
+      (transaction) =>
+        Effect.gen(function* () {
+          const admins = yield* transaction.queryRows<PlatformRoleUserRow>(
+            `SELECT id, email, role
+               FROM ${databaseTable("user")}
+              WHERE role = 'admin'
+              ORDER BY id
+              FOR UPDATE`
+          )
+          if (
+            !input.developmentBypass &&
+            !admins.some((admin) => admin.id === input.actingUserId)
+          ) {
+            return yield* Effect.fail(
+              new Error(
+                "Only a platform administrator can remove platform access"
+              )
+            )
+          }
+
+          const users = yield* transaction.queryRows<PlatformRoleUserRow>(
+            `SELECT id, email, role
+               FROM ${databaseTable("user")}
+              WHERE id = ? LIMIT 1 FOR UPDATE`,
+            [input.targetUserId]
+          )
+          const target = users.at(0)
+          if (
+            !target ||
+            (target.role !== "admin" && target.role !== "relay_creator")
+          ) {
+            return { removed: true }
+          }
+          if (target.role === "admin" && admins.length <= 1) {
+            return yield* Effect.fail(
+              new Error("At least one Platform Admin is required")
+            )
+          }
+
+          yield* transaction.execute(
+            `UPDATE ${databaseTable("user")} SET role = 'user' WHERE id = ?`,
+            [target.id]
+          )
+          yield* transaction.execute(
+            `UPDATE ${databaseTable("invitation")}
+                SET revoked_at = CURRENT_TIMESTAMP(3)
+              WHERE email = ?
+                AND access_type <> 'scoped'
+                AND accepted_at IS NULL
+                AND revoked_at IS NULL`,
+            [target.email]
+          )
+          yield* revokeUserCredentials(transaction, target.id)
+          return { removed: true }
+        })
+    )
+  })
+}
+
+function deleteObsoleteScopedGrants(
+  transaction: DatabaseTransaction,
+  userId: string
+) {
+  return transaction.execute(
+    `DELETE grant_row
+       FROM ${databaseTable("access_grant")} AS grant_row
+       LEFT JOIN ${databaseTable("instance")} AS instance_row
+         ON instance_row.relay_id = grant_row.relay_id
+        AND instance_row.instance_id = grant_row.resource_id
+        AND grant_row.resource_type = 'instance'
+      WHERE grant_row.user_id = ?
+        AND NOT (
+          grant_row.resource_type = 'instance'
+          AND (
+            grant_row.role = 'owner'
+            OR COALESCE(instance_row.owner_id = grant_row.user_id, FALSE)
+          )
+        )`,
+    [userId]
+  )
+}
+
+function revokeUserCredentials(
+  transaction: DatabaseTransaction,
+  userId: string
+) {
+  return Effect.gen(function* () {
+    yield* transaction.execute(
+      `DELETE FROM ${databaseTable("session")} WHERE userId = ?`,
+      [userId]
+    )
+    yield* transaction.execute(
+      `UPDATE ${databaseTable("cli_credential")}
+          SET revoked_at = CURRENT_TIMESTAMP(3)
+        WHERE user_id = ? AND revoked_at IS NULL`,
+      [userId]
+    )
+  })
+}
+
 async function requiredRelay(relayId: string) {
   const relay = await relayById(relayId)
   if (!relay?.enabled) throw new Error("Relay not found")
@@ -967,7 +1482,7 @@ async function relayById(id: string) {
 
 async function readInvitation(token: string): Promise<InvitationRow | null> {
   const [rows] = await databasePool.query<Array<InvitationRow>>(
-    `SELECT id, email, relay_id, instance_id, database_id, role, invited_by,
+    `SELECT id, email, access_type, relay_id, instance_id, database_id, role, invited_by,
             expires_at, accepted_at, revoked_at
        FROM ${databaseTable("invitation")} WHERE token_hash = ? LIMIT 1`,
     [hashToken(token)]
@@ -991,7 +1506,7 @@ function publicUrl(): string {
   return kilnPublicUrl().origin
 }
 
-function accessScope(data: AccessAssignment): {
+function accessScope(data: ScopedAccessAssignment): {
   id: string
   type: AccessScope
 } {
@@ -1009,8 +1524,8 @@ function sendAccessGrantedNotification(input: {
   grantedBy: string
   idempotencySeed: string
   resourceName: string
-  role: (typeof accessRoles)[number]
-  scope: AccessScope
+  role: string
+  scope: AccessNotificationScope
 }): Effect.Effect<Exclude<AccessNotificationStatus, "failed">, Error> {
   const delivery = emailDeliveryConfig()
   if (!delivery) {

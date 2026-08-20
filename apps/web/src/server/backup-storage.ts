@@ -182,7 +182,12 @@ export const setPreferredBackupStorage = createServerFn({ method: "POST" })
         "backupStorage.loadPreferred",
         loadBackupStorageEffect(data.storageId)
       )
-      if (!storage || !canUseStorage(storage, user.id) || !storage.enabled) {
+      if (
+        !storage ||
+        !canUseStorage(storage, user.id) ||
+        !storage.enabled ||
+        storage.deleting
+      ) {
         throw new Error("Backup destination is unavailable")
       }
     }

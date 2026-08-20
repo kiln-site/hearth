@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vite-plus/test"
 
 import {
-  buildDefaultAccentColor,
+  defaultAccentColor,
   defaultAppearance,
-  nightlyDefaultAccentColor,
   normalizeAppearanceOverride,
   normalizeAppearancePreferences,
   parseAccentColor,
@@ -28,12 +27,9 @@ describe("parseAccentColor", () => {
 })
 
 describe("appearance defaults", () => {
-  it("uses blue fire for nightly builds and orange for stable builds", () => {
-    expect(buildDefaultAccentColor("0.2.0-nightly.4")).toBe(
-      nightlyDefaultAccentColor
-    )
-    expect(buildDefaultAccentColor("0.2.0")).toBe(stableDefaultAccentColor)
-    expect(buildDefaultAccentColor(undefined)).toBe(stableDefaultAccentColor)
+  it("uses orange fire for nightly and stable builds", () => {
+    expect(defaultAccentColor).toBe(stableDefaultAccentColor)
+    expect(defaultAppearance.accentColor).toBe(stableDefaultAccentColor)
     expect(defaultAppearance.colorScheme).toBe("dark")
   })
 

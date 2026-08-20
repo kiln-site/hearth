@@ -41,6 +41,7 @@ const backup = {
   objectKey: null,
   reason: "manual",
   relayId: "relay-1",
+  resticSnapshotId: null,
   status: "available",
   storageId: null,
   targetId: "instance-1",

@@ -2,7 +2,6 @@ import { Option, Result, Schema } from "effect"
 
 export const appearanceCacheCookieName = "kiln_appearance"
 export const stableDefaultAccentColor = "#f97316"
-export const nightlyDefaultAccentColor = "#38bdf8"
 export const maximumCustomAccentColors = 3
 
 const appearanceCacheMaxAge = 60 * 60 * 24 * 365
@@ -30,19 +29,7 @@ export type AccentHsl = {
   saturation: number
 }
 
-export function isNightlyVersion(version: string | undefined) {
-  return version?.includes("-nightly.") ?? false
-}
-
-export function buildDefaultAccentColor(version: string | undefined) {
-  return isNightlyVersion(version)
-    ? nightlyDefaultAccentColor
-    : stableDefaultAccentColor
-}
-
-export const defaultAccentColor = buildDefaultAccentColor(
-  import.meta.env.VITE_KILN_VERSION
-)
+export const defaultAccentColor = stableDefaultAccentColor
 export const defaultColorScheme: ColorScheme = "dark"
 
 export const defaultAppearance: AppearancePreferences = {

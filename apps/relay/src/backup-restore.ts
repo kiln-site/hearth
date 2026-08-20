@@ -38,14 +38,14 @@ const RESTORE_TRANSFER_IDLE_TIMEOUT_MS = 30_000
 
 type RestorePhase = "extracting" | "installed" | "moved_original" | "prepared"
 
-interface RestoreJournal {
+export interface RestoreJournal {
   instanceDirectory: string
   phase: RestorePhase
   taskId: string
   version: 1
 }
 
-interface RestorePaths {
+export interface RestorePaths {
   archive: string
   instance: string
   journal: string
@@ -58,23 +58,12 @@ export async function restorePortableInstanceBackup(
   input: BackupRestoreTaskInput & { kind: "restore" },
   instance: RelayInstanceConfig
 ): Promise<{ warnings: Array<string> }> {
-  const configuredRoot = await realpathRequired(config.rootDirectory)
-  const instanceRoot = resolve(configuredRoot, instance.directory)
-  requireContained(configuredRoot, instanceRoot, "restore.path")
-  const paths = restorePaths(config, instance.directory, input.taskId)
+  const prepared = await prepareInstanceRestoreStaging(
+    config,
+    instance.directory,
+    input.taskId
+  )
   let warnings: Array<string> = []
-  let journal: RestoreJournal = {
-    instanceDirectory: instance.directory,
-    phase: "extracting",
-    taskId: input.taskId,
-    version: 1,
-  }
-
-  await mkdir(dirname(paths.journal), { mode: 0o700, recursive: true })
-  await rm(paths.staging, { force: true, recursive: true })
-  await rm(paths.rollback, { force: true, recursive: true })
-  await rm(paths.archive, { force: true })
-  await writeRestoreJournal(paths.journal, journal)
 
   return Effect.runPromise(
     Effect.tryPromise({
@@ -82,42 +71,22 @@ export async function restorePortableInstanceBackup(
         const archive = await materializeBackupArtifact(
           config,
           input,
-          paths.archive
+          prepared.paths.archive
         )
         warnings = await extractBackupArchive(
           archive,
-          paths.staging,
+          prepared.paths.staging,
           input,
           instance
         )
-
-        journal = {
-          ...journal,
-          phase: "prepared",
-        }
-        await writeRestoreJournal(paths.journal, journal)
-        await rename(paths.instance, paths.rollback)
-        journal = {
-          ...journal,
-          phase: "moved_original",
-        }
-        await writeRestoreJournal(paths.journal, journal)
-        await rename(paths.staging, paths.instance)
-        journal = {
-          ...journal,
-          phase: "installed",
-        }
-        await writeRestoreJournal(paths.journal, journal)
-        await rm(paths.rollback, { force: true, recursive: true })
-        await rm(paths.archive, { force: true })
-        await unlink(paths.journal)
+        await installPreparedInstanceRestore(prepared)
         return { warnings }
       },
       catch: (cause) => cause,
     }).pipe(
       Effect.catch((cause) =>
         Effect.tryPromise(() =>
-          settleRestoreJournal(config, journal, false)
+          settleRestoreJournal(config, prepared.journal, false)
         ).pipe(
           Effect.flatMap((completed) =>
             completed ? Effect.succeed({ warnings }) : Effect.fail(cause)
@@ -126,6 +95,59 @@ export async function restorePortableInstanceBackup(
       )
     )
   )
+}
+
+export async function prepareInstanceRestoreStaging(
+  config: RelayConfig,
+  instanceDirectory: string,
+  taskId: string
+): Promise<PreparedInstanceRestore> {
+  const configuredRoot = await realpathRequired(config.rootDirectory)
+  const instanceRoot = resolve(configuredRoot, instanceDirectory)
+  requireContained(configuredRoot, instanceRoot, "restore.path")
+  const paths = restorePaths(config, instanceDirectory, taskId)
+  const journal: RestoreJournal = {
+    instanceDirectory,
+    phase: "extracting",
+    taskId,
+    version: 1,
+  }
+  await mkdir(dirname(paths.journal), { mode: 0o700, recursive: true })
+  await rm(paths.staging, { force: true, recursive: true })
+  await rm(paths.rollback, { force: true, recursive: true })
+  await rm(paths.archive, { force: true })
+  await writeRestoreJournal(paths.journal, journal)
+  return { journal, paths }
+}
+
+export async function installPreparedInstanceRestore(
+  prepared: PreparedInstanceRestore
+): Promise<void> {
+  prepared.journal = {
+    ...prepared.journal,
+    phase: "prepared",
+  }
+  await writeRestoreJournal(prepared.paths.journal, prepared.journal)
+  await rename(prepared.paths.instance, prepared.paths.rollback)
+  prepared.journal = {
+    ...prepared.journal,
+    phase: "moved_original",
+  }
+  await writeRestoreJournal(prepared.paths.journal, prepared.journal)
+  await rename(prepared.paths.staging, prepared.paths.instance)
+  prepared.journal = {
+    ...prepared.journal,
+    phase: "installed",
+  }
+  await writeRestoreJournal(prepared.paths.journal, prepared.journal)
+  await rm(prepared.paths.rollback, { force: true, recursive: true })
+  await rm(prepared.paths.archive, { force: true })
+  await unlink(prepared.paths.journal)
+}
+
+export type PreparedInstanceRestore = {
+  journal: RestoreJournal
+  paths: RestorePaths
 }
 
 export async function recoverInterruptedRestores(
@@ -336,11 +358,22 @@ export async function materializeBackupArtifact(
   )
 ): Promise<string> {
   await mkdir(restoreDirectoryPath(config), { mode: 0o700, recursive: true })
+  if (input.source.kind === "restic") {
+    throw restoreError(
+      "unsupported_restore_source",
+      "restore.materialize",
+      "Restic snapshots cannot be materialized as archive files"
+    )
+  }
   const artifact =
     input.source.kind === "local"
       ? backupArchivePath(config, input.backupId)
       : await downloadRestoreArtifact(destination, input)
-  await verifyBackupArtifact(artifact, input.bytes, input.checksumSha256)
+  await verifyBackupArtifact(
+    artifact,
+    input.source.bytes,
+    input.source.checksumSha256
+  )
   return artifact
 }
 
@@ -385,7 +418,7 @@ async function downloadRestoreArtifact(
         let bytes = 0
         response.on("data", (chunk: Buffer) => {
           bytes += chunk.byteLength
-          if (bytes > input.bytes) {
+          if (bytes > source.bytes) {
             response.destroy(
               new Error("Backup storage returned more data than expected")
             )
@@ -403,7 +436,7 @@ async function downloadRestoreArtifact(
             Effect.match({
               onFailure: rejectDownload,
               onSuccess: () => {
-                if (bytes !== input.bytes) {
+                if (bytes !== source.bytes) {
                   rejectDownload(
                     new Error("Backup storage returned an incomplete archive")
                   )
@@ -454,7 +487,7 @@ export async function verifyBackupArtifact(
   }
 }
 
-async function requireRestoreSpace(
+export async function requireRestoreSpace(
   directory: string,
   logicalBytes: number
 ): Promise<void> {
@@ -470,7 +503,7 @@ async function requireRestoreSpace(
   }
 }
 
-async function settleRestoreJournal(
+export async function settleRestoreJournal(
   config: RelayConfig,
   journal: RestoreJournal,
   preferComplete: boolean

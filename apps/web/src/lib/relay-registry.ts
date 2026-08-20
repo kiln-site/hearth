@@ -4,6 +4,7 @@ import {
   createPublicKey,
   generateKeyPairSync,
   randomBytes,
+  randomUUID,
   sign,
   timingSafeEqual,
   verify,
@@ -50,6 +51,7 @@ export interface PersistedRelay {
   browserOrigin: string
   clientId: string
   createdAt: string
+  createdBy: string | null
   enabled: boolean
   hostname: string
   id: string
@@ -65,6 +67,11 @@ export interface PersistedRelay {
   port: number
   role: "custom" | "full_access" | "read_only"
   useTls: boolean
+}
+
+export interface RelayPairingActor {
+  canManageAnyRelay: boolean
+  userId: string
 }
 
 export interface RelayCredentials {
@@ -114,6 +121,7 @@ interface RelayRow extends RowDataPacket {
   client_public_key: string
   client_role: "custom" | "full_access" | "read_only"
   created_at: Date
+  created_by: string | null
   enabled: number
   hostname: string
   id: string
@@ -206,7 +214,7 @@ async function findPersistedRelayRow(id: string): Promise<RelayRow | null> {
             last_connected_at, last_error, managed_ember_count,
             node_arch, node_platform, node_version,
             relay_public_key, relay_ca_certificate,
-            client_public_key, client_private_key_ciphertext, created_at
+            client_public_key, client_private_key_ciphertext, created_by, created_at
        FROM ${databaseTable("relay")}
       WHERE id = ?
       LIMIT 1`,
@@ -224,14 +232,17 @@ export const listPersistedRelaysEffect = Effect.fn("relays.list")(function* () {
             last_connected_at, last_error, managed_ember_count,
             node_arch, node_platform, node_version,
             relay_public_key, relay_ca_certificate,
-            client_public_key, client_private_key_ciphertext, created_at
+            client_public_key, client_private_key_ciphertext, created_by, created_at
        FROM ${databaseTable("relay")}
       ORDER BY name ASC, created_at ASC`
   )
   return rows.map(toPersistedRelay)
 })
 
-export async function pairPersistedRelay(pairingUri: string, subject: string) {
+export async function pairPersistedRelay(
+  pairingUri: string,
+  actor: RelayPairingActor
+) {
   const envelope = decodePairingUri(pairingUri)
   return pairWithEnvelope(
     envelope,
@@ -240,7 +251,8 @@ export async function pairPersistedRelay(pairingUri: string, subject: string) {
       token: envelope.token,
     },
     undefined,
-    subject
+    actor.userId,
+    actor.canManageAnyRelay ? null : actor.userId
   )
 }
 
@@ -518,7 +530,8 @@ async function pairWithEnvelope(
   envelope: z.infer<typeof pairingEnvelopeSchema>,
   credential: { bootstrapProof: string | null; token: string | null },
   enrollmentOrigin?: URL,
-  subject?: string
+  subject?: string,
+  creatorUserId: string | null = null
 ) {
   if (envelope.expiresAt <= Date.now()) {
     throw new Error("This Relay pairing invitation has expired")
@@ -556,6 +569,9 @@ async function pairWithEnvelope(
     throw new Error(
       "The saved Relay identity does not match this pairing invitation"
     )
+  }
+  if (creatorUserId && existing && existing.created_by !== creatorUserId) {
+    throw new Error("You can only manage Relays you created")
   }
   // A Relay keeps this fingerprint when its SQLite state is rebuilt. Reuse
   // Hearth's client identity so Relay can enroll it again without replacing
@@ -631,58 +647,31 @@ async function pairWithEnvelope(
         (await listPersistedRelays()).map((relay) => relay.name)
       )
   const encryptedPrivateKey = encryptPrivateKey(keys.privateKey)
+  await runAppEffect(
+    "relay.pairing.persist",
+    persistPairedRelayEffect({
+      browserOrigin: browserOrigin.origin,
+      clientActions: JSON.stringify(response.actions),
+      clientId: response.clientId,
+      clientPrivateKeyCiphertext: encryptedPrivateKey,
+      clientPublicKey: keys.publicKey,
+      clientRole: response.role,
+      createdBy: subject ?? null,
+      creatorUserId,
+      expectedExisting: existing !== null,
+      hostname: controlEndpoint.hostname,
+      id: envelope.relayFingerprint,
+      name: initialName,
+      ownerGrantId: randomUUID(),
+      port: effectivePort(controlEndpoint),
+      relayCaCertificate: envelope.caCertificatePem,
+      relayPublicKey: envelope.relayPublicKeyPem,
+      useTls: controlEndpoint.protocol === "wss:",
+    })
+  )
   if (existing) {
-    await databasePool.execute(
-      `UPDATE ${databaseTable("relay")}
-          SET name = ?, hostname = ?, port = ?, use_tls = ?,
-              browser_origin = ?, relay_public_key = ?,
-              relay_ca_certificate = ?, client_id = ?,
-              client_public_key = ?, client_private_key_ciphertext = ?,
-              client_role = ?, client_actions = ?, enabled = TRUE,
-              last_error = NULL
-        WHERE id = ?`,
-      [
-        initialName,
-        controlEndpoint.hostname,
-        effectivePort(controlEndpoint),
-        controlEndpoint.protocol === "wss:",
-        browserOrigin.origin,
-        envelope.relayPublicKeyPem,
-        envelope.caCertificatePem,
-        response.clientId,
-        keys.publicKey,
-        encryptedPrivateKey,
-        response.role,
-        JSON.stringify(response.actions),
-        envelope.relayFingerprint,
-      ]
-    )
     const { closeRelayConnection } = await import("@/lib/relay-connection")
     closeRelayConnection(envelope.relayFingerprint)
-  } else {
-    await databasePool.execute(
-      `INSERT INTO ${databaseTable("relay")} (
-        id, name, hostname, port, use_tls, browser_origin,
-        relay_public_key, relay_ca_certificate,
-        client_id, client_public_key, client_private_key_ciphertext,
-        client_role, client_actions, enabled
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)`,
-      [
-        envelope.relayFingerprint,
-        initialName,
-        controlEndpoint.hostname,
-        effectivePort(controlEndpoint),
-        controlEndpoint.protocol === "wss:",
-        browserOrigin.origin,
-        envelope.relayPublicKeyPem,
-        envelope.caCertificatePem,
-        response.clientId,
-        keys.publicKey,
-        encryptedPrivateKey,
-        response.role,
-        JSON.stringify(response.actions),
-      ]
-    )
   }
   return Effect.runPromise(
     registryOperation(async () => {
@@ -701,15 +690,138 @@ async function pairWithEnvelope(
         (existing
           ? Effect.void
           : registryOperation(() =>
-              databasePool.execute(
-                `DELETE FROM ${databaseTable("relay")} WHERE id = ?`,
-                [envelope.relayFingerprint]
-              )
+              deletePersistedRelay(envelope.relayFingerprint)
             ).pipe(Effect.asVoid)
         ).pipe(Effect.flatMap(() => Effect.fail(cause)))
       )
     )
   )
+}
+
+interface PairedRelayOwnershipRow extends RowDataPacket {
+  created_by: string | null
+}
+
+export function persistPairedRelayEffect(input: {
+  browserOrigin: string
+  clientActions: string
+  clientId: string
+  clientPrivateKeyCiphertext: string
+  clientPublicKey: string
+  clientRole: "custom" | "full_access" | "read_only"
+  createdBy: string | null
+  creatorUserId: string | null
+  expectedExisting: boolean
+  hostname: string
+  id: string
+  name: string
+  ownerGrantId: string
+  port: number
+  relayCaCertificate: string | null
+  relayPublicKey: string
+  useTls: boolean
+}) {
+  return Effect.gen(function* () {
+    if (input.creatorUserId && input.createdBy !== input.creatorUserId) {
+      return yield* Effect.fail(new Error("Invalid Relay creator ownership"))
+    }
+    const database = yield* Database
+    return yield* database.transaction("relay.pairing.persist", (transaction) =>
+      Effect.gen(function* () {
+        const persistedRows =
+          yield* transaction.queryRows<PairedRelayOwnershipRow>(
+            `SELECT created_by
+                 FROM ${databaseTable("relay")}
+                WHERE id = ? LIMIT 1 FOR UPDATE`,
+            [input.id]
+          )
+        const persisted = persistedRows.at(0)
+        if ((persisted !== undefined) !== input.expectedExisting) {
+          return yield* Effect.fail(
+            new Error("Relay pairing state changed. Try again.")
+          )
+        }
+        if (
+          input.creatorUserId &&
+          persisted &&
+          persisted.created_by !== input.creatorUserId
+        ) {
+          return yield* Effect.fail(
+            new Error("You can only manage Relays you created")
+          )
+        }
+
+        if (persisted) {
+          yield* transaction.execute(
+            `UPDATE ${databaseTable("relay")}
+                  SET name = ?, hostname = ?, port = ?, use_tls = ?,
+                      browser_origin = ?, relay_public_key = ?,
+                      relay_ca_certificate = ?, client_id = ?,
+                      client_public_key = ?, client_private_key_ciphertext = ?,
+                      client_role = ?, client_actions = ?, enabled = TRUE,
+                      last_error = NULL
+                WHERE id = ?`,
+            [
+              input.name,
+              input.hostname,
+              input.port,
+              input.useTls,
+              input.browserOrigin,
+              input.relayPublicKey,
+              input.relayCaCertificate,
+              input.clientId,
+              input.clientPublicKey,
+              input.clientPrivateKeyCiphertext,
+              input.clientRole,
+              input.clientActions,
+              input.id,
+            ]
+          )
+        } else {
+          yield* transaction.execute(
+            `INSERT INTO ${databaseTable("relay")} (
+                id, name, hostname, port, use_tls, browser_origin,
+                relay_public_key, relay_ca_certificate,
+                client_id, client_public_key, client_private_key_ciphertext,
+                client_role, client_actions, enabled, created_by
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, ?)`,
+            [
+              input.id,
+              input.name,
+              input.hostname,
+              input.port,
+              input.useTls,
+              input.browserOrigin,
+              input.relayPublicKey,
+              input.relayCaCertificate,
+              input.clientId,
+              input.clientPublicKey,
+              input.clientPrivateKeyCiphertext,
+              input.clientRole,
+              input.clientActions,
+              input.createdBy,
+            ]
+          )
+        }
+
+        if (input.creatorUserId) {
+          yield* transaction.execute(
+            `INSERT INTO ${databaseTable("access_grant")}
+                (id, user_id, relay_id, resource_type, resource_id, role, granted_by)
+               VALUES (?, ?, ?, 'relay', ?, 'owner', ?)
+               ON DUPLICATE KEY UPDATE role = 'owner', granted_by = VALUES(granted_by)`,
+            [
+              input.ownerGrantId,
+              input.creatorUserId,
+              input.id,
+              input.id,
+              input.creatorUserId,
+            ]
+          )
+        }
+      })
+    )
+  })
 }
 
 export async function updatePersistedRelay(input: {
@@ -771,11 +883,37 @@ export const setPersistedRelayEnabledEffect = Effect.fn("relays.setEnabled")(
   }
 )
 
+export const deletePersistedRelayEffect = Effect.fn("relay.deletePersisted")(
+  function* (id: string) {
+    const database = yield* Database
+    yield* database.transaction("relay.deletePersisted", (transaction) =>
+      Effect.gen(function* () {
+        yield* transaction.execute(
+          `UPDATE ${databaseTable("invitation")}
+              SET revoked_at = CURRENT_TIMESTAMP(3)
+            WHERE relay_id = ?
+              AND accepted_at IS NULL
+              AND revoked_at IS NULL`,
+          [id]
+        )
+        yield* transaction.execute(
+          `DELETE FROM ${databaseTable("access_grant")} WHERE relay_id = ?`,
+          [id]
+        )
+        const result = yield* transaction.execute(
+          `DELETE FROM ${databaseTable("relay")} WHERE id = ?`,
+          [id]
+        )
+        if (result.affectedRows !== 1) {
+          return yield* Effect.fail(new Error("Relay not found"))
+        }
+      })
+    )
+  }
+)
+
 export async function deletePersistedRelay(id: string): Promise<void> {
-  const [result] = await databasePool.execute<
-    import("mysql2/promise").ResultSetHeader
-  >(`DELETE FROM ${databaseTable("relay")} WHERE id = ?`, [id])
-  if (result.affectedRows !== 1) throw new Error("Relay not found")
+  await runAppEffect("relay.deletePersisted", deletePersistedRelayEffect(id))
   const { closeRelayConnection } = await import("@/lib/relay-connection")
   closeRelayConnection(id)
 }
@@ -1078,6 +1216,7 @@ function toPersistedRelay(row: RelayRow): PersistedRelay {
     browserOrigin: row.browser_origin,
     clientId: row.client_id,
     createdAt: row.created_at.toISOString(),
+    createdBy: row.created_by,
     enabled: Boolean(row.enabled),
     hostname: row.hostname,
     id: row.id,

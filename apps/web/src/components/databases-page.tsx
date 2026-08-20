@@ -49,6 +49,13 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@workspace/ui/components/popover"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@workspace/ui/components/select"
 import { showToast } from "@workspace/ui/components/sonner"
 import {
   Tooltip,
@@ -657,6 +664,7 @@ function CreateDatabaseDialog({
   const [relayId, setRelayId] = React.useState(
     () => availableRelays.at(0)?.id ?? ""
   )
+  const relayLabelId = React.useId()
   const create = useMutation({
     mutationFn: () =>
       createManagedDatabase({
@@ -717,20 +725,26 @@ function CreateDatabaseDialog({
               ))}
             </div>
           </fieldset>
-          <label className="block">
-            <span className="mb-2 block text-xs font-medium">Relay</span>
-            <select
-              className="h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-              value={relayId}
-              onChange={(event) => setRelayId(event.currentTarget.value)}
-            >
-              {availableRelays.map((relay) => (
-                <option key={relay.id} value={relay.id}>
-                  {relay.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div>
+            <span id={relayLabelId} className="mb-2 block text-xs font-medium">
+              Relay
+            </span>
+            <Select value={relayId} onValueChange={setRelayId}>
+              <SelectTrigger
+                aria-labelledby={relayLabelId}
+                className="h-9 w-full px-3"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {availableRelays.map((relay) => (
+                  <SelectItem key={relay.id} value={relay.id}>
+                    {relay.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           {create.error ? (
             <p className="text-xs text-destructive">{create.error.message}</p>
           ) : null}

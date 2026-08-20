@@ -4,9 +4,11 @@ import { Result } from "effect"
 import {
   BadgeCheck,
   BookOpen,
+  Check,
   FileCode2,
   PackagePlus,
   Search,
+  X,
 } from "lucide-react"
 
 import { Badge } from "@workspace/ui/components/badge"
@@ -18,10 +20,16 @@ import {
   DialogTitle,
 } from "@workspace/ui/components/dialog"
 import { Input } from "@workspace/ui/components/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@workspace/ui/components/select"
 import { cn } from "@workspace/ui/lib/utils"
 
 import { ServerTypeIcon } from "@/components/server-type-icon"
-import { defaultBrickRuntimeName } from "@/lib/brick-variables"
 import { useKilnGitRepositorySlug } from "@/lib/git-repository"
 
 export type BrickSelection =
@@ -29,7 +37,7 @@ export type BrickSelection =
   | { kind: "custom"; source: string }
 
 type BrickCategoryId = "all" | "minecraft" | "steam" | "other"
-type BrickSourceFilter = "all" | "official" | "community"
+type BrickSourceFilter = "all" | "verified" | "community"
 type BrickSort = "featured" | "name-asc" | "name-desc"
 
 const CATEGORIES: ReadonlyArray<{ id: BrickCategoryId; label: string }> = [
@@ -44,7 +52,7 @@ const SOURCE_FILTERS: ReadonlyArray<{
   label: string
 }> = [
   { id: "all", label: "All Sources" },
-  { id: "official", label: "Official" },
+  { id: "verified", label: "Verified" },
   { id: "community", label: "Community" },
 ]
 
@@ -56,7 +64,7 @@ const SORT_OPTIONS: ReadonlyArray<{ id: BrickSort; label: string }> = [
 
 const EMPTY_BRICKS: Array<Brick> = []
 
-function isOfficialBrick(brick: Brick, gitRepositorySlug: string): boolean {
+function isVerifiedBrick(brick: Brick, gitRepositorySlug: string): boolean {
   if (brick.metadata.author.trim().toLowerCase() === "kiln") return true
   return Result.getOrElse(
     Result.try(
@@ -105,8 +113,49 @@ function formatGameLabel(brick: Brick): string {
   return brick.metadata.game
 }
 
+const PLATFORM_ARCHITECTURES = ["amd64", "arm64"] as const
+
+const ArchitectureTag = React.memo(function ArchitectureTag({
+  architecture,
+  supported,
+}: {
+  architecture: string
+  supported: boolean
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex h-4 items-center gap-0.5 rounded-md border px-1 font-mono text-[0.5625rem] font-semibold",
+        supported
+          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+          : "border-destructive/30 bg-destructive/10 text-destructive"
+      )}
+    >
+      {supported ? (
+        <Check className="size-2.5 shrink-0" />
+      ) : (
+        <X className="size-2.5 shrink-0" />
+      )}
+      {architecture}
+    </span>
+  )
+})
+
+function normalizeArchitecture(architecture: string): string {
+  switch (architecture.trim().toLowerCase()) {
+    case "x64":
+    case "x86-64":
+    case "x86_64":
+      return "amd64"
+    case "aarch64":
+      return "arm64"
+    default:
+      return architecture.trim().toLowerCase()
+  }
+}
+
 function sourceLabel(brick: Brick, gitRepositorySlug: string): string {
-  return isOfficialBrick(brick, gitRepositorySlug) ? "Official" : "Community"
+  return isVerifiedBrick(brick, gitRepositorySlug) ? "Verified" : "Community"
 }
 
 function filterAndSortBricks(
@@ -134,14 +183,14 @@ function filterAndSortBricks(
   const filtered = bricks.filter((brick) => {
     if (category !== "all" && brickCategory(brick) !== category) return false
     if (
-      sourceFilter === "official" &&
-      !isOfficialBrick(brick, gitRepositorySlug)
+      sourceFilter === "verified" &&
+      !isVerifiedBrick(brick, gitRepositorySlug)
     ) {
       return false
     }
     if (
       sourceFilter === "community" &&
-      isOfficialBrick(brick, gitRepositorySlug)
+      isVerifiedBrick(brick, gitRepositorySlug)
     ) {
       return false
     }
@@ -157,16 +206,13 @@ function filterAndSortBricks(
     if (sort === "name-desc") {
       return b.metadata.name.localeCompare(a.metadata.name)
     }
-    const officialDelta =
-      Number(isOfficialBrick(b, gitRepositorySlug)) -
-      Number(isOfficialBrick(a, gitRepositorySlug))
-    if (officialDelta !== 0) return officialDelta
+    const verifiedDelta =
+      Number(isVerifiedBrick(b, gitRepositorySlug)) -
+      Number(isVerifiedBrick(a, gitRepositorySlug))
+    if (verifiedDelta !== 0) return verifiedDelta
     return a.metadata.name.localeCompare(b.metadata.name)
   })
 }
-
-const selectClassName =
-  "h-8 w-full rounded-md border border-input bg-input/18 px-2.5 text-xs text-foreground outline-none transition-[border-color,background-color,box-shadow] duration-150 hover:bg-input/24 focus-visible:border-ring/75 focus-visible:ring-2 focus-visible:ring-ring/35 disabled:cursor-not-allowed disabled:opacity-50"
 
 export const BrickCatalogBrowser = React.memo(function BrickCatalogBrowser({
   bricks,
@@ -295,42 +341,60 @@ export const BrickCatalogBrowser = React.memo(function BrickCatalogBrowser({
             />
           </label>
           <div className="grid grid-cols-2 gap-2">
-            <select
+            <Select
               value={sourceFilter}
               disabled={disabled || customOpen}
-              onChange={(event) => {
+              onValueChange={(value) => {
                 const next = SOURCE_FILTERS.find(
-                  (option) => option.id === event.target.value
+                  (option) => option.id === value
                 )
                 if (next) setSourceFilter(next.id)
               }}
-              className={selectClassName}
-              aria-label="Filter by source"
             >
-              {SOURCE_FILTERS.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <select
+              <SelectTrigger
+                className="h-8 w-full text-xs [&_[data-slot=select-value]]:whitespace-nowrap"
+                aria-label="Filter by source"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SOURCE_FILTERS.map((option) => (
+                  <SelectItem
+                    key={option.id}
+                    value={option.id}
+                    className="whitespace-nowrap"
+                  >
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
               value={sort}
               disabled={disabled || customOpen}
-              onChange={(event) => {
-                const next = SORT_OPTIONS.find(
-                  (option) => option.id === event.target.value
-                )
+              onValueChange={(value) => {
+                const next = SORT_OPTIONS.find((option) => option.id === value)
                 if (next) setSort(next.id)
               }}
-              className={selectClassName}
-              aria-label="Sort bricks"
             >
-              {SORT_OPTIONS.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger
+                className="h-8 w-full text-xs [&_[data-slot=select-value]]:whitespace-nowrap"
+                aria-label="Sort bricks"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SORT_OPTIONS.map((option) => (
+                  <SelectItem
+                    key={option.id}
+                    value={option.id}
+                    className="whitespace-nowrap"
+                  >
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </div>
 
@@ -353,7 +417,7 @@ export const BrickCatalogBrowser = React.memo(function BrickCatalogBrowser({
             <ul className="flex flex-col gap-0.5">
               {visibleBricks.map((brick) => {
                 const selected = selectedCatalog?.source === brick.source
-                const official = isOfficialBrick(brick, gitRepositorySlug)
+                const verified = isVerifiedBrick(brick, gitRepositorySlug)
                 return (
                   <li key={brick.source}>
                     <button
@@ -385,12 +449,13 @@ export const BrickCatalogBrowser = React.memo(function BrickCatalogBrowser({
                           {formatGameLabel(brick)}
                         </span>
                       </span>
-                      {official ? (
+                      {verified ? (
                         <Badge
                           variant="outline"
-                          className="h-5 shrink-0 border-primary/35 bg-primary/10 px-1.5 font-mono text-[0.625rem] text-primary"
+                          className="h-5 shrink-0 gap-1 border-primary/35 bg-primary/10 px-1.5 font-mono text-[0.625rem] text-primary"
                         >
-                          Official
+                          <BadgeCheck className="size-3" />
+                          Verified
                         </Badge>
                       ) : null}
                     </button>
@@ -484,7 +549,12 @@ const BrickDetailsPanel = React.memo(function BrickDetailsPanel({
   }
 
   const brick = selection.brick
-  const official = isOfficialBrick(brick, gitRepositorySlug)
+  const verified = isVerifiedBrick(brick, gitRepositorySlug)
+  const supportedArchitectures = new Set(
+    (brick.constraints.architectures ?? PLATFORM_ARCHITECTURES).map(
+      normalizeArchitecture
+    )
+  )
   const tags = brick.metadata.tags ?? []
 
   return (
@@ -502,13 +572,13 @@ const BrickDetailsPanel = React.memo(function BrickDetailsPanel({
               <h3 className="truncate font-heading text-lg font-semibold tracking-[-0.03em]">
                 {brick.metadata.name}
               </h3>
-              {official ? (
+              {verified ? (
                 <Badge
                   variant="outline"
                   className="h-5 gap-1 border-primary/35 bg-primary/10 px-1.5 text-[0.625rem] text-primary"
                 >
                   <BadgeCheck className="size-3" />
-                  Official
+                  Verified
                 </Badge>
               ) : (
                 <Badge variant="outline" className="h-5 px-1.5 text-[0.625rem]">
@@ -516,36 +586,21 @@ const BrickDetailsPanel = React.memo(function BrickDetailsPanel({
                 </Badge>
               )}
             </div>
-            <p className="mt-0.5 text-[0.6875rem] text-muted-foreground">
-              {formatGameLabel(brick)} · {brick.metadata.author}
-            </p>
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {PLATFORM_ARCHITECTURES.map((architecture) => (
+                <ArchitectureTag
+                  key={architecture}
+                  architecture={architecture}
+                  supported={supportedArchitectures.has(architecture)}
+                />
+              ))}
+            </div>
           </div>
         </div>
 
         <p className="mt-4 text-[0.8125rem] leading-relaxed text-foreground/90">
           {brick.metadata.description}
         </p>
-
-        <dl className="mt-4 space-y-2.5 border-t border-border/60 pt-4 text-xs">
-          <div className="flex items-start justify-between gap-3">
-            <dt className="text-muted-foreground">Runtime</dt>
-            <dd className="truncate text-right font-medium">
-              {defaultBrickRuntimeName(brick)}
-            </dd>
-          </div>
-          <div className="flex items-start justify-between gap-3">
-            <dt className="text-muted-foreground">Network</dt>
-            <dd className="truncate text-right font-medium capitalize">
-              {brick.network.mode.replaceAll("-", " ")}
-            </dd>
-          </div>
-          <div className="flex items-start justify-between gap-3">
-            <dt className="text-muted-foreground">Architectures</dt>
-            <dd className="truncate text-right font-mono text-[0.6875rem]">
-              {(brick.constraints.architectures ?? ["any"]).join(", ")}
-            </dd>
-          </div>
-        </dl>
 
         {tags.length > 0 ? (
           <div className="mt-4 flex flex-wrap gap-1.5">

@@ -24,6 +24,7 @@ try {
   await ensureInstanceOwnershipSchema(connection)
   await ensureTailscaleNetworkSchema(connection)
   await ensureDatabaseAccessSchema(connection)
+  await ensureAccessAssignmentSchema(connection)
   await ensureBackupSchema(connection)
   console.log("Kiln application tables are up to date")
 } finally {
@@ -96,6 +97,160 @@ async function ensureBackupSchema(database) {
             backup.created_at, backup.updated_at
        FROM ${databaseTable("backup")} backup`
   )
+  await database.query(
+    `CREATE TABLE IF NOT EXISTS ${databaseTable("backup_repository")} (
+      id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+      relay_id CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+      target_kind ENUM('instance', 'database', 'platform') NOT NULL,
+      target_id VARCHAR(120) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+      storage_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+      storage_key VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'local',
+      object_prefix VARCHAR(1024) NULL,
+      password_ciphertext TEXT NOT NULL,
+      created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      UNIQUE KEY ${databaseTableName("backup_repository_target_storage_unique")} (relay_id, target_kind, target_id, storage_key)
+    )`
+  )
+  await ensureBackupResticS3Schema(database)
+  const [backupColumns] = await database.query(
+    `SHOW COLUMNS FROM ${databaseTable("backup")}`
+  )
+  const backupColumnNames = new Set(backupColumns.map((column) => column.Field))
+  if (!backupColumnNames.has("restic_snapshot_id")) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup")}
+       ADD COLUMN restic_snapshot_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER checksum_sha256`
+    )
+  }
+  if (!backupColumnNames.has("repository_id")) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup")}
+       ADD COLUMN repository_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER restic_snapshot_id,
+       ADD KEY ${databaseTable("backup_repository_idx")} (repository_id),
+       ADD CONSTRAINT ${databaseTable("backup_repository_fk")}
+         FOREIGN KEY (repository_id) REFERENCES ${databaseTable("backup_repository")} (id) ON DELETE RESTRICT`
+    )
+  }
+  const artifactKindColumn = backupColumns.find(
+    (column) => column.Field === "artifact_kind"
+  )
+  if (!artifactKindColumn?.Type?.includes("restic_snapshot")) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup")}
+       MODIFY artifact_kind ENUM('archive', 'database_dump', 'platform_bundle', 'restic_snapshot') NOT NULL`
+    )
+  }
+  const [shareColumns] = await database.query(
+    `SHOW COLUMNS FROM ${databaseTable("backup_download_share")} LIKE 'artifact_kind'`
+  )
+  if (!shareColumns[0]?.Type?.includes("restic_snapshot")) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup_download_share")}
+       MODIFY artifact_kind ENUM('archive', 'database_dump', 'platform_bundle', 'restic_snapshot') NOT NULL`
+    )
+  }
+  const taskKindColumn = taskColumns.find((column) => column.Field === "task_kind")
+  if (!taskKindColumn?.Type?.includes("export")) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup_task")}
+       MODIFY task_kind ENUM('create', 'restore', 'delete', 'export') NOT NULL`
+    )
+  }
+}
+
+async function ensureBackupResticS3Schema(database) {
+  const [storageColumns] = await database.query(
+    `SHOW COLUMNS FROM ${databaseTable("backup_storage")}`
+  )
+  const storageColumnNames = new Set(storageColumns.map((column) => column.Field))
+  if (!storageColumnNames.has("deleting")) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup_storage")}
+       ADD COLUMN deleting BOOLEAN NOT NULL DEFAULT FALSE AFTER enabled`
+    )
+  }
+
+  const [repositoryColumns] = await database.query(
+    `SHOW COLUMNS FROM ${databaseTable("backup_repository")}`
+  )
+  const repositoryColumnNames = new Set(
+    repositoryColumns.map((column) => column.Field)
+  )
+  if (!repositoryColumnNames.has("storage_id")) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup_repository")}
+       ADD COLUMN storage_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER target_id`
+    )
+  }
+  if (!repositoryColumnNames.has("storage_key")) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup_repository")}
+       ADD COLUMN storage_key VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'local' AFTER storage_id`
+    )
+  }
+  if (!repositoryColumnNames.has("object_prefix")) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup_repository")}
+       ADD COLUMN object_prefix VARCHAR(1024) NULL AFTER storage_key`
+    )
+  }
+  await database.query(
+    `UPDATE ${databaseTable("backup_repository")}
+        SET storage_key = IFNULL(storage_id, 'local')
+      WHERE storage_key <> IFNULL(storage_id, 'local')`
+  )
+
+  const [repositoryIndexes] = await database.query(
+    `SHOW INDEX FROM ${databaseTable("backup_repository")}`
+  )
+  const repositoryIndexNames = new Set(
+    repositoryIndexes.map((index) => index.Key_name)
+  )
+  const storageUnique = databaseTableName(
+    "backup_repository_target_storage_unique"
+  )
+  const legacyUnique = databaseTableName("backup_repository_target_unique")
+  if (!repositoryIndexNames.has(storageUnique)) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup_repository")}
+       ADD UNIQUE KEY ${databaseTable("backup_repository_target_storage_unique")} (relay_id, target_kind, target_id, storage_key)`
+    )
+  }
+  if (repositoryIndexNames.has(legacyUnique)) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup_repository")}
+       DROP INDEX ${databaseTable("backup_repository_target_unique")}`
+    )
+  }
+
+  const storageIndex = databaseTableName("backup_repository_storage_idx")
+  if (!repositoryIndexNames.has(storageIndex)) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup_repository")}
+       ADD KEY ${databaseTable("backup_repository_storage_idx")} (storage_id)`
+    )
+  }
+
+  const [createTableRows] = await database.query(
+    `SHOW CREATE TABLE ${databaseTable("backup_repository")}`
+  )
+  const createTable = createTableRows[0]?.["Create Table"] ?? ""
+  const storageFk = databaseTableName("backup_repository_storage_fk")
+  if (!createTable.includes(storageFk)) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup_repository")}
+       ADD CONSTRAINT ${databaseTable("backup_repository_storage_fk")}
+         FOREIGN KEY (storage_id) REFERENCES ${databaseTable("backup_storage")} (id) ON DELETE RESTRICT`
+    )
+  }
+  const storageKeyCheck = databaseTableName("backup_repository_storage_key_chk")
+  if (!createTable.includes(storageKeyCheck)) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("backup_repository")}
+       ADD CONSTRAINT ${databaseTable("backup_repository_storage_key_chk")}
+         CHECK (storage_key = IFNULL(storage_id, 'local'))`
+    )
+  }
 }
 
 async function ensureInstanceOwnershipSchema(database) {
@@ -127,6 +282,49 @@ async function ensureDatabaseAccessSchema(database) {
     await database.query(
       `ALTER TABLE ${databaseTable("invitation")}
        ADD COLUMN database_id CHAR(40) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER instance_id`
+    )
+  }
+}
+
+async function ensureAccessAssignmentSchema(database) {
+  const [relayCreatorColumns] = await database.query(
+    `SHOW COLUMNS FROM ${databaseTable("relay")} LIKE 'created_by'`
+  )
+  if (relayCreatorColumns.length === 0) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("relay")}
+       ADD COLUMN created_by VARCHAR(36) NULL AFTER node_version`
+    )
+  }
+
+  const [invitationColumns] = await database.query(
+    `SHOW COLUMNS FROM ${databaseTable("invitation")}`
+  )
+  const invitationColumnNames = new Set(
+    invitationColumns.map((column) => column.Field)
+  )
+  if (!invitationColumnNames.has("access_type")) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("invitation")}
+       ADD COLUMN access_type ENUM('scoped', 'platform_admin', 'relay_creator')
+         NOT NULL DEFAULT 'scoped' AFTER email`
+    )
+  }
+  const relayIdColumn = invitationColumns.find(
+    (column) => column.Field === "relay_id"
+  )
+  const roleColumn = invitationColumns.find((column) => column.Field === "role")
+  const invitationChanges = [
+    relayIdColumn?.Null === "NO"
+      ? "MODIFY relay_id CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NULL"
+      : null,
+    roleColumn?.Null === "NO"
+      ? "MODIFY role ENUM('owner', 'admin', 'operator', 'viewer') NULL"
+      : null,
+  ].filter(Boolean)
+  if (invitationChanges.length > 0) {
+    await database.query(
+      `ALTER TABLE ${databaseTable("invitation")} ${invitationChanges.join(", ")}`
     )
   }
 }

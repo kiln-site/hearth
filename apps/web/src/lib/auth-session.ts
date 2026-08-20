@@ -2,6 +2,8 @@ import type { AuthSession } from "@/lib/auth"
 
 import { auth } from "@/lib/auth"
 import { developmentBypassEnabled } from "@/lib/environment"
+import type { PlatformRole } from "@/lib/permissions"
+import { platformRoles } from "@/lib/permissions"
 
 export const DEV_BYPASS_COOKIE = "kiln-dev-auth-bypass"
 
@@ -11,7 +13,7 @@ export interface AuthenticatedUser {
   id: string
   isDevelopmentBypass: boolean
   name: string
-  role: "admin" | "user"
+  role: PlatformRole
   twoFactorEnabled: boolean
 }
 
@@ -44,14 +46,19 @@ export async function getAuthenticatedUserFromHeaders(
     id: session.user.id,
     isDevelopmentBypass: false,
     name: session.user.name,
-    role:
-      (session.user as typeof session.user & { role?: string }).role === "admin"
-        ? "admin"
-        : "user",
+    role: platformRole(
+      (session.user as typeof session.user & { role?: string }).role
+    ),
     twoFactorEnabled:
       (session.user as typeof session.user & { twoFactorEnabled?: boolean })
         .twoFactorEnabled ?? false,
   }
+}
+
+function platformRole(role: string | undefined): PlatformRole {
+  return platformRoles.includes(role as PlatformRole)
+    ? (role as PlatformRole)
+    : "user"
 }
 
 export async function requireAuthenticatedUserFromHeaders(

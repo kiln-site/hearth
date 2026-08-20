@@ -23,6 +23,13 @@ import {
   InputGroupAddon,
   InputGroupInput,
 } from "@workspace/ui/components/input-group"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@workspace/ui/components/select"
 import { showToast } from "@workspace/ui/components/sonner"
 import { Switch } from "@workspace/ui/components/switch"
 
@@ -195,15 +202,11 @@ export const FileDownloadDialog = React.memo(function FileDownloadDialog({
     setDownloadError(null)
   }, [])
 
-  const changeArchiveFormat = React.useCallback(
-    (event: React.ChangeEvent<HTMLSelectElement>) => {
-      const nextFormat: FileArchiveFormat =
-        event.target.value === "gzip" ? "gzip" : "zip"
-      setArchiveFormat(nextFormat)
-      setDownloadError(null)
-    },
-    []
-  )
+  const changeArchiveFormat = React.useCallback((value: string) => {
+    const nextFormat: FileArchiveFormat = value === "gzip" ? "gzip" : "zip"
+    setArchiveFormat(nextFormat)
+    setDownloadError(null)
+  }, [])
 
   const changeDownloadBaseName = React.useCallback((name: string) => {
     setDownloadBaseName(name)
@@ -371,7 +374,7 @@ const DownloadOptions = React.memo(function DownloadOptions({
   downloadError: string | null
   downloading: boolean
   invalidName: boolean
-  onArchiveFormatChange: (event: React.ChangeEvent<HTMLSelectElement>) => void
+  onArchiveFormatChange: (value: string) => void
   onCompressionChange: (compressed: boolean) => void
   onDownloadBaseNameChange: (name: string) => void
   onSkipDialogChange: (skip: boolean) => void
@@ -438,16 +441,22 @@ const DownloadOptions = React.memo(function DownloadOptions({
           </p>
         </div>
         {compressed ? (
-          <select
-            aria-label="Archive format"
+          <Select
             value={archiveFormat}
             disabled={downloading}
-            className="h-7 border border-input bg-input/18 px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/35"
-            onChange={onArchiveFormatChange}
+            onValueChange={onArchiveFormatChange}
           >
-            <option value="zip">ZIP</option>
-            <option value="gzip">Gzip</option>
-          </select>
+            <SelectTrigger
+              aria-label="Archive format"
+              className="h-7 gap-1.5 bg-input/18 px-2 text-xs [&_svg]:size-3.5"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="min-w-(--radix-select-trigger-width)">
+              <SelectItem value="zip">ZIP</SelectItem>
+              <SelectItem value="gzip">Gzip</SelectItem>
+            </SelectContent>
+          </Select>
         ) : null}
         <Switch
           id={compressionId}

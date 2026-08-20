@@ -9,6 +9,7 @@ import { Effect, Semaphore } from "effect"
 import {
   backupTaskIdSchema,
   backupTaskInputSchema,
+  redactRelayBackupTask,
   relayConsoleCommandSchema,
   relayConsoleCompletionInputSchema,
   relayConsoleShareInputSchema,
@@ -1120,21 +1121,29 @@ async function executeControlRequest(
     case "backup.task.enqueue":
       return runRelayEffect(
         "relay.backups.enqueue",
-        backupManager.enqueue(backupTaskInputSchema.parse(request.payload))
+        backupManager
+          .enqueue(backupTaskInputSchema.parse(request.payload))
+          .pipe(Effect.map(redactRelayBackupTask))
       )
     case "backup.task.cancel":
       return runRelayEffect(
         "relay.backups.cancel",
-        backupManager.cancel(
-          backupTaskIdSchema.parse(requiredString(payload, "taskId"))
-        )
+        backupManager
+          .cancel(
+            backupTaskIdSchema.parse(requiredString(payload, "taskId"))
+          )
+          .pipe(
+            Effect.map((task) => (task ? redactRelayBackupTask(task) : task))
+          )
       )
     case "backup.task.get":
       return runRelayEffect(
         "relay.backups.get",
-        backupManager.get(
-          backupTaskIdSchema.parse(requiredString(payload, "taskId"))
-        )
+        backupManager
+          .get(backupTaskIdSchema.parse(requiredString(payload, "taskId")))
+          .pipe(
+            Effect.map((task) => (task ? redactRelayBackupTask(task) : task))
+          )
       )
     case "backup.task.list": {
       const updatedAfter = payload.updatedAfter
@@ -1146,9 +1155,9 @@ async function executeControlRequest(
       }
       return runRelayEffect(
         "relay.backups.list",
-        backupManager.list(
-          updatedAfter === undefined ? undefined : Number(updatedAfter)
-        )
+        backupManager
+          .list(updatedAfter === undefined ? undefined : Number(updatedAfter))
+          .pipe(Effect.map((tasks) => tasks.map(redactRelayBackupTask)))
       )
     }
     case "instance.create": {

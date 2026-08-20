@@ -15,10 +15,16 @@ import {
 } from "@workspace/contracts"
 import { z } from "zod"
 
-import { isPlatformAdmin, requireRelayPermission } from "@/lib/access-control"
+import {
+  isPlatformAdmin,
+  isRelayCreator,
+  requireRelayPermission,
+} from "@/lib/access-control"
+import type { AuthenticatedUser } from "@/lib/auth-session"
 import { hydrateBrickVariables } from "@/lib/brick-variables"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import { listPersistedRelays } from "@/lib/relay-registry"
+import { listMcJarVersionsEffect } from "@/effect/mcjarfiles"
 import { runAppEffect } from "@/effect/runtime"
 import {
   cachedRelayJsonEffect,
@@ -29,6 +35,11 @@ import {
 } from "@/lib/relay-client"
 import { requireAuthenticatedUser } from "@/server/auth"
 import { provisionInstanceDomainBestEffort } from "@/server/domains.server"
+
+const brickVersionCatalogSchema = z.object({
+  type: z.string().regex(/^[a-z0-9-]+$/u),
+  variant: z.string().regex(/^[a-z0-9-]+$/u),
+})
 
 const relayInputSchema = z.object({ relayId: relayIdSchema })
 const createInputSchema = relayCreateInstanceSchema.extend({
@@ -49,11 +60,8 @@ const startupInputSchema = relayUpdateInstanceStartupSchema.extend(
 export const getBrickCatalog = createServerFn({ method: "GET" }).handler(
   async () => {
     const user = await requireAuthenticatedUser()
-    if (!isPlatformAdmin(user)) {
-      throw new Error("Platform administrator access required")
-    }
     const candidates = (await listPersistedRelays()).filter(
-      (relay) => relay.enabled
+      (relay) => relay.enabled && canProvisionOnRelay(user, relay)
     )
     const snapshots = await Promise.allSettled(
       candidates.map((relay) => requestRelay(relay, "/v1/snapshot"))
@@ -85,14 +93,22 @@ export const getBrickCatalog = createServerFn({ method: "GET" }).handler(
   }
 )
 
+export const getBrickVersions = createServerFn({ method: "GET" })
+  .validator(brickVersionCatalogSchema)
+  .handler(async ({ data }) => {
+    await requireAuthenticatedUser()
+    return runAppEffect(
+      "mcjarfiles.versions",
+      listMcJarVersionsEffect(data.type, data.variant)
+    )
+  })
+
 export const createBrickInstance = createServerFn({ method: "POST" })
   .validator(createInputSchema)
   .handler(async ({ data }) => {
     const user = await requireAuthenticatedUser()
-    if (!isPlatformAdmin(user)) {
-      throw new Error("Platform administrator access required")
-    }
     const relay = await requiredRelay(data.relayId)
+    requireRelayProvisionAccess(user, relay)
     const input = relayCreateInstanceSchema.parse(data)
     const instance = relayInstanceSchema.parse(
       await requestRelay(
@@ -286,10 +302,8 @@ export const loadBrickRecipe = createServerFn({ method: "POST" })
   .validator(recipeInputSchema)
   .handler(async ({ data }) => {
     const user = await requireAuthenticatedUser()
-    if (!isPlatformAdmin(user)) {
-      throw new Error("Platform administrator access required")
-    }
     const relay = await requiredRelay(data.relayId)
+    requireRelayProvisionAccess(user, relay)
     return brickSchema.parse(
       await requestRelay(
         relay,
@@ -302,10 +316,8 @@ export const configureBrickNetworking = createServerFn({ method: "POST" })
   .validator(networkingInputSchema)
   .handler(async ({ data }) => {
     const user = await requireAuthenticatedUser()
-    if (!isPlatformAdmin(user)) {
-      throw new Error("Platform administrator access required")
-    }
     const relay = await requiredRelay(data.relayId)
+    requireRelayProvisionAccess(user, relay)
     const input = relayNetworkingSchema.parse(data)
     const networking = relayNetworkingSchema.parse(
       await requestRelay(
@@ -332,6 +344,25 @@ async function requiredRelay(id: string): Promise<PersistedRelay> {
   )
   if (!relay) throw new Error("Relay not found")
   return relay
+}
+
+function canProvisionOnRelay(
+  user: AuthenticatedUser,
+  relay: PersistedRelay
+): boolean {
+  return (
+    isPlatformAdmin(user) ||
+    (isRelayCreator(user) && relay.createdBy === user.id)
+  )
+}
+
+function requireRelayProvisionAccess(
+  user: AuthenticatedUser,
+  relay: PersistedRelay
+): void {
+  if (!canProvisionOnRelay(user, relay)) {
+    throw new Error("You can only provision on Relays you created")
+  }
 }
 
 async function requestRelay(

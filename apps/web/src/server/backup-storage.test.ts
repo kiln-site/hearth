@@ -33,6 +33,7 @@ function backupStorage(
     allowPrivateNetwork: false,
     bucket: "backups",
     createdAt: "2026-08-10T00:00:00.000Z",
+    deleting: false,
     enabled: true,
     endpoint: "https://s3.example.com",
     forcePathStyle: false,

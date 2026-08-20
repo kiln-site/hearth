@@ -52,6 +52,7 @@ import {
   relayTailscaleStackSchema,
 } from "@workspace/contracts"
 import type { BrickCatalog } from "./bricks.js"
+import { removeResticRepository } from "./backups.js"
 import type { RelayConfig, RelayInstanceConfig } from "./config.js"
 import type { DockerDriver } from "./docker.js"
 import {
@@ -260,6 +261,46 @@ function dockerMemoryBytes(value: string): number {
 function formatAllocationBytes(bytes: number): string {
   const gibibytes = bytes / 1024 ** 3
   return `${gibibytes.toFixed(gibibytes >= 10 ? 0 : 1)} GiB`
+}
+
+export function resolveInstanceStartupReconfigure(
+  existing: RelayInstance,
+  input: RelayUpdateInstanceStartup
+): {
+  diskLimitBytes: number
+  forcePull: boolean
+  recipe: string
+  start: boolean
+  tailscale: RelayInstanceTailscale
+  variables: NonNullable<RelayInstance["variables"]>
+} {
+  const reinstall = input.reinstall === true
+  const recipe = reinstall
+    ? existing.brickSource
+    : (input.recipe ?? existing.brickSource)
+  if (!recipe) {
+    throw new Error("Instance is missing its Brick recipe source")
+  }
+  const variables = reinstall ? existing.variables : input.variables
+  if (!variables) {
+    throw new Error(
+      reinstall
+        ? "Instance is missing its applied Brick variables"
+        : "Enter startup variables"
+    )
+  }
+  return {
+    diskLimitBytes: reinstall
+      ? existing.limits.diskBytes
+      : (input.diskLimitBytes ?? existing.limits.diskBytes),
+    forcePull: reinstall,
+    recipe,
+    start: reinstall ? existing.desiredState === "running" : input.start,
+    tailscale: reinstall
+      ? existing.tailscale
+      : (input.tailscale ?? existing.tailscale),
+    variables,
+  }
 }
 
 export class LifecycleDriver {
@@ -1866,7 +1907,8 @@ export class LifecycleDriver {
     instanceId: string,
     input: RelayUpdateInstanceStartup
   ): Promise<RelayInstance> {
-    const existing = await this.#docker.findInstance(instanceId)
+    const inspected = await this.#docker.inspectInstances()
+    const existing = inspected.find((item) => item.id === instanceId)
     if (!existing) throw new Error("Instance not found")
     if (!existing.managedByRelay) {
       throw new Error("Relay can only reconfigure containers it created")
@@ -1881,14 +1923,10 @@ export class LifecycleDriver {
         "This server does not have a recoverable primary port. Recreate it before changing startup settings."
       )
     }
-    const recipe = input.recipe ?? existing.brickSource
-    if (!recipe) {
-      throw new Error("Instance is missing its Brick recipe source")
-    }
-    const diskLimitBytes = input.diskLimitBytes ?? existing.limits.diskBytes
-    const tailscale = input.tailscale ?? existing.tailscale
+    const { diskLimitBytes, forcePull, recipe, start, tailscale, variables } =
+      resolveInstanceStartupReconfigure(existing, input)
     if (tailscale.enabled) {
-      const duplicate = (await this.#docker.inspectInstances()).find(
+      const duplicate = inspected.find(
         (instance) =>
           instance.id !== existing.id &&
           instance.managedByRelay &&
@@ -1902,17 +1940,22 @@ export class LifecycleDriver {
       }
     }
     const definition = await this.#bricks.recipe(recipe)
-    const resolved = resolveBrick(definition, input.variables, recipe)
+    const resolved = resolveBrick(definition, variables, recipe)
     await this.#assertAllocationAvailable({
       checkExistingUsage: true,
       currentDiskLimitBytes: existing.limits.diskBytes,
       directory: join(this.#config.rootDirectory, existing.directory),
       diskLimitBytes,
-      existing: (await this.#docker.inspectInstances()).filter(
-        (instance) => instance.id !== existing.id
-      ),
+      existing: inspected.filter((instance) => instance.id !== existing.id),
       memoryLimitBytes: dockerMemoryBytes(resolved.memory),
     })
+    if (forcePull) {
+      await runLifecycle(
+        lifecycleOperation(() =>
+          command("docker", ["pull", resolved.image], { timeout: 300_000 })
+        )
+      )
+    }
 
     await recoverPromise(
       () =>
@@ -1943,9 +1986,10 @@ export class LifecycleDriver {
           prepareDirectory: false,
           ports: existing.ports,
           recipe,
-          start: input.start,
+          skipImagePull: forcePull,
+          start,
           tailscale,
-          variables: input.variables,
+          variables,
         })
       ).pipe(
         Effect.mapError(
@@ -1966,6 +2010,7 @@ export class LifecycleDriver {
     prepareDirectory: boolean
     ports?: ReadonlyArray<RelayInstancePortAllocation>
     recipe: string
+    skipImagePull?: boolean
     start: boolean
     tailscale: RelayInstanceTailscale
     variables: RelayCreateInstance["variables"]
@@ -2083,19 +2128,34 @@ export class LifecycleDriver {
     }
     if (networking?.enabled) await this.#ensureInfrastructure(networking, false)
     let managedInstallationMarker: string | null = null
-    if (installationMarker) {
-      await runLifecycle(
-        lifecycleOperation(() =>
-          command("docker", ["pull", image], { timeout: 300_000 })
-        ).pipe(
-          Effect.catch(() =>
-            lifecycleOperation(() =>
-              command("docker", ["image", "inspect", image])
-            )
-          ),
-          Effect.asVoid
-        )
+    const pullImage = () =>
+      lifecycleOperation(() =>
+        command("docker", ["pull", image], { timeout: 300_000 })
       )
+    if (!input.skipImagePull) {
+      if (installationMarker) {
+        await runLifecycle(
+          pullImage().pipe(
+            Effect.catch(() =>
+              lifecycleOperation(() =>
+                command("docker", ["image", "inspect", image])
+              )
+            ),
+            Effect.asVoid
+          )
+        )
+      } else {
+        await runLifecycle(
+          lifecycleOperation(() =>
+            command("docker", ["image", "inspect", image])
+          ).pipe(
+            Effect.catch(() => pullImage()),
+            Effect.asVoid
+          )
+        )
+      }
+    }
+    if (installationMarker) {
       const protocol = await runLifecycle(
         lifecycleOperation(() =>
           command("docker", [
@@ -2110,19 +2170,6 @@ export class LifecycleDriver {
       if (supportsInstallationMarkerProtocol(protocol)) {
         managedInstallationMarker = installationMarker
       }
-    } else {
-      await runLifecycle(
-        lifecycleOperation(() =>
-          command("docker", ["image", "inspect", image])
-        ).pipe(
-          Effect.catch(() =>
-            lifecycleOperation(() =>
-              command("docker", ["pull", image], { timeout: 300_000 })
-            )
-          ),
-          Effect.asVoid
-        )
-      )
     }
 
     const reservedPorts: Array<{
@@ -2719,6 +2766,7 @@ export class LifecycleDriver {
         recursive: true,
         force: true,
       })
+      await removeResticRepository(this.#config, instance.id)
     }
     const networking = await this.networking()
     if (networking?.enabled) await this.#refreshCoreDnsConfiguration(networking)

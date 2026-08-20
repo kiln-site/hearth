@@ -97,6 +97,9 @@ export function backupDisplayFilename(
   backup: BackupFilenamePresentation
 ): string {
   if (backup.filename) return backup.filename
+  if (backup.artifactKind === "restic_snapshot") {
+    return backupArtifactFilename(backup.id, backup.artifactKind)
+  }
   if (backupShowsUploadArtifact(backup)) {
     return backupArtifactFilename(backup.id, backup.artifactKind)
   }

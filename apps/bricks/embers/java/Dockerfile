@@ -5,10 +5,18 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends binutils \
   && rm -rf /var/lib/apt/lists/*
 
+# java.se is the public Java SE API set, including java.scripting. Paper/Purpur
+# load javax.script during bootstrap, and Pterodactyl yolks avoid this class of
+# crash by shipping a full Temurin JDK. Extra jdk.* modules cover TLS, locales,
+# Spark, and the incubator Vector API used by the Purpur egg when present.
 RUN compression=2; \
   if jlink --help | grep -q 'zip-[0-9]'; then compression=zip-6; fi; \
+  modules="java.se,jdk.attach,jdk.charsets,jdk.crypto.cryptoki,jdk.crypto.ec,jdk.httpserver,jdk.jfr,jdk.localedata,jdk.management,jdk.naming.dns,jdk.net,jdk.security.auth,jdk.security.jgss,jdk.unsupported,jdk.xml.dom,jdk.zipfs"; \
+  if java --list-modules | grep -q '^jdk.incubator.vector@'; then \
+    modules="${modules},jdk.incubator.vector"; \
+  fi; \
   jlink \
-  --add-modules java.base,java.compiler,java.desktop,java.instrument,java.logging,java.management,java.naming,java.net.http,java.security.jgss,java.sql,jdk.crypto.ec,jdk.management,jdk.security.auth,jdk.unsupported,jdk.zipfs \
+  --add-modules "${modules}" \
   --no-header-files \
   --no-man-pages \
   --strip-debug \
@@ -18,7 +26,7 @@ RUN compression=2; \
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends bash ca-certificates curl tini \
+  && apt-get install -y --no-install-recommends bash ca-certificates curl fontconfig libfreetype6 tini tzdata \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=java /opt/kiln-java /opt/java

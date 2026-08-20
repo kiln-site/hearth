@@ -38,6 +38,13 @@ import {
   DialogTitle,
 } from "@workspace/ui/components/dialog"
 import { Input } from "@workspace/ui/components/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@workspace/ui/components/select"
 import { dismissToast, showToast } from "@workspace/ui/components/sonner"
 import {
   Tooltip,
@@ -911,7 +918,13 @@ const RelayDeleteButton = React.memo(function RelayDeleteButton({
         queryKeys.relays,
         (current) => current?.filter((item) => item.id !== relayId)
       )
-      await invalidateRelayRuntimeQueries(queryClient)
+      await Promise.all([
+        invalidateRelayRuntimeQueries(queryClient),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.access.capabilities,
+        }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.access.overview }),
+      ])
     },
   })
 
@@ -1195,7 +1208,13 @@ function AddRelayDialog({
             ? current.map((item) => (item.id === relay.id ? relay : item))
             : [...(current ?? []), relay]
       )
-      await invalidateRelayRuntimeQueries(queryClient)
+      await Promise.all([
+        invalidateRelayRuntimeQueries(queryClient),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.access.capabilities,
+        }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.access.overview }),
+      ])
     },
   })
 
@@ -1676,18 +1695,24 @@ const RelayProxyFields = React.memo(function RelayProxyFields({
     <>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Proxy mode" htmlFor={`relay-proxy-mode-${relayId}`}>
-          <select
-            id={`relay-proxy-mode-${relayId}`}
+          <Select
             name="mode"
             defaultValue={proxy.data?.settings.mode ?? "none"}
             disabled={!relayEnabled}
-            className="h-8 w-full rounded-md border border-input bg-background/35 px-2 text-[0.625rem] outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-50"
           >
-            <option value="none">None / existing Traefik</option>
-            <option value="hearth">Hearth proxy</option>
-            <option value="traefik">Bundled Traefik</option>
-            <option value="coolify">Coolify Traefik</option>
-          </select>
+            <SelectTrigger
+              id={`relay-proxy-mode-${relayId}`}
+              className="h-8 w-full text-[0.625rem] [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">None / existing Traefik</SelectItem>
+              <SelectItem value="hearth">Hearth proxy</SelectItem>
+              <SelectItem value="traefik">Bundled Traefik</SelectItem>
+              <SelectItem value="coolify">Coolify Traefik</SelectItem>
+            </SelectContent>
+          </Select>
         </Field>
         <Field label="Traefik image" htmlFor={`traefik-image-${relayId}`}>
           <Input
@@ -1807,9 +1832,9 @@ function selectHasEnabledRelay(relays: Array<PersistedRelay>): boolean {
 }
 
 function selectCanReviewUpdates(capabilities: {
-  isPlatformAdmin: boolean
+  canUpdateRelays: boolean
 }): boolean {
-  return capabilities.isPlatformAdmin
+  return capabilities.canUpdateRelays
 }
 
 function selectRelayUpdateSummary(overview: UpdateOverview): {

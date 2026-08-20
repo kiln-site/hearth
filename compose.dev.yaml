@@ -12,11 +12,31 @@ services:
       KILN_BRICKS_CATALOG_URL: file:///workspace/apps/bricks/catalog.yml
       KILN_RELAY_TLS_MODE: managed
       KILN_RELAY_NAME: ${KILN_RELAY_NAME:-D001-localdev}
+      RESTIC_CACERT: /minio-certs/public.crt
     command:
       - /bin/sh
       - -lc
       - |
         apk add --no-cache docker-cli docker-cli-compose
+        # Pin restic to the version shipped in apps/relay/Dockerfile so dev
+        # exercises the same CLI/JSON surface as production.
+        if ! restic version 2>/dev/null | grep -q '^restic 0.19.1'; then
+          arch=$$(uname -m)
+          case "$$arch" in aarch64) arch=arm64 ;; x86_64) arch=amd64 ;; esac
+          attempt=0
+          until wget -qO /tmp/restic.bz2 "https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_$${arch}.bz2"; do
+            attempt=$$((attempt + 1))
+            if [ "$$attempt" -ge 5 ]; then echo "restic download failed" >&2; exit 1; fi
+            sleep 2
+          done
+          bunzip2 -c /tmp/restic.bz2 > /usr/local/bin/restic
+          chmod +x /usr/local/bin/restic
+          rm -f /tmp/restic.bz2
+          if ! restic version | grep -q '^restic 0.19.1'; then
+            echo "restic install failed" >&2
+            exit 1
+          fi
+        fi
         corepack enable
         pnpm install --frozen-lockfile --ignore-scripts --filter relay...
         pnpm rebuild esbuild
@@ -36,6 +56,9 @@ services:
       timeout: 3s
       start_period: 10s
       retries: 6
+    depends_on:
+      minio-certs:
+        condition: service_completed_successfully
     volumes: !override
       - /var/run/docker.sock:/var/run/docker.sock
       - relay-data:/data
@@ -44,6 +67,7 @@ services:
       - relay-dev-app-node-modules:/workspace/apps/relay/node_modules
       - relay-dev-contracts-node-modules:/workspace/packages/contracts/node_modules
       - kiln-dev-pnpm-store:/root/.local/share/pnpm/store
+      - minio-certs:/minio-certs:ro
     ports: !reset []
 
   hearth:
@@ -56,10 +80,17 @@ services:
         condition: service_healthy
       relay:
         condition: service_healthy
+      minio-certs:
+        condition: service_completed_successfully
+      minio:
+        condition: service_started
+      minio-setup:
+        condition: service_completed_successfully
     environment:
       NODE_ENV: development
       KILN_ENVIRONMENT: dev
       KILN_SENTRY_VERIFICATION_TOKEN: ${KILN_SENTRY_VERIFICATION_TOKEN:-}
+      NODE_EXTRA_CA_CERTS: /minio-certs/public.crt
     command:
       - /bin/sh
       - -lc
@@ -97,7 +128,64 @@ services:
       - hearth-dev-contracts-node-modules:/workspace/packages/contracts/node_modules
       - hearth-dev-ui-node-modules:/workspace/packages/ui/node_modules
       - kiln-dev-pnpm-store:/root/.local/share/pnpm/store
+      - minio-certs:/minio-certs:ro
     ports: !reset []
+
+  minio-certs:
+    image: alpine:3.21
+    restart: "no"
+    volumes:
+      - minio-certs:/certs
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        if [ ! -f /certs/public.crt ]; then
+          apk add --no-cache openssl
+          openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+            -keyout /certs/private.key \
+            -out /certs/public.crt \
+            -subj "/CN=minio" \
+            -addext "subjectAltName=DNS:minio,DNS:localhost,IP:127.0.0.1"
+          chmod 644 /certs/public.crt
+          chmod 600 /certs/private.key
+        fi
+
+  minio:
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    restart: "no"
+    depends_on:
+      minio-certs:
+        condition: service_completed_successfully
+    command: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: kiln
+      MINIO_ROOT_PASSWORD: kilnminiodevpassword
+      MINIO_REGION_NAME: us-east-1
+    volumes:
+      - minio-data:/data
+      - minio-certs:/root/.minio/certs:ro
+
+  minio-setup:
+    image: minio/mc:RELEASE.2025-07-21T05-28-08Z
+    restart: "no"
+    depends_on:
+      minio-certs:
+        condition: service_completed_successfully
+      minio:
+        condition: service_started
+    volumes:
+      - minio-certs:/certs:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        i=0
+        until mc --insecure alias set kiln https://minio:9000 kiln kilnminiodevpassword; do
+          i=$$((i + 1))
+          if [ "$$i" -ge 30 ]; then exit 1; fi
+          sleep 1
+        done
+        mc --insecure mb --ignore-existing kiln/kiln-backups
 
 volumes:
   relay-dev-node-modules:
@@ -107,6 +195,8 @@ volumes:
   hearth-dev-web-node-modules:
   hearth-dev-contracts-node-modules:
   hearth-dev-ui-node-modules:
+  minio-certs:
+  minio-data:
   kiln-dev-pnpm-store:
     external: true
     name: kiln-dev-pnpm-store

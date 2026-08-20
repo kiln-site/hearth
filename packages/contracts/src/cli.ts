@@ -322,6 +322,7 @@ export const cliBackupTargetsResponseSchema = z
   .strict()
 
 const cliCreateBackupBaseSchema = z.object({
+  mode: backupModeSchema.optional(),
   name: z.string().trim().min(1).max(120),
   relayId: z.string().regex(/^[A-Za-z\d_-]{43}$/u),
   storageId: z.union([z.uuid(), z.null()]).optional(),
@@ -374,18 +375,27 @@ export const cliDeleteBackupResponseSchema = z
   .strict()
 
 export const cliBackupDownloadRequestSchema = z
-  .object({ backupId: backupIdSchema })
+  .object({ backupId: backupIdSchema, poll: z.boolean().default(false) })
   .strict()
 
-export const cliBackupDownloadResponseSchema = z
-  .object({
-    expiresAt: z.iso.datetime(),
-    filename: backupFilenameSchema,
-    url: z.url().refine((value) => new URL(value).protocol === "https:", {
-      message: "Backup downloads must use HTTPS",
-    }),
-  })
-  .strict()
+export const cliBackupDownloadResponseSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      status: z.literal("preparing"),
+      taskId: z.uuid(),
+    })
+    .strict(),
+  z
+    .object({
+      expiresAt: z.iso.datetime(),
+      filename: backupFilenameSchema,
+      status: z.literal("ready"),
+      url: z.url().refine((value) => new URL(value).protocol === "https:", {
+        message: "Backup downloads must use HTTPS",
+      }),
+    })
+    .strict(),
+])
 
 export const cliActivityEntrySchema = z
   .object({

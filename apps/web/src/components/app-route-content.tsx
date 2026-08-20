@@ -167,11 +167,11 @@ function RouteEmptyState() {
   }, [navigate])
 
   return connectionQuery.data.status === "connected" ? (
-    <EmptyServerState canProvision={capabilities.isPlatformAdmin} />
+    <EmptyServerState canProvision={capabilities.canManageRelays} />
   ) : (
     <RelayUnavailableState
       connection={connectionQuery.data}
-      canConfigure={capabilities.isPlatformAdmin}
+      canConfigure={capabilities.canManageRelays}
       onRetry={retry}
       onConfigure={configure}
     />

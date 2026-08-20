@@ -18,7 +18,7 @@ export interface AccessGrantedEmailProps {
   grantedBy: string
   resourceName: string
   role: string
-  scope: "database" | "instance" | "relay"
+  scope: "database" | "instance" | "platform" | "relay"
 }
 
 export function AccessGrantedEmail({
@@ -64,8 +64,10 @@ export function AccessGrantedEmail({
                 Your access is ready
               </Heading>
               <Text className="text-smoke mt-5 text-[15px] leading-[24px]">
-                {grantedBy} added your existing Kiln account to the {scope}{" "}
-                {resourceName} as {role}. You can use this access immediately.
+                {scope === "platform"
+                  ? `${grantedBy} gave your Kiln account ${role} access.`
+                  : `${grantedBy} added your existing Kiln account to the ${scope} ${resourceName} as ${role}.`}{" "}
+                You can use this access immediately.
               </Text>
               <Button
                 href={actionUrl}

@@ -7,8 +7,30 @@ import { XIcon } from "lucide-react"
 import { Button } from "@workspace/ui/components/button"
 import { cn } from "@workspace/ui/lib/utils"
 
-function Dialog({ ...props }: DialogPrimitive.Root.Props) {
-  return <DialogPrimitive.Root data-slot="dialog" {...props} />
+const nestedFloatingSelector = [
+  "[data-slot=select-content]",
+  "[data-slot=popover-content]",
+  "[data-slot=combobox-content]",
+  "[data-radix-popper-content-wrapper]",
+].join(",")
+
+function Dialog({
+  onOpenChange,
+  ...props
+}: DialogPrimitive.Root.Props) {
+  return (
+    <DialogPrimitive.Root
+      data-slot="dialog"
+      {...props}
+      onOpenChange={(open, eventDetails) => {
+        if (!open && shouldKeepDialogOpen(eventDetails)) {
+          eventDetails.cancel()
+          return
+        }
+        onOpenChange?.(open, eventDetails)
+      }}
+    />
+  )
 }
 
 function DialogTrigger({ ...props }: DialogPrimitive.Trigger.Props) {
@@ -148,4 +170,31 @@ export {
   DialogPortal,
   DialogTitle,
   DialogTrigger,
+}
+
+function shouldKeepDialogOpen(
+  eventDetails: DialogPrimitive.Root.ChangeEventDetails
+): boolean {
+  if (
+    eventDetails.reason !== "outside-press" &&
+    eventDetails.reason !== "focus-out" &&
+    eventDetails.reason !== "escape-key"
+  ) {
+    return false
+  }
+  if (eventDetails.reason === "outside-press") {
+    const path =
+      typeof eventDetails.event.composedPath === "function"
+        ? eventDetails.event.composedPath()
+        : []
+    if (
+      path.some(
+        (node) =>
+          node instanceof Element && node.matches(nestedFloatingSelector)
+      )
+    ) {
+      return true
+    }
+  }
+  return document.querySelector(nestedFloatingSelector) !== null
 }

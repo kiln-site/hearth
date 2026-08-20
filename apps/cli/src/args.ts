@@ -13,6 +13,7 @@ export interface CliArguments {
   javaVersion?: string
   limit: number
   memory?: string
+  mode?: "full" | "incremental"
   name?: string
   noOpen: boolean
   profile?: string
@@ -36,6 +37,7 @@ export function parseArguments(argv: Array<string>): CliArguments {
   let limit = 2_000
   let javaVersion: string | undefined
   let memory: string | undefined
+  let mode: "full" | "incremental" | undefined
   let name: string | undefined
   let noOpen = false
   let profile: string | undefined
@@ -72,6 +74,17 @@ export function parseArguments(argv: Array<string>): CliArguments {
     else if (flag === "--help" || flag === "-h") help = true
     else if (flag === "--java-version") javaVersion = value()
     else if (flag === "--memory") memory = value()
+    else if (flag === "--mode") {
+      const parsed = z.enum(["full", "incremental"]).safeParse(value())
+      if (!parsed.success) {
+        throw commandError({
+          code: "invalid_arguments",
+          exitCode: 2,
+          message: "--mode must be full or incremental.",
+        })
+      }
+      mode = parsed.data
+    }
     else if (flag === "--no-open") noOpen = true
     else if (flag === "--no-safety-backup") safetyBackup = false
     else if (flag === "--no-start") start = false
@@ -116,6 +129,7 @@ export function parseArguments(argv: Array<string>): CliArguments {
     ...(javaVersion ? { javaVersion } : {}),
     limit,
     ...(memory ? { memory } : {}),
+    ...(mode ? { mode } : {}),
     ...(name ? { name } : {}),
     noOpen,
     ...(profile ? { profile } : {}),

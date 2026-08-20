@@ -6,7 +6,8 @@ import {
   CircleAlert,
   LoaderCircle,
   Play,
-  Rocket,
+  RefreshCw,
+  RotateCcw,
   Save,
 } from "lucide-react"
 import type {
@@ -17,12 +18,23 @@ import type {
 
 import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@workspace/ui/components/dialog"
+import { Input } from "@workspace/ui/components/input"
+import { showToast } from "@workspace/ui/components/sonner"
 
 import {
   BrickSelectDialog,
   type BrickSelection,
 } from "@/components/brick-selector"
 import { BrickVariableField } from "@/components/brick-variable-fields"
+import { MinecraftJavaVersionFields } from "@/components/minecraft-java-version-fields"
 import { ServerTypeIcon } from "@/components/server-type-icon"
 import {
   formatResourceBytes,
@@ -36,11 +48,16 @@ import {
 } from "@/components/instance-workspace-context"
 import { WorkspaceSummaryCard } from "@/components/workspace-summary-card"
 import {
+  canPairMinecraftJavaVersionFields,
   defaultBrickVariables,
   unavailableMinecraftJavaVersion,
   updateBrickVariable,
   withRecommendedMinecraftJava,
 } from "@/lib/brick-variables"
+import {
+  dockerMemoryBytes,
+  managedJavaStartupFlags,
+} from "@/lib/managed-java-flags"
 import {
   brickCatalogQueryOptions,
   instanceStartupQueryOptions,
@@ -54,6 +71,7 @@ const emptyBricks: Array<Brick> = []
 
 type BrickView = {
   description: string
+  environment: Brick["runtime"]["environment"]
   game: string
   id: string
   memoryTemplate: string
@@ -65,6 +83,7 @@ type BrickView = {
 function brickViewFromBrick(brick: Brick, source = brick.source): BrickView {
   return {
     description: brick.metadata.description,
+    environment: brick.runtime.environment,
     game: brick.metadata.game,
     id: brick.metadata.id,
     memoryTemplate: brick.runtime.resources.memory,
@@ -151,10 +170,8 @@ const StartupForm = React.memo(function StartupForm({
   const [diskLimitGiB, setDiskLimitGiB] = React.useState(() =>
     bytesToGiBInput(initialLimits.diskBytes)
   )
-  const [startAfterSave, setStartAfterSave] = React.useState(
-    () => observedState !== "running"
-  )
   const [swapOpen, setSwapOpen] = React.useState(false)
+  const [reinstallOpen, setReinstallOpen] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [saved, setSaved] = React.useState(false)
 
@@ -189,8 +206,39 @@ const StartupForm = React.memo(function StartupForm({
       window.setTimeout(() => setSaved(false), 2_000)
     },
   })
-  const pending = saveMutation.isPending
+  const reinstallMutation = useMutation({
+    mutationFn: updateInstanceStartup,
+    onSuccess: async (updated) => {
+      queryClient.setQueryData<RelayFleetSnapshot>(
+        queryKeys.relay.snapshot,
+        (current) => {
+          const previous = current?.instances.find(
+            (item) => item.id === updated.id && item.relayId === relayId
+          )
+          return replaceRelaySnapshotInstance(current, {
+            ...updated,
+            name: previous?.name ?? updated.name,
+            relayId,
+          })
+        }
+      )
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["relay", relayId, "instances", instanceId, "startup"],
+        }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.relay.snapshot }),
+      ])
+      setReinstallOpen(false)
+      showToast({
+        type: "success",
+        message: "Brick reinstalled",
+        description: "The container was rebuilt from the current Ember image.",
+      })
+    },
+  })
+  const pending = saveMutation.isPending || reinstallMutation.isPending
   const submittingRef = React.useRef(false)
+  const isRunning = observedState === "running"
 
   function applyBrickSelection(selection: BrickSelection) {
     if (selection.kind === "catalog") {
@@ -202,6 +250,7 @@ const StartupForm = React.memo(function StartupForm({
     const source = selection.source.trim()
     setView({
       description: "Custom HTTPS recipe",
+      environment: {},
       game: "Custom",
       id: "custom",
       memoryTemplate: "",
@@ -267,7 +316,7 @@ const StartupForm = React.memo(function StartupForm({
               instanceId,
               recipe: view.source,
               relayId,
-              start: startAfterSave,
+              start: true,
               variables,
             },
           }),
@@ -277,6 +326,40 @@ const StartupForm = React.memo(function StartupForm({
           Effect.sync(() =>
             setError(
               cause instanceof Error ? cause.message : "Could not apply Startup"
+            )
+          )
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            submittingRef.current = false
+          })
+        )
+      )
+    )
+  }
+
+  async function onReinstall() {
+    if (!canEdit || pending || submittingRef.current) return
+    setError(null)
+    submittingRef.current = true
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: () =>
+          reinstallMutation.mutateAsync({
+            data: {
+              instanceId,
+              reinstall: true,
+              relayId,
+            },
+          }),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() =>
+            setError(
+              cause instanceof Error
+                ? cause.message
+                : "Could not reinstall Brick"
             )
           )
         ),
@@ -305,41 +388,32 @@ const StartupForm = React.memo(function StartupForm({
 
   return (
     <section className="min-h-0 flex-1 overflow-y-auto bg-card">
-      <div className="mx-auto max-w-3xl px-5 py-6 sm:px-8 sm:py-8">
-        <div className="flex flex-col gap-1">
-          <p className="font-mono text-[0.5625rem] tracking-[0.18em] text-primary uppercase">
-            Startup
-          </p>
-          <h2 className="font-heading text-xl font-semibold tracking-[-0.03em]">
-            Brick configuration
-          </h2>
-          <p className="max-w-2xl text-xs leading-relaxed text-muted-foreground">
-            These options come from the Brick recipe. Saving rebuilds the
-            container with the same data volume
-            {startAfterSave ? " and starts it" : ""}.
-          </p>
-        </div>
-
-        <BrickSummary
-          view={view}
-          canEdit={canEdit}
-          pending={pending}
-          onSwap={() => setSwapOpen(true)}
-        />
+      <div className="mx-auto max-w-3xl space-y-6 px-5 py-6 sm:px-8 sm:py-8">
+        <StartupSection title="Brick Selection">
+          <BrickSummary
+            view={view}
+            canEdit={canEdit}
+            pending={pending}
+            onReinstall={() => setReinstallOpen(true)}
+            onSwap={() => setSwapOpen(true)}
+          />
+        </StartupSection>
 
         <StartupSettingsForm
           allocation={allocation}
+          brickId={view.id}
+          brickName={view.name}
           canEdit={canEdit}
           configuredMemoryBytes={configuredMemoryBytes}
           diskLimitGiB={diskLimitGiB}
-          error={error}
+          environment={view.environment}
+          error={reinstallOpen ? null : error}
+          isRunning={isRunning}
           pending={pending}
           saved={saved}
-          startAfterSave={startAfterSave}
           variableDefinitions={view.variables}
           variables={variables}
           onDiskLimitChange={setDiskLimitGiB}
-          onStartAfterSaveChange={setStartAfterSave}
           onSubmit={onSubmit}
           onVariableChange={(name, value) => {
             if (!canEdit) return
@@ -354,15 +428,31 @@ const StartupForm = React.memo(function StartupForm({
       </div>
 
       {canEdit ? (
-        <StartupBrickSwapDialog
-          open={swapOpen}
-          onOpenChange={setSwapOpen}
-          bricks={catalogQuery.data?.bricks ?? emptyBricks}
-          loading={catalogQuery.isPending}
-          error={catalogQuery.error?.message ?? null}
-          initial={swapInitial}
-          onConfirm={applyBrickSelection}
-        />
+        <>
+          <StartupBrickSwapDialog
+            open={swapOpen}
+            onOpenChange={setSwapOpen}
+            bricks={catalogQuery.data?.bricks ?? emptyBricks}
+            loading={catalogQuery.isPending}
+            error={catalogQuery.error?.message ?? null}
+            initial={swapInitial}
+            onConfirm={applyBrickSelection}
+          />
+          <StartupBrickReinstallDialog
+            brickName={initialBrick.metadata.name}
+            error={reinstallOpen ? error : null}
+            open={reinstallOpen}
+            pending={reinstallMutation.isPending}
+            onOpenChange={(open) => {
+              if (reinstallMutation.isPending) return
+              setReinstallOpen(open)
+              if (open) setError(null)
+            }}
+            onConfirm={() => {
+              void onReinstall()
+            }}
+          />
+        </>
       ) : null}
     </section>
   )
@@ -370,82 +460,136 @@ const StartupForm = React.memo(function StartupForm({
 
 function StartupSettingsForm({
   allocation,
+  brickId,
+  brickName,
   canEdit,
   configuredMemoryBytes,
   diskLimitGiB,
+  environment,
   error,
+  isRunning,
   pending,
   saved,
-  startAfterSave,
   variableDefinitions,
   variables,
   onDiskLimitChange,
-  onStartAfterSaveChange,
   onSubmit,
   onVariableChange,
 }: {
   allocation: StartupResourceAllocation
+  brickId: string
+  brickName: string
   canEdit: boolean
   configuredMemoryBytes: number
   diskLimitGiB: string
+  environment: Brick["runtime"]["environment"]
   error: string | null
+  isRunning: boolean
   pending: boolean
   saved: boolean
-  startAfterSave: boolean
   variableDefinitions: Brick["variables"]
   variables: Record<string, BrickVariableValue>
   onDiskLimitChange: (value: string) => void
-  onStartAfterSaveChange: (value: boolean) => void
   onSubmit: React.FormEventHandler<HTMLFormElement>
   onVariableChange: (
     name: string,
     value: BrickVariableValue | undefined
   ) => void
 }) {
-  const entries = Object.entries(variableDefinitions)
+  const javaArgsDefinition = variableDefinitions.java_args
+  const pairVersionAndJava =
+    canPairMinecraftJavaVersionFields(variableDefinitions)
+  const groupedNames = new Set(
+    [
+      pairVersionAndJava ? "version" : null,
+      pairVersionAndJava ? "java_version" : null,
+      javaArgsDefinition ? "java_args" : null,
+    ].filter((name): name is string => name !== null)
+  )
+  const entries = Object.entries(variableDefinitions).filter(
+    ([name]) => !groupedNames.has(name)
+  )
+  const memory =
+    typeof variables.memory === "string" ? variables.memory : undefined
+  const managedFlags = javaArgsDefinition
+    ? managedJavaStartupFlags(environment, memory, variables, {
+        id: brickId,
+        name: brickName,
+      })
+    : null
+  const hasFields =
+    entries.length > 0 || pairVersionAndJava || Boolean(javaArgsDefinition)
+
   return (
-    <form className="mt-5 space-y-4" onSubmit={onSubmit}>
-      <ResourceAllocationCard
-        allocation={allocation}
-        configuredMemoryBytes={configuredMemoryBytes}
-        diskLimitGiB={diskLimitGiB}
-        disabled={!canEdit || pending}
-        onDiskLimitChange={onDiskLimitChange}
-      />
-
-      {entries.length === 0 ? (
-        <div className="rounded-xl border border-border/75 bg-background/45 px-4 py-8 text-center text-xs text-muted-foreground">
-          This Brick has no configurable Startup variables.
-        </div>
-      ) : (
-        <div className="space-y-3 rounded-xl border border-border/75 bg-background/45 p-4">
-          {entries.map(([name, definition]) => (
-            <BrickVariableField
-              key={name}
-              name={name}
-              definition={definition}
-              value={variables[name]}
-              onChange={(value) => onVariableChange(name, value)}
-            />
-          ))}
-        </div>
-      )}
-
-      <label className="flex cursor-pointer items-center justify-between rounded-xl border border-border/75 bg-background/45 px-4 py-3 text-xs">
-        <span>
-          <span className="block font-medium">Start after applying</span>
-          <span className="mt-0.5 block text-[0.5625rem] text-muted-foreground">
-            Leave off to keep the server stopped after rebuild.
+    <form className="space-y-6" onSubmit={onSubmit}>
+      <StartupSection
+        accessory={
+          <span className="font-mono text-[0.5rem] tracking-[0.08em] text-muted-foreground/60 uppercase">
+            Node capacity
           </span>
-        </span>
-        <input
-          type="checkbox"
-          checked={startAfterSave}
+        }
+        description="Limits are validated against every server on this node."
+        title="Resource Allocation"
+      >
+        <ResourceAllocationCard
+          allocation={allocation}
+          configuredMemoryBytes={configuredMemoryBytes}
+          diskLimitGiB={diskLimitGiB}
           disabled={!canEdit || pending}
-          onChange={(event) => onStartAfterSaveChange(event.target.checked)}
-          className="accent-primary"
+          onDiskLimitChange={onDiskLimitChange}
         />
-      </label>
+      </StartupSection>
+
+      <StartupSection title="Brick Configuration">
+        {hasFields ? (
+          <div className="space-y-3 rounded-xl border border-border/75 bg-background/45 p-4">
+            {entries.map(([name, definition]) => (
+              <BrickVariableField
+                key={name}
+                name={name}
+                definition={definition}
+                value={variables[name]}
+                onChange={(value) => onVariableChange(name, value)}
+              />
+            ))}
+            {pairVersionAndJava ? (
+              <MinecraftJavaVersionFields
+                brickId={brickId}
+                disabled={!canEdit || pending}
+                environment={environment}
+                javaVersion={
+                  typeof variables.java_version === "string"
+                    ? variables.java_version
+                    : ""
+                }
+                onJavaVersionChange={(value) =>
+                  onVariableChange("java_version", value)
+                }
+                onVersionChange={(value) => onVariableChange("version", value)}
+                variableDefinitions={variableDefinitions}
+                version={
+                  typeof variables.version === "string" ? variables.version : ""
+                }
+              />
+            ) : null}
+            {javaArgsDefinition ? (
+              <>
+                <ManagedJavaFlagsField value={managedFlags ?? ""} />
+                <BrickVariableField
+                  name="java_args"
+                  definition={javaArgsDefinition}
+                  value={variables.java_args}
+                  onChange={(value) => onVariableChange("java_args", value)}
+                />
+              </>
+            ) : null}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-border/75 bg-background/45 px-4 py-8 text-center text-xs text-muted-foreground">
+            This Brick has no configurable Startup variables.
+          </div>
+        )}
+      </StartupSection>
 
       {error ? (
         <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/8 px-3 py-2 text-xs text-destructive">
@@ -454,33 +598,89 @@ function StartupSettingsForm({
         </div>
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {!canEdit ? (
+          <p className="mr-auto text-[0.6875rem] text-muted-foreground">
+            Connect the Relay and use an account with settings access to change
+            Startup.
+          </p>
+        ) : null}
         <Button type="submit" disabled={!canEdit || pending}>
           {pending ? (
             <LoaderCircle className="animate-spin" />
           ) : saved ? (
             <Save />
-          ) : startAfterSave ? (
-            <Play />
+          ) : isRunning ? (
+            <RotateCcw />
           ) : (
-            <Rocket />
+            <Play />
           )}
           {pending
             ? "Applying…"
             : saved
               ? "Applied"
-              : startAfterSave
-                ? "Apply & Start"
-                : "Apply Startup"}
+              : isRunning
+                ? "Apply & Restart"
+                : "Apply & Start"}
         </Button>
-        {!canEdit ? (
-          <p className="text-[0.6875rem] text-muted-foreground">
-            Connect the Relay and use an account with settings access to change
-            Startup.
-          </p>
-        ) : null}
       </div>
     </form>
+  )
+}
+
+const ManagedJavaFlagsField = React.memo(function ManagedJavaFlagsField({
+  value,
+}: {
+  value: string
+}) {
+  const labelId = React.useId()
+  return (
+    <div className="block space-y-1.5 text-[0.625rem] font-medium text-muted-foreground">
+      <span className="flex items-center justify-between gap-2">
+        <span id={labelId}>Managed flags</span>
+        <span className="font-mono text-[0.5rem] text-muted-foreground/55">
+          ember
+        </span>
+      </span>
+      <Input
+        aria-labelledby={labelId}
+        value={value}
+        readOnly
+        disabled
+        className="font-mono text-xs md:text-xs"
+      />
+    </div>
+  )
+})
+
+function StartupSection({
+  accessory,
+  children,
+  description,
+  title,
+}: {
+  accessory?: React.ReactNode
+  children: React.ReactNode
+  description?: string
+  title: string
+}) {
+  return (
+    <section className="space-y-2">
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <p className="font-mono text-[0.5625rem] tracking-[0.14em] text-primary uppercase">
+            {title}
+          </p>
+          {description ? (
+            <p className="mt-0.5 text-[0.625rem] text-muted-foreground">
+              {description}
+            </p>
+          ) : null}
+        </div>
+        {accessory}
+      </div>
+      {children}
+    </section>
   )
 }
 
@@ -488,31 +688,44 @@ function BrickSummary({
   view,
   canEdit,
   pending,
+  onReinstall,
   onSwap,
 }: {
   view: BrickView
   canEdit: boolean
   pending: boolean
+  onReinstall: () => void
   onSwap: () => void
 }) {
   return (
     <WorkspaceSummaryCard
       action={
         canEdit ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="shrink-0"
-            disabled={pending}
-            onClick={onSwap}
-          >
-            <ArrowLeftRight />
-            Swap Brick
-          </Button>
+          <div className="flex shrink-0 flex-wrap justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={pending}
+              onClick={onReinstall}
+            >
+              <RefreshCw />
+              Reinstall
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={pending}
+              onClick={onSwap}
+            >
+              <ArrowLeftRight />
+              Swap Brick
+            </Button>
+          </div>
         ) : null
       }
-      className="mt-6 bg-background/45"
+      className="bg-background/45"
       icon={<ServerTypeIcon implementation={view.id} className="size-5" />}
       title={view.name}
       titleAccessory={
@@ -540,25 +753,6 @@ function resolvedMemoryBytes(
   )?.[1]
   const value = variable ? variables[variable] : template
   return typeof value === "string" ? dockerMemoryBytes(value) : null
-}
-
-function dockerMemoryBytes(value: string): number | null {
-  const match = value.trim().match(/^(\d+)([bkmgt])$/iu)
-  if (!match?.[1] || !match[2]) return null
-  const amount = Number(match[1])
-  const unit = match[2].toLowerCase()
-  const exponent =
-    unit === "b"
-      ? 0
-      : unit === "k"
-        ? 1
-        : unit === "m"
-          ? 2
-          : unit === "g"
-            ? 3
-            : 4
-  const bytes = amount * 1024 ** exponent
-  return Number.isSafeInteger(bytes) ? bytes : null
 }
 
 function gibibytesToBytes(value: string): number | null {
@@ -628,9 +822,71 @@ const StartupBrickSwapDialog = React.memo(function StartupBrickSwapDialog({
       bricks={bricks}
       initial={initial}
       title="Swap Brick"
-      description="Pick another catalog Brick or a custom recipe. Startup options update immediately; apply to rebuild the container."
+      description="Pick another catalog Brick or a custom recipe. Startup options save as you edit; apply to rebuild the container and start it."
       confirmLabel="Use Brick"
       onConfirm={onConfirm}
     />
   )
 })
+
+const StartupBrickReinstallDialog = React.memo(
+  function StartupBrickReinstallDialog({
+    brickName,
+    error,
+    open,
+    pending,
+    onOpenChange,
+    onConfirm,
+  }: {
+    brickName: string
+    error: string | null
+    open: boolean
+    pending: boolean
+    onOpenChange: (open: boolean) => void
+    onConfirm: () => void
+  }) {
+    return (
+      <Dialog
+        open={open}
+        onOpenChange={(nextOpen) => {
+          if (pending) return
+          onOpenChange(nextOpen)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reinstall {brickName}</DialogTitle>
+            <DialogDescription>
+              Rebuilds the container from the current Ember image. World data and
+              files stay on the volume. Unsaved Startup changes are not applied.
+            </DialogDescription>
+          </DialogHeader>
+          {error ? (
+            <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/8 px-3 py-2 text-xs text-destructive">
+              <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+              {error}
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={pending}
+              onClick={() => onOpenChange(false)}
+            >
+              Cancel
+            </Button>
+            <Button type="button" disabled={pending} onClick={onConfirm}>
+              {pending ? (
+                <LoaderCircle className="animate-spin" />
+              ) : (
+                <RefreshCw />
+              )}
+              {pending ? "Reinstalling…" : "Reinstall"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    )
+  }
+)

@@ -24,7 +24,11 @@ function ServersRoute() {
 
   return (
     <ServersPage
-      canProvision={user.isDevelopmentBypass || user.role === "admin"}
+      canProvision={
+        user.isDevelopmentBypass ||
+        user.role === "admin" ||
+        user.role === "relay_creator"
+      }
       searchStore={searchStore}
     />
   )

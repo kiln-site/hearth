@@ -3,14 +3,80 @@ import { Effect, Layer } from "effect"
 import type { ResultSetHeader } from "mysql2/promise"
 
 import { Database } from "@/effect/database"
+import type { AuthenticatedUser } from "@/lib/auth-session"
 import {
   accessGrantRoleChangeError,
   deduplicateEffectiveInstanceGrants,
   deleteInstanceAccessEffect,
   isBlockedInstanceOwnerRoleChange,
   isCurrentInstanceOwnerGrant,
+  isPlatformAdmin,
   isProtectedInstanceOwnerGrant,
+  isRelayCreator,
+  visibleRelaysForUser,
 } from "@/lib/access-control"
+
+const authenticatedUser = {
+  email: "user@example.com",
+  emailVerified: true,
+  id: "user-one",
+  isDevelopmentBypass: false,
+  name: "User",
+  role: "user",
+  twoFactorEnabled: false,
+} satisfies AuthenticatedUser
+
+describe("platform access roles", () => {
+  it("keeps Relay creators distinct from platform administrators", () => {
+    const relayCreator = {
+      ...authenticatedUser,
+      role: "relay_creator",
+    } satisfies AuthenticatedUser
+    const platformAdmin = {
+      ...authenticatedUser,
+      role: "admin",
+    } satisfies AuthenticatedUser
+
+    assert.isTrue(isRelayCreator(relayCreator))
+    assert.isFalse(isPlatformAdmin(relayCreator))
+    assert.isTrue(isPlatformAdmin(platformAdmin))
+    assert.isFalse(isRelayCreator(platformAdmin))
+  })
+
+  it("exposes only created or granted Relays outside platform administration", () => {
+    const relays = [
+      { createdBy: "creator", id: "owned" },
+      { createdBy: "someone-else", id: "granted" },
+      { createdBy: "someone-else", id: "private" },
+    ]
+    const creator = {
+      ...authenticatedUser,
+      id: "creator",
+      role: "relay_creator",
+    } satisfies AuthenticatedUser
+
+    assert.deepEqual(
+      visibleRelaysForUser(creator, relays, [{ relayId: "granted" }]).map(
+        (relay) => relay.id
+      ),
+      ["owned", "granted"]
+    )
+    assert.deepEqual(
+      visibleRelaysForUser(authenticatedUser, relays, [
+        { relayId: "granted" },
+      ]).map((relay) => relay.id),
+      ["granted"]
+    )
+    assert.deepEqual(
+      visibleRelaysForUser(
+        { ...authenticatedUser, role: "admin" },
+        relays,
+        []
+      ).map((relay) => relay.id),
+      ["owned", "granted", "private"]
+    )
+  })
+})
 
 const emptyResult: ResultSetHeader = {
   affectedRows: 0,

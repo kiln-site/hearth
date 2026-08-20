@@ -30,7 +30,10 @@ import { z } from "zod"
 import {
   allowedInstanceIds,
   hasPlatformPermission,
+  isPlatformAdmin,
+  listUserGrants,
   requireRelayPermission,
+  visibleRelaysForUser,
 } from "@/lib/access-control"
 import {
   listFileActivity,
@@ -187,7 +190,10 @@ export const getRelayConnectionState = createServerFn({
   method: "GET",
 }).handler(async () => {
   const user = await requireAuthenticatedUser()
-  const configuredRelays = await listPersistedRelays()
+  const configuredRelays = await authorizedRelays(
+    user,
+    await listPersistedRelays()
+  )
 
   if (configuredRelays.length === 0) {
     return {
@@ -968,7 +974,9 @@ async function authorizedFleetSnapshot(
   user: AuthenticatedUser,
   fallbackOnError: boolean
 ): Promise<RelayFleetSnapshot> {
-  const relays = (await listPersistedRelays()).filter((relay) => relay.enabled)
+  const relays = (
+    await authorizedRelays(user, await listPersistedRelays())
+  ).filter((relay) => relay.enabled)
   const entries = await Promise.all(
     relays.map((relay) =>
       authorizedRelayEntry(relay, user, {
@@ -978,6 +986,14 @@ async function authorizedFleetSnapshot(
     )
   )
   return mergeRelaySnapshots(entries)
+}
+
+async function authorizedRelays(
+  user: AuthenticatedUser,
+  relays: Array<PersistedRelay>
+): Promise<Array<PersistedRelay>> {
+  const grants = isPlatformAdmin(user) ? [] : await listUserGrants(user.id)
+  return visibleRelaysForUser(user, relays, grants)
 }
 
 async function mergeRelaySnapshots(

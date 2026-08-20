@@ -47,6 +47,7 @@ import { cliRelaySubject, requireCliWrite } from "@/effect/cli-access"
 import {
   listBackupCatalogEffect,
   reserveBackupDeleteEffect,
+  reserveBackupExportEffect,
   reserveBackupRestoreEffect,
   reserveDatabaseBackupEffect,
   reserveInstanceBackupEffect,
@@ -62,6 +63,7 @@ import { CliAccessError, RelayUnavailableError } from "@/effect/errors"
 import {
   allowedInstanceIdsEffect,
   isPlatformAdmin,
+  isRelayCreator,
   listUserGrantsEffect,
   requireRelayPermissionEffect,
 } from "@/lib/access-control"
@@ -403,6 +405,7 @@ export const createCliBackupEffect = Effect.fn("cli.api.backups.create")(
       input.targetKind === "instance"
         ? reserveInstanceBackupEffect({
             ...common,
+            ...(input.mode === undefined ? {} : { mode: input.mode }),
             targetId: input.targetId,
           })
         : input.targetKind === "database"
@@ -440,11 +443,16 @@ export const restoreCliBackupEffect = Effect.fn("cli.api.backups.restore")(
     )
     if (
       backup.status !== "available" ||
-      backup.backupMode !== "full" ||
       (backup.targetKind !== "instance" && backup.targetKind !== "database") ||
-      (backup.targetKind === "instance" && backup.artifactKind !== "archive") ||
+      (backup.targetKind === "instance" &&
+        !(
+          (backup.artifactKind === "archive" && backup.backupMode === "full") ||
+          (backup.artifactKind === "restic_snapshot" &&
+            backup.backupMode === "incremental")
+        )) ||
       (backup.targetKind === "database" &&
-        backup.artifactKind !== "database_dump")
+        (backup.artifactKind !== "database_dump" ||
+          backup.backupMode !== "full"))
     ) {
       return yield* cliConflict(
         "Only complete server or database backups can be restored."
@@ -591,8 +599,59 @@ export const getCliBackupDownloadEffect = Effect.fn("cli.api.backups.download")(
           candidate.status === "available" && candidate.storageId === null
       ) ??
       backup.artifacts.find((candidate) => candidate.status === "available")
-    const filename = artifact?.filename ?? backup.filename
-    if (backup.status !== "available" || !artifact || !filename) {
+    if (backup.status !== "available" || !artifact) {
+      return yield* cliConflict("The backup is not available for download.")
+    }
+    if (backup.artifactKind === "restic_snapshot") {
+      const reserved = yield* mapCliBackupFailure(
+        reserveBackupExportEffect({
+          backupId: backup.id,
+          replaceFailed: !input.poll,
+          requestedBy: principal.user.id,
+          requireFullTtl: !input.poll,
+          taskId: randomUUID(),
+          ttlMs: 300_000,
+        }),
+        "Hearth could not prepare the snapshot export."
+      )
+      if (reserved.kind === "dispatch") {
+        const relay = yield* requiredRelay(backup.relayId)
+        yield* enqueueCliBackupEffect(principal, relay, reserved.dispatch)
+        return cliBackupDownloadResponseSchema.parse({
+          status: "preparing",
+          taskId: reserved.dispatch.taskId,
+        })
+      }
+      const remainingSeconds = Math.max(
+        1,
+        Math.min(300, Math.floor((reserved.expiresAt - Date.now()) / 1_000))
+      )
+      const relay = yield* requiredRelay(backup.relayId)
+      const signed = yield* Effect.tryPromise({
+        try: () =>
+          signLocalBackupDownload(
+            relay,
+            backup,
+            reserved.filename,
+            cliRelaySubject(principal),
+            remainingSeconds
+          ),
+        catch: (cause) =>
+          CliAccessError.make({
+            code: "relay_unavailable",
+            message: "Hearth could not sign the Relay download.",
+            retryable: true,
+            cause,
+          }),
+      })
+      return cliBackupDownloadResponseSchema.parse({
+        ...signed,
+        filename: reserved.filename,
+        status: "ready",
+      })
+    }
+    const filename = artifact.filename ?? backup.filename
+    if (!filename) {
       return yield* cliConflict("The backup is not available for download.")
     }
     if (!artifact.storageId) {
@@ -620,6 +679,7 @@ export const getCliBackupDownloadEffect = Effect.fn("cli.api.backups.download")(
       return cliBackupDownloadResponseSchema.parse({
         ...signed,
         filename,
+        status: "ready",
       })
     }
     if (!artifact.objectKey) {
@@ -639,6 +699,7 @@ export const getCliBackupDownloadEffect = Effect.fn("cli.api.backups.download")(
     return cliBackupDownloadResponseSchema.parse({
       ...signed,
       filename,
+      status: "ready",
     })
   }
 )
@@ -646,13 +707,13 @@ export const getCliBackupDownloadEffect = Effect.fn("cli.api.backups.download")(
 export const createCliServerEffect = Effect.fn("cli.api.servers.create")(
   function* (principal: CliPrincipal, unknownInput: unknown) {
     yield* requireCliWrite(principal)
-    if (!isPlatformAdmin(principal.user)) {
-      return yield* forbidden(
-        "Platform administrator access is required to create servers."
-      )
-    }
     const input = yield* parseInput(cliCreateServerRequestSchema, unknownInput)
     const relay = yield* requiredRelay(input.relayId)
+    if (!canCreateCliServer(principal.user, relay)) {
+      return yield* forbidden(
+        "You can only create servers on Relays you manage."
+      )
+    }
     const recipe = yield* resolveBrickSource(relay, input.brick, principal)
     const result = yield* relayRpcEffect(
       relay,
@@ -679,6 +740,16 @@ export const createCliServerEffect = Effect.fn("cli.api.servers.create")(
     })
   }
 )
+
+export function canCreateCliServer(
+  user: CliPrincipal["user"],
+  relay: Pick<PersistedRelay, "createdBy">
+): boolean {
+  return (
+    isPlatformAdmin(user) ||
+    (isRelayCreator(user) && relay.createdBy === user.id)
+  )
+}
 
 export const updateCliServerStartupEffect = Effect.fn(
   "cli.api.servers.startup.update"
@@ -1097,6 +1168,7 @@ const validateCliBackupStorage = Effect.fn("cli.api.backups.storage.authorize")(
     if (
       !storage ||
       !storage.enabled ||
+      storage.deleting ||
       (input.targetKind === "platform"
         ? storage.ownerUserId !== null
         : storage.ownerUserId !== null &&

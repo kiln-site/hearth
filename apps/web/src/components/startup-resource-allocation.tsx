@@ -29,67 +29,52 @@ export const ResourceAllocationCard = React.memo(
     onDiskLimitChange: (value: string) => void
   }) {
     return (
-      <div className="overflow-hidden rounded-xl border border-border/75 bg-background/45">
-        <div className="flex items-center justify-between border-b border-border/65 px-4 py-2.5">
-          <div>
-            <p className="font-mono text-[0.5625rem] tracking-[0.14em] text-primary uppercase">
-              Resource allocation
-            </p>
-            <p className="mt-0.5 text-[0.625rem] text-muted-foreground">
-              Limits are validated against every server on this node.
-            </p>
+      <div className="grid divide-y divide-border/65 overflow-hidden rounded-xl border border-border/75 bg-background/45 sm:grid-cols-2 sm:divide-x sm:divide-y-0">
+        <ResourceAllocationPanel
+          icon={<MemoryStick className="size-3.5" />}
+          label="Memory"
+          value={formatResourceBytes(configuredMemoryBytes)}
+          availableBytes={allocation.memory.availableBytes}
+          nodeUsedBytes={allocation.memory.nodeUsedBytes}
+          nodeTotalBytes={allocation.memory.nodeTotalBytes}
+          warning={configuredMemoryBytes > allocation.memory.availableBytes}
+          footer="Set with Container memory below"
+        />
+        <div className="p-4">
+          <div className="flex items-center justify-between gap-3">
+            <span className="flex items-center gap-2 font-mono text-[0.5625rem] tracking-[0.08em] text-muted-foreground uppercase">
+              <HardDrive className="size-3.5" />
+              Disk quota
+            </span>
+            <span className="font-mono text-[0.5rem] text-muted-foreground/60">
+              {formatResourceBytes(allocation.storage.availableBytes)}{" "}
+              assignable
+            </span>
           </div>
-          <span className="font-mono text-[0.5rem] tracking-[0.08em] text-muted-foreground/60 uppercase">
-            Node capacity
-          </span>
-        </div>
-
-        <div className="grid divide-y divide-border/65 sm:grid-cols-2 sm:divide-x sm:divide-y-0">
-          <ResourceAllocationPanel
-            icon={<MemoryStick className="size-3.5" />}
-            label="Memory"
-            value={formatResourceBytes(configuredMemoryBytes)}
-            availableBytes={allocation.memory.availableBytes}
-            nodeUsedBytes={allocation.memory.nodeUsedBytes}
-            nodeTotalBytes={allocation.memory.nodeTotalBytes}
-            warning={configuredMemoryBytes > allocation.memory.availableBytes}
-            footer="Set with Container memory below"
-          />
-          <div className="p-4">
-            <div className="flex items-center justify-between gap-3">
-              <span className="flex items-center gap-2 font-mono text-[0.5625rem] tracking-[0.08em] text-muted-foreground uppercase">
-                <HardDrive className="size-3.5" />
-                Disk quota
-              </span>
-              <span className="font-mono text-[0.5rem] text-muted-foreground/60">
-                {formatResourceBytes(allocation.storage.availableBytes)}{" "}
-                assignable
-              </span>
-            </div>
-            <div className="mt-2 flex items-center gap-2">
-              <Input
-                aria-label="Disk quota in GiB"
-                type="number"
-                min={0.1}
-                max={bytesToGiB(allocation.storage.availableBytes)}
-                step={0.1}
-                value={diskLimitGiB}
-                disabled={disabled}
-                onChange={(event) => onDiskLimitChange(event.target.value)}
-                className="font-mono tabular-nums"
-              />
-              <span className="font-mono text-[0.625rem] text-muted-foreground">
-                GiB
-              </span>
-            </div>
-            <NodeCapacityBar
-              usedBytes={allocation.storage.nodeUsedBytes}
-              totalBytes={allocation.storage.nodeTotalBytes}
+          <div className="mt-2 flex items-center gap-2">
+            <Input
+              aria-label="Disk quota in GiB"
+              type="number"
+              min={0.1}
+              max={bytesToGiB(allocation.storage.availableBytes)}
+              step={0.1}
+              value={diskLimitGiB}
+              disabled={disabled}
+              onBlur={(event) => onDiskLimitChange(event.currentTarget.value)}
+              onChange={(event) => onDiskLimitChange(event.target.value)}
+              className="font-mono tabular-nums"
             />
-            <p className="mt-2 text-[0.5rem] leading-3 text-muted-foreground/65">
-              25 GiB by default. Relay keeps 10 GiB free for node overhead.
-            </p>
+            <span className="font-mono text-[0.625rem] text-muted-foreground">
+              GiB
+            </span>
           </div>
+          <NodeCapacityBar
+            usedBytes={allocation.storage.nodeUsedBytes}
+            totalBytes={allocation.storage.nodeTotalBytes}
+          />
+          <p className="mt-2 text-[0.5rem] leading-3 text-muted-foreground/65">
+            25 GiB by default. Relay keeps 10 GiB free for node overhead.
+          </p>
         </div>
       </div>
     )

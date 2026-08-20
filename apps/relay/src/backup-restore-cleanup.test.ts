@@ -81,10 +81,12 @@ describe("Relay backup restore cleanup", () => {
 
       const restore: BackupRestoreTaskInput & { kind: "restore" } = {
         backupId: create.backupId,
-        bytes: created.bytes,
-        checksumSha256: created.checksumSha256,
         kind: "restore",
-        source: { kind: "local" },
+        source: {
+          bytes: created.bytes,
+          checksumSha256: created.checksumSha256,
+          kind: "local",
+        },
         target: create.target,
         taskId: "20000000-0000-4000-8000-000000000009",
       }

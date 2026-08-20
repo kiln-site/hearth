@@ -159,7 +159,9 @@ export function activityLabelForAudit(audit: RelayAuditRecord): string {
   if (operation === "instance.delete") return "Deleted a server"
   if (operation === "instance.rename") return "Renamed a server"
   if (operation === "instance.startup.write") {
-    return "Updated server startup settings"
+    return audit.details.reinstall === true
+      ? "Reinstalled a server Brick"
+      : "Updated server startup settings"
   }
   if (operation === "instance.files.write") return "Saved a server file"
   if (operation === "instance.files.upload-url") {

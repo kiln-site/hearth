@@ -94,6 +94,26 @@ describe("activity", () => {
     expect(activityPermissionForAudit(record)).toBe("instance.power.restart")
   })
 
+  it("labels a Brick reinstall separately from other startup writes", () => {
+    expect(
+      activityLabelForAudit(
+        audit({
+          instanceId: "server-a",
+          operation: "instance.startup.write",
+          reinstall: true,
+        })
+      )
+    ).toBe("Reinstalled a server Brick")
+    expect(
+      activityLabelForAudit(
+        audit({
+          instanceId: "server-a",
+          operation: "instance.startup.write",
+        })
+      )
+    ).toBe("Updated server startup settings")
+  })
+
   it("uses the recorded permission when the audit provides one", () => {
     const record = audit(
       {

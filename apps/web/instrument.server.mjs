@@ -20,7 +20,7 @@ if (dsn && !Sentry.isInitialized()) {
     },
     tracesSampleRate: parseSampleRate(
       process.env.SENTRY_TRACES_SAMPLE_RATE,
-      process.env.NODE_ENV === "production" ? 0.1 : 1
+      process.env.NODE_ENV === "production" ? 0.05 : 1
     ),
     beforeSend(event, hint) {
       return isExpectedAppError(hint.originalException) ? null : event

@@ -7,14 +7,16 @@ import { Readable } from "node:stream"
 
 import {
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3"
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 import { NodeHttpHandler } from "@smithy/node-http-handler"
-import { Effect, Result } from "effect"
+import { Effect, Result, Schedule } from "effect"
 
 import {
   backupArtifactFilename,
@@ -27,6 +29,9 @@ const CONNECTION_TEST_PREFIX = "kiln/connection-tests"
 const PRESIGNED_UPLOAD_SECONDS = 7 * 24 * 60 * 60
 const DEFAULT_S3_REQUEST_TIMEOUT_MS = 30_000
 const BACKUP_TRANSFER_IDLE_TIMEOUT_MS = 60_000
+const S3_DELETE_PAGE_SIZE = 1_000
+const RESTIC_PREFIX_SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/u
+const RESTIC_PREFIX_SAFE_PATH = /^[A-Za-z0-9._/-]*$/u
 const BLOCKED_ADDRESSES = new BlockList()
 const BLOCKED_IPV4: ReadonlyArray<readonly [string, number]> = [
   ["0.0.0.0", 8],
@@ -152,6 +157,125 @@ export function backupObjectKey(input: {
   ]
     .filter(Boolean)
     .join("/")
+}
+
+export function isSafeResticObjectPrefix(value: string): boolean {
+  return (
+    RESTIC_PREFIX_SAFE_PATH.test(value) &&
+    !value.startsWith("/") &&
+    !value.split("/").includes("..")
+  )
+}
+
+export function resticPrefixSegment(value: string): string {
+  if (
+    RESTIC_PREFIX_SAFE_SEGMENT.test(value) &&
+    value !== "." &&
+    value !== ".." &&
+    !value.startsWith("sha256-")
+  ) {
+    return value
+  }
+  return `sha256-${createHash("sha256").update(value).digest("hex")}`
+}
+
+export function resticRepositoryObjectPrefix(input: {
+  installationId: string
+  objectPrefix: string
+  relayId: string
+  repositoryId: string
+  targetId: string
+}): string {
+  return [
+    input.objectPrefix,
+    "kiln",
+    resticPrefixSegment(input.installationId),
+    resticPrefixSegment(input.relayId),
+    "restic",
+    "instance",
+    resticPrefixSegment(input.targetId),
+    resticPrefixSegment(input.repositoryId),
+  ]
+    .filter(Boolean)
+    .join("/")
+}
+
+export function deleteS3BackupPrefix(
+  credential: S3BackupCredential,
+  prefix: string
+) {
+  if (!prefix) {
+    return Effect.fail(
+      backupStorageError(
+        "invalid_prefix",
+        "storage.deletePrefix",
+        "Refusing to delete an empty S3 prefix"
+      )
+    )
+  }
+  return withS3Client(credential, (client) =>
+    deleteS3PrefixPages(client, credential.bucket, prefix).pipe(
+      Effect.retry({
+        schedule: Schedule.exponential("200 millis").pipe(Schedule.jittered),
+        times: 2,
+        while: isRetryableS3Failure,
+      })
+    )
+  )
+}
+
+export async function deleteS3PrefixObjectPages(
+  listPage: (token?: string) => Promise<{
+    keys: Array<string>
+    nextToken?: string
+  }>,
+  deleteKeys: (keys: ReadonlyArray<string>) => Promise<void>
+): Promise<void> {
+  while (true) {
+    let deleted = 0
+    let token: string | undefined
+    do {
+      const page = await listPage(token)
+      if (page.keys.length > 0) {
+        await deleteKeys(page.keys)
+        deleted += page.keys.length
+      }
+      token = page.nextToken
+    } while (token)
+    if (deleted === 0) return
+  }
+}
+
+export function failIfS3DeleteObjectsErrored(result: {
+  Errors?: ReadonlyArray<{
+    Code?: string
+    Key?: string
+    Message?: string
+  }>
+}): void {
+  const errors = result.Errors ?? []
+  if (errors.length === 0) return
+  const sample = errors[0]
+  const detail = [sample?.Key, sample?.Code, sample?.Message]
+    .filter(Boolean)
+    .join(": ")
+  throw backupStorageError(
+    "s3_request_failed",
+    "storage.deletePrefix",
+    errors.length === 1
+      ? `S3 could not delete ${detail || "an object"} under this prefix`
+      : `S3 could not delete ${errors.length} objects under this prefix`,
+    errors
+  )
+}
+
+export function isRetryableS3Failure(error: unknown): boolean {
+  if (!(error instanceof BackupStorageError)) return false
+  if (error.code !== "s3_request_failed") return false
+  const status = s3FailureStatus(error.cause)
+  if (status === 403 || status === 404) return false
+  if (status !== null && status >= 400 && status < 500) return false
+  return true
 }
 
 export function verifyS3BackupCredential(credential: S3BackupCredential) {
@@ -522,6 +646,64 @@ function s3Request<TResult>(
         cause
       ),
   })
+}
+
+function deleteS3PrefixPages(client: S3Client, bucket: string, prefix: string) {
+  return Effect.tryPromise({
+    try: () =>
+      deleteS3PrefixObjectPages(
+        async (token) => {
+          const page = await client.send(
+            new ListObjectsV2Command({
+              Bucket: bucket,
+              ContinuationToken: token,
+              MaxKeys: S3_DELETE_PAGE_SIZE,
+              Prefix: prefix,
+            })
+          )
+          return {
+            keys:
+              page.Contents?.flatMap((entry) =>
+                entry.Key ? [entry.Key] : []
+              ) ?? [],
+            nextToken: page.IsTruncated
+              ? page.NextContinuationToken
+              : undefined,
+          }
+        },
+        async (keys) => {
+          const result = await client.send(
+            new DeleteObjectsCommand({
+              Bucket: bucket,
+              Delete: {
+                Objects: keys.map((Key) => ({ Key })),
+                Quiet: true,
+              },
+            })
+          )
+          failIfS3DeleteObjectsErrored(result)
+        }
+      ),
+    catch: (cause) =>
+      cause instanceof BackupStorageError
+        ? cause
+        : backupStorageError(
+            "s3_request_failed",
+            "storage.deletePrefix",
+            "The S3-compatible storage request failed. Check the endpoint, region, bucket, credentials, and key permissions.",
+            cause
+          ),
+  })
+}
+
+function s3FailureStatus(cause: unknown): number | null {
+  if (cause === null || typeof cause !== "object") return null
+  const metadata = (cause as { $metadata?: { httpStatusCode?: unknown } })
+    .$metadata
+  const status = metadata?.httpStatusCode
+  return typeof status === "number" && Number.isSafeInteger(status)
+    ? status
+    : null
 }
 
 function backupStorageError(

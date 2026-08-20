@@ -2,6 +2,19 @@ import * as React from "react"
 import type { BrickVariable, BrickVariableValue } from "@workspace/contracts"
 
 import { Input } from "@workspace/ui/components/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@workspace/ui/components/select"
+import { Textarea } from "@workspace/ui/components/textarea"
+
+import { usesLongStringBrickField } from "@/lib/brick-variables"
+
+const NOT_SET_SELECT_VALUE = "not-set"
+const optionSelectValue = (index: number) => `option:${index}`
 
 export const BrickVariableField = React.memo(function BrickVariableField({
   name,
@@ -14,6 +27,8 @@ export const BrickVariableField = React.memo(function BrickVariableField({
   value: BrickVariableValue | undefined
   onChange: (value: BrickVariableValue | undefined) => void
 }) {
+  const labelId = React.useId()
+
   if (definition.type === "boolean") {
     return (
       <label className="flex cursor-pointer items-center justify-between rounded-lg border border-border/75 bg-background/45 px-3 py-2.5 text-xs">
@@ -33,39 +48,86 @@ export const BrickVariableField = React.memo(function BrickVariableField({
     )
   }
 
+  const selectedOptionIndex = definition.options?.findIndex((option) =>
+    Object.is(option, value)
+  )
+  const selectValue =
+    value === undefined
+      ? definition.required
+        ? ""
+        : NOT_SET_SELECT_VALUE
+      : selectedOptionIndex !== undefined && selectedOptionIndex >= 0
+        ? optionSelectValue(selectedOptionIndex)
+        : ""
+
   return (
-    <label className="block space-y-1.5 text-[0.625rem] font-medium text-muted-foreground">
+    <div className="block space-y-1.5 text-[0.625rem] font-medium text-muted-foreground">
       <span className="flex items-center justify-between gap-2">
-        <span>{definition.label}</span>
+        <span id={labelId}>{definition.label}</span>
         <span className="font-mono text-[0.5rem] text-muted-foreground/55">
           {name}
         </span>
       </span>
       {definition.options ? (
-        <select
-          value={value === undefined ? "" : String(value)}
-          onChange={(event) => {
-            if (event.target.value === "" && !definition.required) {
+        <Select
+          value={selectValue}
+          onValueChange={(nextValue) => {
+            if (nextValue === NOT_SET_SELECT_VALUE && !definition.required) {
               onChange(undefined)
               return
             }
-            const option = definition.options?.find(
-              (candidate) => String(candidate) === event.target.value
+            const optionIndex = definition.options?.findIndex(
+              (_, index) => optionSelectValue(index) === nextValue
             )
+            const option =
+              optionIndex === undefined
+                ? undefined
+                : definition.options?.[optionIndex]
             if (option !== undefined) onChange(option)
           }}
-          className="h-10 w-full rounded-md border border-input bg-background px-3 text-xs outline-none focus:border-ring"
           required={definition.required}
         >
-          {!definition.required ? <option value="">Not set</option> : null}
-          {definition.options.map((option) => (
-            <option key={String(option)} value={String(option)}>
-              {String(option)}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger
+            aria-labelledby={labelId}
+            aria-required={definition.required}
+            className="h-8 w-full overflow-hidden px-3 text-xs [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate"
+          >
+            <SelectValue placeholder="Select an option" />
+          </SelectTrigger>
+          <SelectContent className="w-max max-w-(--radix-select-content-available-width) min-w-(--radix-select-trigger-width)">
+            {!definition.required ? (
+              <SelectItem
+                className="whitespace-nowrap"
+                value={NOT_SET_SELECT_VALUE}
+              >
+                Not set
+              </SelectItem>
+            ) : null}
+            {definition.options.map((option, index) => (
+              <SelectItem
+                key={optionSelectValue(index)}
+                className="whitespace-nowrap"
+                value={optionSelectValue(index)}
+              >
+                {String(option)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      ) : usesLongStringBrickField(definition) ? (
+        <Textarea
+          aria-labelledby={labelId}
+          value={value === undefined ? "" : String(value)}
+          onBlur={(event) => onChange(event.currentTarget.value)}
+          onChange={(event) => onChange(event.target.value)}
+          minLength={definition.rules?.minLength}
+          maxLength={definition.rules?.maxLength}
+          required={definition.required}
+          className="min-h-24 bg-input/18 font-mono text-xs md:text-xs"
+        />
       ) : (
         <Input
+          aria-labelledby={labelId}
           type={
             definition.sensitive
               ? "password"
@@ -74,6 +136,16 @@ export const BrickVariableField = React.memo(function BrickVariableField({
                 : "text"
           }
           value={value === undefined ? "" : String(value)}
+          onBlur={(event) => {
+            const next = event.currentTarget.value
+            onChange(
+              definition.type === "number"
+                ? next === ""
+                  ? undefined
+                  : Number(next)
+                : next
+            )
+          }}
           onChange={(event) => {
             const next = event.target.value
             onChange(
@@ -95,6 +167,6 @@ export const BrickVariableField = React.memo(function BrickVariableField({
       <span className="block text-[0.5625rem] leading-4 font-normal">
         {definition.description}
       </span>
-    </label>
+    </div>
   )
 })

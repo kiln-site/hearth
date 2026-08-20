@@ -15,6 +15,79 @@ import { fileURLToPath } from "node:url"
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
+const fakeJavaScript = `#!/usr/bin/env bash
+set -eu
+if [[ "\${1:-}" == "-version" ]]; then
+  echo 'openjdk version "test"' >&2
+  exit 0
+fi
+printf '%s\\n' "$@" > "$FAKE_JAVA_ARGUMENTS"
+`
+
+async function runPaperJavaEmber(context, envOverrides = {}) {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "kiln-java-ember-"))
+  context.after(() => rm(temporaryDirectory, { force: true, recursive: true }))
+
+  const binDirectory = join(temporaryDirectory, "bin")
+  const argumentsPath = join(temporaryDirectory, "java-arguments")
+  await Promise.all([
+    mkdir(binDirectory, { recursive: true }),
+    writeFile(join(temporaryDirectory, "paper.jar"), "complete artifact"),
+  ])
+  await writeFile(join(binDirectory, "java"), fakeJavaScript)
+  await chmod(join(binDirectory, "java"), 0o755)
+
+  const source = await readFile(join(root, "embers/java/entrypoint.sh"), "utf8")
+  const entrypointPath = join(temporaryDirectory, "entrypoint.sh")
+  await writeFile(
+    entrypointPath,
+    source.replace("cd /server", 'cd "${KILN_TEST_SERVER_DIRECTORY:?}"')
+  )
+  await chmod(entrypointPath, 0o755)
+
+  const result = await new Promise((resolveResult, rejectResult) => {
+    const child = spawn(entrypointPath, {
+      env: {
+        FAKE_JAVA_ARGUMENTS: argumentsPath,
+        KILN_ARTIFACT_FILE: "paper.jar",
+        KILN_ARTIFACT_URL: "https://example.invalid/paper.jar",
+        KILN_IMPLEMENTATION: "paper",
+        KILN_SERVER_KIND: "minecraft",
+        KILN_TEST_SERVER_DIRECTORY: temporaryDirectory,
+        KILN_VERSION: "1.21.11",
+        PATH: `${binDirectory}:${process.env.PATH ?? ""}`,
+        ...envOverrides,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    let stderr = ""
+    child.stderr.setEncoding("utf8").on("data", (chunk) => {
+      stderr += chunk
+    })
+    child.once("error", rejectResult)
+    child.once("close", (status) => resolveResult({ status, stderr }))
+  })
+
+  let args = []
+  try {
+    const text = (await readFile(argumentsPath, "utf8")).trimEnd()
+    args = text === "" ? [] : text.split("\n")
+  } catch {
+    args = []
+  }
+
+  return { ...result, args }
+}
+
+test("the Java Ember jlink runtime includes the Java SE API set", async () => {
+  const dockerfile = await readFile(join(root, "embers/java/Dockerfile"), "utf8")
+  assert.match(dockerfile, /\bjava\.se\b/u)
+  assert.match(dockerfile, /\bjdk\.unsupported\b/u)
+  assert.match(dockerfile, /\bjdk\.incubator\.vector\b/u)
+  assert.match(dockerfile, /\bfontconfig\b/u)
+  assert.match(dockerfile, /\blibfreetype6\b/u)
+})
+
 test("the Java Ember reports a terminal download failure and removes the partial artifact", async (context) => {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "kiln-java-ember-"))
   context.after(() => rm(temporaryDirectory, { force: true, recursive: true }))
@@ -282,6 +355,103 @@ printf '%s\n' "$@" > "$FAKE_JAVA_ARGUMENTS"
       code: "ENOENT",
     }
   )
+})
+
+test("the Java Ember inserts extra JVM arguments between memory flags and the jar", async (context) => {
+  const result = await runPaperJavaEmber(context, {
+    KILN_JAVA_ARGS: "-XX:+UseG1GC -XX:+AlwaysPreTouch",
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(result.args, [
+    "-Xms512M",
+    "-XX:MaxRAMPercentage=75.0",
+    "-XX:+UseG1GC",
+    "-XX:+AlwaysPreTouch",
+    "-jar",
+    "paper.jar",
+    "--nogui",
+  ])
+})
+
+test("the Java Ember keeps quoted JVM argument values as a single argument", async (context) => {
+  const result = await runPaperJavaEmber(context, {
+    KILN_JAVA_ARGS: '-Dmessage="hello world" -Dpath=\'plugins/My Plugin\'',
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(result.args, [
+    "-Xms512M",
+    "-XX:MaxRAMPercentage=75.0",
+    "-Dmessage=hello world",
+    "-Dpath=plugins/My Plugin",
+    "-jar",
+    "paper.jar",
+    "--nogui",
+  ])
+})
+
+test("the Java Ember ignores heap aliases in extra JVM arguments", async (context) => {
+  const result = await runPaperJavaEmber(context, {
+    KILN_JAVA_ARGS: "-XX:+UseG1GC -XX:MaxHeapSize=1G -Xmx2G -XX:MaxRAMPercentage=90",
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stderr, /ignoring managed JVM flags: -XX:MaxHeapSize=1G -Xmx2G -XX:MaxRAMPercentage=90/u)
+  assert.deepEqual(result.args, [
+    "-Xms512M",
+    "-XX:MaxRAMPercentage=75.0",
+    "-XX:+UseG1GC",
+    "-jar",
+    "paper.jar",
+    "--nogui",
+  ])
+})
+
+test("the Java Ember ignores flags that disable container-aware heap", async (context) => {
+  const result = await runPaperJavaEmber(context, {
+    KILN_JAVA_ARGS: "-XX:+UseG1GC -XX:-UseContainerSupport -XX:-UseCGroupMemoryLimitForHeap",
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(
+    result.stderr,
+    /ignoring managed JVM flags: -XX:-UseContainerSupport -XX:-UseCGroupMemoryLimitForHeap/u
+  )
+  assert.deepEqual(result.args, [
+    "-Xms512M",
+    "-XX:MaxRAMPercentage=75.0",
+    "-XX:+UseG1GC",
+    "-jar",
+    "paper.jar",
+    "--nogui",
+  ])
+})
+
+test("the Java Ember rejects unmatched quotes in extra JVM arguments", async (context) => {
+  const result = await runPaperJavaEmber(context, {
+    KILN_JAVA_ARGS: '-Dmessage="hello world',
+  })
+
+  assert.equal(result.status, 64, result.stderr)
+  assert.match(result.stderr, /unmatched quote in KILN_JAVA_ARGS/u)
+  assert.deepEqual(result.args, [])
+})
+
+test("the Java Ember rejects JVM argument files in extra JVM arguments", async (context) => {
+  const argfile = await runPaperJavaEmber(context, {
+    KILN_JAVA_ARGS: "-XX:+UseG1GC @/server/flags.txt",
+  })
+  assert.equal(argfile.status, 64, argfile.stderr)
+  assert.match(argfile.stderr, /Java argument files are not allowed in KILN_JAVA_ARGS: @\/server\/flags.txt/u)
+  assert.deepEqual(argfile.args, [])
+
+  const optionsFile = await runPaperJavaEmber(context, {
+    KILN_JAVA_ARGS: "-XX:VMOptionsFile=/server/flags.txt",
+  })
+  assert.equal(optionsFile.status, 64, optionsFile.stderr)
+  assert.match(optionsFile.stderr, /Java argument files are not allowed in KILN_JAVA_ARGS: -XX:VMOptionsFile=\/server\/flags.txt/u)
+  assert.deepEqual(optionsFile.args, [])
 })
 
 test("the Java Ember rejects marker names outside the reserved namespace", async (context) => {

@@ -11,6 +11,13 @@ import {
 
 import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@workspace/ui/components/select"
 import { Switch } from "@workspace/ui/components/switch"
 
 import { HearthMark } from "@/components/hearth-mark"
@@ -153,27 +160,35 @@ export function CliAuthorizationPage({
           </span>
         </div>
 
-        <label className="grid gap-2 text-xs font-medium">
-          Access duration
-          <select
+        <div className="grid gap-2 text-xs font-medium">
+          <span id="cli-access-duration-label">Access duration</span>
+          <Select
             value={duration}
-            onChange={(event) => {
-              const parsed = cliAccessDurationSchema.safeParse(
-                event.target.value
-              )
+            onValueChange={(value) => {
+              const parsed = cliAccessDurationSchema.safeParse(value)
               if (parsed.success) setDuration(parsed.data)
             }}
-            className="h-10 w-full border bg-background px-3 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
           >
-            <option value="1h">1 hour</option>
-            <option value="1d">1 day</option>
-            <option value="1w">1 week</option>
-            <option value="30d">{defaultAccessDays} days (default)</option>
-            <option value="indefinite" disabled={mode !== "read_only"}>
-              Indefinite — read-only only
-            </option>
-          </select>
-        </label>
+            <SelectTrigger
+              id="cli-access-duration"
+              aria-labelledby="cli-access-duration-label"
+              className="h-10 w-full [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="1h">1 hour</SelectItem>
+              <SelectItem value="1d">1 day</SelectItem>
+              <SelectItem value="1w">1 week</SelectItem>
+              <SelectItem value="30d">
+                {defaultAccessDays} days (default)
+              </SelectItem>
+              <SelectItem value="indefinite" disabled={mode !== "read_only"}>
+                Indefinite — read-only only
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {error ? (

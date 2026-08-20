@@ -1,17 +1,21 @@
 import type { RowDataPacket } from "mysql2/promise"
-import { Effect } from "effect"
+import { Effect, Result } from "effect"
 
 import { decryptWithKeyring, encryptWithKeyring } from "../../keyring.mjs"
 import { Database } from "@/effect/database"
 import { BackupStorageError, CredentialError } from "@/effect/errors"
 import { databaseTable } from "@/lib/database-config"
 import { betterAuthSecrets } from "@/lib/environment"
-import type { S3BackupCredential } from "@/lib/backup-storage-s3"
+import {
+  deleteS3BackupPrefix,
+  type S3BackupCredential,
+} from "@/lib/backup-storage-s3"
 
 interface BackupStoragePublicRow extends RowDataPacket {
   allow_private_network: boolean | number
   bucket: string
   created_at_ms: number | string
+  deleting: boolean | number
   enabled: boolean | number
   endpoint: string
   force_path_style: boolean | number
@@ -35,9 +39,11 @@ interface BackupReferenceCountRow extends RowDataPacket {
 
 interface BackupStorageIdentityRow extends RowDataPacket {
   bucket: string
+  deleting: boolean | number
   endpoint: string
   force_path_style: boolean | number
   id: string
+  object_prefix: string
   region: string
   owner_user_id: string | null
 }
@@ -46,6 +52,7 @@ export interface BackupStorageRecord {
   allowPrivateNetwork: boolean
   bucket: string
   createdAt: string
+  deleting: boolean
   enabled: boolean
   endpoint: string
   forcePathStyle: boolean
@@ -175,7 +182,7 @@ export const saveBackupStorageEffect = Effect.fn("backupStorage.save")(
         const existingRows =
           yield* transaction.queryRows<BackupStorageIdentityRow>(
             `SELECT id, owner_user_id, endpoint, region, bucket,
-                    force_path_style
+                    object_prefix, force_path_style, deleting
                FROM ${databaseTable("backup_storage")}
               WHERE id = ?
               FOR UPDATE`,
@@ -194,21 +201,40 @@ export const saveBackupStorageEffect = Effect.fn("backupStorage.save")(
           (existing.endpoint !== input.endpoint ||
             existing.region !== input.region ||
             existing.bucket !== input.bucket ||
+            existing.object_prefix !== input.objectPrefix ||
             Boolean(existing.force_path_style) !== input.forcePathStyle)
+        if (existing && Boolean(existing.deleting) && locationChanged) {
+          return yield* BackupStorageError.make({
+            code: "storage_deleting",
+            operation: "storage.save",
+            reason:
+              "Update credentials to retry the purge. Endpoint, region, bucket, prefix, and addressing cannot change while this destination is being deleted",
+          })
+        }
         if (locationChanged) {
           const references =
             yield* transaction.queryRows<BackupReferenceCountRow>(
-              `SELECT COUNT(*) AS reference_count
-                 FROM ${databaseTable("backup")}
-                WHERE storage_id = ? AND status <> 'deleted'`,
-              [input.id]
+              `SELECT (
+                  (SELECT COUNT(*)
+                     FROM ${databaseTable("backup")}
+                    WHERE storage_id = ? AND status <> 'deleted')
+                  +
+                  (SELECT COUNT(*)
+                     FROM ${databaseTable("backup_artifact")}
+                    WHERE storage_id = ? AND status <> 'deleted')
+                  +
+                  (SELECT COUNT(*)
+                     FROM ${databaseTable("backup_repository")}
+                    WHERE storage_id = ?)
+                ) AS reference_count`,
+              [input.id, input.id, input.id]
             )
           if (Number(references[0]?.reference_count ?? 0) > 0) {
             return yield* BackupStorageError.make({
               code: "storage_location_in_use",
               operation: "storage.save",
               reason:
-                "Delete this destination's backups before changing its endpoint, region, bucket, or addressing mode",
+                "Delete this destination's backups before changing its endpoint, region, bucket, prefix, or addressing mode",
             })
           }
         }
@@ -275,35 +301,240 @@ export const setBackupPolicyStorageEffect = Effect.fn(
   targetKind: "database" | "instance" | "platform"
 }) {
   const database = yield* Database
-  yield* database.execute(
-    "backup_storage_set_policy",
-    `INSERT INTO ${databaseTable("backup_policy")}
-      (relay_id, target_kind, target_id, storage_id, exclude_patterns)
-     VALUES (?, ?, ?, ?, JSON_ARRAY())
-     ON DUPLICATE KEY UPDATE storage_id = VALUES(storage_id)`,
-    [input.relayId, input.targetKind, input.targetId, input.storageId]
+  yield* database.transaction("backup_storage_set_policy", (transaction) =>
+    Effect.gen(function* () {
+      yield* transaction.execute(
+        `INSERT IGNORE INTO ${databaseTable("backup_policy")}
+          (relay_id, target_kind, target_id, exclude_patterns)
+         VALUES (?, ?, ?, JSON_ARRAY())`,
+        [input.relayId, input.targetKind, input.targetId]
+      )
+      yield* transaction.queryRows<RowDataPacket>(
+        `SELECT relay_id
+           FROM ${databaseTable("backup_policy")}
+          WHERE relay_id = ? AND target_kind = ? AND target_id = ?
+          FOR UPDATE`,
+        [input.relayId, input.targetKind, input.targetId]
+      )
+      if (input.storageId) {
+        const storage = yield* transaction.queryRows<
+          {
+            deleting: boolean | number
+            enabled: boolean | number
+          } & RowDataPacket
+        >(
+          `SELECT enabled, deleting
+             FROM ${databaseTable("backup_storage")}
+            WHERE id = ?
+            LIMIT 1
+            FOR UPDATE`,
+          [input.storageId]
+        )
+        if (
+          !storage[0] ||
+          !storage[0].enabled ||
+          Boolean(storage[0].deleting)
+        ) {
+          return yield* BackupStorageError.make({
+            code: "storage_unavailable",
+            operation: "storage.setPolicy",
+            reason: "The backup destination is unavailable",
+          })
+        }
+      }
+      yield* transaction.execute(
+        `UPDATE ${databaseTable("backup_policy")}
+            SET storage_id = ?
+          WHERE relay_id = ? AND target_kind = ? AND target_id = ?`,
+        [input.storageId, input.relayId, input.targetKind, input.targetId]
+      )
+    })
   )
 })
 
 export const deleteBackupStorageEffect = Effect.fn("backupStorage.delete")(
   function* (storageId: string) {
     const database = yield* Database
-    yield* database.transaction("backup_storage_delete", (transaction) =>
-      Effect.gen(function* () {
-        const references =
-          yield* transaction.queryRows<BackupReferenceCountRow>(
-            `SELECT COUNT(*) AS reference_count
-             FROM ${databaseTable("backup")}
-            WHERE storage_id = ? AND status <> 'deleted'`,
+    const marked = yield* Effect.result(
+      database.transaction("backup_storage_delete_mark", (transaction) =>
+        Effect.gen(function* () {
+          yield* transaction.queryRows<RowDataPacket>(
+            `SELECT relay_id, target_kind, target_id
+               FROM ${databaseTable("backup_policy")}
+              WHERE storage_id = ?
+              ORDER BY relay_id, target_kind, target_id
+              FOR UPDATE`,
             [storageId]
           )
-        if (Number(references[0]?.reference_count ?? 0) > 0) {
-          return yield* BackupStorageError.make({
-            code: "storage_in_use",
-            operation: "storage.delete",
-            reason: "This destination still contains cataloged backups",
-          })
-        }
+          const finalDeletions = yield* transaction.queryRows<RowDataPacket>(
+            `SELECT final_delete.backup_id
+                 FROM ${databaseTable("backup_final_delete")} final_delete
+                 JOIN ${databaseTable("backup_repository")} repository
+                   ON repository.relay_id = final_delete.relay_id
+                  AND repository.target_kind = 'instance'
+                  AND repository.target_id = final_delete.target_id
+                WHERE repository.storage_id = ?
+                  AND final_delete.status IN ('backing_up', 'deleting')
+                LIMIT 1
+                FOR UPDATE`,
+            [storageId]
+          )
+          if (finalDeletions[0]?.backup_id) {
+            return yield* BackupStorageError.make({
+              code: "storage_in_use",
+              operation: "storage.delete",
+              reason:
+                "A server using this destination is being permanently deleted",
+            })
+          }
+          const rows = yield* transaction.queryRows<BackupStorageRow>(
+            `${backupStorageSelect}
+              WHERE id = ?
+              LIMIT 1
+              FOR UPDATE`,
+            [storageId]
+          )
+          const existing = rows[0]
+          if (!existing) {
+            return yield* BackupStorageError.make({
+              code: "storage_unavailable",
+              operation: "storage.delete",
+              reason: "The backup destination is unavailable",
+            })
+          }
+          const accessKey = yield* decryptCredential(
+            existing.access_key_id_ciphertext,
+            storageId,
+            "access-key-id"
+          )
+          const secretKey = yield* decryptCredential(
+            existing.secret_access_key_ciphertext,
+            storageId,
+            "secret-access-key"
+          )
+          if (!existing.deleting) {
+            const references =
+              yield* transaction.queryRows<BackupReferenceCountRow>(
+                `SELECT (
+                    (SELECT COUNT(*)
+                       FROM ${databaseTable("backup")}
+                      WHERE storage_id = ? AND status <> 'deleted')
+                    +
+                    (SELECT COUNT(*)
+                       FROM ${databaseTable("backup_artifact")}
+                      WHERE storage_id = ? AND status <> 'deleted')
+                  ) AS reference_count`,
+                [storageId, storageId]
+              )
+            if (Number(references[0]?.reference_count ?? 0) > 0) {
+              return yield* BackupStorageError.make({
+                code: "storage_in_use",
+                operation: "storage.delete",
+                reason: "This destination still contains cataloged backups",
+              })
+            }
+            yield* transaction.execute(
+              `UPDATE ${databaseTable("backup_storage")}
+                  SET deleting = TRUE
+                WHERE id = ?`,
+              [storageId]
+            )
+          }
+          yield* transaction.execute(
+            `UPDATE ${databaseTable("backup_policy")}
+                SET storage_id = NULL
+              WHERE storage_id = ?`,
+            [storageId]
+          )
+          return {
+            ...toRecord(existing),
+            accessKeyId: accessKey.plaintext,
+            secretAccessKey: secretKey.plaintext,
+          } satisfies BackupStorageCredential
+        })
+      )
+    )
+    if (Result.isFailure(marked)) {
+      const message =
+        marked.failure instanceof Error
+          ? marked.failure.message.slice(0, 512)
+          : "The backup destination could not be deleted"
+      yield* database.execute(
+        "backup_storage_delete_mark_error",
+        `UPDATE ${databaseTable("backup_storage")}
+            SET last_error = ?
+          WHERE id = ? AND deleting = TRUE`,
+        [message, storageId]
+      )
+      return yield* marked.failure
+    }
+    const credential = marked.success
+    const repositories = yield* database.queryRows<
+      { id: string; object_prefix: string | null } & RowDataPacket
+    >(
+      "backup_storage_delete_repositories",
+      `SELECT id, object_prefix
+         FROM ${databaseTable("backup_repository")}
+        WHERE storage_id = ?`,
+      [storageId]
+    )
+    const purged = yield* Effect.result(
+      Effect.forEach(repositories, (repository) =>
+        repository.object_prefix
+          ? deleteS3BackupPrefix(credential, repository.object_prefix)
+          : Effect.void
+      )
+    )
+    if (Result.isFailure(purged)) {
+      const message =
+        purged.failure instanceof Error
+          ? purged.failure.message.slice(0, 512)
+          : "The backup destination could not be purged"
+      yield* database.execute(
+        "backup_storage_delete_purge_error",
+        `UPDATE ${databaseTable("backup_storage")}
+            SET last_error = ?
+          WHERE id = ?`,
+        [message, storageId]
+      )
+      return yield* purged.failure
+    }
+    yield* database.transaction("backup_storage_delete_finish", (transaction) =>
+      Effect.gen(function* () {
+        yield* transaction.queryRows<RowDataPacket>(
+          `SELECT relay_id, target_kind, target_id
+             FROM ${databaseTable("backup_policy")}
+            WHERE storage_id = ?
+            ORDER BY relay_id, target_kind, target_id
+            FOR UPDATE`,
+          [storageId]
+        )
+        yield* transaction.queryRows<RowDataPacket>(
+          `SELECT id
+             FROM ${databaseTable("backup_storage")}
+            WHERE id = ?
+            FOR UPDATE`,
+          [storageId]
+        )
+        yield* transaction.execute(
+          `UPDATE ${databaseTable("backup")} backup
+             JOIN ${databaseTable("backup_repository")} repository
+               ON repository.id = backup.repository_id
+              SET backup.repository_id = NULL
+            WHERE repository.storage_id = ? AND backup.status = 'deleted'`,
+          [storageId]
+        )
+        yield* transaction.execute(
+          `UPDATE ${databaseTable("backup_artifact")}
+              SET storage_id = NULL
+            WHERE storage_id = ? AND status = 'deleted'`,
+          [storageId]
+        )
+        yield* transaction.execute(
+          `DELETE FROM ${databaseTable("backup_repository")}
+            WHERE storage_id = ?`,
+          [storageId]
+        )
         yield* transaction.execute(
           `UPDATE ${databaseTable("backup_policy")}
               SET storage_id = NULL
@@ -327,14 +558,14 @@ export const deleteBackupStorageEffect = Effect.fn("backupStorage.delete")(
 
 const backupStoragePublicSelect = `SELECT id, owner_user_id, name, endpoint,
        region, bucket, object_prefix, force_path_style, allow_private_network,
-       enabled,
+       enabled, deleting,
        ROUND(UNIX_TIMESTAMP(last_verified_at) * 1000) AS last_verified_at_ms,
        last_error, ROUND(UNIX_TIMESTAMP(created_at) * 1000) AS created_at_ms
   FROM ${databaseTable("backup_storage")}`
 
 const backupStorageSelect = `SELECT id, owner_user_id, name, endpoint, region,
        bucket, object_prefix, force_path_style, allow_private_network,
-       access_key_id_ciphertext, secret_access_key_ciphertext, enabled,
+       access_key_id_ciphertext, secret_access_key_ciphertext, enabled, deleting,
        ROUND(UNIX_TIMESTAMP(last_verified_at) * 1000) AS last_verified_at_ms,
        last_error, ROUND(UNIX_TIMESTAMP(created_at) * 1000) AS created_at_ms
   FROM ${databaseTable("backup_storage")}`
@@ -344,6 +575,7 @@ function toRecord(row: BackupStoragePublicRow): BackupStorageRecord {
     allowPrivateNetwork: Boolean(row.allow_private_network),
     bucket: row.bucket,
     createdAt: timestampIso(row.created_at_ms, "storage created at"),
+    deleting: Boolean(row.deleting),
     enabled: Boolean(row.enabled),
     endpoint: row.endpoint,
     forcePathStyle: Boolean(row.force_path_style),

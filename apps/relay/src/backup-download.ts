@@ -95,10 +95,23 @@ export class BackupDownloadServer {
       "backups",
       `${capability.backupId}.zip`
     )
-    const metadata = await lstat(archivePath)
-    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    const exportPath = resolve(
+      this.#config.dataDirectory,
+      "exports",
+      `${capability.backupId}.zip`
+    )
+    const archive = await optionalLstat(archivePath)
+    const exported = await optionalLstat(exportPath)
+    const selected =
+      archive?.isFile() && !archive.isSymbolicLink()
+        ? { metadata: archive, path: archivePath }
+        : exported?.isFile() && !exported.isSymbolicLink()
+          ? { metadata: exported, path: exportPath }
+          : null
+    if (!selected) {
       throw new Error("Backup archive is unavailable")
     }
+    const metadata = selected.metadata
     const range = parseRange(request.headers.range, metadata.size)
     const headers: Record<string, string> = {
       "Accept-Ranges": "bytes",
@@ -125,7 +138,7 @@ export class BackupDownloadServer {
       return
     }
     let transferred = 0
-    const stream = createReadStream(archivePath, range ?? undefined)
+    const stream = createReadStream(selected.path, range ?? undefined)
     stream.on("data", (chunk) => {
       transferred += Buffer.byteLength(chunk)
     })
@@ -202,6 +215,17 @@ export class BackupDownloadServer {
     }
     return payload
   }
+}
+
+function optionalLstat(path: string) {
+  return Effect.runPromise(
+    Effect.result(
+      Effect.tryPromise({
+        try: () => lstat(path),
+        catch: (cause) => cause,
+      })
+    )
+  ).then((result) => (Result.isSuccess(result) ? result.success : null))
 }
 
 function parseRange(

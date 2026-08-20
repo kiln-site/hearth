@@ -3,6 +3,7 @@ import { z } from "zod"
 
 import { AuthPage } from "@/components/auth-page"
 import { recoverPromise } from "@/effect/promise"
+import { inviteTokenFromRedirect } from "@/lib/invitation-auth"
 import { pageTitle } from "@/lib/page-title"
 import { relayConnectionQueryOptions } from "@/lib/query-options"
 import {
@@ -25,25 +26,19 @@ export const Route = createFileRoute("/")({
   beforeLoad: async ({ context, search }) => {
     const state = await getAuthState()
     if (!state.user) {
-      let invitationSignup = false
-      if (search.signup && search.redirect?.startsWith("/invite?")) {
-        const token = new URL(
-          search.redirect,
-          "http://kiln.local"
-        ).searchParams.get("token")
-        if (token) {
-          const invitation = await recoverPromise(
+      const token = inviteTokenFromRedirect(search.redirect)
+      const invitation = token
+        ? await recoverPromise(
             () => getInvitationPreview({ data: { token } }),
             () => null
           )
-          invitationSignup = Boolean(
-            invitation &&
-            search.email &&
-            invitation.email.toLowerCase() === search.email.toLowerCase()
-          )
-        }
+        : null
+      const invitationSignup = Boolean(invitation && !invitation.accountExists)
+      return {
+        ...state,
+        invitationEmail: invitation?.email,
+        invitationSignup,
       }
-      return { ...state, invitationSignup }
     }
     if (search.redirect?.startsWith("/")) {
       throw redirect({ href: search.redirect })
@@ -55,7 +50,11 @@ export const Route = createFileRoute("/")({
       getUiPreferences(),
     ])
     if (connection.status !== "connected") {
-      if (state.user.isDevelopmentBypass || state.user.role === "admin") {
+      if (
+        state.user.isDevelopmentBypass ||
+        state.user.role === "admin" ||
+        state.user.role === "relay_creator"
+      ) {
         throw redirect({ to: "/infra/relays" })
       }
       throw redirect({
@@ -99,7 +98,15 @@ export const Route = createFileRoute("/")({
       },
     })
   },
-  head: () => ({ meta: [{ title: pageTitle("Sign In") }] }),
+  head: ({ match }) => ({
+    meta: [
+      {
+        title: pageTitle(
+          match.context.invitationSignup ? "Create Account" : "Sign In"
+        ),
+      },
+    ],
+  }),
   component: LoginRoute,
 })
 
@@ -108,15 +115,18 @@ function LoginRoute() {
   const {
     developmentBypassEnabled,
     emailDeliveryEnabled,
+    invitationEmail,
     invitationSignup,
     setupRequired,
     signupEnabled,
   } = Route.useRouteContext()
   return (
     <AuthPage
+      key={`${invitationEmail ?? ""}:${invitationSignup ? "signup" : "signin"}:${search.forgot ? "forgot" : ""}`}
       developmentBypassEnabled={developmentBypassEnabled}
       emailDeliveryEnabled={emailDeliveryEnabled}
-      initialEmail={search.email}
+      initialEmail={invitationEmail ?? search.email}
+      lockedEmail={invitationEmail}
       forgotPassword={Boolean(search.forgot)}
       redirectPath={search.redirect}
       setupRequired={setupRequired}

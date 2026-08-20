@@ -20,7 +20,11 @@ export async function redirectLegacyPage(
   }
   const connection = await getRelayConnectionState()
   if (connection.status !== "connected") {
-    if (user.isDevelopmentBypass || user.role === "admin") {
+    if (
+      user.isDevelopmentBypass ||
+      user.role === "admin" ||
+      user.role === "relay_creator"
+    ) {
       throw redirect({ to: "/infra/relays", replace: true })
     }
     throw redirect({

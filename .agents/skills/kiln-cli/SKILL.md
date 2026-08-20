@@ -135,9 +135,10 @@ kiln servers create <relay-id> https://example.com/custom-brick.yml \
   --name custom --variable version=1.0.0
 ```
 
-Server creation requires a full-access CLI credential and platform
-administrator access. Disk quotas must be at least `0.1GiB`, matching the
-Relay allocation minimum. `--no-start` leaves the new server stopped.
+Server creation requires a full-access CLI credential. Platform administrators
+can create on any Relay; Bring Your Own Relays users can create only on Relays
+they paired. Disk quotas must be at least `0.1GiB`, matching the Relay
+allocation minimum. `--no-start` leaves the new server stopped.
 
 Permanently delete a server and its data only after verifying the full target:
 
@@ -164,12 +165,19 @@ kiln backups list --limit 200
 ```
 
 The `DEST` column consolidates the logical backup's destinations, such as
-`local+s3`; it does not repeat a backup once per destination.
+`local+s3`; it does not repeat a backup once per destination. The `MODE`
+column is `incremental` (restic snapshots, the server default) or `full`
+(portable zip archives).
 
-Create a manual backup with a reference from `backups targets`:
+Create a manual backup with a reference from `backups targets`. Server backups
+default to incremental restic snapshots stored on the Relay or an S3
+destination. Pass `--mode full` for a portable zip, which can also use local or
+S3 storage. Incremental mode accepts exactly one destination.
 
 ```sh
 kiln backups create server <relay-id>:<instance-id> --name "Before update"
+kiln backups create server <relay-id>:<instance-id> --storage <destination-uuid>
+kiln backups create server <relay-id>:<instance-id> --mode full --storage local
 kiln backups create database <relay-id>:<database-id> --name "Before migration"
 kiln backups create platform <relay-id> --name "Before Hearth update"
 ```
@@ -180,11 +188,14 @@ Relay-local storage. Override it explicitly when needed:
 ```sh
 kiln backups create server <server> --storage local
 kiln backups create server <server> --storage <destination-uuid>
+kiln backups create server <server> --mode full --storage local
+kiln backups create server <server> --mode full --storage <destination-uuid>
 ```
 
-Restore a complete server or database backup by UUID. A full safety backup is
-created first unless explicitly disabled. Game servers must be stopped;
-managed databases remain online for their logical import:
+Restore a complete server or database backup by UUID, including incremental
+snapshots. A full safety backup is created first unless explicitly disabled.
+Game servers must be stopped; managed databases remain online for their
+logical import:
 
 ```sh
 kiln backup restore <backup-id>
@@ -192,7 +203,8 @@ kiln backup restore <backup-id> --no-safety-backup
 ```
 
 Download through a temporary signed URL without printing the URL itself. The
-backup filename is used when the local path is omitted:
+backup filename is used when the local path is omitted. Incremental snapshots
+are exported to a zip first; the command waits until that export is ready:
 
 ```sh
 kiln backup download <backup-id>
@@ -233,6 +245,8 @@ kiln server startup <server> --memory 6GiB
 kiln server startup <server> --disk 40GiB --java-version 25
 kiln server startup <server> --game-version 1.21.11 \
   --variable online_mode=json:false
+kiln server startup <server> \
+  --variable java_args="-XX:+UseG1GC -XX:+AlwaysPreTouch"
 ```
 
 Settings omitted from a startup patch, including the disk quota, are preserved.

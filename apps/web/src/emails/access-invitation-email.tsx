@@ -18,7 +18,7 @@ export interface AccessInvitationEmailProps {
   inviterName: string
   resourceName: string
   role: string
-  scope: "database" | "instance" | "relay"
+  scope: "database" | "instance" | "platform" | "relay"
 }
 
 export function AccessInvitationEmail({
@@ -64,15 +64,16 @@ export function AccessInvitationEmail({
                 You&apos;re invited
               </Heading>
               <Text className="text-smoke mt-5 text-[15px] leading-[24px]">
-                {inviterName} invited you to the {scope} {resourceName} as{" "}
-                {role}. Sign in with this email address, or create an account,
-                to accept.
+                {scope === "platform"
+                  ? `${inviterName} invited you to Kiln as ${role}.`
+                  : `${inviterName} invited you to the ${scope} ${resourceName} as ${role}.`}{" "}
+                Open this link to continue with this email address.
               </Text>
               <Button
                 href={inviteUrl}
                 className="bg-ember mt-5 box-border block rounded-lg px-5 py-3 text-center text-[14px] font-bold text-white no-underline"
               >
-                Review invitation
+                Continue
               </Button>
               <Text className="text-smoke mt-6 text-[12px] leading-[19px]">
                 This invitation expires in seven days. If you weren&apos;t

@@ -89,12 +89,18 @@ describe("CLI arguments", () => {
         "relay:instance",
         "--storage",
         "local",
+        "--mode",
+        "full",
         "--no-safety-backup",
       ])
     ).toMatchObject({
       command: ["backups", "create", "server", "relay:instance"],
+      mode: "full",
       safetyBackup: false,
       storage: "local",
     })
+    expect(() =>
+      parseArguments(["backups", "create", "server", "relay:instance", "--mode", "zip"])
+    ).toThrow("--mode must be full or incremental")
   })
 })

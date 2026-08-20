@@ -2,11 +2,17 @@ import { createFileRoute, redirect } from "@tanstack/react-router"
 
 import { RelaysPage } from "@/components/relays-page"
 import { pageTitle } from "@/lib/page-title"
-import { relaysQueryOptions } from "@/lib/query-options"
+import {
+  accessCapabilitiesQueryOptions,
+  relaysQueryOptions,
+} from "@/lib/query-options"
 
 export const Route = createFileRoute("/_app/infra/relays")({
-  beforeLoad: ({ context }) => {
-    if (!context.user.isDevelopmentBypass && context.user.role !== "admin") {
+  beforeLoad: async ({ context }) => {
+    const capabilities = await context.queryClient.ensureQueryData(
+      accessCapabilitiesQueryOptions()
+    )
+    if (!capabilities.canManageRelays) {
       throw redirect({ to: "/infra/servers", replace: true })
     }
   },

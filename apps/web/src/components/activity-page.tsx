@@ -6,7 +6,6 @@ import { ensuringPromise, forkPromise } from "@/effect/promise"
 import {
   CalendarDays,
   Bot,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleGauge,
@@ -26,6 +25,13 @@ import {
 
 import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@workspace/ui/components/select"
 import {
   Popover,
   PopoverContent,
@@ -495,11 +501,11 @@ const ActivityTypeFilter = React.memo(function ActivityTypeFilter({
       value={value}
       onChange={update}
     >
-      <option value="">All types</option>
+      <SelectItem value={allActivityFiltersValue}>All types</SelectItem>
       {activityTypes.map((type) => (
-        <option key={type} value={type}>
+        <SelectItem key={type} value={type}>
           {typeDetails[type].label}
-        </option>
+        </SelectItem>
       ))}
     </ActivitySelect>
   )
@@ -527,9 +533,9 @@ const ActivitySourceFilter = React.memo(function ActivitySourceFilter({
       value={value}
       onChange={update}
     >
-      <option value="">All sources</option>
-      <option value="web">Web</option>
-      <option value="cli">CLI</option>
+      <SelectItem value={allActivityFiltersValue}>All sources</SelectItem>
+      <SelectItem value="web">Web</SelectItem>
+      <SelectItem value="cli">CLI</SelectItem>
     </ActivitySelect>
   )
 })
@@ -561,11 +567,11 @@ const ActivityUserFilter = React.memo(function ActivityUserFilter({
       value={value}
       onChange={update}
     >
-      <option value="">All users</option>
+      <SelectItem value={allActivityFiltersValue}>All users</SelectItem>
       {actors.map((actor) => (
-        <option key={actor.id} value={actor.id}>
+        <SelectItem key={actor.id} value={actor.id}>
           {actor.name}
-        </option>
+        </SelectItem>
       ))}
     </ActivitySelect>
   )
@@ -613,11 +619,11 @@ const ActivityRelayFilter = React.memo(function ActivityRelayFilter({
       value={relay ?? ""}
       onChange={update}
     >
-      <option value="">All Relays</option>
+      <SelectItem value={allActivityFiltersValue}>All Relays</SelectItem>
       {data.relays.map((candidate) => (
-        <option key={candidate.id} value={candidate.id}>
+        <SelectItem key={candidate.id} value={candidate.id}>
           {candidate.name}
-        </option>
+        </SelectItem>
       ))}
     </ActivitySelect>
   )
@@ -833,6 +839,8 @@ const ActivitySyncButton = React.memo(function ActivitySyncButton({
   )
 })
 
+const allActivityFiltersValue = "__all_activity_filters__"
+
 function ActivitySelect({
   ariaLabel,
   children,
@@ -847,20 +855,25 @@ function ActivitySelect({
   value: string
 }) {
   return (
-    <label className="relative inline-flex h-8 min-w-0 items-center border border-input/90 bg-input/20 text-xs text-foreground/90 transition-colors hover:border-primary/35 hover:bg-accent/70">
-      <span className="pointer-events-none ml-2 text-muted-foreground [&_svg]:size-3.5">
-        {icon}
-      </span>
-      <select
+    <Select
+      value={value || allActivityFiltersValue}
+      onValueChange={(nextValue) =>
+        onChange(nextValue === allActivityFiltersValue ? "" : nextValue)
+      }
+    >
+      <SelectTrigger
         aria-label={ariaLabel}
-        value={value}
-        onChange={(event) => onChange(event.currentTarget.value)}
-        className="h-full min-w-0 appearance-none bg-transparent py-0 pr-7 pl-1.5 outline-none"
+        className="h-8 min-w-0 gap-1.5 px-2 text-xs [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:flex-1 [&_[data-slot=select-value]]:truncate [&_[data-slot=select-value]]:whitespace-nowrap"
       >
+        <span className="shrink-0 text-muted-foreground [&_svg]:size-3.5">
+          {icon}
+        </span>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent className="w-max min-w-(--radix-select-trigger-width)">
         {children}
-      </select>
-      <ChevronDown className="pointer-events-none absolute right-2 size-3 text-muted-foreground" />
-    </label>
+      </SelectContent>
+    </Select>
   )
 }
 

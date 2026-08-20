@@ -102,13 +102,13 @@ const InfraUpdatesDialogHost = React.memo(function InfraUpdatesDialogHost({
     accessCapabilitiesQueryOptions()
   )
 
-  return capabilities.isPlatformAdmin ? (
-    <PlatformAdminInfraUpdatesDialogHost store={store} />
+  return capabilities.canUpdateRelays ? (
+    <AuthorizedInfraUpdatesDialogHost store={store} />
   ) : null
 })
 
-const PlatformAdminInfraUpdatesDialogHost = React.memo(
-  function PlatformAdminInfraUpdatesDialogHost({
+const AuthorizedInfraUpdatesDialogHost = React.memo(
+  function AuthorizedInfraUpdatesDialogHost({
     store,
   }: {
     store: InfraUpdateDialogStore

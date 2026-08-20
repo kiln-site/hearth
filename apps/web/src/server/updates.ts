@@ -7,7 +7,7 @@ import {
   listKilnReleasesEffect,
 } from "@/effect/github-releases"
 import { runAppEffect } from "@/effect/runtime"
-import { isPlatformAdmin } from "@/lib/access-control"
+import { isPlatformAdmin, isRelayCreator } from "@/lib/access-control"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import { listPersistedRelays } from "@/lib/relay-registry"
 import {
@@ -57,23 +57,33 @@ const getContainerHostname = createServerOnlyFn(async () => {
   return hostname()
 })
 
-async function requirePlatformAdministrator() {
+async function requireUpdateAccess() {
   const user = await requireAuthenticatedUser()
-  if (!isPlatformAdmin(user)) {
-    throw new Error("Platform administrator access required")
+  if (!isPlatformAdmin(user) && !isRelayCreator(user)) {
+    throw new Error("Relay creator or platform administrator access required")
   }
   return user
 }
 
+async function updateRelaysForUser(
+  user: Awaited<ReturnType<typeof requireAuthenticatedUser>>
+): Promise<Array<PersistedRelay>> {
+  const relays = (await listPersistedRelays()).filter((relay) => relay.enabled)
+  return isPlatformAdmin(user)
+    ? relays
+    : relays.filter((relay) => relay.createdBy === user.id)
+}
+
 export const getUpdateOverview = createServerFn({ method: "GET" }).handler(
   async () => {
-    await requirePlatformAdministrator()
+    const user = await requireUpdateAccess()
+    const platformAdmin = isPlatformAdmin(user)
     const [releases, relays, container] = await Promise.all([
       runAppEffect("updates.releases", listKilnReleasesEffect()),
-      listPersistedRelays(),
-      getContainerHostname(),
+      updateRelaysForUser(user),
+      platformAdmin ? getContainerHostname() : Promise.resolve(null),
     ])
-    const enabledRelays = relays.filter((relay) => relay.enabled)
+    const enabledRelays = relays
     const { relayRpc } = await import("@/lib/relay-connection")
 
     const [relayTargets, hearthCandidates] = await Promise.all([
@@ -114,40 +124,43 @@ export const getUpdateOverview = createServerFn({ method: "GET" }).handler(
           )
         )
       ),
-      Promise.all(
-        enabledRelays.map((relay) =>
-          Effect.runPromise(
-            Effect.tryPromise({
-              try: async () => {
-                const inspection = systemInspectionSchema.parse(
-                  await relayRpc(
-                    relay,
-                    "relay.system.inspect",
-                    { container },
-                    5_000
-                  )
+      platformAdmin && container
+        ? Promise.all(
+            enabledRelays.map((relay) =>
+              Effect.runPromise(
+                Effect.tryPromise({
+                  try: async () => {
+                    const inspection = systemInspectionSchema.parse(
+                      await relayRpc(
+                        relay,
+                        "relay.system.inspect",
+                        { container },
+                        5_000
+                      )
+                    )
+                    return inspection.component === "hearth" &&
+                      inspection.sameInstallation
+                      ? {
+                          ...inspection,
+                          relayId: relay.id,
+                          relayName: relay.name,
+                        }
+                      : null
+                  },
+                  catch: (cause) => cause,
+                }).pipe(
+                  // A remote Relay cannot see Hearth's container and is skipped.
+                  Effect.catch(() => Effect.succeed(null))
                 )
-                return inspection.component === "hearth" &&
-                  inspection.sameInstallation
-                  ? {
-                      ...inspection,
-                      relayId: relay.id,
-                      relayName: relay.name,
-                    }
-                  : null
-              },
-              catch: (cause) => cause,
-            }).pipe(
-              // A remote Relay cannot see Hearth's container and is skipped.
-              Effect.catch(() => Effect.succeed(null))
+              )
             )
           )
-        )
-      ),
+        : Promise.resolve([]),
     ])
     const hearthTarget = hearthCandidates.find((target) => target) ?? null
 
     return {
+      canUpdateHearth: platformAdmin,
       currentVersion: import.meta.env.VITE_KILN_VERSION,
       hearth: hearthTarget,
       releases,
@@ -159,7 +172,14 @@ export const getUpdateOverview = createServerFn({ method: "GET" }).handler(
 export const startSystemUpdates = createServerFn({ method: "POST" })
   .validator(startUpdatesSchema)
   .handler(async ({ data }) => {
-    const user = await requirePlatformAdministrator()
+    const user = await requireUpdateAccess()
+    const platformAdmin = isPlatformAdmin(user)
+    if (
+      !platformAdmin &&
+      data.targets.some((target) => target.component === "hearth")
+    ) {
+      throw new Error("Only a platform administrator can update Hearth")
+    }
     const releases = await runAppEffect(
       "updates.latest-release",
       listKilnReleasesEffect()
@@ -168,19 +188,19 @@ export const startSystemUpdates = createServerFn({ method: "POST" })
     if (!latestRelease) {
       throw new Error("No public Kiln release is available to install")
     }
-    const manifest = await runAppEffect(
-      "updates.manifest",
-      kilnReleaseManifestEffect(latestRelease.tag)
+    const [manifest, relays, { relayRpc }, hearthContainer] = await Promise.all(
+      [
+        runAppEffect(
+          "updates.manifest",
+          kilnReleaseManifestEffect(latestRelease.tag)
+        ),
+        updateRelaysForUser(user),
+        import("@/lib/relay-connection"),
+        data.targets.some(({ component }) => component === "hearth")
+          ? getContainerHostname()
+          : Promise.resolve(null),
+      ]
     )
-    const relays = (await listPersistedRelays()).filter(
-      (relay) => relay.enabled
-    )
-    const { relayRpc } = await import("@/lib/relay-connection")
-    const hearthContainer = data.targets.some(
-      ({ component }) => component === "hearth"
-    )
-      ? await getContainerHostname()
-      : null
     const prepared = await Effect.runPromise(
       Effect.forEach(
         data.targets,
@@ -344,15 +364,12 @@ export const startSystemUpdates = createServerFn({ method: "POST" })
 export const getSystemUpdateStatus = createServerFn({ method: "POST" })
   .validator(updateStatusSchema)
   .handler(async ({ data }) => {
-    await requirePlatformAdministrator()
+    const user = await requireUpdateAccess()
     const [relays, { relayRpc }] = await Promise.all([
-      listPersistedRelays(),
+      updateRelaysForUser(user),
       import("@/lib/relay-connection"),
     ])
-    const relay = await selectedRelay(
-      relays.filter((item) => item.enabled),
-      data.relayId
-    )
+    const relay = await selectedRelay(relays, data.relayId)
     const result = await relayRpc(
       relay,
       "relay.update.status",

@@ -67,7 +67,9 @@ const InfraNavigation = React.memo(function InfraNavigation() {
           (tab.to === "/infra/relays" ||
             tab.to === "/infra/tailscale" ||
             tab.to === "/infra/domains") &&
-          !capabilities.isPlatformAdmin ? null : (
+          !(tab.to === "/infra/relays"
+            ? capabilities.canManageRelays
+            : capabilities.isPlatformAdmin) ? null : (
             <Link
               key={tab.to}
               to={tab.to}
@@ -83,7 +85,7 @@ const InfraNavigation = React.memo(function InfraNavigation() {
           )
         )}
       </nav>
-      {capabilities.isPlatformAdmin ? (
+      {capabilities.canUpdateRelays ? (
         <Tooltip>
           <TooltipTrigger asChild>
             <Button

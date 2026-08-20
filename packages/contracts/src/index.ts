@@ -437,13 +437,24 @@ export const relayCreateInstanceSchema = z.object({
   start: z.boolean().default(true),
 })
 
-export const relayUpdateInstanceStartupSchema = z.object({
-  diskLimitBytes: relayRequestedDiskLimitBytesSchema.optional(),
-  recipe: brickSourceSchema.optional(),
-  tailscale: relayInstanceTailscaleSchema.optional(),
-  variables: brickVariableValuesSchema,
-  start: z.boolean().default(true),
-})
+export const relayUpdateInstanceStartupSchema = z
+  .object({
+    diskLimitBytes: relayRequestedDiskLimitBytesSchema.optional(),
+    recipe: brickSourceSchema.optional(),
+    reinstall: z.boolean().optional(),
+    tailscale: relayInstanceTailscaleSchema.optional(),
+    variables: brickVariableValuesSchema.optional(),
+    start: z.boolean().default(true),
+  })
+  .superRefine((value, context) => {
+    if (value.reinstall !== true && value.variables === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "Enter startup variables",
+        path: ["variables"],
+      })
+    }
+  })
 
 export const relayTailscaleSettingsSchema = z
   .object({

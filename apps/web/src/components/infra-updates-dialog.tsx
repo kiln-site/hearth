@@ -1248,7 +1248,9 @@ const UpdateOverviewView = React.memo(function UpdateOverviewView({
             </p>
             <p className="mt-0.5 max-w-2xl text-[0.625rem] leading-4 text-muted-foreground">
               Updates do not restart running game servers or disconnect players.
-              Only the Panel may be briefly unavailable.
+              {overview.canUpdateHearth
+                ? " Only the Panel may be briefly unavailable."
+                : " A Relay may reconnect briefly while its update completes."}
             </p>
           </div>
         </div>
@@ -1265,21 +1267,23 @@ const UpdateOverviewView = React.memo(function UpdateOverviewView({
       <section className="overflow-hidden rounded-xl border bg-card/45">
         {latestRelease ? (
           <>
-            <UpdateSectionLabel component="hearth" />
             {hearthTarget ? (
-              <UpdateTargetRow
-                activityStore={activityStore}
-                focused={false}
-                key={hearthTarget.key}
-                latestVersion={latestRelease.version}
-                releases={overview.releases}
-                target={hearthTarget}
-                onChangelog={onChangelog}
-                onUpdate={onUpdate}
-              />
+              <>
+                <UpdateSectionLabel component="hearth" />
+                <UpdateTargetRow
+                  activityStore={activityStore}
+                  focused={false}
+                  key={hearthTarget.key}
+                  latestVersion={latestRelease.version}
+                  releases={overview.releases}
+                  target={hearthTarget}
+                  onChangelog={onChangelog}
+                  onUpdate={onUpdate}
+                />
+              </>
             ) : null}
 
-            <div className="border-t border-border">
+            <div className={hearthTarget ? "border-t border-border" : ""}>
               <UpdateSectionLabel component="relay" />
               {relayTargets.length > 0 ? (
                 <div className="divide-y divide-border/70">
@@ -1727,7 +1731,7 @@ const UpdateProgressBar = React.memo(function UpdateProgressBar({
         aria-valuemax={100}
         aria-valuemin={0}
         aria-valuenow={progress.percent}
-        className="h-1.5 min-w-16 max-w-36 flex-1 overflow-hidden bg-muted/70"
+        className="h-1.5 max-w-36 min-w-16 flex-1 overflow-hidden bg-muted/70"
         role="progressbar"
       >
         <div
@@ -2236,7 +2240,7 @@ function updateTargets(overview: UpdateOverview): Array<UpdateTarget> {
     relayId: overview.hearth?.relayId ?? null,
   }
   return [
-    hearth,
+    ...(overview.canUpdateHearth ? [hearth] : []),
     ...overview.relays.map(
       (relay): UpdateTarget => ({
         component: "relay",

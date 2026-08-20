@@ -14,7 +14,7 @@ if (dsn) {
     sendDefaultPii: false,
     tracesSampleRate: parseSampleRate(
       process.env.SENTRY_TRACES_SAMPLE_RATE,
-      process.env.NODE_ENV === "production" ? 0.1 : 1
+      process.env.NODE_ENV === "production" ? 0.05 : 1
     ),
     initialScope: {
       tags: { "kiln.service": "relay" },

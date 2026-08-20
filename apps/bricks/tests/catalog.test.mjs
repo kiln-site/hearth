@@ -9,6 +9,8 @@ import addFormats from "ajv-formats"
 import { parse } from "yaml"
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
+const JAVA_ARGS_RULE_PATTERN =
+  "^(?!.*(?:^|\\s)(?:@(?!@)\\S+|-Xm[sx]\\S*|-XX:(?:-UseContainerSupport|-UseCGroupMemoryLimitForHeap|InitialHeapSize|MaxHeapSize|SoftMaxHeapSize|MaxRAMPercentage|MinRAMPercentage|InitialRAMPercentage|MaxRAMFraction|InitialRAMFraction|MinRAMFraction|MaxRAM|VMOptionsFile|Flags)(?:=\\S*)?|--nogui)(?:\\s|$)).*$"
 const loadJson = async (path) => JSON.parse(await readFile(join(root, path), "utf8"))
 const loadYaml = async (path) => parse(await readFile(join(root, path), "utf8"), {
   maxAliasCount: 20,
@@ -69,6 +71,52 @@ test("the official catalog and every recipe satisfy the v1 schemas", async () =>
     const installationMarker = recipe.runtime.environment.KILN_INSTALLATION_MARKER
     if (installationMarker) {
       assert.match(installationMarker, /^\.kiln-[a-zA-Z0-9._-]{1,58}$/u)
+    }
+    if (recipe.runtime.image.includes("bricks-java:")) {
+      const javaArgs = recipe.variables.java_args
+      assert.equal(javaArgs?.type, "string", `${recipePath}: Java recipes must declare java_args`)
+      assert.equal(
+        recipe.runtime.environment.KILN_JAVA_ARGS,
+        "{{ variables.java_args }}",
+        `${recipePath}: Java recipes must map java_args to KILN_JAVA_ARGS`,
+      )
+      assert.doesNotMatch(
+        javaArgs.default ?? "",
+        /(?:-Xm[sx]\b|-XX:(?:-UseContainerSupport|-UseCGroupMemoryLimitForHeap|InitialHeapSize|MaxHeapSize|SoftMaxHeapSize|MaxRAMPercentage|MinRAMPercentage|InitialRAMPercentage|MaxRAMFraction|InitialRAMFraction|MinRAMFraction|MaxRAM)\b|--nogui)/u,
+        `${recipePath}: java_args defaults must omit managed heap and --nogui flags`,
+      )
+      assert.doesNotMatch(
+        javaArgs.default ?? "",
+        /--add-modules=jdk\.incubator\.vector/u,
+        `${recipePath}: java_args defaults must omit --add-modules=jdk.incubator.vector so Java 11 can start`,
+      )
+      assert.equal(
+        javaArgs.rules?.pattern,
+        JAVA_ARGS_RULE_PATTERN,
+        `${recipePath}: java_args must reject heap aliases, argument files, container-support overrides, and --nogui`,
+      )
+      const javaArgsPattern = new RegExp(javaArgs.rules?.pattern ?? "", "u")
+      assert.equal(javaArgsPattern.test(javaArgs.default ?? ""), true)
+      assert.equal(javaArgsPattern.test(""), true)
+      assert.equal(javaArgsPattern.test("-XX:+UseG1GC -Dkiln.test=true"), true)
+      assert.equal(javaArgsPattern.test('-Dmessage="hello world"'), true)
+      assert.equal(javaArgsPattern.test("-Xmx2G"), false)
+      assert.equal(javaArgsPattern.test("-XX:+UseG1GC --nogui"), false)
+      assert.equal(javaArgsPattern.test("-XX:MaxRAMPercentage=75.0"), false)
+      assert.equal(javaArgsPattern.test("-XX:MaxHeapSize=1G"), false)
+      assert.equal(javaArgsPattern.test("-XX:InitialHeapSize=512M"), false)
+      assert.equal(javaArgsPattern.test("-XX:MaxRAM=4G"), false)
+      assert.equal(javaArgsPattern.test("-XX:MinRAMPercentage=50"), false)
+      assert.equal(javaArgsPattern.test("-XX:MaxRAMFraction=2"), false)
+      assert.equal(javaArgsPattern.test("@/server/flags.txt"), false)
+      assert.equal(javaArgsPattern.test("-XX:+UseG1GC @flags.txt"), false)
+      assert.equal(javaArgsPattern.test("-XX:VMOptionsFile=/server/flags.txt"), false)
+      assert.equal(javaArgsPattern.test("-Dcontact=ops@example.com"), true)
+      assert.equal(javaArgsPattern.test("-XX:-UseContainerSupport"), false)
+      assert.equal(
+        javaArgsPattern.test("-XX:+UseG1GC -XX:-UseCGroupMemoryLimitForHeap"),
+        false,
+      )
     }
   }
 })

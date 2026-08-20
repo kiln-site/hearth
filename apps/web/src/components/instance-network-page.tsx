@@ -12,7 +12,6 @@ import {
   BrickWall,
   Cable,
   Check,
-  ChevronDown,
   CircleAlert,
   Copy,
   Globe2,
@@ -49,6 +48,13 @@ import {
   DialogTitle,
 } from "@workspace/ui/components/dialog"
 import { Input } from "@workspace/ui/components/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@workspace/ui/components/select"
 import { showToast } from "@workspace/ui/components/sonner"
 import {
   Tooltip,
@@ -2136,28 +2142,24 @@ function ProtocolSelect({
   onChange: (protocol: RelayInstancePortProtocol) => void
 }) {
   return (
-    <div className="relative">
-      <select
-        aria-label="Protocol"
-        className="flex h-8 w-full appearance-none rounded-md border border-input bg-transparent py-1 pr-8 pl-3 text-xs shadow-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
-        name="protocol"
-        value={value}
-        onChange={(event) => {
-          const parsed = relayInstancePortInputSchema.shape.protocol.safeParse(
-            event.target.value
-          )
-          if (parsed.success) onChange(parsed.data)
-        }}
-      >
-        <option value="tcp">TCP</option>
-        <option value="udp">UDP</option>
-        <option value="both">TCP + UDP</option>
-      </select>
-      <ChevronDown
-        aria-hidden="true"
-        className="pointer-events-none absolute top-1/2 right-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
-      />
-    </div>
+    <Select
+      name="protocol"
+      value={value}
+      onValueChange={(nextValue) => {
+        const parsed =
+          relayInstancePortInputSchema.shape.protocol.safeParse(nextValue)
+        if (parsed.success) onChange(parsed.data)
+      }}
+    >
+      <SelectTrigger aria-label="Protocol" className="h-8 w-full text-xs">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="tcp">TCP</SelectItem>
+        <SelectItem value="udp">UDP</SelectItem>
+        <SelectItem value="both">TCP + UDP</SelectItem>
+      </SelectContent>
+    </Select>
   )
 }
 

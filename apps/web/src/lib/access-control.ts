@@ -143,20 +143,14 @@ export const grantExistingUserAccessEffect = Effect.fn(
                 [input.relayId, input.resourceId]
               )
             : []
-        const grantRows =
-          yield* transaction.queryRows<ScopedGrantRoleRow>(
-            `SELECT user_id, role
+        const grantRows = yield* transaction.queryRows<ScopedGrantRoleRow>(
+          `SELECT user_id, role
                FROM ${databaseTable("access_grant")}
               WHERE user_id = ? AND relay_id = ?
                 AND resource_type = ? AND resource_id = ?
               LIMIT 1 FOR UPDATE`,
-            [
-              input.userId,
-              input.relayId,
-              input.resourceType,
-              input.resourceId,
-            ]
-          )
+          [input.userId, input.relayId, input.resourceType, input.resourceId]
+        )
         const existingGrant = grantRows.at(0)
         const roleChangeError = accessGrantRoleChangeError({
           canManageOwners: input.canManageOwners,
@@ -245,6 +239,26 @@ export const listUserGrantsEffect = Effect.fn("access.listUserGrants")(
 
 export function isPlatformAdmin(user: AuthenticatedUser): boolean {
   return user.isDevelopmentBypass || user.role === "admin"
+}
+
+export function isRelayCreator(user: AuthenticatedUser): boolean {
+  return !user.isDevelopmentBypass && user.role === "relay_creator"
+}
+
+export function visibleRelaysForUser<
+  TRelay extends { createdBy: string | null; id: string },
+>(
+  user: AuthenticatedUser,
+  relays: ReadonlyArray<TRelay>,
+  grants: Iterable<Pick<AccessGrant, "relayId">>
+): Array<TRelay> {
+  if (isPlatformAdmin(user)) return [...relays]
+  const grantedRelayIds = new Set(Array.from(grants, (grant) => grant.relayId))
+  return relays.filter(
+    (relay) =>
+      grantedRelayIds.has(relay.id) ||
+      (isRelayCreator(user) && relay.createdBy === user.id)
+  )
 }
 
 export function hasPlatformPermission(

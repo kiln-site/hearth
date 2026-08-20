@@ -19,6 +19,7 @@ manual tasks use the same durable task model that schedules can enqueue later.
 - Restore with one clear action and optionally create a safety backup first.
 - Produce short-lived download URLs for both local and S3 artifacts.
 - Take a portable full backup before destructive resource deletion.
+- Deduplicate live game-server backups with Relay-local restic snapshots.
 
 ## Ownership model
 
@@ -102,12 +103,16 @@ user can select it. Destination removal is blocked while cataloged artifacts
 still depend on it.
 
 S3 credentials never go to a game container and are not returned to the
-browser. Hearth signs a narrowly scoped object request for Relay. The first
-implementation stages one artifact locally, validates its size and digest,
-then uploads it. The single queue plus free-space preflight prevents the
-unbounded concurrent staging failure seen in other panels. Multipart streaming
-can replace this adapter later without changing task or catalog contracts. The
-initial single-request adapter has a 5 GiB artifact ceiling.
+browser. Full archives still use Hearth-signed, narrowly scoped object
+requests. Incremental restic repositories cannot be driven with presigned
+URLs, so Relay receives the destination's static keys inside the durable task
+input (see Incremental snapshots). The first full-archive implementation
+stages one artifact locally, validates its size and digest, then uploads it.
+The single queue plus free-space preflight prevents the unbounded concurrent
+staging failure seen in other panels. Multipart streaming can replace this
+adapter later without changing task or catalog contracts. The initial
+single-request full-archive adapter has a 5 GiB artifact ceiling; restic S3
+pack writes are not subject to that ceiling.
 
 User-owned endpoints must resolve exclusively to public network addresses on
 every connection. Platform administrators may explicitly allow private
@@ -234,20 +239,83 @@ kiln backup storage list
 `apps/cli/README.md` and `.agents/skills/kiln-cli/SKILL.md` must be updated in
 the CLI layer of the stack.
 
-## Incremental option
+## Incremental snapshots
 
-Restic is the preferred experiment after portable full backups are reliable.
-It provides encrypted, content-addressed chunks, snapshots, S3 support, and
-deduplication. Use one repository per resource for isolation and predictable
-deletion; cross-resource deduplication is not worth the credential, lock, and
-retention blast radius. Quantity limits map to retained snapshots, while size
-limits must use logical snapshot size because physical repository bytes are
-shared across snapshots.
+Live game-server backups default to restic incremental snapshots. Each instance
+has one restic repository per destination:
 
-Restic snapshots are not directly downloadable archives, so Relay must export
-one through the normal download path. `forget` and `prune` are separate queued
-maintenance tasks. Final-deletion backups stay full archives so recovery does
-not depend on a mutable repository.
+- Relay-local: `<data>/restic/instance/<id>/`
+- S3-compatible: `s3:https://<endpoint>/<bucket>/<stored-prefix>` where the
+  stored prefix is
+  `<objectPrefix>/kiln/<installation>/<relay>/restic/instance/<targetId>/<repositoryId>`
+
+Hearth generates a repository password on first use and encrypts it with the
+installation keyring. For S3 repositories it also sends the destination's
+static access key and secret inside the durable task input. These are the
+destination keys as stored in Hearth, not scoped or temporary credentials —
+Relay receives whatever those keys can do. Use least-privilege keys
+(per-bucket or per-prefix policy) for destinations used with incremental mode.
+
+Relay persists complete task input in its SQLite journal before acknowledging,
+so secrets are durably stored while the task is live. Mitigations: mTLS control
+socket, journal file mode 0600, task-list responses redact `repositoryPassword`,
+`accessKeyId`, and `secretAccessKey`, terminal journal rows scrub those keys
+even when the stored JSON is corrupt, and restic stderr is redacted before it
+becomes a Relay error. A task that fails because credentials were rotated is
+terminal; retry the operation so Hearth dispatches a new task with the current
+keys. Queued tasks are not refreshed in place.
+
+Restic cannot pin DNS itself. For S3 repositories the Relay starts a
+per-invocation local HTTP CONNECT proxy on `127.0.0.1` and sets `HTTPS_PROXY`
+only for that restic process. Every CONNECT resolves the requested host with the
+same public-address policy as other backup downloads and connects to the vetted
+IP. A derived host allowlist (endpoint, `bucket.endpoint`, and AWS regional /
+dual-stack forms when the endpoint is on `amazonaws.com`) is a secondary
+control that fails closed. TLS stays end-to-end inside the CONNECT tunnel.
+
+Quantity limits map to retained snapshot rows. Size limits use each snapshot's
+logical restore size because physical repository bytes are shared. Database
+dumps and platform bundles stay full archives. Incremental backups accept
+exactly one destination. The 5 GiB single-PUT ceiling applies only to full
+archive uploads, not to restic's own pack writes.
+
+Downloading any backup yields the complete file. For restic snapshots (local or
+S3), creating a download link reserves an `export` task. Relay runs
+`restic dump -a zip`, fetching packs from the repository if needed, stages the
+zip locally, and serves it with the existing Relay download token. Export files
+expire after five minutes and are swept on Relay startup.
+
+Delete runs `restic forget` for the cataloged snapshot, or — when a failed
+create never recorded a snapshot ID — forgets snapshots tagged
+`task:<createTaskId>`. A missing snapshot is treated as a successful forget.
+Relay then self-enqueues an internal `prune` task that Hearth never lists.
+Prune on S3 rereads packs and rewrites the repository, so it costs bandwidth.
+Ordinary snapshot deletion never deletes the repository row; an empty repo is
+the dedup base for later backups and costs a few KiB. A straggling internal
+prune after the repo has been purged simply fails; it is internal and benign.
+
+Pre-restore safety backups and final-deletion backups stay full zip archives
+so recovery does not depend on a mutable repository. When an instance is
+finally deleted, Hearth marks remaining incremental catalog rows deleted, nulls
+`repository_id`, purges each S3 repository prefix (current object versions
+only), and deletes the repository rows. Relay-side final deletion still
+removes only the local repository directory. Versioned buckets retain old
+object versions after DeleteObjects; configure a bucket lifecycle rule if that
+storage must not remain billable.
+
+Destination deletion is two-phase: the row is marked `deleting` so new backups
+cannot select it, preferred destination policies that pointed at it are cleared,
+S3 repository prefixes are purged, then foreign keys on deleted catalog rows are
+cleared and the destination is removed. A purge failure leaves the destination
+listed as `deleting` with `last_error` so the operator can retry instead of
+silently orphaning data.
+
+Development preview (`pnpm dev:docker`) starts a TLS MinIO at
+`https://minio:9000`. Register it as a platform destination with path-style
+access, private-network allowed, bucket `kiln-backups`, region `us-east-1`,
+access key `kiln`, and secret `kilnminiodevpassword`. Hearth trusts the
+generated certificate through `NODE_EXTRA_CA_CERTS`; Relay restic uses
+`RESTIC_CACERT`.
 
 Ceph RGW is already covered by the S3-compatible adapter. CephFS/RBD snapshots
 are infrastructure-specific consistency sources, not a portable backup format,
@@ -275,6 +343,10 @@ and should be an optional Relay snapshot adapter rather than the default.
    browser validation.
 8. `feat/backup-cli`: list/create/status/download/restore/delete/storage CLI,
    help, README, and synchronized CLI skill documentation.
+9. `feat/backup-restic`: incremental restic snapshots as the instance default,
+   export-for-download, forget/prune split, and the full-archive escape hatch.
+10. `feat/backup-restic-s3`: incremental restic repositories on S3-compatible
+    destinations, Relay CONNECT proxy, and destination lifecycle purge.
 
 Each layer receives targeted deterministic tests, full typecheck/lint, and a
 T3 Preview end-to-end pass before its ready-for-review PR is opened. Runtime

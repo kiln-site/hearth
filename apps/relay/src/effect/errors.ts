@@ -114,6 +114,7 @@ export class RelayBackupError extends Schema.TaggedErrorClass<RelayBackupError>(
     code: Schema.String,
     operation: Schema.String,
     reason: Schema.String,
+    exitCode: Schema.optional(Schema.Number),
     cause: Schema.optional(Schema.Defect()),
   }
 ) {

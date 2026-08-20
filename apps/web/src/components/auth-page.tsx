@@ -37,6 +37,7 @@ export function AuthPage({
   emailDeliveryEnabled = false,
   forgotPassword,
   initialEmail,
+  lockedEmail,
   setupRequired = false,
   signupEnabled = false,
   startWithSignup,
@@ -47,6 +48,7 @@ export function AuthPage({
   emailDeliveryEnabled?: boolean
   forgotPassword?: boolean
   initialEmail?: string
+  lockedEmail?: string
   setupRequired?: boolean
   signupEnabled?: boolean
   startWithSignup?: boolean
@@ -82,10 +84,16 @@ export function AuthPage({
       .trim()
       .toLowerCase()
     const password = String(form.get("password") ?? "")
+    const invitedEmail = lockedEmail?.trim().toLowerCase()
 
     await Effect.runPromise(
       Effect.tryPromise({
         try: async () => {
+          if (invitedEmail && email !== invitedEmail) {
+            throw new Error(
+              "This invitation is only valid for its original email."
+            )
+          }
           if (mode === "forgot-password") {
             const result = await authClient.emailOtp.requestPasswordReset({
               email,
@@ -390,17 +398,18 @@ export function AuthPage({
         {verification ? (
           <VerificationPanel
             deliveryEnabled={emailDeliveryEnabled}
+            emailLocked={Boolean(lockedEmail)}
             feedback={verificationFeedback}
             pending={pending}
             state={verification}
             onBack={() => {
               setVerification(null)
               setVerificationFeedback(null)
-              setMode("sign-in")
+              setMode(lockedEmail && startWithSignup ? "sign-up" : "sign-in")
             }}
             onChange={(email) =>
               setVerification((current) =>
-                current ? { ...current, email } : null
+                current && !lockedEmail ? { ...current, email } : current
               )
             }
             onResend={() => void resendVerificationCode()}
@@ -422,7 +431,11 @@ export function AuthPage({
           />
         ) : (
           <>
-            <AuthHeading mode={mode} signupEnabled={signupEnabled} />
+            <AuthHeading
+              lockedEmail={lockedEmail}
+              mode={mode}
+              signupEnabled={signupEnabled}
+            />
             {mode === "setup" ? (
               <div className="mb-5 rounded-lg border border-primary/20 bg-primary/6 px-3 py-2.5 text-xs leading-5 text-muted-foreground">
                 No users exist yet. This account becomes the platform
@@ -449,10 +462,11 @@ export function AuthPage({
                   type="email"
                   autoComplete={mode === "sign-in" ? "email webauthn" : "email"}
                   placeholder="you@example.com"
-                  defaultValue={initialEmail}
+                  defaultValue={lockedEmail ?? initialEmail}
+                  readOnly={Boolean(lockedEmail)}
                   required
-                  autoFocus
-                  className="h-11 bg-card/60"
+                  autoFocus={!lockedEmail}
+                  className="h-11 bg-card/60 read-only:bg-muted/35 read-only:text-foreground/85"
                 />
               </Field>
               {mode !== "forgot-password" ? (
@@ -488,6 +502,7 @@ export function AuthPage({
                     }
                     placeholder="••••••••••••"
                     required
+                    autoFocus={Boolean(lockedEmail)}
                     className="h-11 bg-card/60 font-mono"
                   />
                 </Field>
@@ -546,7 +561,13 @@ export function AuthPage({
 
             {mode !== "setup" ? (
               <p className="mt-5 text-center text-xs text-muted-foreground">
-                {mode === "sign-in" && signupEnabled ? (
+                {mode === "forgot-password" ? (
+                  <button type="button" onClick={() => setMode("sign-in")}>
+                    Back to sign in
+                  </button>
+                ) : lockedEmail ? (
+                  <>This invitation is for {lockedEmail}.</>
+                ) : mode === "sign-in" && signupEnabled ? (
                   <button
                     type="button"
                     className="font-medium text-foreground underline decoration-border underline-offset-4"
@@ -595,9 +616,11 @@ export function AuthPage({
 }
 
 function AuthHeading({
+  lockedEmail,
   mode,
   signupEnabled,
 }: {
+  lockedEmail?: string
   mode: AuthMode
   signupEnabled: boolean
 }) {
@@ -608,7 +631,9 @@ function AuthHeading({
         {mode === "setup"
           ? "Set up Kiln"
           : mode === "sign-in"
-            ? "Welcome to Kiln"
+            ? lockedEmail
+              ? "Sign in to continue"
+              : "Welcome to Kiln"
             : mode === "sign-up"
               ? "Create your Kiln account"
               : "Reset your password"}
@@ -617,9 +642,11 @@ function AuthHeading({
         {mode === "setup"
           ? "Create the first operator account."
           : mode === "sign-in"
-            ? signupEnabled
-              ? "Sign in or create a new account."
-              : "Sign in to your control plane."
+            ? lockedEmail
+              ? "Sign in with the email this invitation was sent to."
+              : signupEnabled
+                ? "Sign in or create a new account."
+                : "Sign in to your control plane."
             : mode === "sign-up"
               ? "Use the email address tied to your invitation."
               : "We’ll send a six-digit recovery code."}
@@ -630,6 +657,7 @@ function AuthHeading({
 
 function VerificationPanel({
   deliveryEnabled,
+  emailLocked = false,
   feedback,
   pending,
   state,
@@ -639,6 +667,7 @@ function VerificationPanel({
   onSubmit,
 }: {
   deliveryEnabled: boolean
+  emailLocked?: boolean
   feedback: Feedback | null
   pending: string | null
   state: VerificationState
@@ -647,7 +676,8 @@ function VerificationPanel({
   onResend: () => void
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void
 }) {
-  const changed = state.email.trim().toLowerCase() !== state.registeredEmail
+  const changed =
+    !emailLocked && state.email.trim().toLowerCase() !== state.registeredEmail
   return (
     <div>
       <StateHeading
@@ -656,7 +686,9 @@ function VerificationPanel({
         title="Confirm your email"
         description={
           deliveryEnabled
-            ? "Enter the six-digit code we sent. You can correct the address before requesting another."
+            ? emailLocked
+              ? "Enter the six-digit code we sent to your invited address."
+              : "Enter the six-digit code we sent. You can correct the address before requesting another."
             : "Enter the six-digit code printed in the Hearth container logs."
         }
       />
@@ -669,7 +701,8 @@ function VerificationPanel({
             value={state.email}
             onChange={(event) => onChange(event.target.value)}
             required
-            className="h-11 bg-card/60"
+            readOnly={emailLocked}
+            className="h-11 bg-card/60 read-only:bg-muted/35 read-only:text-foreground/85"
           />
           <span className="text-[0.625rem] leading-4 text-muted-foreground">
             Codes expire in 10 minutes · pending accounts expire after 24 hours
@@ -726,7 +759,7 @@ function VerificationPanel({
         className="mt-5 text-xs text-muted-foreground hover:text-foreground"
         onClick={onBack}
       >
-        Back to sign in
+        {emailLocked ? "Back" : "Back to sign in"}
       </button>
     </div>
   )

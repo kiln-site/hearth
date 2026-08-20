@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import { describe, expect, it } from "vite-plus/test"
 
 import {
+  cliPlatformRole,
   cliRelaySubject,
   requireCliWrite,
   type CliPrincipal,
@@ -44,5 +45,10 @@ describe("CLI access enforcement", () => {
     expect(cliRelaySubject(principal)).toBe(
       "cli/12345678-1234-4123-8123-123456789abc/user-123"
     )
+  })
+
+  it("preserves Bring Your Own Relays authorization", () => {
+    expect(cliPlatformRole("relay_creator")).toBe("relay_creator")
+    expect(cliPlatformRole("unexpected-role")).toBe("user")
   })
 })

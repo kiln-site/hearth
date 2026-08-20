@@ -1,11 +1,12 @@
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { Effect, Result } from "effect"
+import { Effect } from "effect"
 import { CircleAlert, HardDrive, LoaderCircle, Rocket } from "lucide-react"
 import {
   DEFAULT_INSTANCE_DISK_LIMIT_BYTES,
   type Brick,
+  type BrickVariable,
   type BrickVariableValue,
 } from "@workspace/contracts"
 
@@ -16,14 +17,29 @@ import {
   DialogTitle,
 } from "@workspace/ui/components/dialog"
 import { Input } from "@workspace/ui/components/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@workspace/ui/components/select"
 
 import {
   BrickCatalogBrowser,
   type BrickSelection,
 } from "@/components/brick-selector"
 import {
+  MinecraftJavaVersionFields,
+  javaVersionDefinition,
+} from "@/components/minecraft-java-version-fields"
+import {
   defaultBrickInstanceName,
   defaultBrickVariables,
+  missingRequiredBrickVersion,
+  recommendedSupportedJavaVersion,
+  stringVariableAllows,
+  supportedJavaVersions,
   unavailableMinecraftJavaVersion,
   withRecommendedMinecraftJava,
 } from "@/lib/brick-variables"
@@ -54,6 +70,7 @@ export interface AddServerDialogStore {
 
 const closedState: AddServerDialogState = { kind: "closed" }
 const GIBIBYTE_BYTES = 1024 ** 3
+const NO_RELAY_OPTION_VALUE = "__no-relay-option__"
 
 export function createAddServerDialogStore(): AddServerDialogStore {
   let state = closedState
@@ -125,7 +142,7 @@ const AddServerDialog = React.memo(function AddServerDialog({
                 </p>
                 <p className="mt-1 text-[0.6875rem] text-muted-foreground">
                   {catalogQuery.error?.message ??
-                    "Connect a Relay to load official Bricks."}
+                    "Connect a Relay to load verified Bricks."}
                 </p>
               </div>
             )}
@@ -305,9 +322,37 @@ const AddServerConfiguration = React.memo(function AddServerConfiguration({
       return
     }
     const submittedVersion = formData.get("version")
+    const submittedJavaVersion = formData.get("java_version")
+    if (selection.kind === "catalog") {
+      const versionDefinition = selection.brick.variables.version
+      if (missingRequiredBrickVersion(versionDefinition, submittedVersion)) {
+        setFailure({
+          selectionIdentity,
+          message: "Select a Minecraft version",
+        })
+        return
+      }
+      const version =
+        typeof submittedVersion === "string" ? submittedVersion.trim() : ""
+      if (
+        version &&
+        versionDefinition &&
+        !stringVariableAllows(versionDefinition, version)
+      ) {
+        setFailure({
+          selectionIdentity,
+          message: "Enter a valid Minecraft version",
+        })
+        return
+      }
+    }
     const configured =
       selection.kind === "catalog"
-        ? catalogVariablesForVersion(selection.brick, submittedVersion)
+        ? catalogVariablesForVersion(
+            selection.brick,
+            submittedVersion,
+            submittedJavaVersion
+          )
         : { unavailableJavaVersion: null, variables: {}, version: null }
     if (configured.unavailableJavaVersion && configured.version) {
       setFailure({
@@ -379,38 +424,12 @@ const AddServerConfiguration = React.memo(function AddServerConfiguration({
         />
       </label>
       {versionDefinition ? (
-        <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
-          <span className="flex items-center justify-between gap-3">
-            <span>{versionDefinition.label}</span>
-            {versionDefinition.default === undefined ? null : (
-              <span className="font-mono text-[0.5625rem] font-normal tracking-[0.06em] text-muted-foreground/60 uppercase">
-                {String(versionDefinition.default)} default
-              </span>
-            )}
-          </span>
-          <Input
-            key={`${selectionIdentity}:version`}
-            name="version"
-            defaultValue={
-              versionDefinition.default === undefined
-                ? ""
-                : String(versionDefinition.default)
-            }
-            placeholder="Enter a version"
-            pattern={versionDefinition.rules?.pattern}
-            minLength={versionDefinition.rules?.minLength}
-            maxLength={versionDefinition.rules?.maxLength}
-            disabled={pending}
-            className="font-mono tabular-nums"
-            required={
-              versionDefinition.required &&
-              versionDefinition.default === undefined
-            }
-          />
-          <span className="block text-[0.5625rem] leading-relaxed font-normal text-muted-foreground/65">
-            {versionDefinition.description}
-          </span>
-        </label>
+        <MinecraftVersionField
+          key={`${selectionIdentity}:version`}
+          definition={versionDefinition}
+          disabled={pending}
+          selection={selection}
+        />
       ) : null}
       <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
         <span className="flex items-center justify-between gap-3">
@@ -435,44 +454,59 @@ const AddServerConfiguration = React.memo(function AddServerConfiguration({
             GiB
           </span>
         </span>
-        <span className="block text-[0.5625rem] leading-relaxed font-normal text-muted-foreground/65">
-          Counts server files only; backups remain outside this allocation.
-        </span>
       </label>
       <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
         <span>Relay</span>
-        <select
+        <Select
           value={relayId}
-          onChange={(event) => onRelayIdChange(event.target.value)}
+          onValueChange={(value) => {
+            if (value !== NO_RELAY_OPTION_VALUE) onRelayIdChange(value)
+          }}
           disabled={pending}
-          className="h-8 w-full rounded-md border border-input bg-input/18 px-2.5 text-sm transition-[border-color,background-color,box-shadow] duration-150 outline-none hover:bg-input/24 focus-visible:border-ring/75 focus-visible:ring-2 focus-visible:ring-ring/35 disabled:cursor-not-allowed disabled:opacity-50"
           required
         >
-          {relays.length === 0 ? (
-            <option value="">No Relays available</option>
-          ) : (
-            <>
-              {compatibleRelays.length === 0 ? (
-                <option value="">No compatible Relays</option>
-              ) : null}
-              {relays.map((relay) => {
-                const compatible = relaySupportsSelection(relay, selection)
-                return (
-                  <option
-                    key={relay.id}
-                    value={relay.id}
-                    disabled={!compatible}
-                  >
-                    {relay.name} - {relayDisplayHost(relay)}
-                    {compatible
-                      ? ""
-                      : ` — incompatible (${displayArchitecture(relay.nodeArch)})`}
-                  </option>
-                )
-              })}
-            </>
-          )}
-        </select>
+          <SelectTrigger className="h-8 w-full [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:flex-1 [&_[data-slot=select-value]]:overflow-hidden [&_[data-slot=select-value]]:text-left [&_[data-slot=select-value]]:text-ellipsis [&_[data-slot=select-value]]:whitespace-nowrap">
+            <SelectValue
+              placeholder={
+                relays.length === 0
+                  ? "No Relays available"
+                  : compatibleRelays.length === 0
+                    ? "No compatible Relays"
+                    : "Select a Relay"
+              }
+            />
+          </SelectTrigger>
+          <SelectContent>
+            {relays.length === 0 ? (
+              <SelectItem value={NO_RELAY_OPTION_VALUE} disabled>
+                No Relays available
+              </SelectItem>
+            ) : (
+              <>
+                {compatibleRelays.length === 0 ? (
+                  <SelectItem value={NO_RELAY_OPTION_VALUE} disabled>
+                    No compatible Relays
+                  </SelectItem>
+                ) : null}
+                {relays.map((relay) => {
+                  const compatible = relaySupportsSelection(relay, selection)
+                  return (
+                    <SelectItem
+                      key={relay.id}
+                      value={relay.id}
+                      disabled={!compatible}
+                    >
+                      {relay.name}
+                      {compatible
+                        ? ""
+                        : ` — incompatible (${displayArchitecture(relay.nodeArch)})`}
+                    </SelectItem>
+                  )
+                })}
+              </>
+            )}
+          </SelectContent>
+        </Select>
       </label>
 
       {error ? (
@@ -541,7 +575,8 @@ function diskLimitBytesFromFormValue(
 
 function catalogVariablesForVersion(
   brick: Brick,
-  value: FormDataEntryValue | null
+  value: FormDataEntryValue | null,
+  javaValue: FormDataEntryValue | null
 ): {
   unavailableJavaVersion: string | null
   variables: Record<string, BrickVariableValue>
@@ -549,33 +584,30 @@ function catalogVariablesForVersion(
 } {
   const variables = defaultBrickVariables(brick)
   const version = typeof value === "string" ? value.trim() : ""
+  const javaVersion = typeof javaValue === "string" ? javaValue.trim() : ""
   if (!version) {
     return { unavailableJavaVersion: null, variables, version: null }
   }
   variables.version = version
+  if (javaVersion) variables.java_version = javaVersion
   const unavailableJavaVersion = unavailableMinecraftJavaVersion(
     brick.metadata.id,
     brick.variables,
-    version
+    version,
+    javaVersion || undefined
   )
   return {
     unavailableJavaVersion,
-    variables: unavailableJavaVersion
-      ? variables
-      : withRecommendedMinecraftJava(
-          brick.metadata.id,
-          brick.variables,
-          variables
-        ),
+    variables:
+      javaVersion || unavailableJavaVersion
+        ? variables
+        : withRecommendedMinecraftJava(
+            brick.metadata.id,
+            brick.variables,
+            variables
+          ),
     version,
   }
-}
-
-function relayDisplayHost(relay: PersistedRelay): string {
-  return Result.getOrElse(
-    Result.try(() => new URL(relay.browserOrigin).hostname || relay.hostname),
-    () => relay.hostname
-  )
 }
 
 function relaySupportsSelection(
@@ -590,6 +622,54 @@ function relaySupportsSelection(
     (architecture) => normalizeArchitecture(architecture) === relayArchitecture
   )
 }
+
+const MinecraftVersionField = React.memo(function MinecraftVersionField({
+  definition,
+  disabled,
+  selection,
+}: {
+  definition: BrickVariable
+  disabled: boolean
+  selection: BrickSelection | null
+}) {
+  const brick = selection?.kind === "catalog" ? selection.brick : null
+  const defaultVersion =
+    definition.default === undefined ? "" : String(definition.default)
+  const javaDefinition = brick ? javaVersionDefinition(brick) : null
+  const javaVersions = React.useMemo(
+    () => (javaDefinition ? supportedJavaVersions(javaDefinition) : []),
+    [javaDefinition]
+  )
+  const [version, setVersion] = React.useState(defaultVersion)
+  const recommendedJava =
+    brick && javaDefinition
+      ? recommendedSupportedJavaVersion(
+          brick.metadata.id,
+          javaDefinition,
+          version
+        )
+      : null
+  const [javaVersion, setJavaVersion] = React.useState(
+    recommendedJava ?? javaVersions.at(-1) ?? ""
+  )
+
+  if (!brick) return null
+
+  return (
+    <MinecraftJavaVersionFields
+      brickId={brick.metadata.id}
+      disabled={disabled}
+      environment={brick.runtime.environment}
+      javaInputName="java_version"
+      javaVersion={javaVersion}
+      onJavaVersionChange={setJavaVersion}
+      onVersionChange={setVersion}
+      variableDefinitions={brick.variables}
+      version={version}
+      versionInputName="version"
+    />
+  )
+})
 
 function minecraftVersionDefinition(selection: BrickSelection | null) {
   if (

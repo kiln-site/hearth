@@ -171,6 +171,70 @@ describe("Brick recipes", () => {
     )
   })
 
+  it("interpolates java_args into KILN_JAVA_ARGS and rejects managed flags", () => {
+    const javaRecipe = brickRecipeSchema.parse({
+      ...recipe,
+      variables: {
+        ...recipe.variables,
+        java_args: {
+          type: "string",
+          label: "Java arguments",
+          description: "Extra JVM flags.",
+          required: false,
+          default: "-XX:+UseG1GC",
+          rules: {
+            maxLength: 2048,
+            pattern:
+              "^(?!.*(?:^|\\s)(?:@(?!@)\\S+|-Xm[sx]\\S*|-XX:(?:-UseContainerSupport|-UseCGroupMemoryLimitForHeap|InitialHeapSize|MaxHeapSize|SoftMaxHeapSize|MaxRAMPercentage|MinRAMPercentage|InitialRAMPercentage|MaxRAMFraction|InitialRAMFraction|MinRAMFraction|MaxRAM|VMOptionsFile|Flags)(?:=\\S*)?|--nogui)(?:\\s|$)).*$",
+          },
+        },
+      },
+      runtime: {
+        ...recipe.runtime,
+        environment: {
+          ...recipe.runtime.environment,
+          KILN_JAVA_ARGS: "{{ variables.java_args }}",
+        },
+      },
+    })
+
+    expect(resolveBrick(javaRecipe, {}).environment.KILN_JAVA_ARGS).toBe(
+      "-XX:+UseG1GC"
+    )
+    expect(
+      resolveBrick(javaRecipe, { java_args: "-XX:+AlwaysPreTouch" }).environment
+        .KILN_JAVA_ARGS
+    ).toBe("-XX:+AlwaysPreTouch")
+    expect(
+      resolveBrick(javaRecipe, { java_args: "" }).environment.KILN_JAVA_ARGS
+    ).toBe("")
+    expect(() => resolveBrick(javaRecipe, { java_args: "-Xmx2G" })).toThrow(
+      /recipe rule/u
+    )
+    expect(() =>
+      resolveBrick(javaRecipe, { java_args: "-XX:MaxHeapSize=1G" })
+    ).toThrow(/recipe rule/u)
+    expect(() =>
+      resolveBrick(javaRecipe, { java_args: "-XX:+UseG1GC --nogui" })
+    ).toThrow(/recipe rule/u)
+    expect(
+      resolveBrick(javaRecipe, {
+        java_args: '-Dmessage="hello world"',
+      }).environment.KILN_JAVA_ARGS
+    ).toBe('-Dmessage="hello world"')
+    expect(() =>
+      resolveBrick(javaRecipe, { java_args: "@/server/flags.txt" })
+    ).toThrow(/recipe rule/u)
+    expect(() =>
+      resolveBrick(javaRecipe, {
+        java_args: "-XX:VMOptionsFile=/server/flags.txt",
+      })
+    ).toThrow(/recipe rule/u)
+    expect(() =>
+      resolveBrick(javaRecipe, { java_args: "-XX:-UseContainerSupport" })
+    ).toThrow(/recipe rule/u)
+  })
+
   it("rejects expressions because templates are not executable", () => {
     expect(() =>
       interpolateTemplate("{{ variables.version.toString() }}", recipe, {})

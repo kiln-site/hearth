@@ -25,9 +25,9 @@ jobs:
       architectures: '["arm64"]'
       build_args: |
         SOURCE_COMMIT=${{ github.sha }}
-        VITE_SENTRY_DSN=${{ vars.VITE_SENTRY_DSN }}
-        VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE=${{ vars.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE || '0.1' }}
-        VITE_SENTRY_TRACES_SAMPLE_RATE=${{ vars.VITE_SENTRY_TRACES_SAMPLE_RATE || '0.1' }}
+        VITE_SENTRY_DSN=${{ vars.VITE_SENTRY_DSN || 'https://9516d942af12672a1ff5aa7f181f7217@o4511745768226816.ingest.us.sentry.io/4511745775501312' }}
+        VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE=${{ vars.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE || '0.05' }}
+        VITE_SENTRY_TRACES_SAMPLE_RATE=${{ vars.VITE_SENTRY_TRACES_SAMPLE_RATE || '0.05' }}
       tags: |
         type=sha,prefix=sha-
       source_label: https://github.com/kiln-site/hearth
@@ -46,9 +46,9 @@ jobs:
       build_args: |
         SOURCE_COMMIT=${{ github.sha }}
         SENTRY_SOURCEMAPS=prepare
-        VITE_SENTRY_DSN=${{ vars.VITE_SENTRY_DSN }}
-        VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE=${{ vars.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE || '0.1' }}
-        VITE_SENTRY_TRACES_SAMPLE_RATE=${{ vars.VITE_SENTRY_TRACES_SAMPLE_RATE || '0.1' }}
+        VITE_SENTRY_DSN=${{ vars.VITE_SENTRY_DSN || 'https://9516d942af12672a1ff5aa7f181f7217@o4511745768226816.ingest.us.sentry.io/4511745775501312' }}
+        VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE=${{ vars.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE || '0.05' }}
+        VITE_SENTRY_TRACES_SAMPLE_RATE=${{ vars.VITE_SENTRY_TRACES_SAMPLE_RATE || '0.05' }}
       tags: |
         type=sha,prefix=sha-
       source_label: https://github.com/kiln-site/hearth

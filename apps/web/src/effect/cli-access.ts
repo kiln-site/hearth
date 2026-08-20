@@ -15,6 +15,7 @@ import { CliAccessError } from "@/effect/errors"
 import type { AuthenticatedUser } from "@/lib/auth-session"
 import { databaseTable } from "@/lib/database-config"
 import { betterAuthSecrets, cliDefaultAccessDays } from "@/lib/environment"
+import type { PlatformRole } from "@/lib/permissions"
 
 const DEVICE_CODE_TTL_MS = 10 * 60_000
 const DEVICE_POLL_INTERVAL_SECONDS = 3
@@ -75,6 +76,10 @@ export interface CliAuthorizationRequest {
   expiresAt: string
   name: string
   userCode: string
+}
+
+export function cliPlatformRole(role: string | null): PlatformRole {
+  return role === "admin" || role === "relay_creator" ? role : "user"
 }
 
 export const issueCliDeviceCodeEffect = Effect.fn("cli.device.issue")(
@@ -476,7 +481,7 @@ export const authenticateCliTokenEffect = Effect.fn("cli.token.authenticate")(
         id: credential.user_id,
         isDevelopmentBypass: false,
         name: credential.user_name,
-        role: credential.role === "admin" ? "admin" : "user",
+        role: cliPlatformRole(credential.role),
         twoFactorEnabled: Boolean(credential.two_factor_enabled),
       },
     } satisfies CliPrincipal

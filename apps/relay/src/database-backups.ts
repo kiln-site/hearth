@@ -10,7 +10,7 @@ import { Effect, Result } from "effect"
 import {
   backupArtifactFilename,
   type BackupCreateTaskInput,
-  type BackupCreateTaskResult,
+  type BackupArchiveCreateTaskResult,
   type RelayManagedDatabase,
 } from "@workspace/contracts"
 
@@ -31,7 +31,7 @@ export async function createCompressedDatabaseBackup(
   destination: string,
   progress: DatabaseBackupProgress,
   signal: AbortSignal = new AbortController().signal
-): Promise<BackupCreateTaskResult> {
+): Promise<BackupArchiveCreateTaskResult> {
   signal.throwIfAborted()
   const database = await databases.backupTarget(input.target.id)
   const child = spawnDatabaseClient(database, "export")

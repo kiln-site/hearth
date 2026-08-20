@@ -249,10 +249,11 @@ const runCommandEffect = Effect.fn("cli.command")(function* (
       writeLine("No backups found.")
     } else {
       writeTable(
-        ["CREATED", "STATUS", "NAME", "TARGET", "DEST", "SIZE", "ID"],
+        ["CREATED", "STATUS", "MODE", "NAME", "TARGET", "DEST", "SIZE", "ID"],
         result.backups.map((backup) => [
           backup.createdAt,
           cliBackupStatus(backup),
+          backup.backupMode,
           backup.name,
           `${backup.targetKind}:${backup.targetId}`,
           backup.destinations.join("+"),
@@ -269,12 +270,18 @@ const runCommandEffect = Effect.fn("cli.command")(function* (
       .safeParse(rest[0])
     if (!targetKind.success) {
       return yield* invalidUsage(
-        "Usage: kiln backups create <server|database|platform> <reference> [--name <name>] [--storage <default|local|id>]"
+        "Usage: kiln backups create <server|database|platform> <reference> [--name <name>] [--mode full|incremental] [--storage <default|local|id>]"
       )
     }
     const storageId = yield* parseBackupStorageEffect(args.storage)
+    if (args.mode && targetKind.data !== "server") {
+      return yield* invalidUsage(
+        "--mode is only valid when creating a server backup."
+      )
+    }
     const common = {
       name: args.name?.trim() || "CLI backup",
+      ...(args.mode ? { mode: args.mode } : {}),
       ...(storageId === undefined ? {} : { storageId }),
     }
     const body =
@@ -364,12 +371,24 @@ const runCommandEffect = Effect.fn("cli.command")(function* (
   }
   if (group === "backup" && action === "download") {
     const backupId = yield* parseBackupIdEffect(rest[0])
-    const signed = yield* apiJsonEffect(
+    let poll = false
+    let signed = yield* apiJsonEffect(
       session,
       "/api/cli/v1/backup/download",
       cliBackupDownloadResponseSchema,
-      jsonRequest("POST", { backupId })
+      jsonRequest("POST", { backupId, poll })
     )
+    while (signed.status === "preparing") {
+      writeLine("Preparing snapshot export…")
+      yield* Effect.sleep("1 second")
+      poll = true
+      signed = yield* apiJsonEffect(
+        session,
+        "/api/cli/v1/backup/download",
+        cliBackupDownloadResponseSchema,
+        jsonRequest("POST", { backupId, poll })
+      )
+    }
     const localPath = rest[1] || basename(signed.filename)
     const downloaded = yield* downloadBackupEffect({
       localPath,
@@ -1135,6 +1154,7 @@ Commands:
   backups targets                         List resources that can be backed up
   backups list                            List accessible backups
   backups create <type> <reference>       Create a manual backup
+                                          (server default: incremental)
   backup restore <backup-id>              Restore a server or database backup
   backup download <backup-id> [local]     Download a backup
   backup delete <backup-id> --confirm <backup-id>
@@ -1168,6 +1188,8 @@ Options:
                        Set the Brick's java_version variable
       --limit <n>     Limit log, activity, or backup history (1-10000)
       --memory <size> Set the Brick's memory variable, for example 4GiB
+      --mode <full|incremental>
+                       Server backup mode (default incremental)
       --name <name>   Name this CLI credential, server, or backup
       --no-open       Do not open a browser during login
       --no-safety-backup

@@ -1,4 +1,4 @@
-export const platformRoles = ["admin", "user"] as const
+export const platformRoles = ["admin", "relay_creator", "user"] as const
 export type PlatformRole = (typeof platformRoles)[number]
 
 export const platformPermissions = [
@@ -14,6 +14,7 @@ const platformRolePermissions: Record<
   ReadonlySet<PlatformPermission>
 > = {
   admin: new Set(platformPermissions),
+  relay_creator: new Set(),
   user: new Set(),
 }
 

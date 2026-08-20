@@ -36,14 +36,19 @@ RUN vp run relay#build
 
 FROM docker:29.6.2-cli AS docker-cli
 
+FROM restic/restic:0.19.1 AS restic
+
 FROM gcr.io/distroless/nodejs24-debian12 AS runtime
 
 ENV KILN_GIT_REPO=https://github.com/kiln-site/kiln
 ENV NODE_ENV=production
+ENV SENTRY_DSN=https://9516d942af12672a1ff5aa7f181f7217@o4511745768226816.ingest.us.sentry.io/4511745775501312
+ENV SENTRY_TRACES_SAMPLE_RATE=0.05
 WORKDIR /app
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
+COPY --from=restic /usr/bin/restic /usr/bin/restic
 COPY --from=runtime-deps /runtime/node_modules ./node_modules
 COPY apps/relay/package.runtime.json ./package.json
 RUN ["/nodejs/bin/node", "--input-type=module", "-e", "await import('reflect-metadata'); const manifest = await import('./package.json', { with: { type: 'json' } }); await Promise.all(Object.keys(manifest.default.dependencies).map((name) => import(name)))"]
