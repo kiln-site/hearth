@@ -347,8 +347,8 @@ prepare_directory() {
   saved_mode="$(read_env KILN_INSTALL_MODE)"
 
   if [[ "$DRY_RUN" != "true" ]] && docker volume inspect kiln-hearth-mysql >/dev/null 2>&1; then
-    [[ -n "$db_password" && -n "$mysql_root_password" && -n "$auth_secret" && -n "$backup_key" ]] ||
-      die "The existing Kiln MySQL volume has incomplete credentials in $ENV_FILE; refusing to replace them."
+    [[ -n "$db_password" && -n "$mysql_root_password" && -n "$auth_secret" && -n "$backup_key" && -n "$installation_id" ]] ||
+      die "The existing Kiln MySQL volume has incomplete credentials or no KILN_INSTALLATION_ID in $ENV_FILE; refusing to replace its identity or secrets."
   fi
 
   [[ -n "$db_password" ]] || db_password="$(generate_secret)"
@@ -622,13 +622,23 @@ compose() {
     -f "$COMPOSE_FILE" -f "$PROXY_COMPOSE_FILE" "$@"
 }
 
+relay_edge_network_is_owned() {
+  local kind owner
+  kind="$(
+    docker network inspect kiln-relay-edge \
+      --format '{{index .Labels "kiln.relay.network"}}' 2>/dev/null
+  )" || return 1
+  owner="$(
+    docker network inspect kiln-relay-edge \
+      --format '{{index .Labels "kiln.relay.owner"}}' 2>/dev/null
+  )" || return 1
+  [[ "$kind" == "relay-edge" && -z "$owner" ]]
+}
+
 ensure_relay_edge_network() {
   [[ "$PROXY" == "traefik" ]] || return 0
   if docker network inspect kiln-relay-edge >/dev/null 2>&1; then
-    local kind owner
-    kind="$(docker network inspect kiln-relay-edge --format '{{index .Labels "kiln.relay.network"}}')"
-    owner="$(docker network inspect kiln-relay-edge --format '{{index .Labels "kiln.relay.owner"}}')"
-    [[ "$kind" == "relay-edge" && -z "$owner" ]] ||
+    relay_edge_network_is_owned ||
       die "Docker network kiln-relay-edge exists but is not owned by this Kiln Relay."
     return
   fi
@@ -649,6 +659,8 @@ update_persisted_proxy_settings() {
 detach_relay_edge_dependents() {
   [[ "$PROXY" != "traefik" ]] || return 0
   docker network inspect kiln-relay-edge >/dev/null 2>&1 || return 0
+  relay_edge_network_is_owned ||
+    die "Docker network kiln-relay-edge is not owned by this Kiln Relay; refusing to disconnect its containers."
   local container
   while IFS= read -r container; do
     [[ -n "$container" ]] || continue
@@ -737,6 +749,16 @@ process.exit(current ? 0 : 1)
 ' -- "$client_id" "https://${HEARTH_HOST}" "$started_at" >/dev/null 2>&1
 }
 
+manual_pairing_recovery() {
+  log "Manual Relay pairing is required."
+  printf '1. Open https://%s/infra/relays and choose Add Relay.\n' "$HEARTH_HOST" >&2
+  printf '2. Paste the 15-minute pairing URI printed below and confirm the Relay identity.\n\n' >&2
+  compose exec -T relay kiln-relay pair create ||
+    die "Could not create a manual Relay pairing invitation. Check the Relay logs and retry."
+  printf '\n3. After Hearth accepts the URI, rerun this installer to verify the connection.\n' >&2
+  die "Automatic pairing could not safely replace or bypass an existing Hearth client. Complete the manual pairing steps above."
+}
+
 wait_for_automatic_pairing() {
   local started_at="$1"
   local deadline=$((SECONDS + 60))
@@ -753,7 +775,7 @@ wait_for_automatic_pairing() {
     relay_has_current_hearth_client "$started_at" && return
     sleep 2
   done
-  die "Hearth is healthy but its current client identity did not connect to Relay. Rerun the installer to retry."
+  manual_pairing_recovery
 }
 
 check_dns() {

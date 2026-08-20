@@ -1,5 +1,10 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, readFileSync, appendFileSync } from "node:fs"
+import {
+  appendFileSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { spawnSync } from "node:child_process"
@@ -7,6 +12,18 @@ import test from "node:test"
 
 const root = resolve(import.meta.dirname, "..")
 const installer = join(root, "apps/web/public/install.sh")
+
+function sourceableInstaller() {
+  const directory = mkdtempSync(join(tmpdir(), "kiln-installer-library-"))
+  const path = join(directory, "install.sh")
+  const source = readFileSync(installer, "utf8")
+  const library = source.replace(/\nmain "\$@"\n?$/u, "\n")
+  assert.notEqual(library, source, "installer main call was not removed")
+  writeFileSync(path, library)
+  return path
+}
+
+const installerLibrary = sourceableInstaller()
 
 function runInstaller(directory, mode, environment = {}) {
   return spawnSync("bash", [installer, mode], {
@@ -189,6 +206,94 @@ test("accepts public-ip as the Relay game host", () => {
   assert.equal(dotenv(directory).KILN_RELAY_GAME_HOST, "public-ip")
 })
 
+test("does not disconnect containers from a foreign Relay edge network", () => {
+  const result = spawnSync(
+    "bash",
+    [
+      "-c",
+      `source "$1"
+PROXY=coolify
+docker() {
+  if [[ "$1 $2" == "network inspect" ]]; then
+    if [[ "$*" == *kiln.relay.network* ]]; then
+      printf foreign
+    elif [[ "$*" == *kiln.relay.owner* ]]; then
+      printf ''
+    fi
+    return 0
+  fi
+  if [[ "$1 $2 $3" == "network disconnect -f" ]]; then
+    printf disconnected
+    return 0
+  fi
+  return 1
+}
+detach_relay_edge_dependents`,
+      "_",
+      installerLibrary,
+    ],
+    { encoding: "utf8" }
+  )
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /not owned.*refusing to disconnect/u)
+  assert.doesNotMatch(result.stdout, /disconnected/u)
+})
+
+test("requires an installation ID for an existing MySQL volume", () => {
+  const directory = mkdtempSync(join(tmpdir(), "kiln-installer-id-guard-"))
+  assert.equal(runInstaller(directory, "kiln").status, 0)
+  const environmentPath = join(directory, ".env")
+  writeFileSync(
+    environmentPath,
+    readFileSync(environmentPath, "utf8").replace(
+      /^KILN_INSTALLATION_ID=.*\n/mu,
+      ""
+    )
+  )
+  const result = spawnSync(
+    "bash",
+    [
+      "-c",
+      `source "$1"
+DRY_RUN=false
+docker() { [[ "$1 $2" == "volume inspect" ]]; }
+prepare_directory`,
+      "_",
+      installerLibrary,
+    ],
+    {
+      encoding: "utf8",
+      env: { ...process.env, KILN_INSTALL_DIR: directory },
+    }
+  )
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /no KILN_INSTALLATION_ID/u)
+  assert.doesNotMatch(
+    readFileSync(environmentPath, "utf8"),
+    /^KILN_INSTALLATION_ID=/mu
+  )
+})
+
+test("prints an actionable manual pairing recovery", () => {
+  const result = spawnSync(
+    "bash",
+    [
+      "-c",
+      `source "$1"
+HEARTH_HOST=hearth.example.com
+compose() { printf 'kiln-relay://pair/v1?payload=test-value\\n'; }
+manual_pairing_recovery`,
+      "_",
+      installerLibrary,
+    ],
+    { encoding: "utf8" }
+  )
+  assert.notEqual(result.status, 0)
+  assert.match(result.stdout, /kiln-relay:\/\/pair\/v1/u)
+  assert.match(result.stderr, /https:\/\/hearth\.example\.com\/infra\/relays/u)
+  assert.match(result.stderr, /After Hearth accepts the URI, rerun/u)
+})
+
 test("rejects unsupported modes", () => {
   const directory = mkdtempSync(join(tmpdir(), "kiln-installer-invalid-"))
   const mode = runInstaller(directory, "everything")
@@ -212,6 +317,14 @@ test("installer script parses and contains no destructive volume operations", ()
   assert.match(source, /docker ps --filter "publish=\$\{port\}"/u)
   assert.match(
     source,
+    /relay_edge_network_is_owned\(\) \{[\s\S]*?kiln\.relay\.network[\s\S]*?kiln\.relay\.owner/u
+  )
+  assert.match(
+    source,
+    /detach_relay_edge_dependents\(\) \{[\s\S]*?relay_edge_network_is_owned \|\|[\s\S]*?docker network disconnect -f kiln-relay-edge/u
+  )
+  assert.match(
+    source,
     /update_persisted_proxy_settings\(\) \{[\s\S]*?docker volume inspect[\s\S]*?docker run --rm/u
   )
   assert.doesNotMatch(source, /mode_changed/u)
@@ -220,4 +333,13 @@ test("installer script parses and contains no destructive volume operations", ()
   assert.match(source, /client\.id === clientId/u)
   assert.match(source, /client\.lastSeenAt >= startedAt/u)
   assert.match(source, /' -- "\$client_id" "https:\/\/\$\{HEARTH_HOST\}"/u)
+  assert.match(
+    source,
+    /manual_pairing_recovery\(\) \{[\s\S]*?\/infra\/relays[\s\S]*?kiln-relay pair create/u
+  )
+  assert.doesNotMatch(source, /Rerun the installer to retry/u)
+  assert.match(
+    source,
+    /-n "\$backup_key" && -n "\$installation_id"[\s\S]*?refusing to replace its identity or secrets/u
+  )
 })

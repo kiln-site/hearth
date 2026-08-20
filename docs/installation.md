@@ -60,6 +60,13 @@ Switching an existing installation to `relay` stops Hearth, MySQL, and Valkey
 without deleting their containers or volumes. A later `kiln` or `hearth` run
 starts them again with the saved data.
 
+Kiln links a colocated Relay automatically when it can prove the current
+Hearth client identity. If restored or pre-existing state makes automatic
+pairing unsafe, the installer prints a fresh 15-minute pairing URI instead of
+revoking an existing client. Open Hearth's **Infrastructure → Relays** page,
+choose **Add Relay**, paste the URI, and rerun the installer to verify the new
+authenticated connection.
+
 Hearth and Relay use HTTPS on ports 80 and 443. Full Kiln and standalone Relay
 hosts should also allow TCP 2022 and the configured game-server range (TCP/UDP
 30000-39999 by default). MySQL, Valkey, Hearth port 3000, and Relay port 4100
