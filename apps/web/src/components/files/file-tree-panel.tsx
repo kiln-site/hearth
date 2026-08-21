@@ -1156,7 +1156,7 @@ export function FileTreePanel({
                 type="button"
                 role="menuitem"
                 disabled={!actions.canWrite}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-destructive/10 focus-visible:bg-destructive/10 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-destructive transition-colors hover:bg-destructive/10 focus-visible:bg-destructive/10 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
                 onClick={() => {
                   context.close({ restoreFocus: false })
                   actions.request("delete", [item.path])

@@ -122,6 +122,9 @@ export class FilesystemDriver {
         paths,
         sizes,
         total: paths.length,
+        // Kept for wire compatibility with older CLI builds that require the
+        // field when parsing tree responses.
+        truncated: false,
       } satisfies RelayFileTree
     }).pipe(Effect.withSpan("relay.files.tree"))
   }
