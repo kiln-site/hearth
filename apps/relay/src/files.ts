@@ -45,8 +45,6 @@ import { RelayFilesystemError } from "./effect/errors.js"
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024
 const MAX_LOG_SHARE_BYTES = 10 * 1024 * 1024
-const MAX_TREE_ITEMS = 5_000
-const MAX_TREE_DEPTH = 10
 const MAX_ARCHIVE_ITEMS = 50_000
 export const MAX_TRANSFER_BYTES = 20 * 1024 * 1024 * 1024
 const gunzipAsync = promisify(gunzip)
@@ -64,18 +62,11 @@ export class FilesystemDriver {
       const modifiedAt: Record<string, number> = {}
       const paths: Array<string> = []
       const sizes: Record<string, number> = {}
-      let truncated = false
 
       const visit = (
-        directory: string,
-        depth: number
+        directory: string
       ): Effect.Effect<number, RelayFilesystemError> =>
         Effect.gen(function* () {
-          if (paths.length >= MAX_TREE_ITEMS || depth > MAX_TREE_DEPTH) {
-            truncated = true
-            return 0
-          }
-
           const entries = yield* filesystemOperation(
             "tree.readDirectory",
             async () => {
@@ -104,17 +95,13 @@ export class FilesystemDriver {
 
           let directorySize = 0
           for (const [index, entry] of entries.entries()) {
-            if (paths.length >= MAX_TREE_ITEMS) {
-              truncated = true
-              break
-            }
             const absolute = join(directory, entry.name)
             const path = relative(root, absolute).split(sep).join("/")
             if (entry.isDirectory()) {
               const directoryPath = `${path}/`
               paths.push(directoryPath)
               modifiedAt[directoryPath] = metadata[index]?.mtimeMs ?? 0
-              const size = yield* visit(absolute, depth + 1)
+              const size = yield* visit(absolute)
               sizes[directoryPath] = size
               directorySize += size
             } else if (entry.isFile() || entry.isSymbolicLink()) {
@@ -128,14 +115,13 @@ export class FilesystemDriver {
           return directorySize
         })
 
-      sizes[""] = yield* visit(root, 0)
+      sizes[""] = yield* visit(root)
       return {
         instanceId: instance.id,
         modifiedAt,
         paths,
         sizes,
         total: paths.length,
-        truncated,
       } satisfies RelayFileTree
     }).pipe(Effect.withSpan("relay.files.tree"))
   }

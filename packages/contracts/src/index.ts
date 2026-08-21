@@ -1041,7 +1041,6 @@ export const relayFileTreeSchema = z.object({
   paths: z.array(z.string()),
   sizes: z.record(z.string(), z.number().int().nonnegative()),
   total: z.number().int().nonnegative(),
-  truncated: z.boolean(),
 })
 
 export const relayFileContentSchema = z.object({
