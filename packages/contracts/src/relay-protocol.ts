@@ -11,6 +11,10 @@ export const relayBrowserConsoleProtocols = [
   relayBrowserProtocol,
 ] as const
 export const relayBrowserMaxFrameBytes = 256 * 1024
+// Shared cap for relay<->hearth control frames. Sized so large file-tree
+// responses (roughly 75,000-100,000 typical paths) fit in one message while
+// keeping a memory-safety boundary on both ends.
+export const relayControlMaxFrameBytes = 16 * 1024 * 1024
 export const relayPairingProtocol = "kiln-relay-pair.v1" as const
 export const relayAuthenticationWindowMs = 10_000
 

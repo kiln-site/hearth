@@ -727,7 +727,180 @@ describe("Relay control socket", () => {
       )
     }
   })
+
+  it("delivers multi-megabyte tree responses and reports oversized ones without closing the socket", async () => {
+    const relayKeys = generateKeyPairSync("ed25519", {
+      privateKeyEncoding: { format: "pem", type: "pkcs8" },
+      publicKeyEncoding: { format: "pem", type: "spki" },
+    })
+    const hearthKeys = generateKeyPairSync("ed25519", {
+      privateKeyEncoding: { format: "pem", type: "pkcs8" },
+      publicKeyEncoding: { format: "pem", type: "spki" },
+    })
+    const client: RelayClientRecord = {
+      actions: ["relay.read"],
+      createdAt: Date.now(),
+      id: fingerprint(hearthKeys.publicKey),
+      invitationId: "test-invitation",
+      lastAddress: null,
+      lastSeenAt: null,
+      name: "Test Hearth",
+      origins: ["https://hearth.test"],
+      publicKey: hearthKeys.publicKey,
+      role: "full_access",
+      sourceCidrs: [],
+    }
+    const state = RelayStateStore.of({
+      appendAudit: () => Effect.void,
+      cancelBackupTask: () => Effect.succeed(false),
+      createInvitation: () => Effect.void,
+      findActiveInvitation: () => Effect.succeed(null),
+      findClientById: (clientId) =>
+        Effect.succeed(clientId === client.id ? client : null),
+      findClientByPublicKey: () => Effect.succeed(null),
+      findInvitationById: () => Effect.succeed(null),
+      getMetadata: () => Effect.succeed(null),
+      enqueueBackupTask: () => Effect.die("not implemented"),
+      claimNextBackupTask: () => Effect.succeed(null),
+      getBackupTask: () => Effect.succeed(null),
+      listBackupTasks: () => Effect.succeed([]),
+      updateBackupTaskProgress: () => Effect.succeed(false),
+      updateBackupTaskOperationProgress: () => Effect.succeed(false),
+      completeBackupTask: () => Effect.succeed(false),
+      failBackupTask: () => Effect.succeed(false),
+      requeueInterruptedBackupTasks: () => Effect.succeed(0),
+      getPendingPrimaryPort: () => Effect.succeed(null),
+      getRuntimeRecovery: () => Effect.succeed(null),
+      listClients: () => Effect.succeed([client]),
+      listAudits: () => Effect.succeed([]),
+      listInstanceNames: () => Effect.succeed([]),
+      listPendingPrimaryPorts: () => Effect.succeed([]),
+      listRuntimeRecoveries: () => Effect.succeed([]),
+      listInstanceRoutes: () => Effect.succeed([]),
+      listInvitations: () => Effect.succeed([]),
+      listWebRoutes: () => Effect.succeed([]),
+      pairClient: () => Effect.void,
+      revokeClient: () => Effect.succeed(false),
+      revokeInvitation: () => Effect.succeed(false),
+      replaceInstanceRoutes: () => Effect.void,
+      deleteInstanceName: () => Effect.void,
+      deletePendingPrimaryPort: () => Effect.void,
+      deleteRuntimeRecovery: () => Effect.void,
+      setInstanceName: () => Effect.void,
+      setMetadata: () => Effect.void,
+      setPendingPrimaryPort: () => Effect.void,
+      setRuntimeRecovery: () => Effect.void,
+      touchClient: () => Effect.void,
+      updateClient: () => Effect.succeed(false),
+    })
+    const server = createServer()
+    const control = attachControlSocket({
+      execute: async (request) => treeResponse(
+        (request.payload as { count?: number } | null)?.count ?? 0
+      ),
+      identity: {
+        fingerprint: fingerprint(relayKeys.publicKey),
+        name: "Test Relay",
+        privateKeyPem: relayKeys.privateKey,
+        publicKeyPem: relayKeys.publicKey,
+      },
+      initialSnapshot: async () => ({ instances: [], node: {} }),
+      subscribeSnapshots: () => () => undefined,
+      runEffect: (effect) => Effect.runPromise(effect),
+      server,
+      state,
+    })
+    server.listen(0, "127.0.0.1")
+    await once(server, "listening")
+    const address = server.address()
+    if (!address || typeof address === "string") throw new Error("Missing port")
+
+    const { inbox, socket } = await authenticateTestSocket(
+      address.port,
+      client,
+      hearthKeys.privateKey
+    )
+
+    try {
+      const largeRequestId = randomBytes(12).toString("hex")
+      socket.send(
+        JSON.stringify({
+          deadline: Date.now() + 15_000,
+          id: largeRequestId,
+          operation: "instance.files.list",
+          payload: { count: 10_000, instanceId: "a".repeat(40) },
+          type: "request",
+          v: 1,
+        })
+      )
+      const largeResponse = await inbox.next()
+      expect(largeResponse.type).toBe("response")
+      if (largeResponse.type === "response") {
+        const payload = largeResponse.payload as { paths: Array<string> }
+        expect(payload.paths).toHaveLength(10_000)
+        // Regression guard: this payload is larger than the previous 1 MiB
+        // control frame limit.
+        expect(JSON.stringify(largeResponse).length).toBeGreaterThan(
+          1024 * 1024
+        )
+      }
+
+      const oversizeRequestId = randomBytes(12).toString("hex")
+      socket.send(
+        JSON.stringify({
+          deadline: Date.now() + 15_000,
+          id: oversizeRequestId,
+          operation: "instance.files.list",
+          payload: { count: 250_000, instanceId: "a".repeat(40) },
+          type: "request",
+          v: 1,
+        })
+      )
+      const oversizeFailure = await inbox.next()
+      expect(oversizeFailure.type).toBe("error")
+      if (oversizeFailure.type === "error") {
+        expect(oversizeFailure.code).toBe("response_too_large")
+        expect(oversizeFailure.replyTo).toBe(oversizeRequestId)
+        expect(oversizeFailure.message).toContain("instance.files.list")
+        expect(oversizeFailure.retryable).toBe(false)
+      }
+
+      const followUpId = randomBytes(12).toString("hex")
+      socket.send(
+        JSON.stringify({
+          deadline: Date.now() + 15_000,
+          id: followUpId,
+          operation: "relay.snapshot",
+          payload: { count: 0 },
+          type: "request",
+          v: 1,
+        })
+      )
+      const followUp = await inbox.next()
+      expect(followUp.type).toBe("response")
+    } finally {
+      socket.close()
+      await once(socket, "close")
+      await control.close()
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      )
+    }
+  })
 })
+
+function treeResponse(count: number): Record<string, unknown> {
+  const paths: Array<string> = []
+  const sizes: Record<string, number> = {}
+  const modifiedAt: Record<string, number> = {}
+  for (let index = 0; index < count; index += 1) {
+    const path = `world/region/folder-${index % 64}/r.${index}.mca`
+    paths.push(path)
+    sizes[path] = index
+    modifiedAt[path] = index
+  }
+  return { instanceId: "instance-1", modifiedAt, paths, sizes, total: count }
+}
 
 async function authenticateTestSocket(
   port: number,
