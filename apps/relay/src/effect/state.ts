@@ -1434,11 +1434,16 @@ const makeRelayStateStore = Effect.gen(function* () {
               UPDATE relay_backup_tasks
               SET status = 'queued',
                   input_refresh_required = CASE
-                    WHEN json_extract(input_json, '$.destination.kind') = 's3'
+                    WHEN (
+                      json_extract(input_json, '$.destination.kind') = 's3'
+                      AND json_extract(input_json, '$.destination.uploadUrl')
+                        IS NOT NULL
+                    )
                       OR EXISTS (
                         SELECT 1
                         FROM json_each(input_json, '$.replicas')
                         WHERE json_extract(value, '$.kind') = 's3'
+                          AND json_extract(value, '$.uploadUrl') IS NOT NULL
                       )
                     THEN 1
                     ELSE 0

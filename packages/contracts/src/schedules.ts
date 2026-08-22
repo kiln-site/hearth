@@ -5,7 +5,9 @@ import { z } from "zod"
 import {
   backupLocalDestinationSchema,
   backupModeSchema,
+  backupObjectKeySchema,
   backupResticDestinationSchema,
+  backupS3CredentialSchema,
 } from "./backups.js"
 
 export const scheduleActionTypeSchema = z.enum([
@@ -235,11 +237,19 @@ export const scheduleDefinitionSchema = scheduleInputSchema
 
 export type ScheduleDefinition = z.infer<typeof scheduleDefinitionSchema>
 
+export const relayScheduleS3DestinationSchema = backupS3CredentialSchema
+  .safeExtend({
+    kind: z.literal("s3"),
+    objectKeyPrefix: backupObjectKeySchema,
+  })
+  .strict()
+
 const relayScheduleBackupExecutionSchema = z
   .object({
     destination: z.discriminatedUnion("kind", [
       backupLocalDestinationSchema,
       backupResticDestinationSchema,
+      relayScheduleS3DestinationSchema,
     ]),
     mode: backupModeSchema,
     targetId: z.string().min(1).max(120),

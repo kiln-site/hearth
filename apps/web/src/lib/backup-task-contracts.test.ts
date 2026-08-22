@@ -150,4 +150,36 @@ describe("restic backup contracts", () => {
       })
     ).toEqual({ nested: { value: 1 } })
   })
+
+  it("redacts scheduled full-upload credentials", () => {
+    const redacted = redactBackupTaskInput({
+      artifactKind: "archive",
+      backupId,
+      destination: {
+        accessKeyId: "AKIAEXAMPLE",
+        allowPrivateNetwork: false,
+        bucket: "kiln-backups",
+        endpoint: "https://s3.example.com",
+        forcePathStyle: false,
+        kind: "s3",
+        objectKey: "team/backups/scheduled.zip",
+        region: "us-east-1",
+        secretAccessKey: "s3-secret",
+      },
+      exclude: [],
+      kind: "create",
+      maxBytes: null,
+      mode: "full",
+      reason: "scheduled",
+      target,
+      taskId,
+    })
+
+    expect(redacted.kind).toBe("create")
+    if (redacted.kind !== "create" || redacted.destination.kind !== "s3") {
+      throw new Error("expected S3 create input")
+    }
+    expect(redacted.destination).not.toHaveProperty("accessKeyId")
+    expect(redacted.destination).not.toHaveProperty("secretAccessKey")
+  })
 })

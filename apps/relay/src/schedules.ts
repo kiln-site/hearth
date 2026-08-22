@@ -6,6 +6,7 @@ import type { Fiber } from "effect"
 import { z } from "zod"
 
 import {
+  backupArtifactFilename,
   nextScheduleOccurrence,
   resolveScheduleBackupName,
   relayScheduleProjectionSchema,
@@ -749,12 +750,12 @@ export class ScheduleManager {
           candidate.targetId === target.id &&
           candidate.targetKind === target.kind
       )
-      const destination =
+      const deployedDestination =
         execution?.destination ??
         (action.mode === "full" && action.destination.kind === "local"
           ? ({ kind: "local" } as const)
           : null)
-      if (!destination) {
+      if (!deployedDestination) {
         throw new Error("Scheduled backup destination is not deployed")
       }
       const backupId = scheduleDeterministicUuid(
@@ -773,15 +774,31 @@ export class ScheduleManager {
       const taskId = scheduleDeterministicUuid("task", backupId)
       const artifactId = scheduleDeterministicUuid("artifact", backupId)
       const targetKind = target.kind === "relay" ? "platform" : target.kind
+      const artifactKind =
+        action.mode === "incremental"
+          ? ("restic_snapshot" as const)
+          : targetKind === "instance"
+            ? ("archive" as const)
+            : targetKind === "database"
+              ? ("database_dump" as const)
+              : ("platform_bundle" as const)
+      const destination =
+        deployedDestination.kind === "s3"
+          ? {
+              accessKeyId: deployedDestination.accessKeyId,
+              allowPrivateNetwork: deployedDestination.allowPrivateNetwork,
+              artifactId,
+              bucket: deployedDestination.bucket,
+              endpoint: deployedDestination.endpoint,
+              forcePathStyle: deployedDestination.forcePathStyle,
+              kind: "s3" as const,
+              objectKey: `${deployedDestination.objectKeyPrefix}/${backupId}/${backupArtifactFilename(backupId, artifactKind)}`,
+              region: deployedDestination.region,
+              secretAccessKey: deployedDestination.secretAccessKey,
+            }
+          : { ...deployedDestination, artifactId }
       const input: BackupTaskInput = {
-        artifactKind:
-          action.mode === "incremental"
-            ? "restic_snapshot"
-            : targetKind === "instance"
-              ? "archive"
-              : targetKind === "database"
-                ? "database_dump"
-                : "platform_bundle",
+        artifactKind,
         backupId,
         catalog: {
           name: resolveScheduleBackupName(action.name, {
@@ -797,7 +814,7 @@ export class ScheduleManager {
               ? action.destination.storageId
               : null,
         },
-        destination: { ...destination, artifactId },
+        destination,
         exclude: [],
         kind: "create",
         maxBytes: null,

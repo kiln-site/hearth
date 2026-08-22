@@ -1,3 +1,4 @@
+import { createHash, createHmac } from "node:crypto"
 import { createReadStream } from "node:fs"
 import { request as httpsRequest } from "node:https"
 import { isIP } from "node:net"
@@ -9,6 +10,7 @@ import {
   resticRepositoryPrefixSchema,
   resticS3BucketSchema,
   resticS3RegionSchema,
+  type BackupS3CredentialUploadDestination,
   type ResticRepositoryLocation,
 } from "@workspace/contracts"
 
@@ -151,19 +153,26 @@ export const s3BackupDestination = defineBackupDestination({
           "S3 backups cannot exceed 5 GiB until multipart upload support is enabled",
       })
     }
+    const request =
+      "uploadUrl" in destination
+        ? {
+            headers: destination.headers,
+            url: destination.uploadUrl,
+          }
+        : signS3CredentialUpload(destination, result.checksumSha256)
     return Effect.tryPromise({
       try: () =>
         sendSignedBackupRequest({
           allowPrivateNetwork: destination.allowPrivateNetwork,
           bodyPath: backupArchivePath(config, backupId),
           headers: {
-            ...destination.headers,
+            ...request.headers,
             "content-length": String(result.bytes),
           },
           method: "PUT",
           onBodyChunk: onChunk,
           signal,
-          url: destination.uploadUrl,
+          url: request.url,
         }),
       catch: (cause) =>
         RelayBackupError.make({
@@ -175,6 +184,101 @@ export const s3BackupDestination = defineBackupDestination({
     }).pipe(Effect.as(result))
   },
 })
+
+export function signS3CredentialUpload(
+  destination: BackupS3CredentialUploadDestination,
+  payloadSha256: string,
+  now = new Date()
+): { headers: Record<string, string>; url: string } {
+  if (!destination.accessKeyId || !destination.secretAccessKey) {
+    throw RelayBackupError.make({
+      code: "s3_credentials_missing",
+      operation: "create.upload",
+      reason: "The scheduled S3 credentials were not provided to Relay",
+    })
+  }
+  const url = s3ObjectUrl(destination)
+  const amzDate = now
+    .toISOString()
+    .replaceAll(/[:-]/gu, "")
+    .replace(/\.\d{3}Z$/u, "Z")
+  const date = amzDate.slice(0, 8)
+  const headers = {
+    "content-type": "application/zip",
+    host: url.host,
+    "x-amz-content-sha256": payloadSha256,
+    "x-amz-date": amzDate,
+  }
+  const signedHeaders = Object.keys(headers).join(";")
+  const canonicalHeaders = Object.entries(headers)
+    .map(([key, value]) => `${key}:${value}\n`)
+    .join("")
+  const canonicalRequest = [
+    "PUT",
+    url.pathname,
+    "",
+    canonicalHeaders,
+    signedHeaders,
+    payloadSha256,
+  ].join("\n")
+  const scope = `${date}/${destination.region}/s3/aws4_request`
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    amzDate,
+    scope,
+    sha256Hex(canonicalRequest),
+  ].join("\n")
+  const dateKey = hmac(`AWS4${destination.secretAccessKey}`, date)
+  const regionKey = hmac(dateKey, destination.region)
+  const serviceKey = hmac(regionKey, "s3")
+  const signingKey = hmac(serviceKey, "aws4_request")
+  const signature = createHmac("sha256", signingKey)
+    .update(stringToSign)
+    .digest("hex")
+  return {
+    headers: {
+      Authorization: `AWS4-HMAC-SHA256 Credential=${destination.accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
+      "content-type": headers["content-type"],
+      "x-amz-content-sha256": headers["x-amz-content-sha256"],
+      "x-amz-date": headers["x-amz-date"],
+    },
+    url: url.toString(),
+  }
+}
+
+function s3ObjectUrl(destination: BackupS3CredentialUploadDestination): URL {
+  const url = new URL(destination.endpoint)
+  const virtualHosted =
+    !destination.forcePathStyle &&
+    isIP(url.hostname.replace(/^\[|\]$/gu, "")) === 0 &&
+    /^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$/u.test(destination.bucket)
+  const objectPath = destination.objectKey
+    .split("/")
+    .map(encodeS3PathSegment)
+    .join("/")
+  if (virtualHosted) {
+    url.hostname = `${destination.bucket}.${url.hostname}`
+    url.pathname = `/${objectPath}`
+  } else {
+    url.pathname = `/${encodeS3PathSegment(destination.bucket)}/${objectPath}`
+  }
+  return url
+}
+
+function encodeS3PathSegment(value: string): string {
+  return encodeURIComponent(value).replace(
+    /[!'()*]/gu,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+  )
+}
+
+function sha256Hex(value: string): string {
+  return createHash("sha256").update(value).digest("hex")
+}
+
+function hmac(key: string | Buffer, value: string): Buffer {
+  return createHmac("sha256", key).update(value).digest()
+}
 
 function sendSignedBackupRequest(input: {
   allowPrivateNetwork: boolean

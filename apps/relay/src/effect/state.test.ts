@@ -493,7 +493,8 @@ describe("Relay state", () => {
         )
         assert.strictEqual(
           refreshed.input.kind === "create" &&
-            refreshed.input.destination.kind === "s3"
+            refreshed.input.destination.kind === "s3" &&
+            "uploadUrl" in refreshed.input.destination
             ? refreshed.input.destination.uploadUrl
             : null,
           "https://s3.example.test/fresh-upload"
@@ -636,6 +637,45 @@ describe("Relay state", () => {
           local.taskId
         )
         yield* store.failBackupTask(local.taskId, "test finished", 350)
+      })
+    )
+
+    it.effect("reclaims credentialed S3 creates without Hearth", () =>
+      Effect.gen(function* () {
+        const store = yield* RelayStateStore
+        const scheduled: BackupTaskInput = {
+          artifactKind: "archive",
+          backupId: "00000000-0000-4000-8000-000000000016",
+          destination: {
+            accessKeyId: "AKIDEXAMPLE",
+            allowPrivateNetwork: false,
+            bucket: "kiln-backups",
+            endpoint: "https://s3.example.test",
+            forcePathStyle: false,
+            kind: "s3",
+            objectKey: "backups/scheduled.zip",
+            region: "us-east-1",
+            secretAccessKey: "storage-secret",
+          },
+          exclude: [],
+          kind: "create",
+          maxBytes: null,
+          mode: "full",
+          reason: "scheduled",
+          target: { id: "instance-c", kind: "instance" },
+          taskId: "00000000-0000-4000-8000-000000000017",
+        }
+        yield* store.enqueueBackupTask(scheduled, 360)
+        yield* store.claimNextBackupTask(370)
+
+        assert.strictEqual(yield* store.requeueInterruptedBackupTasks(380), 1)
+        const requeued = yield* store.getBackupTask(scheduled.taskId)
+        assert.isFalse(requeued?.inputRefreshRequired)
+        assert.strictEqual(
+          (yield* store.claimNextBackupTask(390))?.taskId,
+          scheduled.taskId
+        )
+        yield* store.failBackupTask(scheduled.taskId, "test finished", 400)
       })
     )
 

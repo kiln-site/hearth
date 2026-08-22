@@ -148,14 +148,26 @@ export function backupObjectKey(input: {
   targetKind: "database" | "instance" | "platform"
 }): string {
   return [
+    backupObjectKeyPrefix(input),
+    objectKeySegment(input.backupId),
+    backupArtifactFilename(input.backupId, input.artifactKind),
+  ].join("/")
+}
+
+export function backupObjectKeyPrefix(input: {
+  installationId: string
+  objectPrefix: string
+  relayId: string
+  targetId: string
+  targetKind: "database" | "instance" | "platform"
+}): string {
+  return [
     input.objectPrefix,
     "kiln",
     objectKeySegment(input.installationId),
     objectKeySegment(input.relayId),
     input.targetKind,
     objectKeySegment(input.targetId),
-    objectKeySegment(input.backupId),
-    backupArtifactFilename(input.backupId, input.artifactKind),
   ]
     .filter(Boolean)
     .join("/")

@@ -23,12 +23,17 @@ import {
 } from "@workspace/contracts"
 
 import { prepareResticRepositoryLocation } from "@/backups/destinations"
-import { loadBackupStorageEffect } from "@/backups/destinations/s3"
+import {
+  backupObjectKeyPrefix,
+  loadBackupStorageCredentialEffect,
+  loadBackupStorageEffect,
+} from "@/backups/destinations/s3"
 import { ensureBackupRepositoryEffect } from "@/effect/backups"
 import { Database, type DatabaseTransaction } from "@/effect/database"
 import { forkAppEffect, runAppEffect } from "@/effect/runtime"
 import { databasePool } from "@/lib/database"
 import { databaseTable } from "@/lib/database-config"
+import { kilnInstallationId } from "@/lib/environment"
 import {
   hasPlatformPermission,
   isPlatformAdmin,
@@ -741,7 +746,7 @@ async function prepareRelayScheduleActions(
               : promiseEffect(async () => ({
                   destination:
                     action.mode === "full"
-                      ? ({ kind: "local" } as const)
+                      ? await scheduledFullBackupDestination(action, target)
                       : await scheduledResticDestination(action, target),
                   mode: action.mode,
                   targetId: target.id,
@@ -760,6 +765,41 @@ async function prepareRelayScheduleActions(
       { concurrency: 1 }
     )
   )
+}
+
+async function scheduledFullBackupDestination(
+  action: Extract<ScheduleAction, { type: "backup" }>,
+  target: ScheduleTarget
+) {
+  if (action.destination.kind === "local") {
+    return { kind: "local" as const }
+  }
+  const storage = await runAppEffect(
+    "schedules.loadBackupStorageCredential",
+    loadBackupStorageCredentialEffect(action.destination.storageId)
+  )
+  if (!storage || !storage.enabled || storage.deleting) {
+    throw new Error("Backup destination is unavailable")
+  }
+  const installationId = kilnInstallationId()
+  const targetKind = target.kind === "relay" ? "platform" : target.kind
+  return {
+    accessKeyId: storage.accessKeyId,
+    allowPrivateNetwork: storage.allowPrivateNetwork,
+    bucket: storage.bucket,
+    endpoint: storage.endpoint,
+    forcePathStyle: storage.forcePathStyle,
+    kind: "s3" as const,
+    objectKeyPrefix: backupObjectKeyPrefix({
+      installationId,
+      objectPrefix: storage.objectPrefix,
+      relayId: target.relayId,
+      targetId: targetKind === "platform" ? installationId : target.id,
+      targetKind,
+    }),
+    region: storage.region,
+    secretAccessKey: storage.secretAccessKey,
+  }
 }
 
 async function scheduledResticDestination(
@@ -801,16 +841,6 @@ async function requireScheduleBackupDestinations(
     (action): action is Extract<ScheduleAction, { type: "backup" }> =>
       action.type === "backup"
   )
-  if (
-    backupActions.some(
-      (action) =>
-        action.mode === "full" && action.destination.kind === "storage"
-    )
-  ) {
-    throw new Error(
-      "Full scheduled backups must use Relay-local storage so they can run while Hearth is offline"
-    )
-  }
   const storageIds = [
     ...new Set(
       backupActions.flatMap((action) =>

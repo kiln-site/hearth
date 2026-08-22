@@ -129,17 +129,6 @@ export const backupLocalDestinationSchema = z
   })
   .strict()
 
-export const backupS3UploadDestinationSchema = z
-  .object({
-    allowPrivateNetwork: z.boolean().default(false),
-    artifactId: z.uuid().optional(),
-    headers: z.record(z.string(), z.string()).default({}),
-    kind: z.literal("s3"),
-    objectKey: backupObjectKeySchema,
-    uploadUrl: backupHttpsUrlSchema,
-  })
-  .strict()
-
 export const resticS3BucketSchema = z
   .string()
   .regex(/^[A-Za-z0-9][A-Za-z0-9.-]{1,61}[A-Za-z0-9]$/u, {
@@ -194,23 +183,55 @@ const resticS3EndpointSchema = backupHttpsUrlSchema.refine(
   }
 )
 
+export const backupS3CredentialSchema = z
+  .object({
+    accessKeyId: z.string().min(1).max(512),
+    allowPrivateNetwork: z.boolean().default(false),
+    bucket: resticS3BucketSchema,
+    endpoint: resticS3EndpointSchema,
+    forcePathStyle: z.boolean().default(false),
+    region: resticS3RegionSchema,
+    secretAccessKey: z.string().min(1).max(2_048),
+  })
+  .strict()
+
+const backupS3PresignedUploadDestinationSchema = z
+  .object({
+    allowPrivateNetwork: z.boolean().default(false),
+    artifactId: z.uuid().optional(),
+    headers: z.record(z.string(), z.string()).default({}),
+    kind: z.literal("s3"),
+    objectKey: backupObjectKeySchema,
+    uploadUrl: backupHttpsUrlSchema,
+  })
+  .strict()
+
+export const backupS3CredentialUploadDestinationSchema =
+  backupS3CredentialSchema
+    .partial({ accessKeyId: true, secretAccessKey: true })
+    .safeExtend({
+      artifactId: z.uuid().optional(),
+      kind: z.literal("s3"),
+      objectKey: backupObjectKeySchema,
+    })
+    .strict()
+
+export const backupS3UploadDestinationSchema = z.union([
+  backupS3PresignedUploadDestinationSchema,
+  backupS3CredentialUploadDestinationSchema,
+])
+
 const resticLocalRepositoryLocationSchema = z
   .object({
     kind: z.literal("local"),
   })
   .strict()
 
-const resticS3RepositoryLocationObjectSchema = z
-  .object({
-    accessKeyId: z.string().min(1).max(512).optional(),
-    allowPrivateNetwork: z.boolean().default(false),
-    bucket: resticS3BucketSchema,
-    endpoint: resticS3EndpointSchema,
-    forcePathStyle: z.boolean().default(false),
+const resticS3RepositoryLocationObjectSchema = backupS3CredentialSchema
+  .partial({ accessKeyId: true, secretAccessKey: true })
+  .safeExtend({
     kind: z.literal("s3"),
-    region: resticS3RegionSchema,
     repositoryPrefix: resticRepositoryPrefixSchema,
-    secretAccessKey: z.string().min(1).max(2_048).optional(),
   })
   .strict()
 
@@ -232,7 +253,7 @@ export const backupResticDestinationSchema = z
   })
   .strict()
 
-const backupArchiveDestinationSchema = z.discriminatedUnion("kind", [
+const backupArchiveDestinationSchema = z.union([
   backupLocalDestinationSchema,
   backupS3UploadDestinationSchema,
 ])
@@ -248,7 +269,7 @@ const backupCreateTaskInputObjectSchema = z
       })
       .strict()
       .optional(),
-    destination: z.discriminatedUnion("kind", [
+    destination: z.union([
       backupLocalDestinationSchema,
       backupS3UploadDestinationSchema,
       backupResticDestinationSchema,
@@ -361,9 +382,8 @@ export const backupRestoreTaskInputSchema = z
   })
   .strict()
 
-export const backupS3DeleteDestinationSchema = backupS3UploadDestinationSchema
-  .omit({ uploadUrl: true })
-  .extend({
+export const backupS3DeleteDestinationSchema =
+  backupS3PresignedUploadDestinationSchema.omit({ uploadUrl: true }).extend({
     deleteUrl: backupHttpsUrlSchema,
   })
 
@@ -761,6 +781,9 @@ export type BackupExportTaskResult = z.infer<
   typeof backupExportTaskResultSchema
 >
 export type BackupMode = z.infer<typeof backupModeSchema>
+export type BackupS3CredentialUploadDestination = z.infer<
+  typeof backupS3CredentialUploadDestinationSchema
+>
 export type BackupPruneTaskInput = z.infer<typeof backupPruneTaskInputSchema>
 export type ResticRepositoryLocation = z.infer<
   typeof resticRepositoryLocationSchema

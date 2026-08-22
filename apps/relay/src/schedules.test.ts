@@ -557,6 +557,79 @@ describe("Relay schedule persistence", () => {
     })
   })
 
+  it("runs a deployed full backup with stored S3 credentials", async () => {
+    const inputs: Array<BackupTaskInput> = []
+    const schedules = await manager({
+      enqueueBackup: async (input) => {
+        inputs.push(input)
+        return {
+          status: "succeeded",
+          taskId: input.taskId,
+        } as RelayBackupTask
+      },
+      findInstance: async () => ({}),
+    })
+    await schedules.apply({
+      ...projection,
+      actions: [
+        {
+          destination: {
+            kind: "storage",
+            storageId: "87949dc0-3b2a-4b57-999c-f9bfaf487880",
+          },
+          executions: [
+            {
+              destination: {
+                accessKeyId: "AKIDEXAMPLE",
+                allowPrivateNetwork: false,
+                bucket: "kiln-backups",
+                endpoint: "https://s3.example.com",
+                forcePathStyle: false,
+                kind: "s3",
+                objectKeyPrefix: "team/kiln/test/relay/instance/server-a",
+                region: "us-east-1",
+                secretAccessKey: "storage-secret",
+              },
+              mode: "full",
+              targetId: "server-a",
+              targetKind: "instance",
+            },
+          ],
+          id: "6cc00681-a2cd-40c7-a036-7c9bd09b269b",
+          mode: "full",
+          name: "scheduled-<schedule>-<timestamp>",
+          type: "backup",
+        },
+      ],
+    })
+
+    await schedules.runNow({
+      revision: projection.revision,
+      scheduleId: projection.id,
+    })
+
+    await vi.waitFor(() => {
+      expect(inputs).toHaveLength(1)
+      expect(inputs[0]).toMatchObject({
+        artifactKind: "archive",
+        catalog: {
+          storageId: "87949dc0-3b2a-4b57-999c-f9bfaf487880",
+        },
+        destination: {
+          accessKeyId: "AKIDEXAMPLE",
+          artifactId: expect.any(String),
+          bucket: "kiln-backups",
+          kind: "s3",
+          objectKey: expect.stringMatching(
+            /^team\/kiln\/test\/relay\/instance\/server-a\/[a-f0-9-]{36}\/backup-[a-f0-9]{8}\.zip$/u
+          ),
+          secretAccessKey: "storage-secret",
+        },
+        mode: "full",
+      })
+    })
+  })
+
   it("fails a wedged scheduled backup after the configured timeout", async () => {
     const schedules = await manager({
       backupPollIntervalMs: 5,
