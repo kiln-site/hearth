@@ -28,7 +28,7 @@
     "@lezer/highlight": "^1.2.3",
     "@opentelemetry/api": "1.9.0",
     "@opentelemetry/core": "2.9.0",
-    "@pierre/trees": "1.0.0-beta.5",
+    "@pierre/trees": "1.0.0-beta.6",
     "@react-email/components": "^1.0.12",
     "@sentry/tanstackstart-react": "^10.66.0",
     "@smithy/node-http-handler": "4.9.13",

@@ -9,6 +9,7 @@ import {
   relayAuthChallengeTranscript,
   relayAuthResponseTranscript,
   relayControlDeadlineMs,
+  relayControlMaxFrameBytes,
   relayControlRequestTimeoutMs,
   relayControlProtocol,
 } from "@workspace/contracts"
@@ -312,7 +313,7 @@ class RelayConnection {
             {
               ca: credentials.caCertificatePem ?? undefined,
               handshakeTimeout: 5_000,
-              maxPayload: 1024 * 1024,
+              maxPayload: relayControlMaxFrameBytes,
               perMessageDeflate: false,
               rejectUnauthorized: this.#relay.useTls,
             }

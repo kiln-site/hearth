@@ -16,6 +16,7 @@ import {
   relayAuthChallengeTranscript,
   relayAuthResponseTranscript,
   relayControlDeadlineMs,
+  relayControlMaxFrameBytes,
   relayControlRequestTimeoutMs,
   relayControlProtocol,
 } from "@workspace/contracts"
@@ -38,7 +39,9 @@ import type { RelayClientGrant, RelayStateStore } from "./effect/state.js"
 import type { Server } from "node:http"
 
 const HEARTBEAT_INTERVAL_MS = 15_000
-const MAX_BUFFERED_BYTES = 4 * 1024 * 1024
+// Slow-consumer bound. Allows one full-size control frame to be in flight so
+// a large (but accepted) response does not look like a stuck peer.
+const MAX_BUFFERED_BYTES = 2 * relayControlMaxFrameBytes
 const MAX_IN_FLIGHT_REQUESTS = 32
 const MAX_CONTROL_SESSIONS = 128
 const MAX_CONTROL_SESSIONS_PER_CLIENT = 4
@@ -93,7 +96,7 @@ export function attachControlSocket(
   >()
   const wss = new WebSocketServer({
     clientTracking: false,
-    maxPayload: 1024 * 1024,
+    maxPayload: relayControlMaxFrameBytes,
     noServer: true,
     perMessageDeflate: false,
     handleProtocols: (protocols) =>
@@ -529,7 +532,17 @@ function authenticateSocket(
             v: 1,
           }
           yield* Effect.sync(() => {
-            send(socket, response)
+            const serialized = JSON.stringify(response)
+            if (Buffer.byteLength(serialized) > relayControlMaxFrameBytes) {
+              sendError(
+                socket,
+                request.id,
+                "response_too_large",
+                `${request.operation} produced a ${(Buffer.byteLength(serialized) / (1024 * 1024)).toFixed(1)} MiB response, over the ${relayControlMaxFrameBytes / (1024 * 1024)} MiB control message limit`
+              )
+              return
+            }
+            sendSerialized(socket, serialized)
           })
         }),
       (timeoutFiber) => Fiber.interrupt(timeoutFiber)
@@ -941,11 +954,16 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
       return null
     }
     case "instance.files.list":
+    case "instance.files.directory.list":
+    case "instance.files.search":
       return "instance.files.list"
+    case "instance.files.stat":
+      return "instance.files.read"
     case "instance.files.read":
       return "instance.files.read"
     case "instance.files.write":
     case "instance.files.mutate":
+    case "instance.files.mutate.result":
       return "instance.files.write"
     case "instance.files.upload-url":
       return "instance.files.upload-url"
@@ -1020,12 +1038,16 @@ function closeWebSocketServerEffect(
 }
 
 function send(socket: WebSocket, message: unknown): void {
+  sendSerialized(socket, JSON.stringify(message))
+}
+
+function sendSerialized(socket: WebSocket, serialized: string): void {
   if (socket.readyState !== WebSocket.OPEN) return
   if (socket.bufferedAmount > MAX_BUFFERED_BYTES) {
     socket.close(1013, "Control socket is not consuming messages")
     return
   }
-  socket.send(JSON.stringify(message))
+  socket.send(serialized)
 }
 
 function sendError(

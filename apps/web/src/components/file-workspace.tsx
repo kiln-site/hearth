@@ -1,15 +1,14 @@
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useRouter } from "@tanstack/react-router"
-import type { ContextMenuAnchorRect } from "@pierre/trees"
-import { FileTree, useFileTree, useFileTreeSearch } from "@pierre/trees/react"
-import { Effect, Result } from "effect"
+import { prepareFileTreeInput } from "@pierre/trees"
+import { Effect } from "effect"
 import type {
   RelayFileActivity,
   RelayFileActivityEntry,
   RelayFileContent,
+  RelayFileEntry,
   RelayFileMutationInput,
-  RelayFileTree,
 } from "@workspace/contracts"
 import {
   ALargeSmall,
@@ -27,19 +26,14 @@ import {
   FileIcon,
   FilePlus,
   Folder,
-  FolderTree,
   FolderPlus,
+  FolderTree,
   GitCompareArrows,
-  GripVertical,
   HardDriveDownload,
-  House,
   LoaderCircle,
   LockKeyhole,
-  Network,
-  PanelLeftClose,
   Pin,
   PinOff,
-  Plus,
   RefreshCw,
   Save,
   Search,
@@ -50,7 +44,6 @@ import {
   WrapText,
   X,
 } from "lucide-react"
-import { createPortal } from "react-dom"
 
 import { Button } from "@workspace/ui/components/button"
 import { Input } from "@workspace/ui/components/input"
@@ -77,7 +70,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@workspace/ui/components/popover"
-import { floatingSurfaceClassName } from "@workspace/ui/lib/surface-styles"
 import { dismissToast, showToast } from "@workspace/ui/components/sonner"
 import {
   Tooltip,
@@ -98,12 +90,29 @@ import {
   fileEditorFontSizes,
 } from "@/components/files/file-workspace-stores"
 import { FileDownloadDialog } from "@/components/files/file-download-dialog"
+import { FileTreePanel } from "@/components/files/file-tree-panel"
 import {
-  droppedUploadFiles,
+  ProgressiveFileIndex,
+  type FileDirectorySnapshot,
+} from "@/components/files/progressive-file-index"
+import {
+  directoryPath,
+  folderInputAttributes,
+  hasDraggedFiles,
+  joinFilePath,
+  normalizeDirectoryPath,
+  uploadDroppedFiles,
+} from "@/components/files/file-tree-utils"
+import type {
+  FileActionsController,
+  FileWorkspaceAction,
+  UploadFiles,
+} from "@/components/files/file-tree-utils"
+import { EditorTooltip } from "@/components/files/editor-tooltip"
+import {
   maxFolderUploadFiles,
   selectedUploadFiles,
 } from "@/components/files/file-upload-selection"
-import type { UploadFile } from "@/components/files/file-upload-selection"
 import type {
   EditorSearchStore,
   EditorSessionStore,
@@ -125,11 +134,11 @@ import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
 import {
   queryKeys,
   relayFileActivityQueryOptions,
+  relayFileEntryQueryOptions,
   relayFileQueryOptions,
-  relayTreeQueryOptions,
+  relayRootDirectoryQueryOptions,
 } from "@/lib/query-options"
 import {
-  getRelayTree,
   mutateRelayFiles,
   saveRelayFile,
   updateRelayFilePin,
@@ -142,178 +151,9 @@ const SyntaxCodeEditor = React.lazy(async () => {
 })
 
 const activeFileRevisionPollDelayMs = 30_000
-const folderInputAttributes = { webkitdirectory: "" }
-const contextMenuCursorGap = 4
-const contextMenuViewportPadding = 8
-
-function FileTreeContextMenu({
-  anchorRect,
-  children,
-  label,
-}: {
-  anchorRect: ContextMenuAnchorRect
-  children: React.ReactNode
-  label: string
-}) {
-  const menuRef = React.useRef<HTMLDivElement>(null)
-  const portalTarget = typeof document === "undefined" ? null : document.body
-  const [position, setPosition] = React.useState<{
-    left: number
-    top: number
-  } | null>(null)
-
-  React.useLayoutEffect(() => {
-    if (!portalTarget) return
-
-    const updatePosition = () => {
-      const menu = menuRef.current
-      if (!menu) return
-
-      const { height, width } = menu.getBoundingClientRect()
-      const maxLeft = Math.max(
-        contextMenuViewportPadding,
-        window.innerWidth - width - contextMenuViewportPadding
-      )
-      const maxTop = Math.max(
-        contextMenuViewportPadding,
-        window.innerHeight - height - contextMenuViewportPadding
-      )
-      const fitsRight =
-        anchorRect.right + contextMenuCursorGap + width <=
-        window.innerWidth - contextMenuViewportPadding
-      const fitsBelow =
-        anchorRect.bottom + contextMenuCursorGap + height <=
-        window.innerHeight - contextMenuViewportPadding
-      const preferredLeft = fitsRight
-        ? anchorRect.right + contextMenuCursorGap
-        : anchorRect.left - width - contextMenuCursorGap
-      const preferredTop = fitsBelow
-        ? anchorRect.bottom + contextMenuCursorGap
-        : anchorRect.top - height - contextMenuCursorGap
-
-      setPosition({
-        left: Math.min(
-          maxLeft,
-          Math.max(contextMenuViewportPadding, preferredLeft)
-        ),
-        top: Math.min(
-          maxTop,
-          Math.max(contextMenuViewportPadding, preferredTop)
-        ),
-      })
-    }
-
-    updatePosition()
-    window.addEventListener("resize", updatePosition)
-    return () => window.removeEventListener("resize", updatePosition)
-  }, [
-    anchorRect.bottom,
-    anchorRect.left,
-    anchorRect.right,
-    anchorRect.top,
-    portalTarget,
-  ])
-
-  if (!portalTarget) return null
-
-  return createPortal(
-    <div
-      ref={menuRef}
-      role="menu"
-      aria-label={label}
-      data-file-tree-context-menu-root="true"
-      className={`${floatingSurfaceClassName} fixed z-[100] min-w-44 rounded-lg p-1 text-xs ring-1 ring-accent-border/22`}
-      style={
-        position
-          ? { left: position.left, top: position.top }
-          : { top: 0, left: 0, visibility: "hidden" }
-      }
-    >
-      {children}
-    </div>,
-    portalTarget
-  )
-}
 
 function formatName(path: string) {
   return path.split("/").filter(Boolean).at(-1) ?? path
-}
-
-function directoryPath(path: string): string {
-  const normalized = path.replace(/^\/+|\/+$/gu, "")
-  const segments = normalized.split("/").filter(Boolean)
-  segments.pop()
-  return segments.length ? `${segments.join("/")}/` : ""
-}
-
-function fileTreeParentDirectoryPaths(path: string): Array<string> {
-  const parent = directoryPath(path)
-  const parents: Array<string> = []
-  let current = ""
-  for (const segment of parent.split("/").filter(Boolean)) {
-    current = `${current}${segment}/`
-    parents.push(current)
-  }
-  return parents
-}
-
-function normalizeDirectoryPath(path: string): string {
-  const normalized = path.replace(/^\/+|\/+$/gu, "")
-  return normalized ? `${normalized}/` : ""
-}
-
-function joinFilePath(directory: string, name: string): string {
-  return `${normalizeDirectoryPath(directory)}${name}`
-}
-
-function hasDraggedFiles(event: React.DragEvent): boolean {
-  return Array.from(event.dataTransfer.types).includes("Files")
-}
-
-type UploadFiles = (
-  files: ReadonlyArray<UploadFile>,
-  directory: string
-) => Promise<void>
-
-async function uploadDroppedFiles(
-  dataTransfer: DataTransfer,
-  directory: string,
-  onUploadFiles: UploadFiles
-): Promise<void> {
-  await Effect.runPromise(
-    Effect.tryPromise({
-      try: () => droppedUploadFiles(dataTransfer),
-      catch: (cause) => cause,
-    }).pipe(
-      Effect.flatMap((files) => {
-        if (!files.length) {
-          return Effect.sync(() => {
-            showToast({
-              type: "error",
-              message: "Folder contains no files",
-              description: "Empty folders are not uploaded.",
-            })
-          })
-        }
-        return Effect.tryPromise({
-          try: () => onUploadFiles(files, directory),
-          catch: (cause) => cause,
-        })
-      }),
-      Effect.catch((cause) =>
-        Effect.sync(() => {
-          showToast({
-            type: "error",
-            message: "Could not read dropped folder",
-            description:
-              cause instanceof Error
-                ? cause.message
-                : "The browser could not enumerate these files.",
-          })
-        })
-      )
-    )
-  )
 }
 
 function UploadProgressDescription({
@@ -526,12 +366,8 @@ const fileEditorHeaderClassName =
 const fileEditorHeaderContentClassName =
   "flex min-w-0 flex-1 items-center gap-2 px-2 sm:px-3 md:flex-wrap md:gap-x-3 md:gap-y-2 md:py-[7px]"
 
-const fileTreeWidthCookieName = "file_tree_width"
 const fileTreeCollapsedCookieName = "file_tree_collapsed"
 const fileTreeCookieMaxAge = 60 * 60 * 24 * 7
-const fileTreeMinWidth = 224
-const fileTreeMaxWidth = 480
-const mobileFileDrawerTransitionMs = 200
 const recentFileDateFormatter = new Intl.DateTimeFormat(undefined, {
   month: "short",
   day: "numeric",
@@ -558,71 +394,6 @@ function shortRelativeFileTime(timestamp: number): string | null {
     return `${Math.floor(elapsed / relativeFileDayMs)}d ago`
   }
   return null
-}
-
-function persistFileTreeWidth(width: number) {
-  document.cookie = `${fileTreeWidthCookieName}=${width}; path=/; max-age=${fileTreeCookieMaxAge}; SameSite=Lax`
-}
-
-const fileTreeLayoutCss = `
-  [data-item-section="content"] {
-    flex: 1 1 auto;
-  }
-
-  [data-item-section="decoration"]:empty {
-    display: none;
-  }
-
-  [data-truncate-marker] {
-    opacity: 0;
-  }
-
-  @container measure (height > calc(1lh + 1px)) {
-    [data-truncate-marker] {
-      opacity: 1;
-    }
-  }
-
-  [data-icon-name="file-tree-icon-chevron"] {
-    width: 14px;
-    height: 14px;
-  }
-
-  [data-item-path][data-external-file-drop-target="true"] {
-    background: color-mix(in oklch, var(--primary) 22%, var(--card)) !important;
-    color: var(--foreground) !important;
-    outline: 1px solid color-mix(in oklch, var(--primary) 72%, transparent);
-    outline-offset: -1px;
-    box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--primary) 16%, transparent), 0 0 12px color-mix(in oklch, var(--primary) 10%, transparent);
-  }
-
-  [data-item-path][data-external-file-drop-target="true"] [data-item-section="icon"] {
-    color: var(--primary) !important;
-  }
-
-  [data-external-file-drop-segment="true"] {
-    border-radius: 2px;
-    background: color-mix(in oklch, var(--primary) 24%, transparent);
-    box-shadow: 0 0 0 1px color-mix(in oklch, var(--primary) 48%, transparent);
-    color: var(--foreground);
-    font-weight: 600;
-  }
-
-  :host([data-external-file-drop-root="true"]) [data-file-tree-virtualized-wrapper="true"] {
-    box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--primary) 48%, transparent);
-  }
-`
-function clampFileTreeWidth(width: number, workspaceWidth: number) {
-  const responsiveMaximum = Math.floor(workspaceWidth * 0.45)
-  const maximum = Math.max(
-    fileTreeMinWidth,
-    Math.min(fileTreeMaxWidth, responsiveMaximum)
-  )
-  return Math.min(maximum, Math.max(fileTreeMinWidth, Math.round(width)))
-}
-
-function defaultFileTreeWidth() {
-  return window.innerWidth >= 1280 ? 304 : 280
 }
 
 async function copyToClipboard(value: string) {
@@ -696,29 +467,6 @@ function FileTreeRevealButton({ onClick }: { onClick: () => void }) {
         </TooltipContent>
       </Tooltip>
     </div>
-  )
-}
-
-function FilesHomeButton({
-  active = false,
-  onClick,
-}: {
-  active?: boolean
-  onClick: () => void
-}) {
-  return (
-    <EditorTooltip content="Files Home">
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        className={`shrink-0 shadow-none ${active ? "text-primary hover:bg-transparent hover:text-primary focus-visible:bg-transparent" : ""}`}
-        aria-label="Files home"
-        aria-current={active ? "page" : undefined}
-        onClick={onClick}
-      >
-        <House className="size-[18px]" />
-      </Button>
-    </EditorTooltip>
   )
 }
 
@@ -2412,60 +2160,25 @@ function FileActionMenuItem({
   )
 }
 
-function EditorTooltip({
-  content,
-  children,
-}: {
-  content: string
-  children: React.ReactElement<{ disabled?: boolean }>
-}) {
-  const trigger = children.props.disabled ? (
-    <span className="inline-flex max-w-full min-w-0">{children}</span>
-  ) : (
-    children
-  )
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>{trigger}</TooltipTrigger>
-      <TooltipContent side="bottom" sideOffset={6}>
-        {content}
-      </TooltipContent>
-    </Tooltip>
-  )
-}
-
-type FileWorkspaceAction =
-  | "archive"
-  | "delete"
-  | "download"
-  | "duplicate"
-  | "rename"
-
 type FileActionDialogState =
   | { kind: "archive"; paths: ReadonlyArray<string> }
   | { kind: "delete"; paths: ReadonlyArray<string> }
   | { kind: "rename"; path: string }
   | null
 
-interface FileActionsController {
-  busy: boolean
-  canWrite: boolean
-  request: (action: FileWorkspaceAction, paths: ReadonlyArray<string>) => void
-}
-
 function useFileActions({
   canWrite,
   instance,
+  onRefresh,
   onPathChange,
   selectionStore,
 }: {
   canWrite: boolean
   instance: InstanceWorkspaceInstance
+  onRefresh: () => void
   onPathChange: (path: string) => void
   selectionStore: FileSelectionStore
 }) {
-  const queryClient = useQueryClient()
   const [dialog, setDialog] = React.useState<FileActionDialogState>(null)
   const [downloadPath, setDownloadPath] = React.useState<string | null>(null)
   const [downloadPending, setDownloadPending] = React.useState(false)
@@ -2474,12 +2187,7 @@ function useFileActions({
       mutateRelayFiles({
         data: { ...input, instanceId: instance.id, relayId: instance.relayId },
       }),
-    onSuccess: (tree) => {
-      queryClient.setQueryData(
-        queryKeys.relay.tree(instance.relayId, instance.id),
-        tree
-      )
-    },
+    onSuccess: onRefresh,
   })
 
   const runMutation = React.useCallback(
@@ -2821,975 +2529,6 @@ function FileActionsDropdown({
   )
 }
 
-function resolveTreeDropDirectory(event: React.DragEvent): string {
-  for (const target of event.nativeEvent.composedPath()) {
-    if (!(target instanceof HTMLElement)) continue
-    const flattened = target.dataset.itemFlattenedSubitem
-    if (flattened) return normalizeDirectoryPath(flattened)
-    const path = target.dataset.itemPath
-    if (!path) continue
-    return target.dataset.itemType === "folder"
-      ? normalizeDirectoryPath(path)
-      : directoryPath(path)
-  }
-  return ""
-}
-
-function FileTreePanel({
-  instance,
-  tree,
-  selectionStore,
-  refreshing,
-  refreshDisabled,
-  mobileOpen,
-  onPathChange,
-  onRefresh,
-  onMobileOpenChange,
-  onFileSelected,
-  onHome,
-  collapsed,
-  animateCollapsedChange,
-  onCollapsedChange,
-  initialWidth,
-  canWrite,
-  onUploadFiles,
-  uploading,
-  actions,
-}: {
-  instance: InstanceWorkspaceInstance
-  tree: RelayFileTree
-  selectionStore: FileSelectionStore
-  refreshing: boolean
-  refreshDisabled: boolean
-  mobileOpen: boolean
-  onPathChange: (path: string) => void
-  onRefresh: () => void
-  onMobileOpenChange: (open: boolean) => void
-  onFileSelected: () => void
-  onHome: () => void
-  collapsed: boolean
-  animateCollapsedChange: boolean
-  onCollapsedChange: (collapsed: boolean) => void
-  initialWidth: number | null
-  canWrite: boolean
-  onUploadFiles: UploadFiles
-  uploading: boolean
-  actions: FileActionsController
-}) {
-  const selectedPath = selectionStore.getSnapshot()
-  const initialPath =
-    selectedPath && tree.paths.includes(selectedPath) ? selectedPath : undefined
-  const initialExpandedPaths = initialPath
-    ? fileTreeParentDirectoryPaths(initialPath)
-    : []
-  const selectionHandlers = React.useRef({
-    onFileSelected,
-    onPathChange,
-  })
-  const previousTreePaths = React.useRef(tree.paths)
-  const { model } = useFileTree({
-    paths: tree.paths,
-    initialExpansion: "closed",
-    initialExpandedPaths,
-    initialSelectedPaths: initialPath ? [initialPath] : [],
-    onSelectionChange: (paths) => {
-      const selected = paths.at(-1)
-      const handlers = selectionHandlers.current
-      if (!selected || selected === selectionStore.getSnapshot()) {
-        return
-      }
-      handlers.onPathChange(selected)
-      handlers.onFileSelected()
-    },
-    search: false,
-    flattenEmptyDirectories: true,
-    stickyFolders: true,
-    itemHeight: 29,
-    composition: { contextMenu: { enabled: true, triggerMode: "both" } },
-    unsafeCSS: fileTreeLayoutCss,
-  })
-  const [mobileContentVisible, setMobileContentVisible] =
-    React.useState(mobileOpen)
-  const mobileBrowseButtonRef = React.useRef<HTMLButtonElement>(null)
-  const panelRef = React.useRef<HTMLElement>(null)
-  const resizeHandleRef = React.useRef<HTMLDivElement>(null)
-  const resizeFrame = React.useRef<number | null>(null)
-  const transitionOverflowTimer = React.useRef<number | null>(null)
-  const pendingWidth = React.useRef<number | null>(null)
-  const currentWidth = React.useRef(initialWidth ?? 304)
-  const previousCollapsed = React.useRef(collapsed)
-  const resizeSession = React.useRef<{
-    pointerId: number
-    startX: number
-    startWidth: number
-  } | null>(null)
-  const previousDocumentStyles = React.useRef({
-    userSelect: "",
-  })
-  const uploadInputRef = React.useRef<HTMLInputElement>(null)
-  const folderUploadInputRef = React.useRef<HTMLInputElement>(null)
-  const dragDepth = React.useRef(0)
-  const activeDropElement = React.useRef<HTMLElement | null>(null)
-  const activeDropSegment = React.useRef<HTMLElement | null>(null)
-  const activeTreeHost = React.useRef<HTMLElement | null>(null)
-  const dropDirectory = React.useRef("")
-  const dropExpandDirectory = React.useRef("")
-  const dropExpandTimer = React.useRef<number | null>(null)
-  const dropPathLabelRef = React.useRef<HTMLSpanElement>(null)
-
-  const handleFilesSelected = React.useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>) => {
-      const files = selectedUploadFiles(event.target.files ?? [])
-      event.target.value = ""
-      if (files.length && canWrite) void onUploadFiles(files, "")
-    },
-    [canWrite, onUploadFiles]
-  )
-
-  function clearTreeDropTarget() {
-    activeDropElement.current?.removeAttribute("data-external-file-drop-target")
-    activeDropSegment.current?.removeAttribute(
-      "data-external-file-drop-segment"
-    )
-    activeTreeHost.current?.removeAttribute("data-external-file-drop-root")
-    activeDropElement.current = null
-    activeDropSegment.current = null
-    activeTreeHost.current = null
-    dropDirectory.current = ""
-    dropExpandDirectory.current = ""
-    if (dropExpandTimer.current !== null) {
-      window.clearTimeout(dropExpandTimer.current)
-      dropExpandTimer.current = null
-    }
-    if (panelRef.current) panelRef.current.dataset.fileDropActive = "false"
-  }
-
-  function scheduleTreeDropExpansion(directory: string) {
-    if (dropExpandDirectory.current === directory) return
-    if (dropExpandTimer.current !== null) {
-      window.clearTimeout(dropExpandTimer.current)
-      dropExpandTimer.current = null
-    }
-    dropExpandDirectory.current = directory
-    const item = model.getItem(directory)
-    if (!directory || !item || !("isExpanded" in item) || item.isExpanded())
-      return
-    dropExpandTimer.current = window.setTimeout(() => {
-      dropExpandTimer.current = null
-      const currentItem = model.getItem(directory)
-      if (
-        currentItem &&
-        "isExpanded" in currentItem &&
-        !currentItem.isExpanded()
-      ) {
-        currentItem.expand()
-      }
-    }, 650)
-  }
-
-  function showTreeDropTarget(event: React.DragEvent) {
-    const directory = resolveTreeDropDirectory(event)
-    dropDirectory.current = directory
-    activeDropElement.current?.removeAttribute("data-external-file-drop-target")
-    activeDropSegment.current?.removeAttribute(
-      "data-external-file-drop-segment"
-    )
-    activeDropElement.current = null
-    activeDropSegment.current = null
-    const treeHost = panelRef.current?.querySelector<HTMLElement>(
-      "file-tree-container"
-    )
-    activeTreeHost.current?.removeAttribute("data-external-file-drop-root")
-    activeTreeHost.current = treeHost ?? null
-    if (!directory)
-      treeHost?.setAttribute("data-external-file-drop-root", "true")
-    const rows =
-      treeHost?.shadowRoot?.querySelectorAll<HTMLElement>("[data-item-path]")
-    for (const row of rows ?? []) {
-      if (normalizeDirectoryPath(row.dataset.itemPath ?? "") === directory) {
-        activeDropElement.current = row
-      } else {
-        const segments = row.querySelectorAll<HTMLElement>(
-          "[data-item-flattened-subitem]"
-        )
-        for (const segment of segments) {
-          if (
-            normalizeDirectoryPath(
-              segment.dataset.itemFlattenedSubitem ?? ""
-            ) !== directory
-          ) {
-            continue
-          }
-          activeDropElement.current = row
-          activeDropSegment.current = segment
-          break
-        }
-      }
-      if (!activeDropElement.current) continue
-      activeDropElement.current.setAttribute(
-        "data-external-file-drop-target",
-        "true"
-      )
-      activeDropSegment.current?.setAttribute(
-        "data-external-file-drop-segment",
-        "true"
-      )
-      break
-    }
-    scheduleTreeDropExpansion(directory)
-    if (panelRef.current) panelRef.current.dataset.fileDropActive = "true"
-    if (dropPathLabelRef.current) {
-      dropPathLabelRef.current.textContent = `/data/${directory}`
-    }
-  }
-
-  function handleTreeDragEnter(event: React.DragEvent) {
-    if (!canWrite || !hasDraggedFiles(event)) return
-    event.preventDefault()
-    dragDepth.current += 1
-    showTreeDropTarget(event)
-  }
-
-  function handleTreeDragOver(event: React.DragEvent) {
-    if (!canWrite || !hasDraggedFiles(event)) return
-    event.preventDefault()
-    event.dataTransfer.dropEffect = "copy"
-    showTreeDropTarget(event)
-  }
-
-  function handleTreeDragLeave(event: React.DragEvent) {
-    if (!canWrite || !hasDraggedFiles(event)) return
-    dragDepth.current = Math.max(0, dragDepth.current - 1)
-    if (dragDepth.current === 0) clearTreeDropTarget()
-  }
-
-  function handleTreeDrop(event: React.DragEvent) {
-    if (!canWrite || !hasDraggedFiles(event)) return
-    event.preventDefault()
-    const directory = dropDirectory.current
-    dragDepth.current = 0
-    clearTreeDropTarget()
-    void uploadDroppedFiles(event.dataTransfer, directory, onUploadFiles)
-  }
-
-  function workspaceWidth() {
-    return (
-      panelRef.current?.parentElement?.getBoundingClientRect().width ??
-      window.innerWidth
-    )
-  }
-
-  function applyFileTreeWidth(width: number) {
-    const nextWidth = clampFileTreeWidth(width, workspaceWidth())
-    currentWidth.current = nextWidth
-    panelRef.current?.style.setProperty("--file-tree-width", `${nextWidth}px`)
-    const handle = resizeHandleRef.current
-    if (handle) {
-      handle.setAttribute("aria-valuenow", String(nextWidth))
-      handle.setAttribute(
-        "aria-valuemax",
-        String(clampFileTreeWidth(fileTreeMaxWidth, workspaceWidth()))
-      )
-    }
-    return nextWidth
-  }
-
-  function scheduleFileTreeWidth(width: number) {
-    pendingWidth.current = width
-    if (resizeFrame.current !== null) return
-    resizeFrame.current = window.requestAnimationFrame(() => {
-      resizeFrame.current = null
-      const nextWidth = pendingWidth.current
-      pendingWidth.current = null
-      if (nextWidth !== null) applyFileTreeWidth(nextWidth)
-    })
-  }
-
-  function restoreDocumentAfterResize() {
-    document.documentElement.style.userSelect =
-      previousDocumentStyles.current.userSelect
-  }
-
-  function finishPanelTransition() {
-    if (transitionOverflowTimer.current !== null) {
-      window.clearTimeout(transitionOverflowTimer.current)
-      transitionOverflowTimer.current = null
-    }
-    panelRef.current?.style.removeProperty("overflow")
-  }
-
-  function finishResize(pointerId?: number) {
-    if (
-      pointerId !== undefined &&
-      resizeSession.current?.pointerId !== pointerId
-    ) {
-      return
-    }
-    if (resizeFrame.current !== null) {
-      window.cancelAnimationFrame(resizeFrame.current)
-      resizeFrame.current = null
-    }
-    if (pendingWidth.current !== null) {
-      applyFileTreeWidth(pendingWidth.current)
-      pendingWidth.current = null
-    }
-    resizeSession.current = null
-    panelRef.current?.removeAttribute("data-resizing")
-    panelRef.current?.style.removeProperty("transition")
-    resizeHandleRef.current?.removeAttribute("data-resizing")
-    restoreDocumentAfterResize()
-    persistFileTreeWidth(currentWidth.current)
-  }
-
-  React.useLayoutEffect(() => {
-    applyFileTreeWidth(initialWidth ?? defaultFileTreeWidth())
-  }, [initialWidth])
-
-  React.useLayoutEffect(() => {
-    selectionHandlers.current = {
-      onFileSelected,
-      onPathChange,
-    }
-  }, [onFileSelected, onPathChange])
-
-  React.useLayoutEffect(() => {
-    if (previousTreePaths.current === tree.paths) return
-    previousTreePaths.current = tree.paths
-    model.resetPaths(tree.paths, {
-      initialExpandedPaths: fileTreeParentDirectoryPaths(
-        selectionStore.getSnapshot()
-      ),
-    })
-  }, [model, selectionStore, tree.paths])
-
-  React.useLayoutEffect(() => {
-    if (mobileOpen) {
-      setMobileContentVisible(true)
-      return
-    }
-    const timer = window.setTimeout(
-      () => setMobileContentVisible(false),
-      mobileFileDrawerTransitionMs
-    )
-    return () => window.clearTimeout(timer)
-  }, [mobileOpen])
-
-  React.useLayoutEffect(() => {
-    if (!collapsed) applyFileTreeWidth(currentWidth.current)
-  }, [collapsed])
-
-  React.useLayoutEffect(() => {
-    const panel = panelRef.current
-    const changed = previousCollapsed.current !== collapsed
-    previousCollapsed.current = collapsed
-    if (!panel || !changed || !window.matchMedia("(min-width: 768px)").matches)
-      return
-    if (!animateCollapsedChange) {
-      finishPanelTransition()
-      return
-    }
-
-    panel.style.overflow = "hidden"
-    if (transitionOverflowTimer.current !== null) {
-      window.clearTimeout(transitionOverflowTimer.current)
-    }
-    transitionOverflowTimer.current = window.setTimeout(
-      finishPanelTransition,
-      240
-    )
-  }, [animateCollapsedChange, collapsed])
-
-  React.useEffect(
-    () => () => {
-      if (resizeFrame.current !== null) {
-        window.cancelAnimationFrame(resizeFrame.current)
-      }
-      if (transitionOverflowTimer.current !== null) {
-        window.clearTimeout(transitionOverflowTimer.current)
-      }
-      if (dropExpandTimer.current !== null) {
-        window.clearTimeout(dropExpandTimer.current)
-      }
-      if (resizeSession.current) restoreDocumentAfterResize()
-    },
-    []
-  )
-
-  function handleResizePointerDown(event: React.PointerEvent<HTMLDivElement>) {
-    if (event.button !== 0) return
-    event.preventDefault()
-    const panel = panelRef.current
-    if (!panel) return
-    resizeSession.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startWidth: panel.getBoundingClientRect().width,
-    }
-    previousDocumentStyles.current = {
-      userSelect: document.documentElement.style.userSelect,
-    }
-    document.documentElement.style.userSelect = "none"
-    panel.dataset.resizing = "true"
-    panel.style.transition = "none"
-    event.currentTarget.dataset.resizing = "true"
-    // Pointer capture is progressive enhancement; pointer events still work.
-    Result.try(() => event.currentTarget.setPointerCapture(event.pointerId))
-  }
-
-  function handleResizePointerMove(event: React.PointerEvent<HTMLDivElement>) {
-    const session = resizeSession.current
-    if (!session || session.pointerId !== event.pointerId) return
-    scheduleFileTreeWidth(session.startWidth + event.clientX - session.startX)
-  }
-
-  function handleResizePointerEnd(event: React.PointerEvent<HTMLDivElement>) {
-    if (resizeSession.current?.pointerId !== event.pointerId) return
-    // The pointer may already have been released by the browser.
-    Result.try(() => {
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-        event.currentTarget.releasePointerCapture(event.pointerId)
-      }
-    })
-    finishResize(event.pointerId)
-  }
-
-  function handleResizeKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
-    const step = event.shiftKey ? 32 : 16
-    let nextWidth: number | null = null
-    if (event.key === "ArrowLeft") nextWidth = currentWidth.current - step
-    if (event.key === "ArrowRight") nextWidth = currentWidth.current + step
-    if (event.key === "Home") nextWidth = fileTreeMinWidth
-    if (event.key === "End") nextWidth = fileTreeMaxWidth
-    if (nextWidth === null) return
-    event.preventDefault()
-    persistFileTreeWidth(applyFileTreeWidth(nextWidth))
-  }
-
-  function handleHomeClick() {
-    onMobileOpenChange(false)
-    onHome()
-  }
-
-  function closeMobileFileBrowser() {
-    onMobileOpenChange(false)
-    window.requestAnimationFrame(() => mobileBrowseButtonRef.current?.focus())
-  }
-
-  return (
-    <aside
-      ref={panelRef}
-      id={`file-tree-${instance.shortId}`}
-      data-file-tree-panel
-      data-mobile-file-drawer
-      data-state={mobileOpen ? "open" : "closed"}
-      data-collapsed={collapsed}
-      className={`group/tree-drop absolute inset-x-0 bottom-0 z-30 flex w-full shrink-0 flex-col overflow-hidden border-t border-border/80 bg-card shadow-[0_-18px_45px_rgba(0,0,0,0.35)] transition-[height] duration-200 ease-out md:relative md:inset-auto md:z-auto md:h-auto md:min-h-0 md:border-t-0 md:shadow-none ${animateCollapsedChange ? "md:transition-[width,min-width,max-width] md:duration-200 md:ease-linear" : "md:transition-none"} ${collapsed ? "md:!w-0 md:!max-w-0 md:!min-w-0 md:overflow-hidden" : "md:w-[var(--file-tree-width)] md:max-w-[45%] md:min-w-56 md:overflow-visible md:[--file-tree-width:17.5rem] xl:max-w-[30rem] xl:[--file-tree-width:19rem]"} ${mobileOpen ? "h-full" : "h-11"}`}
-      onDragEnter={handleTreeDragEnter}
-      onDragOver={handleTreeDragOver}
-      onDragLeave={handleTreeDragLeave}
-      onDrop={handleTreeDrop}
-      onTransitionEnd={(event) => {
-        if (event.currentTarget !== event.target) return
-        if (
-          event.propertyName === "width" ||
-          event.propertyName === "min-width" ||
-          event.propertyName === "max-width"
-        ) {
-          finishPanelTransition()
-        }
-      }}
-      style={
-        initialWidth
-          ? ({
-              "--file-tree-width": `${initialWidth}px`,
-            } as React.CSSProperties)
-          : undefined
-      }
-    >
-      <div
-        className={`${mobileContentVisible ? "flex" : "hidden"} order-1 h-12 shrink-0 items-center border-b border-border/80 bg-card px-3 md:hidden`}
-      >
-        <div className="flex min-w-0 flex-1 items-center gap-2.5">
-          <FolderTree className="size-[18px] shrink-0 text-primary" />
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold">Browse files</p>
-            <p className="truncate font-mono text-[0.625rem] text-muted-foreground">
-              /data
-            </p>
-          </div>
-        </div>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="Close file browser"
-          onClick={closeMobileFileBrowser}
-        >
-          <X className="size-[18px]" />
-        </Button>
-      </div>
-
-      <div
-        className={`absolute inset-x-0 bottom-0 z-10 order-2 flex h-11 shrink-0 items-center overflow-hidden border-t bg-card px-1.5 md:relative md:inset-auto md:z-auto md:order-1 md:h-14 md:w-[var(--file-tree-width)] md:border-t-0 md:border-b md:px-2 ${collapsed ? "md:invisible" : ""}`}
-      >
-        <FileTreeHomeButton
-          selectionStore={selectionStore}
-          onClick={handleHomeClick}
-        />
-        <Button
-          ref={mobileBrowseButtonRef}
-          variant={mobileOpen ? "secondary" : "ghost"}
-          size="icon-sm"
-          className="shrink-0 shadow-none md:hidden"
-          aria-label="Browse files"
-          aria-controls={`file-tree-${instance.shortId}`}
-          aria-expanded={mobileOpen}
-          onClick={() => onMobileOpenChange(!mobileOpen)}
-        >
-          <FolderTree className="size-[18px]" />
-        </Button>
-        <FileTreeSearchInput
-          model={model}
-          onMobileOpenChange={onMobileOpenChange}
-          onMobileClose={closeMobileFileBrowser}
-        />
-        <div className="flex shrink-0 items-center gap-0.5">
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="New"
-                title="New…"
-              >
-                <Plus className="size-[18px]" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent
-              align="end"
-              side="bottom"
-              sideOffset={6}
-              className="w-56 p-1"
-            >
-              <p className="border-b px-2 py-2 text-[0.625rem] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
-                Add to instance
-              </p>
-              <FileActionPreview icon={<FolderPlus />} label="New directory" />
-              <FileActionPreview icon={<FilePlus />} label="New file" />
-              <FileUploadPickerAction
-                disabled={!canWrite || uploading || refreshDisabled}
-                onClick={() => uploadInputRef.current?.click()}
-                icon={<Upload />}
-                label="Upload files"
-                uploading={uploading}
-              />
-              <FileUploadPickerAction
-                disabled={!canWrite || uploading || refreshDisabled}
-                onClick={() => folderUploadInputRef.current?.click()}
-                icon={<FolderPlus />}
-                label="Upload folder"
-                uploading={uploading}
-              />
-              <input
-                ref={uploadInputRef}
-                type="file"
-                multiple
-                className="hidden"
-                aria-label="Choose files to upload"
-                onChange={(event) => void handleFilesSelected(event)}
-              />
-              <input
-                {...folderInputAttributes}
-                ref={folderUploadInputRef}
-                type="file"
-                multiple
-                className="hidden"
-                aria-label="Choose folder to upload"
-                onChange={(event) => void handleFilesSelected(event)}
-              />
-              <FileActionPreview icon={<Network />} label="Connect with SFTP" />
-            </PopoverContent>
-          </Popover>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              {refreshing ? (
-                <span className="inline-flex">
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label="Refreshing files"
-                    disabled
-                  >
-                    <RefreshCw className="size-[18px] animate-spin" />
-                  </Button>
-                </span>
-              ) : (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Refresh files"
-                  disabled={refreshDisabled}
-                  onClick={onRefresh}
-                >
-                  <RefreshCw className="size-[18px]" />
-                </Button>
-              )}
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>
-              {refreshing
-                ? "Refreshing Files"
-                : refreshDisabled
-                  ? "Relay disconnected"
-                  : "Refresh Files"}
-            </TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="hidden md:inline-flex"
-                aria-label="Collapse file tree"
-                aria-controls={`file-tree-${instance.shortId}`}
-                onClick={() => onCollapsedChange(true)}
-              >
-                <PanelLeftClose className="size-[18px]" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>
-              Collapse File Tree
-            </TooltipContent>
-          </Tooltip>
-        </div>
-      </div>
-      <div
-        className={`order-1 mb-11 min-h-0 flex-1 overflow-hidden bg-card py-1.5 md:order-2 md:mb-0 md:block md:w-[var(--file-tree-width)] md:shrink-0 ${mobileContentVisible ? "block" : "hidden"} ${collapsed ? "md:invisible" : ""}`}
-      >
-        <FileTreeSelectionSync
-          model={model}
-          selectionStore={selectionStore}
-          treePaths={tree.paths}
-        />
-        <FileTree
-          model={model}
-          aria-label={`${instance.name} files`}
-          className="block size-full min-h-[210px]"
-          style={
-            {
-              "--trees-selected-bg-override":
-                "color-mix(in oklch, var(--primary) 20%, transparent)",
-              "--trees-selected-fg-override": "var(--foreground)",
-              "--trees-bg-override": "var(--card)",
-              "--trees-bg-muted-override": "var(--muted)",
-              "--trees-fg-override": "var(--foreground)",
-              "--trees-fg-muted-override": "var(--muted-foreground)",
-              "--trees-input-bg-override": "var(--background)",
-              "--trees-search-bg-override": "var(--background)",
-              "--trees-search-fg-override": "var(--foreground)",
-              "--trees-border-color-override": "var(--border)",
-              "--trees-border-radius-override": "0px",
-              "--trees-font-family-override": "var(--font-sans)",
-              "--trees-font-size-override": "0.75rem",
-              "--trees-padding-inline-override": "0px",
-              "--trees-item-padding-x-override": "5px",
-              "--trees-item-margin-x-override": "0px",
-              "--trees-item-row-gap-override": "4px",
-              "--trees-level-gap-override": "4px",
-              "--trees-context-menu-trigger-inline-offset": "8px",
-              height: "100%",
-            } as React.CSSProperties
-          }
-          renderContextMenu={(item, context) => (
-            <FileTreeContextMenu
-              anchorRect={context.anchorRect}
-              label={`Actions for ${item.name}`}
-            >
-              <button
-                type="button"
-                role="menuitem"
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none [&>svg]:size-3.5"
-                onClick={() => {
-                  context.close()
-                  onPathChange(item.path)
-                  onFileSelected()
-                }}
-              >
-                {item.kind === "directory" ? <Folder /> : <FileIcon />}
-                Open
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                disabled={!actions.canWrite}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
-                onClick={() => {
-                  context.close({ restoreFocus: false })
-                  actions.request("rename", [item.path])
-                }}
-              >
-                <ALargeSmall /> Rename
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none [&>svg]:size-3.5"
-                onClick={() => {
-                  context.close({ restoreFocus: false })
-                  actions.request("download", [item.path])
-                }}
-              >
-                <Download />
-                Download
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                disabled={!actions.canWrite}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
-                onClick={() => {
-                  context.close({ restoreFocus: false })
-                  actions.request("archive", [item.path])
-                }}
-              >
-                <Archive /> Archive
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                disabled={!actions.canWrite}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
-                onClick={() => {
-                  context.close()
-                  actions.request("duplicate", [item.path])
-                }}
-              >
-                <Copy /> Duplicate
-              </button>
-              <div className="-mx-1 my-1 h-px bg-border" />
-              <button
-                type="button"
-                role="menuitem"
-                disabled={!actions.canWrite}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-destructive transition-colors hover:bg-destructive/10 focus-visible:bg-destructive/10 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
-                onClick={() => {
-                  context.close({ restoreFocus: false })
-                  actions.request("delete", [item.path])
-                }}
-              >
-                <Trash2 /> Delete
-              </button>
-            </FileTreeContextMenu>
-          )}
-        />
-      </div>
-
-      <div className="pointer-events-none absolute right-2 bottom-12 left-2 z-50 hidden items-center gap-2 border border-primary/35 bg-popover/95 px-3 py-2 text-xs shadow-xl backdrop-blur-sm group-data-[file-drop-active=true]/tree-drop:flex md:bottom-2">
-        <Upload className="size-4 shrink-0 text-primary" />
-        <span className="min-w-0 flex-1 truncate">Upload to</span>
-        <span
-          ref={dropPathLabelRef}
-          className="max-w-[65%] truncate font-mono text-[0.625rem] text-primary"
-        >
-          /data/
-        </span>
-      </div>
-
-      <span
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-y-0 right-0 z-30 hidden w-px bg-border/80 md:block"
-      />
-
-      <div
-        ref={resizeHandleRef}
-        role="separator"
-        tabIndex={0}
-        aria-label="Resize file tree"
-        aria-orientation="vertical"
-        aria-valuemin={fileTreeMinWidth}
-        aria-valuemax={fileTreeMaxWidth}
-        aria-valuenow={currentWidth.current}
-        className={`${collapsed ? "md:hidden" : "md:flex"} group absolute inset-y-0 -right-1 z-40 hidden w-2.5 cursor-col-resize touch-none items-center justify-center outline-none`}
-        onPointerDown={handleResizePointerDown}
-        onPointerMove={handleResizePointerMove}
-        onPointerUp={handleResizePointerEnd}
-        onPointerCancel={handleResizePointerEnd}
-        onLostPointerCapture={() => {
-          if (resizeSession.current) finishResize()
-        }}
-        onDoubleClick={(event) => {
-          event.preventDefault()
-          persistFileTreeWidth(applyFileTreeWidth(defaultFileTreeWidth()))
-        }}
-        onKeyDown={handleResizeKeyDown}
-      >
-        <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border/80 transition-colors group-hover:bg-primary/55 group-focus-visible:bg-primary/75 group-data-[resizing=true]:bg-primary" />
-        <span className="relative grid h-9 w-2.5 place-items-center overflow-hidden border border-primary/35 bg-background text-primary opacity-0 shadow-[0_0_14px_color-mix(in_oklch,var(--primary),transparent_70%)] transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 group-data-[resizing=true]:opacity-100">
-          <GripVertical className="size-2" />
-        </span>
-      </div>
-    </aside>
-  )
-}
-
-function FileTreeHomeButton({
-  selectionStore,
-  onClick,
-}: {
-  selectionStore: FileSelectionStore
-  onClick: () => void
-}) {
-  const isHome = React.useSyncExternalStore(
-    selectionStore.subscribe,
-    selectionStore.getIsHomeSnapshot,
-    selectionStore.getIsHomeSnapshot
-  )
-  return <FilesHomeButton active={isHome} onClick={onClick} />
-}
-
-function FileTreeSearchInput({
-  model,
-  onMobileOpenChange,
-  onMobileClose,
-}: {
-  model: ReturnType<typeof useFileTree>["model"]
-  onMobileOpenChange: (open: boolean) => void
-  onMobileClose: () => void
-}) {
-  const search = useFileTreeSearch(model)
-
-  return (
-    <label className="flex h-full min-w-0 flex-1 items-center">
-      <Search className="ml-1 size-[18px] shrink-0 text-foreground/90 md:ml-1.5" />
-      <input
-        type="search"
-        value={search.value}
-        placeholder="Search files…"
-        aria-label="Search instance files"
-        className="h-full min-w-0 flex-1 bg-transparent px-2 text-base text-foreground outline-none placeholder:text-muted-foreground/70 md:text-sm"
-        onChange={(event) => {
-          const value = event.target.value
-          if (value) search.setValue(value)
-          else search.close()
-        }}
-        onFocus={() => {
-          if (window.matchMedia("(max-width: 767px)").matches) {
-            onMobileOpenChange(true)
-          }
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault()
-            if (search.value) search.close()
-            else onMobileClose()
-            return
-          }
-          if (event.key === "Enter") {
-            event.preventDefault()
-            if (event.shiftKey) search.focusPreviousMatch()
-            else search.focusNextMatch()
-          }
-        }}
-      />
-    </label>
-  )
-}
-
-function FileTreeSelectionSync({
-  model,
-  selectionStore,
-  treePaths,
-}: {
-  model: ReturnType<typeof useFileTree>["model"]
-  selectionStore: FileSelectionStore
-  treePaths: ReadonlyArray<string>
-}) {
-  const selectedPath = React.useSyncExternalStore(
-    selectionStore.subscribe,
-    selectionStore.getSnapshot,
-    selectionStore.getSnapshot
-  )
-
-  React.useLayoutEffect(() => {
-    const currentSelection = model.getSelectedPaths()
-    if (selectedPath) {
-      for (const parentPath of fileTreeParentDirectoryPaths(selectedPath)) {
-        const parent = model.getItem(parentPath)
-        if (parent && "isExpanded" in parent && !parent.isExpanded()) {
-          parent.expand()
-        }
-      }
-      if (
-        currentSelection.length !== 1 ||
-        currentSelection[0] !== selectedPath
-      ) {
-        for (const path of currentSelection) model.getItem(path)?.deselect()
-        model.getItem(selectedPath)?.select()
-      }
-      model.scrollToPath(selectedPath, { focus: false, offset: "nearest" })
-      return
-    }
-    for (const path of currentSelection) model.getItem(path)?.deselect()
-  }, [model, selectedPath, treePaths])
-
-  return null
-}
-
-function FileActionPreview({
-  icon,
-  label,
-}: {
-  icon: React.ReactNode
-  label: string
-}) {
-  return (
-    <button
-      type="button"
-      disabled
-      className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-muted-foreground/80 transition-colors hover:bg-popover-accent/75 hover:text-foreground focus-visible:bg-popover-accent focus-visible:text-foreground focus-visible:outline-none disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-muted-foreground/80"
-    >
-      <span className="grid size-7 shrink-0 place-items-center border border-border/70 bg-card [&>svg]:size-3.5">
-        {icon}
-      </span>
-      <span className="min-w-0 flex-1 text-foreground/75">{label}</span>
-      <span className="font-mono text-[0.5rem] tracking-wider text-muted-foreground/60 uppercase">
-        Soon
-      </span>
-    </button>
-  )
-}
-
-function FileUploadPickerAction({
-  disabled,
-  icon,
-  label,
-  onClick,
-  uploading,
-}: {
-  disabled: boolean
-  icon: React.ReactNode
-  label: string
-  onClick: () => void
-  uploading: boolean
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      className="flex w-full items-center gap-2.5 px-2 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-popover-accent/75 hover:text-foreground focus-visible:bg-popover-accent focus-visible:text-foreground focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40"
-      onClick={onClick}
-    >
-      <span className="grid size-7 shrink-0 place-items-center border border-border/70 bg-card [&>svg]:size-3.5">
-        {uploading ? <LoaderCircle className="animate-spin" /> : icon}
-      </span>
-      <span className="min-w-0 flex-1 text-foreground">
-        {uploading ? "Uploading…" : label}
-      </span>
-      <span className="font-mono text-[0.5rem] tracking-wider text-primary uppercase">
-        Direct
-      </span>
-    </button>
-  )
-}
-
 function fileActivityKind(entry: RelayFileActivityEntry): "Edited" | "Viewed" {
   if (
     entry.lastEditedAt &&
@@ -3871,7 +2610,7 @@ function FileActivityRow({
 
 function FilesHome({
   instance,
-  tree,
+  fileIndex,
   fileTreeLoading,
   fileTreeError,
   treeCollapsed,
@@ -3882,7 +2621,7 @@ function FilesHome({
   actions,
 }: {
   instance: InstanceWorkspaceInstance
-  tree: RelayFileTree | null
+  fileIndex: ProgressiveFileIndex
   fileTreeLoading: boolean
   fileTreeError: string | null
   treeCollapsed: boolean
@@ -3902,13 +2641,7 @@ function FilesHome({
   const activityQuery = useQuery(
     relayFileActivityQueryOptions(instance.relayId, instance.id)
   )
-  const activity = React.useMemo(() => {
-    if (!tree || !activityQuery.data) return []
-    const availablePaths = new Set(tree.paths)
-    return activityQuery.data.files.filter(
-      (entry) => availablePaths.has(entry.path) && !entry.path.endsWith("/")
-    )
-  }, [activityQuery.data, tree])
+  const activity = activityQuery.data?.files ?? []
   const loading = fileTreeLoading || activityQuery.isFetching
   const error =
     fileTreeError ??
@@ -3990,9 +2723,12 @@ function FilesHome({
             </div>
           ) : null}
 
-          {tree ? (
-            <RootDirectoryList actions={actions} onOpen={onOpen} tree={tree} />
-          ) : null}
+          <RootDirectoryList
+            actions={actions}
+            enabled={!fileTreeLoading}
+            fileIndex={fileIndex}
+            onOpen={onOpen}
+          />
         </div>
       </div>
     </section>
@@ -4109,18 +2845,20 @@ interface DirectoryEntry {
   modifiedAt: number
   name: string
   path: string
-  size: number
+  size: number | null
 }
 
 type DirectorySortKey = "modifiedAt" | "name" | "size"
 type DirectorySortDirection = "ascending" | "descending"
+const directoryEntryBatchSize = 128
 
 const fileModifiedAtFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
 })
 
-function formatFileSize(bytes: number): string {
+function formatFileSize(bytes: number | null): string {
+  if (bytes === null) return "—"
   if (bytes < 1_024) return `${bytes} B`
   const units = ["KiB", "MiB", "GiB", "TiB"] as const
   let value = bytes / 1_024
@@ -4170,32 +2908,39 @@ function FileModifiedAtTime({ modifiedAt }: { modifiedAt: number }) {
   )
 }
 
+function useFileDirectory(
+  fileIndex: ProgressiveFileIndex,
+  directory: string,
+  enabled = true
+): FileDirectorySnapshot {
+  const normalized = normalizeDirectoryPath(directory)
+  const subscribe = React.useCallback(
+    (listener: () => void) =>
+      fileIndex.subscribeDirectory(normalized, listener),
+    [fileIndex, normalized]
+  )
+  const getSnapshot = React.useCallback(
+    () => fileIndex.getDirectorySnapshot(normalized),
+    [fileIndex, normalized]
+  )
+  const snapshot = React.useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    getSnapshot
+  )
+  React.useEffect(() => {
+    if (enabled) void fileIndex.ensureDirectory(normalized)
+  }, [enabled, fileIndex, normalized])
+  return snapshot
+}
+
 function directoryEntries(
-  tree: RelayFileTree,
-  directory: string
+  entries: ReadonlyArray<RelayFileEntry>
 ): Array<DirectoryEntry> {
-  const normalizedDirectory = normalizeDirectoryPath(directory)
-  const entries = new Map<string, DirectoryEntry>()
-  for (const path of tree.paths) {
-    if (!path.startsWith(normalizedDirectory) || path === normalizedDirectory)
-      continue
-    const remainder = path.slice(normalizedDirectory.length)
-    const segment = remainder.split("/")[0]
-    if (!segment) continue
-    const nested = remainder.includes("/")
-    const entryPath = `${normalizedDirectory}${segment}${nested ? "/" : ""}`
-    entries.set(entryPath, {
-      kind: nested ? "directory" : "file",
-      modifiedAt: tree.modifiedAt?.[entryPath] ?? 0,
-      name: segment,
-      path: entryPath,
-      size: tree.sizes[entryPath] ?? 0,
-    })
-  }
-  return [...entries.values()].sort((left, right) => {
-    if (left.kind !== right.kind) return left.kind === "directory" ? -1 : 1
-    return left.name.localeCompare(right.name)
-  })
+  return entries.map((entry) => ({
+    ...entry,
+    name: formatName(entry.path.replace(/\/$/u, "")),
+  }))
 }
 
 function useSortedDirectoryEntries(entries: Array<DirectoryEntry>) {
@@ -4212,7 +2957,7 @@ function useSortedDirectoryEntries(entries: Array<DirectoryEntry>) {
               numeric: true,
               sensitivity: "base",
             })
-          : left[sortKey] - right[sortKey]
+          : (left[sortKey] ?? -1) - (right[sortKey] ?? -1)
       return comparison === 0
         ? left.name.localeCompare(right.name, undefined, { numeric: true })
         : comparison * direction
@@ -4234,6 +2979,28 @@ function useSortedDirectoryEntries(entries: Array<DirectoryEntry>) {
   )
 
   return { sortDirection, sortedEntries, sortKey, toggleSort }
+}
+
+function useBatchedDirectoryEntries(
+  entries: Array<DirectoryEntry>,
+  complete: boolean,
+  loadMore: () => Promise<void>
+) {
+  const [visibleCount, setVisibleCount] = React.useState(
+    directoryEntryBatchSize
+  )
+  const visibleEntries = React.useMemo(
+    () => entries.slice(0, visibleCount),
+    [entries, visibleCount]
+  )
+  const hasBufferedEntries = visibleCount < entries.length
+  const hasMoreEntries = hasBufferedEntries || !complete
+  const revealMore = React.useCallback(() => {
+    const needsFetch = visibleCount >= entries.length
+    setVisibleCount((current) => current + directoryEntryBatchSize)
+    if (needsFetch) void loadMore()
+  }, [entries.length, loadMore, visibleCount])
+  return { hasBufferedEntries, hasMoreEntries, revealMore, visibleEntries }
 }
 
 function DirectorySortButton({
@@ -4270,16 +3037,28 @@ function DirectorySortButton({
 
 function RootDirectoryList({
   actions,
+  enabled,
+  fileIndex,
   onOpen,
-  tree,
 }: {
   actions: FileActionsController
+  enabled: boolean
+  fileIndex: ProgressiveFileIndex
   onOpen: (path: string) => void
-  tree: RelayFileTree
 }) {
-  const entries = React.useMemo(() => directoryEntries(tree, ""), [tree])
+  const directory = useFileDirectory(fileIndex, "", enabled)
+  const entries = React.useMemo(
+    () => directoryEntries(directory.entries),
+    [directory.entries]
+  )
   const { sortDirection, sortedEntries, sortKey, toggleSort } =
     useSortedDirectoryEntries(entries)
+  const loadMore = React.useCallback(
+    () => fileIndex.loadMoreDirectory(""),
+    [fileIndex]
+  )
+  const { hasBufferedEntries, hasMoreEntries, revealMore, visibleEntries } =
+    useBatchedDirectoryEntries(sortedEntries, directory.complete, loadMore)
   const [selected, setSelected] = React.useState<ReadonlySet<string>>(
     () => new Set()
   )
@@ -4291,7 +3070,8 @@ function RootDirectoryList({
     [entries, selected]
   )
   const allSelected =
-    entries.length > 0 && selectedPaths.length === entries.length
+    visibleEntries.length > 0 &&
+    visibleEntries.every((entry) => selected.has(entry.path))
 
   function toggle(path: string) {
     setSelected((current) => {
@@ -4330,7 +3110,7 @@ function RootDirectoryList({
                 setSelected(
                   allSelected
                     ? new Set()
-                    : new Set(entries.map((entry) => entry.path))
+                    : new Set(visibleEntries.map((entry) => entry.path))
                 )
               }
             />
@@ -4355,7 +3135,7 @@ function RootDirectoryList({
           />
           <span />
         </div>
-        {sortedEntries.map((entry) => (
+        {visibleEntries.map((entry) => (
           <div
             key={entry.path}
             className="grid min-h-11 grid-cols-[2.25rem_minmax(12rem,1fr)_7rem_11rem_2.5rem] items-center border-b border-border/55 px-2 last:border-b-0 hover:bg-accent/30 has-checked:bg-primary/[0.07]"
@@ -4388,7 +3168,29 @@ function RootDirectoryList({
             <FileActionsDropdown controller={actions} paths={[entry.path]} />
           </div>
         ))}
-        {!entries.length ? (
+        {directory.loading && !hasBufferedEntries ? (
+          <div className="flex min-h-10 items-center justify-center gap-2 border-t border-border/55 px-6 text-xs text-muted-foreground">
+            <LoaderCircle className="size-3.5 animate-spin text-primary" />
+            Loading more files
+          </div>
+        ) : hasMoreEntries ? (
+          <button
+            type="button"
+            className="flex min-h-10 w-full items-center justify-center gap-2 border-t border-border/55 px-6 text-xs font-medium text-primary transition-colors hover:bg-accent/30 focus-visible:bg-accent/40 focus-visible:outline-none"
+            onClick={revealMore}
+          >
+            {directory.loading ? (
+              <LoaderCircle className="size-3.5 animate-spin" />
+            ) : null}
+            Load more files
+          </button>
+        ) : null}
+        {directory.error ? (
+          <div className="border-t border-destructive/30 bg-destructive/5 px-4 py-3 text-xs text-destructive">
+            {directory.error.message || "Could not load this directory"}
+          </div>
+        ) : null}
+        {!entries.length && directory.complete ? (
           <div className="grid min-h-32 place-items-center px-6 text-center text-xs text-muted-foreground">
             The server root is empty. Drop files anywhere on this page to
             upload.
@@ -4402,30 +3204,37 @@ function RootDirectoryList({
 function DirectoryView({
   actions,
   canWrite,
+  fileIndex,
   onOpen,
   onTreeExpand,
   onUploadFiles,
   path,
-  tree,
   treeCollapsed,
   uploading,
 }: {
   actions: FileActionsController
   canWrite: boolean
+  fileIndex: ProgressiveFileIndex
   onOpen: (path: string) => void
   onTreeExpand: () => void
   onUploadFiles: UploadFiles
   path: string
-  tree: RelayFileTree
   treeCollapsed: boolean
   uploading: boolean
 }) {
+  const directory = useFileDirectory(fileIndex, path)
   const entries = React.useMemo(
-    () => directoryEntries(tree, path),
-    [path, tree]
+    () => directoryEntries(directory.entries),
+    [directory.entries]
   )
   const { sortDirection, sortedEntries, sortKey, toggleSort } =
     useSortedDirectoryEntries(entries)
+  const loadMore = React.useCallback(
+    () => fileIndex.loadMoreDirectory(path),
+    [fileIndex, path]
+  )
+  const { hasBufferedEntries, hasMoreEntries, revealMore, visibleEntries } =
+    useBatchedDirectoryEntries(sortedEntries, directory.complete, loadMore)
   const [selected, setSelected] = React.useState<ReadonlySet<string>>(
     () => new Set()
   )
@@ -4446,7 +3255,8 @@ function DirectoryView({
     [entries, selected]
   )
   const allSelected =
-    entries.length > 0 && selectedPaths.length === entries.length
+    visibleEntries.length > 0 &&
+    visibleEntries.every((entry) => selected.has(entry.path))
 
   function toggle(pathToToggle: string) {
     setSelected((current) => {
@@ -4547,7 +3357,7 @@ function DirectoryView({
                   setSelected(
                     allSelected
                       ? new Set()
-                      : new Set(entries.map((entry) => entry.path))
+                      : new Set(visibleEntries.map((entry) => entry.path))
                   )
                 }
               />
@@ -4595,7 +3405,7 @@ function DirectoryView({
             <span />
           </button>
 
-          {sortedEntries.map((entry) => (
+          {visibleEntries.map((entry) => (
             <div
               key={entry.path}
               className="group/row grid min-h-11 grid-cols-[2.25rem_minmax(12rem,1fr)_7rem_11rem_2.5rem] items-center border-b border-border/55 px-2 last:border-b-0 hover:bg-accent/30 has-checked:bg-primary/[0.07]"
@@ -4629,7 +3439,31 @@ function DirectoryView({
             </div>
           ))}
 
-          {!entries.length ? (
+          {directory.loading && !hasBufferedEntries ? (
+            <div className="flex min-h-11 items-center justify-center gap-2 border-t border-border/55 px-6 text-xs text-muted-foreground">
+              <LoaderCircle className="size-3.5 animate-spin text-primary" />
+              Loading more files
+            </div>
+          ) : hasMoreEntries ? (
+            <button
+              type="button"
+              className="flex min-h-11 w-full items-center justify-center gap-2 border-t border-border/55 px-6 text-xs font-medium text-primary transition-colors hover:bg-accent/30 focus-visible:bg-accent/40 focus-visible:outline-none"
+              onClick={revealMore}
+            >
+              {directory.loading ? (
+                <LoaderCircle className="size-3.5 animate-spin" />
+              ) : null}
+              Load more files
+            </button>
+          ) : null}
+
+          {directory.error ? (
+            <div className="border-t border-destructive/30 bg-destructive/5 px-4 py-3 text-xs text-destructive">
+              {directory.error.message || "Could not load this directory"}
+            </div>
+          ) : null}
+
+          {!entries.length && directory.complete ? (
             <div className="grid min-h-40 place-items-center px-6 text-center">
               <div>
                 <Folder className="mx-auto size-6 text-muted-foreground/60" />
@@ -4651,6 +3485,18 @@ function DirectoryView({
 const StableEditor = React.memo(Editor)
 const StableDirectoryView = React.memo(DirectoryView)
 const StableFileTreePanel = React.memo(FileTreePanel)
+
+const InitializedFileTreePanel = React.memo(function InitializedFileTreePanel({
+  initialPaths,
+  ...props
+}: Omit<React.ComponentProps<typeof FileTreePanel>, "preparedInput"> & {
+  readonly initialPaths: readonly string[]
+}) {
+  const [preparedInput] = React.useState(() =>
+    prepareFileTreeInput(initialPaths)
+  )
+  return <StableFileTreePanel {...props} preparedInput={preparedInput} />
+})
 
 interface FileWorkspaceProps {
   instance: InstanceWorkspaceInstance
@@ -4765,27 +3611,34 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
   const handledTreeEntry = React.useRef(false)
   const openingTreeForRouteEntry = openTreeOnEntry && !handledTreeEntry.current
   const displayedTreeCollapsed = treeCollapsed && !openingTreeForRouteEntry
-  const treeQuery = useQuery(
-    relayTreeQueryOptions(instance.relayId, instance.id)
+  const rootDirectoryQuery = useQuery(
+    relayRootDirectoryQueryOptions(instance.relayId, instance.id)
   )
-  const tree = treeQuery.data ?? null
-  const treeReady = tree !== null
-  const refreshTreeMutation = useMutation({
-    mutationFn: () =>
-      getRelayTree({
-        data: {
-          instanceId: instance.id,
-          relayId: instance.relayId,
-          fresh: true,
-        },
-      }),
-    onSuccess: (nextTree) => {
-      queryClient.setQueryData(
-        queryKeys.relay.tree(instance.relayId, instance.id),
-        nextTree
-      )
-    },
-  })
+  const [fileIndex] = React.useState(
+    () =>
+      new ProgressiveFileIndex({
+        initialRoot: rootDirectoryQuery.data ?? null,
+        instanceId: instance.id,
+        relayId: instance.relayId,
+      })
+  )
+  const treeReady = rootDirectoryQuery.data !== undefined
+  const initialTreePaths = React.useMemo(
+    () => rootDirectoryQuery.data?.entries.map((entry) => entry.path) ?? [],
+    [rootDirectoryQuery.data]
+  )
+
+  React.useLayoutEffect(() => {
+    if (rootDirectoryQuery.data) {
+      fileIndex.hydrateRoot(rootDirectoryQuery.data)
+    }
+  }, [fileIndex, rootDirectoryQuery.data])
+
+  React.useEffect(() => {
+    if (treeReady) fileIndex.start()
+  }, [fileIndex, treeReady])
+
+  React.useEffect(() => () => fileIndex.dispose(), [fileIndex])
 
   React.useEffect(() => preferencesStore.hydrate(), [preferencesStore])
 
@@ -4839,10 +3692,15 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
     setMobileTreeOpen(false)
   }, [])
 
-  const refreshTree = refreshTreeMutation.mutate
   const handleRefresh = React.useCallback(() => {
-    refreshTree()
-  }, [refreshTree])
+    fileIndex.refresh()
+    void queryClient.invalidateQueries({
+      exact: true,
+      queryKey: relayRootDirectoryQueryOptions(instance.relayId, instance.id)
+        .queryKey,
+      refetchType: "none",
+    })
+  }, [fileIndex, instance.id, instance.relayId, queryClient])
   const uploads = useFileUploadAction({
     canWrite: canWrite && relayConnected,
     instance,
@@ -4851,6 +3709,7 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
   const fileActions = useFileActions({
     canWrite: canWrite && relayConnected,
     instance,
+    onRefresh: handleRefresh,
     onPathChange,
     selectionStore,
   })
@@ -4860,13 +3719,13 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
       className="relative flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden md:flex-row"
       data-file-workspace
     >
-      {tree ? (
-        <StableFileTreePanel
+      {treeReady && rootDirectoryQuery.data ? (
+        <InitializedFileTreePanel
           key={instance.id}
           instance={instance}
-          tree={tree}
+          fileIndex={fileIndex}
+          initialPaths={initialTreePaths}
           selectionStore={selectionStore}
-          refreshing={refreshTreeMutation.isPending}
           refreshDisabled={!relayConnected}
           mobileOpen={mobileTreeOpen}
           onPathChange={onPathChange}
@@ -4895,20 +3754,17 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
         <FileViewer
           canShare={canShare && relayConnected}
           canWrite={canWrite && relayConnected}
-          fileTreeError={
-            queryErrorMessage(treeQuery.error, "Could not load files") ??
-            queryErrorMessage(
-              refreshTreeMutation.error,
-              "Could not refresh files"
-            )
-          }
-          fileTreeLoading={treeQuery.isPending}
+          fileTreeError={queryErrorMessage(
+            rootDirectoryQuery.error,
+            "Could not load files"
+          )}
+          fileTreeLoading={rootDirectoryQuery.isPending}
+          fileIndex={fileIndex}
           instance={instance}
           onPathChange={onPathChange}
           onTreeExpand={handleTreeExpand}
           preferencesStore={preferencesStore}
           selectionStore={selectionStore}
-          tree={tree}
           treeCollapsed={displayedTreeCollapsed}
           relayConnected={relayConnected}
           onUploadFiles={uploads.uploadFiles}
@@ -4951,12 +3807,12 @@ interface FileViewerProps {
   canWrite: boolean
   fileTreeError: string | null
   fileTreeLoading: boolean
+  fileIndex: ProgressiveFileIndex
   instance: InstanceWorkspaceInstance
   onPathChange: (path: string) => void
   onTreeExpand: () => void
   preferencesStore: FileEditorPreferencesStore
   selectionStore: FileSelectionStore
-  tree: RelayFileTree | null
   treeCollapsed: boolean
   relayConnected: boolean
   onUploadFiles: UploadFiles
@@ -4969,12 +3825,12 @@ function FileViewer({
   canWrite,
   fileTreeError,
   fileTreeLoading,
+  fileIndex,
   instance,
   onPathChange,
   onTreeExpand,
   preferencesStore,
   selectionStore,
-  tree,
   treeCollapsed,
   relayConnected,
   onUploadFiles,
@@ -4988,11 +3844,20 @@ function FileViewer({
   )
   const isHome = !selectedPath
   const selectedDirectoryPath = normalizeDirectoryPath(selectedPath)
+  const entryQuery = useQuery({
+    ...relayFileEntryQueryOptions(instance.relayId, instance.id, selectedPath),
+    enabled: Boolean(selectedPath) && relayConnected,
+  })
+  const selectedEntry = entryQuery.data ?? null
+  React.useEffect(() => {
+    if (selectedEntry) fileIndex.addEntry(selectedEntry)
+  }, [fileIndex, selectedEntry])
   const selectedPathIsDirectory = Boolean(
-    selectedPath && tree?.paths.includes(selectedDirectoryPath)
+    selectedPath &&
+    (selectedPath.endsWith("/") || selectedEntry?.kind === "directory")
   )
   const selectedPathIsReadable = Boolean(
-    tree?.paths.includes(selectedPath) && !selectedPath.endsWith("/")
+    selectedPath && selectedEntry?.kind === "file"
   )
   React.useEffect(() => {
     if (selectedPathIsDirectory && selectedPath !== selectedDirectoryPath) {
@@ -5017,10 +3882,15 @@ function FileViewer({
   })
   const file = fileQuery.data?.path === selectedPath ? fileQuery.data : null
   const loadingFile =
-    fileTreeLoading || (selectedPathIsReadable && fileQuery.isPending)
+    fileTreeLoading ||
+    (Boolean(selectedPath) && relayConnected && entryQuery.isPending) ||
+    (selectedPathIsReadable && fileQuery.isPending)
   const routeError =
-    tree && selectedPath && !selectedPathIsReadable && !selectedPathIsDirectory
-      ? `Could not find /data/${selectedPath}`
+    selectedPath && entryQuery.isError
+      ? queryErrorMessage(
+          entryQuery.error,
+          `Could not find /data/${selectedPath}`
+        )
       : null
   const error =
     routeError ??
@@ -5033,11 +3903,12 @@ function FileViewer({
     queryErrorMessage(fileQuery.error, "Could not read file")
   const selectedFileUnavailable =
     Boolean(
-      tree &&
+      entryQuery.isError &&
       selectedPath &&
       !selectedPathIsReadable &&
       !selectedPathIsDirectory
     ) ||
+    Boolean(selectedPath && !relayConnected && !selectedEntry && !file) ||
     (selectedPathIsReadable && !file && (!relayConnected || fileQuery.isError))
   const activitySyncKey = React.useRef<string | null>(null)
 
@@ -5080,7 +3951,7 @@ function FileViewer({
     return (
       <FilesHome
         instance={instance}
-        tree={tree}
+        fileIndex={fileIndex}
         fileTreeLoading={fileTreeLoading}
         fileTreeError={fileTreeError}
         treeCollapsed={treeCollapsed}
@@ -5093,17 +3964,17 @@ function FileViewer({
     )
   }
 
-  if (tree && selectedPathIsDirectory) {
+  if (selectedPathIsDirectory) {
     return (
       <StableDirectoryView
         key={selectedDirectoryPath}
         actions={actions}
         canWrite={canWrite}
+        fileIndex={fileIndex}
         onOpen={onPathChange}
         onTreeExpand={onTreeExpand}
         onUploadFiles={onUploadFiles}
         path={selectedDirectoryPath}
-        tree={tree}
         treeCollapsed={treeCollapsed}
         uploading={uploading}
       />

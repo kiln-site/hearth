@@ -3,7 +3,13 @@ import { Effect } from "effect"
 import {
   relayFileActivitySchema,
   relayFileContentSchema,
+  relayDirectoryPageInputSchema,
+  relayDirectoryPageSchema,
+  relayFileSearchPageInputSchema,
+  relayFileSearchPageSchema,
+  relayFileEntrySchema,
   relayFileMutationInputSchema,
+  relayFileMutationResultSchema,
   relayFileTreeSchema,
   relayConsoleCommandResultSchema,
   relayConsoleCommandSchema,
@@ -84,6 +90,18 @@ const instanceInputSchema = z.object({
 
 const treeInputSchema = instanceInputSchema.extend({
   fresh: z.boolean().optional(),
+})
+
+const fileStatInputSchema = instanceInputSchema.extend({
+  path: z.string().min(1).max(8_192),
+})
+
+const directoryPageInputSchema = relayDirectoryPageInputSchema.extend({
+  relayId: relayIdSchema,
+})
+
+const fileSearchPageInputSchema = relayFileSearchPageInputSchema.extend({
+  relayId: relayIdSchema,
 })
 
 const instanceNameInputSchema = instanceInputSchema.extend({
@@ -508,6 +526,71 @@ export const getRelayTree = createServerFn({ method: "GET" })
     )
   })
 
+export const getRelayDirectoryPage = createServerFn({ method: "GET" })
+  .validator(directoryPageInputSchema)
+  .handler(async ({ data }) => {
+    const { relay, user } = await instanceRelayAccess(data.relayId)
+    await requireRelayPermission({
+      user,
+      relayId: relay.id,
+      permission: "instance.files.read",
+      instanceId: data.instanceId,
+    })
+    const search = new URLSearchParams({ path: data.path })
+    if (data.cursor) search.set("cursor", data.cursor)
+    return runAppEffect(
+      "relay.directory",
+      relayJsonEffect(
+        relay,
+        `/v1/instances/${encodeURIComponent(data.instanceId)}/directory?${search.toString()}`,
+        relayDirectoryPageSchema.parse
+      )
+    )
+  })
+
+export const getRelayFileEntry = createServerFn({ method: "GET" })
+  .validator(fileStatInputSchema)
+  .handler(async ({ data }) => {
+    const { relay, user } = await instanceRelayAccess(data.relayId)
+    await requireRelayPermission({
+      user,
+      relayId: relay.id,
+      permission: "instance.files.read",
+      instanceId: data.instanceId,
+    })
+    const search = new URLSearchParams({ path: data.path })
+    return runAppEffect(
+      "relay.fileStat",
+      relayJsonEffect(
+        relay,
+        `/v1/instances/${encodeURIComponent(data.instanceId)}/file-stat?${search.toString()}`,
+        relayFileEntrySchema.parse
+      )
+    )
+  })
+
+export const searchRelayFiles = createServerFn({ method: "GET" })
+  .validator(fileSearchPageInputSchema)
+  .handler(async ({ data }) => {
+    const { relay, user } = await instanceRelayAccess(data.relayId)
+    await requireRelayPermission({
+      user,
+      relayId: relay.id,
+      permission: "instance.files.read",
+      instanceId: data.instanceId,
+    })
+    const search = new URLSearchParams({ query: data.query })
+    if (data.cursor) search.set("cursor", data.cursor)
+    return runAppEffect(
+      "relay.fileSearch",
+      relayJsonEffect(
+        relay,
+        `/v1/instances/${encodeURIComponent(data.instanceId)}/file-search?${search.toString()}`,
+        relayFileSearchPageSchema.parse
+      )
+    )
+  })
+
 export const getRelayFile = createServerFn({ method: "GET" })
   .validator(fileInputSchema)
   .handler(async ({ data }) => {
@@ -577,12 +660,12 @@ export const mutateRelayFiles = createServerFn({ method: "POST" })
       undefined,
       user.id
     )
-    const tree = relayFileTreeSchema.parse(await response.json())
+    const result = relayFileMutationResultSchema.parse(await response.json())
     await runAppEffect(
       "relay.tree.invalidate",
       invalidateRelayCache(relayCachePolicy.tree(relay.id, data.instanceId))
     )
-    return tree
+    return result
   })
 
 export const getRelayFileActivity = createServerFn({ method: "GET" })
@@ -610,25 +693,51 @@ export const updateRelayFilePin = createServerFn({ method: "POST" })
       permission: "instance.files.write",
       instanceId: data.instanceId,
     })
-    const tree = await runAppEffect(
-      "relay.tree.pinValidation",
-      cachedRelayJsonEffect({
-        decode: relayFileTreeSchema.parse,
-        path: `/v1/instances/${encodeURIComponent(data.instanceId)}/tree`,
-        policy: relayCachePolicy.tree(relay.id, data.instanceId),
+    const search = new URLSearchParams({ path: data.path })
+    const entry = await runAppEffect(
+      "relay.fileStat.pinValidation",
+      relayJsonEffect(
         relay,
-      })
+        `/v1/instances/${encodeURIComponent(data.instanceId)}/file-stat?${search.toString()}`,
+        relayFileEntrySchema.parse
+      )
     )
-    if (!tree.paths.includes(data.path) || data.path.endsWith("/")) {
+    if (entry.kind !== "file" || entry.path !== data.path) {
       throw new Error("File not found")
     }
+    const activity = await listFileActivity(relay.id, data.instanceId)
+    const validPinnedPaths = await runAppEffect(
+      "relay.fileStat.pinnedValidation",
+      Effect.forEach(
+        activity.files.filter((file) => file.pinned),
+        (file) => {
+          const pinnedSearch = new URLSearchParams({ path: file.path })
+          return relayJsonEffect(
+            relay,
+            `/v1/instances/${encodeURIComponent(data.instanceId)}/file-stat?${pinnedSearch.toString()}`,
+            relayFileEntrySchema.parse
+          ).pipe(
+            Effect.match({
+              onFailure: () => null,
+              onSuccess: (pinnedEntry) =>
+                pinnedEntry.kind === "file" ? pinnedEntry.path : null,
+            })
+          )
+        },
+        { concurrency: 8 }
+      )
+    )
+    const validPaths = new Set(
+      validPinnedPaths.filter((path): path is string => path !== null)
+    )
+    validPaths.add(data.path)
     return relayFileActivitySchema.parse(
       await setFilePinned(
         relay.id,
         data.instanceId,
         data.path,
         data.pinned,
-        new Set(tree.paths)
+        validPaths
       )
     )
   })

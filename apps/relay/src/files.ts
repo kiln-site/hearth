@@ -16,6 +16,7 @@ import {
   createReadStream,
   createWriteStream,
 } from "node:fs"
+import type { Dir, Dirent } from "node:fs"
 import type { FileHandle } from "node:fs/promises"
 import {
   basename,
@@ -33,8 +34,14 @@ import { Effect, Stream } from "effect"
 import ZipStream from "zip-stream"
 
 import type {
+  RelayDirectoryPage,
+  RelayDirectoryPageInput,
   RelayFileContent,
+  RelayFileEntry,
   RelayFileMutationInput,
+  RelayFileMutationResult,
+  RelayFileSearchPage,
+  RelayFileSearchPageInput,
   RelayFileTree,
   RelayLatestLog,
   RelaySaveFileInput,
@@ -45,14 +52,20 @@ import { RelayFilesystemError } from "./effect/errors.js"
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024
 const MAX_LOG_SHARE_BYTES = 10 * 1024 * 1024
-const MAX_TREE_ITEMS = 5_000
-const MAX_TREE_DEPTH = 10
 const MAX_ARCHIVE_ITEMS = 50_000
+const FILE_SCAN_PAGE_BYTES = 192 * 1024
+const FILE_DIRECTORY_PAGE_ITEMS = 128
+const FILE_SEARCH_PAGE_ITEMS = 512
+const FILE_SEARCH_PAGE_VISITS = 8_192
+const FILE_SCAN_SESSION_TTL_MS = 2 * 60_000
+const FILE_SCAN_MAX_SESSIONS = 256
 export const MAX_TRANSFER_BYTES = 20 * 1024 * 1024 * 1024
 const gunzipAsync = promisify(gunzip)
 
 export class FilesystemDriver {
   readonly #config: RelayConfig
+  readonly #directoryScans = new Map<string, DirectoryScan>()
+  readonly #searchScans = new Map<string, SearchScan>()
 
   constructor(config: RelayConfig) {
     this.#config = config
@@ -64,18 +77,11 @@ export class FilesystemDriver {
       const modifiedAt: Record<string, number> = {}
       const paths: Array<string> = []
       const sizes: Record<string, number> = {}
-      let truncated = false
 
       const visit = (
-        directory: string,
-        depth: number
+        directory: string
       ): Effect.Effect<number, RelayFilesystemError> =>
         Effect.gen(function* () {
-          if (paths.length >= MAX_TREE_ITEMS || depth > MAX_TREE_DEPTH) {
-            truncated = true
-            return 0
-          }
-
           const entries = yield* filesystemOperation(
             "tree.readDirectory",
             async () => {
@@ -104,17 +110,13 @@ export class FilesystemDriver {
 
           let directorySize = 0
           for (const [index, entry] of entries.entries()) {
-            if (paths.length >= MAX_TREE_ITEMS) {
-              truncated = true
-              break
-            }
             const absolute = join(directory, entry.name)
             const path = relative(root, absolute).split(sep).join("/")
             if (entry.isDirectory()) {
               const directoryPath = `${path}/`
               paths.push(directoryPath)
               modifiedAt[directoryPath] = metadata[index]?.mtimeMs ?? 0
-              const size = yield* visit(absolute, depth + 1)
+              const size = yield* visit(absolute)
               sizes[directoryPath] = size
               directorySize += size
             } else if (entry.isFile() || entry.isSymbolicLink()) {
@@ -128,16 +130,182 @@ export class FilesystemDriver {
           return directorySize
         })
 
-      sizes[""] = yield* visit(root, 0)
+      sizes[""] = yield* visit(root)
       return {
         instanceId: instance.id,
         modifiedAt,
         paths,
         sizes,
         total: paths.length,
-        truncated,
+        // Kept for wire compatibility with older CLI builds that require the
+        // field when parsing tree responses.
+        truncated: false,
       } satisfies RelayFileTree
     }).pipe(Effect.withSpan("relay.files.tree"))
+  }
+
+  directory(instance: RelayInstanceConfig, input: RelayDirectoryPageInput) {
+    return Effect.gen({ self: this }, function* () {
+      const root = yield* this.#instanceRoot(instance)
+      const requestedDirectory = normalizeDirectoryPath(input.path)
+      let scan: DirectoryScan
+
+      if (input.cursor) {
+        const existing = this.#directoryScans.get(input.cursor)
+        if (
+          !existing ||
+          existing.instanceId !== instance.id ||
+          existing.directory !== requestedDirectory
+        ) {
+          return yield* filesystemFailure(
+            "invalid_path",
+            "directory.cursor",
+            "Directory scan expired; refresh the directory to continue"
+          )
+        }
+        scan = existing
+      } else {
+        this.#makeDirectoryScanRoom()
+        const absolute = yield* resolveInstanceDirectory(
+          root,
+          requestedDirectory
+        )
+        const handle = yield* filesystemOperation("directory.open", () =>
+          opendir(absolute)
+        )
+        scan = {
+          busy: false,
+          directory: requestedDirectory,
+          expires: null,
+          handle,
+          id: randomUUID(),
+          instanceId: instance.id,
+          pending: null,
+          root,
+        }
+        this.#directoryScans.set(scan.id, scan)
+      }
+
+      if (scan.busy) {
+        return yield* filesystemFailure(
+          "io_error",
+          "directory.cursor",
+          "Directory scan is already being read"
+        )
+      }
+      scan.busy = true
+      this.#armDirectoryScan(scan)
+
+      return yield* filesystemOperation("directory.read", () =>
+        readDirectoryScanPage(scan)
+      ).pipe(
+        Effect.tap((page) =>
+          Effect.sync(() => {
+            if (!page.cursor) this.#finishDirectoryScan(scan)
+          })
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            scan.busy = false
+          })
+        )
+      )
+    }).pipe(Effect.withSpan("relay.files.directory"))
+  }
+
+  search(instance: RelayInstanceConfig, input: RelayFileSearchPageInput) {
+    return Effect.gen({ self: this }, function* () {
+      const root = yield* this.#instanceRoot(instance)
+      const query = input.query.trim()
+      let scan: SearchScan
+
+      if (input.cursor) {
+        const existing = this.#searchScans.get(input.cursor)
+        if (
+          !existing ||
+          existing.instanceId !== instance.id ||
+          existing.query !== query
+        ) {
+          return yield* filesystemFailure(
+            "invalid_path",
+            "search.cursor",
+            "File search expired; run the search again"
+          )
+        }
+        scan = existing
+      } else {
+        this.#makeSearchScanRoom()
+        scan = {
+          active: null,
+          busy: false,
+          expires: null,
+          id: randomUUID(),
+          instanceId: instance.id,
+          pending: null,
+          query,
+          queryLower: query.toLowerCase(),
+          queue: [{ absolute: root, directory: "" }],
+          root,
+        }
+        this.#searchScans.set(scan.id, scan)
+      }
+
+      if (scan.busy) {
+        return yield* filesystemFailure(
+          "io_error",
+          "search.cursor",
+          "File search is already being read"
+        )
+      }
+      scan.busy = true
+      this.#armSearchScan(scan)
+
+      return yield* filesystemOperation("search.read", () =>
+        readSearchScanPage(scan)
+      ).pipe(
+        Effect.tap((page) =>
+          Effect.sync(() => {
+            if (!page.cursor) this.#finishSearchScan(scan)
+          })
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            scan.busy = false
+          })
+        )
+      )
+    }).pipe(Effect.withSpan("relay.files.search"))
+  }
+
+  entry(instance: RelayInstanceConfig, requestedPath: string) {
+    return Effect.gen({ self: this }, function* () {
+      yield* validateRelativePath(requestedPath.replace(/\/$/u, ""))
+      const root = yield* this.#instanceRoot(instance)
+      const absolute = yield* filesystemOperation("stat.resolve", () =>
+        realpath(resolve(root, requestedPath))
+      )
+      yield* ensureContained(root, absolute)
+      const metadata = yield* filesystemOperation("stat.read", () =>
+        lstat(absolute)
+      )
+      if (!metadata.isDirectory() && !metadata.isFile()) {
+        return yield* filesystemFailure(
+          "unsupported_file",
+          "stat",
+          "Path is not a regular file or directory"
+        )
+      }
+      const kind = metadata.isDirectory() ? "directory" : "file"
+      return {
+        kind,
+        modifiedAt: metadata.mtimeMs,
+        path:
+          kind === "directory"
+            ? normalizeDirectoryPath(requestedPath)
+            : requestedPath,
+        size: kind === "directory" ? null : metadata.size,
+      } satisfies RelayFileEntry
+    }).pipe(Effect.withSpan("relay.files.stat"))
   }
 
   read(instance: RelayInstanceConfig, requestedPath: string) {
@@ -465,7 +633,7 @@ export class FilesystemDriver {
         )
       }
 
-      return yield* this.tree(instance)
+      return { mutated: true } satisfies RelayFileMutationResult
     }).pipe(Effect.withSpan("relay.files.mutate"))
   }
 
@@ -505,6 +673,273 @@ export class FilesystemDriver {
       return root
     })
   }
+
+  #armDirectoryScan(scan: DirectoryScan) {
+    if (scan.expires) clearTimeout(scan.expires)
+    scan.expires = setTimeout(() => {
+      this.#finishDirectoryScan(scan)
+    }, FILE_SCAN_SESSION_TTL_MS)
+    scan.expires.unref()
+  }
+
+  #finishDirectoryScan(scan: DirectoryScan) {
+    if (scan.expires) clearTimeout(scan.expires)
+    scan.expires = null
+    this.#directoryScans.delete(scan.id)
+    Effect.runFork(closeDirectoryEffect(scan.handle).pipe(Effect.ignore))
+  }
+
+  #makeDirectoryScanRoom() {
+    if (this.#directoryScans.size < FILE_SCAN_MAX_SESSIONS) return
+    for (const scan of this.#directoryScans.values()) {
+      if (scan.busy) continue
+      this.#finishDirectoryScan(scan)
+      return
+    }
+  }
+
+  #armSearchScan(scan: SearchScan) {
+    if (scan.expires) clearTimeout(scan.expires)
+    scan.expires = setTimeout(() => {
+      this.#finishSearchScan(scan)
+    }, FILE_SCAN_SESSION_TTL_MS)
+    scan.expires.unref()
+  }
+
+  #finishSearchScan(scan: SearchScan) {
+    if (scan.expires) clearTimeout(scan.expires)
+    scan.expires = null
+    this.#searchScans.delete(scan.id)
+    if (scan.active) {
+      Effect.runFork(
+        closeDirectoryEffect(scan.active.handle).pipe(Effect.ignore)
+      )
+    }
+    scan.active = null
+  }
+
+  #makeSearchScanRoom() {
+    if (this.#searchScans.size < FILE_SCAN_MAX_SESSIONS) return
+    for (const scan of this.#searchScans.values()) {
+      if (scan.busy) continue
+      this.#finishSearchScan(scan)
+      return
+    }
+  }
+}
+
+interface DirectoryScan {
+  busy: boolean
+  directory: string
+  expires: ReturnType<typeof setTimeout> | null
+  handle: Dir
+  id: string
+  instanceId: string
+  pending: Dirent | null
+  root: string
+}
+
+interface SearchDirectory {
+  absolute: string
+  directory: string
+}
+
+interface SearchScan {
+  active: (SearchDirectory & { handle: Dir }) | null
+  busy: boolean
+  expires: ReturnType<typeof setTimeout> | null
+  id: string
+  instanceId: string
+  pending: Dirent | null
+  query: string
+  queryLower: string
+  queue: Array<SearchDirectory>
+  root: string
+}
+
+function normalizeDirectoryPath(path: string): string {
+  const normalized = path.replace(/^\/+|\/+$/gu, "")
+  return normalized ? `${normalized}/` : ""
+}
+
+function fileEntryPath(directory: string, entry: Dirent): string {
+  const path = `${directory}${entry.name}`
+  return entry.isDirectory() ? `${path}/` : path
+}
+
+function supportedDirectoryEntry(entry: Dirent): boolean {
+  return entry.isDirectory() || entry.isFile() || entry.isSymbolicLink()
+}
+
+async function relayFileEntry(
+  root: string,
+  directory: string,
+  entry: Dirent
+): Promise<RelayFileEntry> {
+  const path = fileEntryPath(directory, entry)
+  const metadata = await lstat(join(root, path.replace(/\/$/u, "")))
+  const kind = entry.isDirectory() ? "directory" : "file"
+  return {
+    kind,
+    modifiedAt: metadata.mtimeMs,
+    path,
+    size: kind === "directory" ? null : metadata.size,
+  }
+}
+
+function estimatedFileEntryBytes(path: string): number {
+  return Buffer.byteLength(path) + 96
+}
+
+async function readDirectoryScanPage(
+  scan: DirectoryScan
+): Promise<RelayDirectoryPage> {
+  const entries: Array<Dirent> = []
+  let estimatedBytes = 0
+  let complete = false
+
+  while (entries.length < FILE_DIRECTORY_PAGE_ITEMS) {
+    const entry = scan.pending ?? (await scan.handle.read())
+    scan.pending = null
+    if (!entry) {
+      complete = true
+      break
+    }
+    if (!supportedDirectoryEntry(entry)) continue
+    const nextBytes = estimatedFileEntryBytes(
+      fileEntryPath(scan.directory, entry)
+    )
+    if (
+      entries.length > 0 &&
+      estimatedBytes + nextBytes > FILE_SCAN_PAGE_BYTES
+    ) {
+      scan.pending = entry
+      break
+    }
+    entries.push(entry)
+    estimatedBytes += nextBytes
+  }
+
+  const resolved: Array<RelayFileEntry> = []
+  for (let offset = 0; offset < entries.length; offset += 16) {
+    resolved.push(
+      ...(await Promise.all(
+        entries
+          .slice(offset, offset + 16)
+          .map((entry) => relayFileEntry(scan.root, scan.directory, entry))
+      ))
+    )
+  }
+  return {
+    cursor: complete ? null : scan.id,
+    directory: scan.directory,
+    entries: resolved,
+    instanceId: scan.instanceId,
+  }
+}
+
+async function readSearchScanPage(
+  scan: SearchScan
+): Promise<RelayFileSearchPage> {
+  const entries: Array<RelayFileEntry> = []
+  let estimatedBytes = 0
+  let visits = 0
+
+  while (
+    entries.length < FILE_SEARCH_PAGE_ITEMS &&
+    visits < FILE_SEARCH_PAGE_VISITS
+  ) {
+    if (!scan.active) {
+      const next = scan.queue.shift()
+      if (!next) break
+      scan.active = { ...next, handle: await opendir(next.absolute) }
+    }
+
+    const entry = scan.pending ?? (await scan.active.handle.read())
+    scan.pending = null
+    if (!entry) {
+      await Effect.runPromise(closeDirectoryEffect(scan.active.handle))
+      scan.active = null
+      continue
+    }
+    if (!supportedDirectoryEntry(entry)) continue
+    visits += 1
+
+    const path = fileEntryPath(scan.active.directory, entry)
+    const matches = path.toLowerCase().includes(scan.queryLower)
+
+    const nextBytes = estimatedFileEntryBytes(path)
+    if (
+      matches &&
+      entries.length > 0 &&
+      estimatedBytes + nextBytes > FILE_SCAN_PAGE_BYTES
+    ) {
+      scan.pending = entry
+      break
+    }
+    if (entry.isDirectory()) {
+      scan.queue.push({
+        absolute: join(scan.root, path.replace(/\/$/u, "")),
+        directory: path,
+      })
+    }
+    if (matches) {
+      entries.push(
+        await relayFileEntry(scan.root, scan.active.directory, entry)
+      )
+      estimatedBytes += nextBytes
+    }
+  }
+
+  const complete = !scan.active && scan.queue.length === 0
+  return {
+    cursor: complete ? null : scan.id,
+    entries,
+    instanceId: scan.instanceId,
+    query: scan.query,
+  }
+}
+
+function closeDirectoryEffect(handle: Dir) {
+  return Effect.tryPromise({
+    try: () => handle.close(),
+    catch: (cause) => cause,
+  }).pipe(
+    Effect.catchIf(
+      (cause) =>
+        Boolean(
+          cause &&
+          typeof cause === "object" &&
+          "code" in cause &&
+          cause.code === "ERR_DIR_CLOSED"
+        ),
+      () => Effect.void
+    )
+  )
+}
+
+function resolveInstanceDirectory(root: string, directory: string) {
+  return Effect.gen(function* () {
+    const requested = directory.replace(/\/$/u, "")
+    if (requested) yield* validateRelativePath(requested)
+    const candidate = requested
+      ? yield* filesystemOperation("directory.resolve", () =>
+          realpath(resolve(root, requested))
+        )
+      : root
+    yield* ensureContained(root, candidate)
+    const metadata = yield* filesystemOperation("directory.stat", () =>
+      lstat(candidate)
+    )
+    if (!metadata.isDirectory()) {
+      return yield* filesystemFailure(
+        "not_a_directory",
+        "directory",
+        "Path is not a directory"
+      )
+    }
+    return candidate
+  })
 }
 
 function fileDescriptorPath(file: FileHandle): string {

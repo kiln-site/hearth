@@ -16,8 +16,8 @@ import { pageTitle } from "@/lib/page-title"
 import {
   relayConnectionQueryOptions,
   relayFileActivityQueryOptions,
+  relayRootDirectoryQueryOptions,
   relaySnapshotQueryOptions,
-  relayTreeQueryOptions,
 } from "@/lib/query-options"
 import { findRelayInstance } from "@/lib/relay-selectors"
 import { warmSyntaxCodeEditorModule } from "@/lib/syntax-editor-module-preload"
@@ -46,7 +46,7 @@ export const Route = createFileRoute("/_app/server/$serverId/files")({
     // FileWorkspace observes these same query keys and reuses the in-flight work.
     void Promise.all([
       context.queryClient.prefetchQuery(
-        relayTreeQueryOptions(instance.relayId, instance.id)
+        relayRootDirectoryQueryOptions(instance.relayId, instance.id)
       ),
       context.queryClient.prefetchQuery(
         relayFileActivityQueryOptions(instance.relayId, instance.id)
