@@ -15,6 +15,7 @@ import { isPlatformAdmin, isRelayCreator } from "@/lib/access-control"
 import { runAppEffect } from "@/effect/runtime"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import { requireAuthenticatedUser } from "@/server/auth"
+import { removeRelayThenCleanup } from "@/server/relay-removal"
 
 const relayIdSchema = z.object({
   id: relayFingerprintSchema,
@@ -154,27 +155,32 @@ export const removeRelay = createServerFn({ method: "POST" })
   .validator(removeRelaySchema)
   .handler(async ({ data }) => {
     await requireRelayAdministrator(data.id)
-    let forgottenBackups = 0
-    const { removeRelayManagedDomainsEffect } =
-      await import("@/server/domains.server")
-    const managedDomainCount = await runAppEffect(
-      "domains.relay.removeAssignments",
-      removeRelayManagedDomainsEffect(data.id, data.removeVanityDomains)
-    )
-    if (data.forgetBackups) {
-      const { forgetRelayBackupsEffect } = await import("@/effect/backups")
-      forgottenBackups = await runAppEffect(
-        "backups.forgetRelay",
-        forgetRelayBackupsEffect(data.id)
-      )
-    }
     const { deletePersistedRelay } = await import("@/lib/relay-registry")
-    await deletePersistedRelay(data.id)
-    return {
-      forgottenBackups,
-      removed: true,
-      removedVanityDomains: data.removeVanityDomains ? managedDomainCount : 0,
-    }
+    return removeRelayThenCleanup(
+      {
+        forgetBackups: data.forgetBackups,
+        relayId: data.id,
+        removeVanityDomains: data.removeVanityDomains,
+      },
+      {
+        deleteRelay: () => deletePersistedRelay(data.id),
+        forgetBackups: async () => {
+          const { forgetRelayBackupsEffect } = await import("@/effect/backups")
+          return runAppEffect(
+            "backups.forgetRelay",
+            forgetRelayBackupsEffect(data.id)
+          )
+        },
+        removeManagedDomains: async () => {
+          const { removeRelayManagedDomainsEffect } =
+            await import("@/server/domains.server")
+          return runAppEffect(
+            "domains.relay.removeAssignments",
+            removeRelayManagedDomainsEffect(data.id, data.removeVanityDomains)
+          )
+        },
+      }
+    )
   })
 
 export const previewRelayPairing = createServerFn({ method: "POST" })

@@ -33,7 +33,7 @@ describe("backup forgetting", () => {
     return Effect.gen(function* () {
       const forgotten = yield* forgetBackupEffect("backup-one")
 
-      assert.isTrue(forgotten)
+      assert.strictEqual(forgotten, "forgotten")
       assert.deepEqual(
         statements.map(({ sql }) => deletedTable(sql)),
         [
@@ -63,9 +63,12 @@ describe("backup forgetting", () => {
           ],
         ]
       )
-      assert.lengthOf(queries, 1)
+      assert.lengthOf(queries, 2)
       assert.include(queries[0]?.sql ?? "", "FOR UPDATE")
       assert.deepEqual(queries[0]?.values, ["backup-one"])
+      assert.include(queries[1]?.sql ?? "", "kiln_relay")
+      assert.include(queries[1]?.sql ?? "", "FOR UPDATE")
+      assert.deepEqual(queries[1]?.values, ["relay-one"])
       const cleanupSql = statements.slice(-2).map(({ sql }) => sql)
       assert.isTrue(cleanupSql.every((sql) => sql.includes("NOT EXISTS")))
       assert.notInclude(
@@ -93,9 +96,41 @@ describe("backup forgetting", () => {
     return Effect.gen(function* () {
       const forgotten = yield* forgetBackupEffect("missing-backup")
 
-      assert.isFalse(forgotten)
+      assert.strictEqual(forgotten, "not_found")
       assert.isEmpty(statements)
     }).pipe(Effect.provide(databaseLayer(statements)))
+  })
+
+  it.effect("rejects forget when the Relay is present under lock", () => {
+    const statements: Array<{ sql: string; values: ReadonlyArray<unknown> }> =
+      []
+    const queries: Array<{ sql: string; values: ReadonlyArray<unknown> }> = []
+
+    return Effect.gen(function* () {
+      const forgotten = yield* forgetBackupEffect("backup-one")
+
+      assert.strictEqual(forgotten, "relay_present")
+      assert.isEmpty(statements)
+      assert.lengthOf(queries, 2)
+      assert.include(queries[1]?.sql ?? "", "kiln_relay")
+      assert.include(queries[1]?.sql ?? "", "FOR UPDATE")
+    }).pipe(
+      Effect.provide(
+        databaseLayer(
+          statements,
+          queries,
+          [
+            {
+              relay_id: "relay-one",
+              repository_id: "repository-one",
+              target_id: "instance-one",
+              target_kind: "instance",
+            },
+          ],
+          [{ id: "relay-one" }]
+        )
+      )
+    )
   })
 
   it.effect("forgets all Relay backup state without deleting artifacts", () => {
@@ -137,7 +172,8 @@ function databaseLayer(
     repository_id: string | null
     target_id: string
     target_kind: "database" | "instance" | "platform"
-  }> = []
+  }> = [],
+  relayRows: ReadonlyArray<{ id: string }> = []
 ) {
   return Layer.succeed(Database)({
     execute: () => Effect.die("Unexpected standalone database write"),
@@ -155,7 +191,8 @@ function databaseLayer(
         ) =>
           Effect.sync(() => {
             queries.push({ sql, values: values ?? [] })
-            return [...backupRows] as unknown as ReadonlyArray<TRow>
+            const rows = sql.includes("kiln_relay") ? relayRows : backupRows
+            return [...rows] as unknown as ReadonlyArray<TRow>
           }),
       }),
   })

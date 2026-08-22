@@ -1642,7 +1642,20 @@ export const forgetBackupEffect = Effect.fn("backups.forget")(function* (
             FOR UPDATE`,
         [backupId]
       ))[0]
-      if (!backup) return false
+      if (!backup) return "not_found" as const
+      // Pairing locks this same primary-key lookup before inserting, so an
+      // absent Relay stays absent until this forget transaction commits.
+      const relay = (yield* transaction.queryRows<
+        { id: string } & RowDataPacket
+      >(
+        `SELECT id
+             FROM ${databaseTable("relay")}
+            WHERE id = ?
+            LIMIT 1
+            FOR UPDATE`,
+        [backup.relay_id]
+      ))[0]
+      if (relay) return "relay_present" as const
       yield* transaction.execute(
         `DELETE FROM ${databaseTable("backup_download_share")}
           WHERE backup_id = ?`,
@@ -1689,7 +1702,7 @@ export const forgetBackupEffect = Effect.fn("backups.forget")(function* (
           backup.target_id,
         ]
       )
-      return result.affectedRows === 1
+      return result.affectedRows === 1 ? ("forgotten" as const) : "not_found"
     })
   )
 })

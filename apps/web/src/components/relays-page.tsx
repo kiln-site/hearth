@@ -951,15 +951,18 @@ const RelayDeleteButton = React.memo(function RelayDeleteButton({
           }),
         catch: (cause) => cause,
       }).pipe(
-        Effect.tap(() =>
+        Effect.tap((result) =>
           Effect.sync(() => {
             dismissToast(relayPausedToastId(relayId))
             dismissToast(relayResumedToastId(relayId))
             dismissToast(relayResumeErrorToastId(relayId))
             setOpen(false)
             showToast({
-              message: `${name} removed from Hearth`,
-              type: "success",
+              message:
+                result.cleanupFailures.length > 0
+                  ? `${name} removed, but some Hearth cleanup could not be completed`
+                  : `${name} removed from Hearth`,
+              type: result.cleanupFailures.length > 0 ? "warning" : "success",
             })
           })
         ),

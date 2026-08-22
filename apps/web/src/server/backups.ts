@@ -456,11 +456,16 @@ export const deleteBackup = createServerFn({ method: "POST" })
           "This Relay belongs to Hearth again. Refresh before removing the backup."
         )
       }
-      const forgotten = await runAppEffect(
+      const forgetResult = await runAppEffect(
         "backups.forget",
         forgetBackupEffect(backup.id)
       )
-      if (!forgotten) throw new Error("Backup not found")
+      if (forgetResult === "relay_present") {
+        throw new Error(
+          "This Relay belongs to Hearth again. Refresh before removing the backup."
+        )
+      }
+      if (forgetResult === "not_found") throw new Error("Backup not found")
       return { forgotten: true as const }
     }
     if (!hasBackupPermission(user, grants, backup, "backup.delete")) {
