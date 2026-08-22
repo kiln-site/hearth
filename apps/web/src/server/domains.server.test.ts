@@ -22,6 +22,7 @@ import {
   applyManagedDomainAddressesEffect,
   deleteManagedDomainAssignmentEffect,
   loadManagedDomainAddressesEffect,
+  removeRelayManagedDomainsEffect,
   resyncDomainInstancesEffect,
 } from "./domains.server"
 
@@ -176,6 +177,45 @@ describe("managed domain deletion", () => {
   afterEach(() => {
     vi.unstubAllGlobals()
   })
+
+  it.effect(
+    "clears Hearth assignments when Cloudflare cleanup is skipped",
+    () => {
+      const events: Array<string> = []
+      const cacheLayer = Layer.succeed(AppCache)({
+        backend: "redis-protocol",
+        enabled: true,
+        get: () => Effect.succeed(undefined),
+        remove: () =>
+          Effect.sync(() => {
+            events.push("cache:remove")
+          }),
+        set: () => Effect.void,
+      })
+      const databaseLayer = Layer.succeed(Database)({
+        execute: (operation) =>
+          Effect.sync(() => {
+            events.push(`database:${operation}`)
+            return {} as ResultSetHeader
+          }),
+        queryRows: () => Effect.succeed([]),
+        transaction: () => Effect.die("Unexpected database transaction"),
+      })
+
+      return Effect.gen(function* () {
+        const removed = yield* removeRelayManagedDomainsEffect(
+          "relay-one",
+          false
+        )
+
+        assert.strictEqual(removed, 0)
+        assert.deepEqual(events, [
+          "database:domains.assignments.deleteRelay",
+          "cache:remove",
+        ])
+      }).pipe(Effect.provide(Layer.merge(cacheLayer, databaseLayer)))
+    }
+  )
 
   it.effect(
     "removes Cloudflare records before releasing the assignment",

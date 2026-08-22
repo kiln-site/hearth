@@ -18,11 +18,13 @@ import { recoverPromise } from "@/effect/promise"
 import {
   activateInstanceDomainAssignmentEffect,
   deleteInstanceDomainAssignmentEffect,
+  deleteRelayInstanceDomainAssignmentsEffect,
   loadActiveInstanceDomainAssignmentsEffect,
   loadCloudflareIntegrationCredentialEffect,
   loadDomainIntegrationEffect,
   loadInstanceDomainAssignmentsEffect,
   loadInstanceDomainAssignmentEffect,
+  loadRelayInstanceDomainAssignmentsEffect,
   loadUsedVanityLabelsEffect,
   recordInstanceDomainErrorEffect,
   recordInstanceDomainSyncErrorEffect,
@@ -365,6 +367,33 @@ export const deleteManagedDomainAssignmentEffect = Effect.fn(
     assignment.instanceId
   )
   yield* invalidateManagedDomainAddressesEffect
+})
+
+export const removeRelayManagedDomainsEffect = Effect.fn(
+  "domains.relay.removeAssignments"
+)(function* (relayId: string, removeCloudflareRecords: boolean) {
+  const assignments = yield* loadRelayInstanceDomainAssignmentsEffect(relayId)
+  const recordIds = assignments.flatMap((assignment) =>
+    [assignment.addressRecordId, assignment.srvRecordId].filter(
+      (recordId): recordId is string => recordId !== null
+    )
+  )
+  if (removeCloudflareRecords && recordIds.length > 0) {
+    const credential = yield* loadCloudflareIntegrationCredentialEffect()
+    yield* Effect.all(
+      recordIds.map((recordId) =>
+        deleteCloudflareRecordEffect(
+          credential.apiToken,
+          credential.zoneId,
+          recordId
+        )
+      ),
+      { concurrency: "unbounded" }
+    )
+  }
+  yield* deleteRelayInstanceDomainAssignmentsEffect(relayId)
+  yield* invalidateManagedDomainAddressesEffect
+  return assignments.length
 })
 
 const provisionInstanceDomainEffect = Effect.fn("domains.instance.provision")(

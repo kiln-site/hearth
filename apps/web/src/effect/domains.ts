@@ -213,6 +213,29 @@ export const deleteInstanceDomainAssignmentEffect = Effect.fn(
   )
 })
 
+export const deleteRelayInstanceDomainAssignmentsEffect = Effect.fn(
+  "domains.assignments.deleteRelay"
+)(function* (relayId: string) {
+  const database = yield* Database
+  yield* database.execute(
+    "domains.assignments.deleteRelay",
+    `DELETE FROM ${databaseTable("instance_domain")} WHERE relay_id = ?`,
+    [relayId]
+  )
+})
+
+export const loadRelayInstanceDomainAssignmentsEffect = Effect.fn(
+  "domains.assignments.relay"
+)(function* (relayId: string) {
+  const database = yield* Database
+  const rows = yield* database.queryRows<InstanceDomainRow>(
+    "domains.assignments.relay",
+    `${instanceDomainSelect} WHERE relay_id = ?`,
+    [relayId]
+  )
+  return rows.map(domainAssignment)
+})
+
 export const loadActiveInstanceDomainAssignmentsEffect = Effect.fn(
   "domains.assignments.active"
 )(function* () {

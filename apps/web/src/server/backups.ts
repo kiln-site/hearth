@@ -12,6 +12,7 @@ import {
 
 import { createBackupDownloadShareEffect } from "@/effect/backup-download-shares"
 import {
+  forgetBackupEffect,
   listBackupCatalogEffect,
   getInstanceBackupPolicyEffect,
   reconcileBackupTaskEffect,
@@ -310,9 +311,9 @@ export const getBackups = createServerFn({ method: "GET" }).handler(
   async () => {
     const user = await requireAuthenticatedUser()
     scheduleBackupCopyProcessing()
-    const relays = (await listPersistedRelays()).filter(
-      (relay) => relay.enabled
-    )
+    const persistedRelays = await listPersistedRelays()
+    const persistedRelayIds = new Set(persistedRelays.map((relay) => relay.id))
+    const relays = persistedRelays.filter((relay) => relay.enabled)
     const grants = isPlatformAdmin(user) ? [] : await listUserGrants(user.id)
     const catalog = await runAppEffect(
       "backups.listForReconcile",
@@ -358,6 +359,7 @@ export const getBackups = createServerFn({ method: "GET" }).handler(
       const { createdBy: _, objectKey: __, ...backup } = candidate
       visibleBackups.push({
         ...backup,
+        relayPresent: persistedRelayIds.has(backup.relayId),
         artifacts: backup.artifacts.map(
           ({ objectKey: ___, ...artifact }) => artifact
         ),
@@ -437,6 +439,20 @@ export const deleteBackup = createServerFn({ method: "POST" })
     const backup = catalog.find((candidate) => candidate.id === data.backupId)
     if (!backup) throw new Error("Backup not found")
     const grants = isPlatformAdmin(user) ? [] : await listUserGrants(user.id)
+    const relayPresent = (await listPersistedRelays()).some(
+      (relay) => relay.id === backup.relayId
+    )
+    if (!relayPresent) {
+      if (!hasBackupPermission(user, grants, backup, "backup.read")) {
+        throw new Error("You do not have permission to forget this backup")
+      }
+      const forgotten = await runAppEffect(
+        "backups.forget",
+        forgetBackupEffect(backup.id)
+      )
+      if (!forgotten) throw new Error("Backup not found")
+      return { forgotten: true as const }
+    }
     if (!hasBackupPermission(user, grants, backup, "backup.delete")) {
       throw new Error("You do not have permission to delete this backup")
     }
@@ -452,7 +468,10 @@ export const deleteBackup = createServerFn({ method: "POST" })
     const dispatched = await Promise.allSettled([
       dispatchBackupTask(relay, input, user.id),
     ])
-    return { relayAccepted: dispatched[0]?.status === "fulfilled" }
+    return {
+      forgotten: false as const,
+      relayAccepted: dispatched[0]?.status === "fulfilled",
+    }
   })
 
 export const renameBackup = createServerFn({ method: "POST" })

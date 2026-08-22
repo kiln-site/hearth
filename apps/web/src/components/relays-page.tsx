@@ -10,8 +10,10 @@ import type { QueryClient } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { Effect } from "effect"
 import {
+  ArchiveX,
   Check,
   CircleAlert,
+  Cloud,
   Fingerprint,
   ListTodo,
   LoaderCircle,
@@ -902,7 +904,10 @@ const RelayDeleteButton = React.memo(function RelayDeleteButton({
 }) {
   const queryClient = useQueryClient()
   const pendingRef = React.useRef(false)
+  const [open, setOpen] = React.useState(false)
   const [pending, setPending] = React.useState(false)
+  const [forgetBackups, setForgetBackups] = React.useState(true)
+  const [removeVanityDomains, setRemoveVanityDomains] = React.useState(true)
   const selectName = React.useCallback(
     (relays: Array<PersistedRelay>) =>
       relays.find((relay) => relay.id === relayId)?.name ?? "Relay",
@@ -922,6 +927,10 @@ const RelayDeleteButton = React.memo(function RelayDeleteButton({
       )
       await Promise.all([
         invalidateRelayRuntimeQueries(queryClient),
+        queryClient.invalidateQueries({ queryKey: queryKeys.backups.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.domains.settings }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.databases.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.schedules.all }),
         queryClient.invalidateQueries({
           queryKey: queryKeys.access.capabilities,
         }),
@@ -932,12 +941,14 @@ const RelayDeleteButton = React.memo(function RelayDeleteButton({
 
   async function remove() {
     if (pendingRef.current) return
-    if (!window.confirm(`Remove ${name} from Hearth?`)) return
     pendingRef.current = true
     setPending(true)
     await Effect.runPromise(
       Effect.tryPromise({
-        try: () => removeMutation.mutateAsync({ data: { id: relayId } }),
+        try: () =>
+          removeMutation.mutateAsync({
+            data: { forgetBackups, id: relayId, removeVanityDomains },
+          }),
         catch: (cause) => cause,
       }).pipe(
         Effect.tap(() =>
@@ -945,6 +956,11 @@ const RelayDeleteButton = React.memo(function RelayDeleteButton({
             dismissToast(relayPausedToastId(relayId))
             dismissToast(relayResumedToastId(relayId))
             dismissToast(relayResumeErrorToastId(relayId))
+            setOpen(false)
+            showToast({
+              message: `${name} removed from Hearth`,
+              type: "success",
+            })
           })
         ),
         Effect.catch((cause) =>
@@ -960,25 +976,120 @@ const RelayDeleteButton = React.memo(function RelayDeleteButton({
     )
   }
 
+  function changeOpen(nextOpen: boolean) {
+    if (pending) return
+    setOpen(nextOpen)
+    if (nextOpen) {
+      setForgetBackups(true)
+      setRemoveVanityDomains(true)
+    }
+  }
+
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          type="button"
-          size="icon-sm"
-          variant="ghost"
-          aria-label={`Delete ${name}`}
-          disabled={pending}
-          className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-          onClick={() => void remove()}
-        >
-          {pending ? <LoaderCircle className="animate-spin" /> : <Trash2 />}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" sideOffset={6}>
-        Delete
-      </TooltipContent>
-    </Tooltip>
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            aria-label={`Remove ${name}`}
+            disabled={pending}
+            className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+            onClick={() => changeOpen(true)}
+          >
+            {pending ? <LoaderCircle className="animate-spin" /> : <Trash2 />}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={6}>
+          Remove
+        </TooltipContent>
+      </Tooltip>
+
+      <Dialog open={open} onOpenChange={changeOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Remove {name}?</DialogTitle>
+            <DialogDescription>
+              Hearth will stop managing this Relay. Nothing on the Relay itself
+              will be changed or deleted.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2">
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/70 bg-background/35 p-3 transition-colors hover:bg-muted/25 has-checked:border-primary/35 has-checked:bg-primary/[0.06]">
+              <input
+                aria-describedby={`forget-backups-description-${relayId}`}
+                checked={forgetBackups}
+                className="mt-0.5 size-4 shrink-0 rounded-[3px] border-input accent-primary"
+                disabled={pending}
+                type="checkbox"
+                onChange={(event) => setForgetBackups(event.target.checked)}
+              />
+              <ArchiveX className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold">
+                  Forget all backups
+                </span>
+                <span
+                  id={`forget-backups-description-${relayId}`}
+                  className="mt-0.5 block text-xs leading-5 text-muted-foreground"
+                >
+                  Remove backup history from Hearth. Stored backup files on the
+                  Relay are not deleted.
+                </span>
+              </span>
+            </label>
+
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/70 bg-background/35 p-3 transition-colors hover:bg-muted/25 has-checked:border-primary/35 has-checked:bg-primary/[0.06]">
+              <input
+                aria-describedby={`remove-domains-description-${relayId}`}
+                checked={removeVanityDomains}
+                className="mt-0.5 size-4 shrink-0 rounded-[3px] border-input accent-primary"
+                disabled={pending}
+                type="checkbox"
+                onChange={(event) =>
+                  setRemoveVanityDomains(event.target.checked)
+                }
+              />
+              <Cloud className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold">
+                  Remove vanity domains
+                </span>
+                <span
+                  id={`remove-domains-description-${relayId}`}
+                  className="mt-0.5 block text-xs leading-5 text-muted-foreground"
+                >
+                  Delete this Relay’s managed DNS records from Cloudflare.
+                  Nothing changes on the Relay.
+                </span>
+              </span>
+            </label>
+          </div>
+
+          <DialogFooter>
+            <Button
+              disabled={pending}
+              type="button"
+              variant="ghost"
+              onClick={() => changeOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={pending}
+              type="button"
+              variant="destructive"
+              onClick={() => void remove()}
+            >
+              {pending ? <LoaderCircle className="animate-spin" /> : <Trash2 />}
+              Remove Relay
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 })
 

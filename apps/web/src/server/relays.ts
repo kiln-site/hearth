@@ -12,6 +12,7 @@ import {
 import { z } from "zod"
 
 import { isPlatformAdmin, isRelayCreator } from "@/lib/access-control"
+import { runAppEffect } from "@/effect/runtime"
 import type { PersistedRelay } from "@/lib/relay-registry"
 import { requireAuthenticatedUser } from "@/server/auth"
 
@@ -19,6 +20,10 @@ const relayIdSchema = z.object({
   id: relayFingerprintSchema,
 })
 const relayEnabledSchema = relayIdSchema.extend({ enabled: z.boolean() })
+const removeRelaySchema = relayIdSchema.extend({
+  forgetBackups: z.boolean().default(true),
+  removeVanityDomains: z.boolean().default(true),
+})
 const relayProxyInputSchema = relayProxySettingsSchema.extend({
   relayId: relayFingerprintSchema,
 })
@@ -146,12 +151,30 @@ export const setRelayEnabled = createServerFn({ method: "POST" })
   })
 
 export const removeRelay = createServerFn({ method: "POST" })
-  .validator(relayIdSchema)
+  .validator(removeRelaySchema)
   .handler(async ({ data }) => {
     await requireRelayAdministrator(data.id)
+    let forgottenBackups = 0
+    const { removeRelayManagedDomainsEffect } =
+      await import("@/server/domains.server")
+    const managedDomainCount = await runAppEffect(
+      "domains.relay.removeAssignments",
+      removeRelayManagedDomainsEffect(data.id, data.removeVanityDomains)
+    )
+    if (data.forgetBackups) {
+      const { forgetRelayBackupsEffect } = await import("@/effect/backups")
+      forgottenBackups = await runAppEffect(
+        "backups.forgetRelay",
+        forgetRelayBackupsEffect(data.id)
+      )
+    }
     const { deletePersistedRelay } = await import("@/lib/relay-registry")
     await deletePersistedRelay(data.id)
-    return { removed: true }
+    return {
+      forgottenBackups,
+      removed: true,
+      removedVanityDomains: data.removeVanityDomains ? managedDomainCount : 0,
+    }
   })
 
 export const previewRelayPairing = createServerFn({ method: "POST" })

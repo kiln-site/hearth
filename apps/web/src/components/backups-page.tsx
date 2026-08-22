@@ -9,6 +9,7 @@ import { ensuringPromise, forkPromise, settlePromises } from "@/effect/promise"
 import { Link } from "@tanstack/react-router"
 import {
   Archive,
+  ArchiveX,
   ArrowLeft,
   Check,
   CircleAlert,
@@ -602,7 +603,7 @@ export const BackupsPage = React.memo(function BackupsPage({
       selectionStore.retain(
         new Set(
           filteredBackups.flatMap((backup) =>
-            !backupIsActive(backup) &&
+            backupCanBeRemoved(backup) &&
             backupMatchesSearch(backup, normalizedSearch)
               ? [backup.id]
               : []
@@ -1201,7 +1202,9 @@ const BackupMobileSelectAll = React.memo(function BackupMobileSelectAll({
 }) {
   const backupIds = React.useMemo(
     () =>
-      backups.flatMap((backup) => (backupIsActive(backup) ? [] : [backup.id])),
+      backups.flatMap((backup) =>
+        backupCanBeRemoved(backup) ? [backup.id] : []
+      ),
     [backups]
   )
 
@@ -1294,7 +1297,7 @@ const BackupFilteredSelectAllCheckbox = React.memo(
     const visibleBackupIds = React.useMemo(
       () =>
         backups.flatMap((backup) =>
-          !backupIsActive(backup) &&
+          backupCanBeRemoved(backup) &&
           backupMatchesSearch(backup, normalizedSearch)
             ? [backup.id]
             : []
@@ -1535,7 +1538,7 @@ const BackupSelectionCheckbox = React.memo(function BackupSelectionCheckbox({
     getSelectedSnapshot,
     () => false
   )
-  const disabled = backupIsActive(backup)
+  const disabled = !backupCanBeRemoved(backup)
 
   return (
     <label
@@ -1697,8 +1700,9 @@ const BackupBulkActions = React.memo(function BackupBulkActions({
     onSuccess: async (outcomes) => {
       const deleted = outcomes.filter((outcome) => outcome.status === "deleted")
       const failed = outcomes.filter((outcome) => outcome.status === "failed")
+      const forgotten = deleted.filter((outcome) => outcome.result.forgotten)
       const deferred = deleted.filter(
-        (outcome) => !outcome.result.relayAccepted
+        (outcome) => !outcome.result.forgotten && !outcome.result.relayAccepted
       )
       deleteFeedbackStore.remove(failed.map((outcome) => outcome.backup.id))
 
@@ -1725,9 +1729,13 @@ const BackupBulkActions = React.memo(function BackupBulkActions({
       }
       showToast({
         message:
-          deferred.length > 0
-            ? `${deleted.length} backups scheduled; ${deferred.length} will resume when Relay reconnects`
-            : `${deleted.length} ${deleted.length === 1 ? "backup" : "backups"} queued for deletion`,
+          forgotten.length === deleted.length
+            ? `${forgotten.length} ${forgotten.length === 1 ? "backup" : "backups"} forgotten`
+            : forgotten.length > 0
+              ? `${forgotten.length} forgotten; ${deleted.length - forgotten.length} queued for deletion`
+              : deferred.length > 0
+                ? `${deleted.length} backups scheduled; ${deferred.length} will resume when Relay reconnects`
+                : `${deleted.length} ${deleted.length === 1 ? "backup" : "backups"} queued for deletion`,
         type: deferred.length > 0 ? "warning" : "success",
       })
     },
@@ -1735,6 +1743,12 @@ const BackupBulkActions = React.memo(function BackupBulkActions({
   const failedOutcomes = (remove.data ?? []).filter(
     (outcome) => outcome.status === "failed"
   )
+  const orphanedConfirmationCount = confirmationBackups.filter(
+    (backup) => !backup.relayPresent
+  ).length
+  const allConfirmationBackupsOrphaned =
+    confirmationBackups.length > 0 &&
+    orphanedConfirmationCount === confirmationBackups.length
   const openConfirmation = React.useCallback(() => {
     const selected = selectionStore.getSnapshot()
     const selectedBackups = backups.filter((backup) => selected.has(backup.id))
@@ -1766,12 +1780,20 @@ const BackupBulkActions = React.memo(function BackupBulkActions({
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              Delete {confirmationBackups.length}{" "}
+              {allConfirmationBackupsOrphaned
+                ? "Forget"
+                : orphanedConfirmationCount > 0
+                  ? "Remove"
+                  : "Delete"}{" "}
+              {confirmationBackups.length}{" "}
               {confirmationBackups.length === 1 ? "backup" : "backups"}?
             </DialogTitle>
             <DialogDescription>
-              Every selected backup and all of its stored artifacts will be
-              permanently removed. This cannot be undone.
+              {allConfirmationBackupsOrphaned
+                ? "Their Relays no longer belong to Hearth. Backup history will be forgotten, while stored files remain untouched."
+                : orphanedConfirmationCount > 0
+                  ? `${orphanedConfirmationCount} orphaned ${orphanedConfirmationCount === 1 ? "backup" : "backups"} will be forgotten. The remaining backups and their stored artifacts will be deleted.`
+                  : "Every selected backup and all of its stored artifacts will be permanently removed. This cannot be undone."}
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-44 overflow-y-auto rounded-lg border bg-muted/15 px-3 py-2">
@@ -1817,10 +1839,17 @@ const BackupBulkActions = React.memo(function BackupBulkActions({
             >
               {remove.isPending ? (
                 <LoaderCircle className="animate-spin" />
+              ) : allConfirmationBackupsOrphaned ? (
+                <ArchiveX />
               ) : (
                 <Trash2 />
               )}
-              Delete {confirmationBackups.length}{" "}
+              {allConfirmationBackupsOrphaned
+                ? "Forget"
+                : orphanedConfirmationCount > 0
+                  ? "Remove"
+                  : "Delete"}{" "}
+              {confirmationBackups.length}{" "}
               {confirmationBackups.length === 1 ? "backup" : "backups"}
             </Button>
           </DialogFooter>
@@ -2080,10 +2109,10 @@ const BackupRowActions = React.memo(function BackupRowActions({
           onClick={() => dialogStore.open({ backup, kind: "download" })}
         />
         <BackupActionButton
-          disabled={backupIsActive(backup)}
+          disabled={!backupCanBeRemoved(backup)}
           icon={Trash2}
-          label={`Delete ${backup.name}`}
-          tooltip="Delete backup"
+          label={`${backup.relayPresent ? "Delete" : "Forget"} ${backup.name}`}
+          tooltip={backup.relayPresent ? "Delete backup" : "Forget backup"}
           onClick={() => dialogStore.open({ backup, kind: "delete" })}
         />
       </div>
@@ -3941,10 +3970,12 @@ function DeleteBackupDialog({
     onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.backups.all })
       showToast({
-        message: result.relayAccepted
-          ? `${backup.name} queued for deletion`
-          : `Deletion saved and will resume when Relay reconnects`,
-        type: result.relayAccepted ? "success" : "warning",
+        message: result.forgotten
+          ? `${backup.name} forgotten`
+          : result.relayAccepted
+            ? `${backup.name} queued for deletion`
+            : `Deletion saved and will resume when Relay reconnects`,
+        type: result.forgotten || result.relayAccepted ? "success" : "warning",
       })
       onOpenChange(false)
     },
@@ -3954,11 +3985,24 @@ function DeleteBackupDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Delete backup?</DialogTitle>
+          <DialogTitle>
+            {backup.relayPresent ? "Delete backup?" : "Forget backup?"}
+          </DialogTitle>
           <DialogDescription>
-            “{backup.name}” and its stored artifact will be permanently removed.
+            {backup.relayPresent
+              ? `“${backup.name}” and its stored artifact will be permanently removed.`
+              : `The Relay for “${backup.name}” no longer belongs to Hearth.`}
           </DialogDescription>
         </DialogHeader>
+        {!backup.relayPresent ? (
+          <div className="flex gap-2.5 rounded-lg border border-primary/25 bg-primary/[0.06] px-3 py-2.5 text-xs leading-5">
+            <CircleAlert className="mt-0.5 size-4 shrink-0 text-primary" />
+            <p>
+              Forgetting removes this backup’s history from Hearth. Any stored
+              files are left untouched.
+            </p>
+          </div>
+        ) : null}
         {remove.error ? (
           <p className="text-xs text-destructive">{remove.error.message}</p>
         ) : null}
@@ -3978,10 +4022,12 @@ function DeleteBackupDialog({
           >
             {remove.isPending ? (
               <LoaderCircle className="animate-spin" />
-            ) : (
+            ) : backup.relayPresent ? (
               <Trash2 />
+            ) : (
+              <ArchiveX />
             )}
-            Delete backup
+            {backup.relayPresent ? "Delete backup" : "Forget backup"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -4153,6 +4199,10 @@ function backupIsActive(backup: Backup): boolean {
     backupSourceIsActive(backup) ||
     backup.artifacts.some((artifact) => activeStatuses.has(artifact.status))
   )
+}
+
+function backupCanBeRemoved(backup: Backup): boolean {
+  return !backup.relayPresent || !backupIsActive(backup)
 }
 
 function backupSourceIsActive(backup: Backup): boolean {
