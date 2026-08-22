@@ -614,10 +614,9 @@ export class DockerDriver {
       discovered.map(async ({ config, container }) => {
         const transition = this.#powerTransitions.get(config.id)
         const readySession = this.#readySessions.get(config.id)
-        if (
-          readySession?.startedAt === container.State.StartedAt &&
-          container.State.Running
-        ) {
+        const readySessionMatches =
+          readySession?.startedAt === container.State.StartedAt
+        if (readySessionMatches && container.State.Running) {
           readiness.set(config.id, true)
           return
         }
@@ -625,16 +624,14 @@ export class DockerDriver {
         const startedRecently =
           Number.isFinite(startedAt) &&
           now - startedAt < INSTANCE_STARTUP_READINESS_TIMEOUT_MS
-        if (
-          !container.State.Running ||
-          container.State.Health ||
-          (!startedRecently &&
-            (!transition ||
-              (transition.action !== "start" &&
-                transition.action !== "restart")))
-        ) {
-          return
-        }
+        const shouldProbe = shouldProbeInstanceReadiness({
+          hasHealthCheck: container.State.Health !== undefined,
+          hasLogReadiness: config.brickReadiness !== undefined,
+          running: container.State.Running,
+          startedRecently,
+          transitionAction: transition?.action,
+        })
+        if (!shouldProbe) return
         const result = await this.#instanceReady(config, container)
         if (!result) return
         readiness.set(config.id, result.ready)
@@ -2719,6 +2716,33 @@ export function observedSessionReadyAt(
   // A rediscovered session has no trustworthy historical probe time. Keep it
   // unknown so restored console history does not place readiness at startup.
   return transitionActive ? new Date(now).toISOString() : null
+}
+
+export function shouldProbeInstanceReadiness({
+  hasHealthCheck,
+  hasLogReadiness,
+  running,
+  startedRecently,
+  transitionAction,
+}: {
+  hasHealthCheck: boolean
+  hasLogReadiness: boolean
+  running: boolean
+  startedRecently: boolean
+  transitionAction: InstancePowerAction | undefined
+}): boolean {
+  if (!running || hasHealthCheck) return false
+
+  // A configured startup log is historical evidence. Re-read it once when a
+  // Relay rediscovers an existing container so readyAt remains anchored to the
+  // actual completion line instead of falling to the end of console history.
+  if (hasLogReadiness) return true
+
+  return (
+    startedRecently ||
+    transitionAction === "start" ||
+    transitionAction === "restart"
+  )
 }
 
 export function matchingReadyLogLine(

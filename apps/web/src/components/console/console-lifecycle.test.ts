@@ -53,6 +53,42 @@ describe("console lifecycle lines", () => {
     ])
   })
 
+  it("places running directly after the matching readiness log, before later output", () => {
+    const doneAt = "2026-08-21T20:40:19.000Z"
+    const lines = [
+      {
+        id: "done",
+        level: "info" as const,
+        text: 'Done (21.758s)! For help, type "help"',
+        timestamp: doneAt,
+      },
+      {
+        id: "backup-started",
+        level: "info" as const,
+        text: "Server is Backing up...",
+        timestamp: "2026-08-22T08:11:13.000Z",
+      },
+      {
+        id: "backup-completed",
+        level: "info" as const,
+        text: "Backup Completed!",
+        timestamp: "2026-08-22T08:11:15.000Z",
+      },
+    ]
+
+    expect(
+      mergeConsoleStateLines(lines, startedAt, "running", doneAt).map(
+        (line) => line.text
+      )
+    ).toEqual([
+      "Server is starting",
+      'Done (21.758s)! For help, type "help"',
+      "Server is running",
+      "Server is Backing up...",
+      "Backup Completed!",
+    ])
+  })
+
   it("keeps unknown restored readiness after console history", () => {
     const lines = [
       {

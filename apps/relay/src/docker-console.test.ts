@@ -6,6 +6,7 @@ import {
   matchingReadyLogLine,
   observedSessionReadyAt,
   parseConsoleLine,
+  shouldProbeInstanceReadiness,
 } from "./docker.js"
 
 describe("Docker console parsing", () => {
@@ -80,6 +81,65 @@ describe("Docker console parsing", () => {
     expect(observedSessionReadyAt(undefined, true, relayRestartedAt)).toBe(
       "2026-07-25T20:00:00.000Z"
     )
+  })
+
+  it.each([
+    {
+      expected: true,
+      hasHealthCheck: false,
+      hasLogReadiness: true,
+      label: "an old session with a configured readiness log",
+      running: true,
+      startedRecently: false,
+      transitionAction: undefined,
+    },
+    {
+      expected: false,
+      hasHealthCheck: false,
+      hasLogReadiness: false,
+      label: "an old port-only session",
+      running: true,
+      startedRecently: false,
+      transitionAction: undefined,
+    },
+    {
+      expected: true,
+      hasHealthCheck: false,
+      hasLogReadiness: false,
+      label: "a recent port-only session",
+      running: true,
+      startedRecently: true,
+      transitionAction: undefined,
+    },
+    {
+      expected: true,
+      hasHealthCheck: false,
+      hasLogReadiness: false,
+      label: "an explicitly restarted port-only session",
+      running: true,
+      startedRecently: false,
+      transitionAction: "restart" as const,
+    },
+    {
+      expected: false,
+      hasHealthCheck: true,
+      hasLogReadiness: true,
+      label: "a session whose health check owns readiness",
+      running: true,
+      startedRecently: true,
+      transitionAction: "start" as const,
+    },
+    {
+      expected: false,
+      hasHealthCheck: false,
+      hasLogReadiness: true,
+      label: "a stopped session",
+      running: false,
+      startedRecently: true,
+      transitionAction: "start" as const,
+    },
+  ])("probes readiness for $label", ({ expected, ...input }) => {
+    expect(shouldProbeInstanceReadiness(input)).toBe(expected)
   })
 
   it.each([
