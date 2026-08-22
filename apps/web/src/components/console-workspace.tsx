@@ -1145,6 +1145,10 @@ function ConsoleLogViewport({
     if (!active || !autoScroll || filteredLines.length === 0 || loading) return
     programmaticScroll.current = true
     rowVirtualizer.scrollToIndex(filteredLines.length - 1, { align: "end" })
+    // Chromium can defer this programmatic scroll event until pointer movement.
+    queueMicrotask(() => {
+      parentRef.current?.dispatchEvent(new Event("scroll"))
+    })
     const frame = window.requestAnimationFrame(() => {
       programmaticScroll.current = false
     })
@@ -1156,6 +1160,9 @@ function ConsoleLogViewport({
     programmaticScroll.current = true
     if (filteredLines.length > 0) {
       rowVirtualizer.scrollToIndex(filteredLines.length - 1, { align: "end" })
+      queueMicrotask(() => {
+        parentRef.current?.dispatchEvent(new Event("scroll"))
+      })
     }
     window.requestAnimationFrame(() => {
       programmaticScroll.current = false
