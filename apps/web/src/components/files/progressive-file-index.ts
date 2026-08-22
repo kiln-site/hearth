@@ -5,6 +5,7 @@ import { ensuringPromise, promiseEffect } from "@/effect/promise"
 import { getRelayDirectoryPage, searchRelayFiles } from "@/server/relay"
 
 const emptyEntries: ReadonlyArray<RelayFileEntry> = []
+const fileTreeInitialLoadingDelayMs = 120
 const emptyDirectorySnapshot: FileDirectorySnapshot = {
   complete: false,
   entries: emptyEntries,
@@ -50,6 +51,7 @@ export class ProgressiveFileIndex {
   readonly #statusListeners = new Set<() => void>()
   readonly #loads = new Map<string, Promise<void>>()
   readonly #treePendingDirectories = new Set<string>()
+  readonly #treeLoadingTimers = new Map<string, ReturnType<typeof setTimeout>>()
   #disposed = false
   #epoch = 0
   #searchGeneration = 0
@@ -88,6 +90,7 @@ export class ProgressiveFileIndex {
     this.#pathListeners.clear()
     this.#statusListeners.clear()
     this.#loads.clear()
+    this.#clearTreeLoadingTimers()
     this.#treePendingDirectories.clear()
   }
 
@@ -99,6 +102,7 @@ export class ProgressiveFileIndex {
     this.#directories.clear()
     this.#knownPaths.clear()
     this.#loads.clear()
+    this.#clearTreeLoadingTimers()
     this.#treePendingDirectories.clear()
     this.#setStatus({ ...initialStatus, refreshing: true })
     this.#pathListeners.forEach((listener) =>
@@ -166,7 +170,7 @@ export class ProgressiveFileIndex {
     const normalized = normalizeDirectoryPath(directory)
     const existing = this.#directories.get(normalized)
     if (existing) return Promise.resolve()
-    this.#setTreeDirectoryHasMore(normalized, true)
+    this.#scheduleTreeDirectoryLoading(normalized)
     return this.#loadNextDirectoryPage(normalized)
   }
 
@@ -238,6 +242,7 @@ export class ProgressiveFileIndex {
       this.#applyDirectoryPage(result.success)
       return
     }
+    this.#cancelTreeDirectoryLoading(directory)
     this.#setTreeDirectoryHasMore(directory, false)
     const snapshot = this.#directories.get(directory)
     this.#setDirectory(directory, {
@@ -254,6 +259,7 @@ export class ProgressiveFileIndex {
 
   #applyDirectoryPage(page: RelayDirectoryPage): void {
     const directory = normalizeDirectoryPath(page.directory)
+    this.#cancelTreeDirectoryLoading(directory)
     const previous = this.#directories.get(directory)
     const entries = mergeEntries(
       previous?.entries ?? emptyEntries,
@@ -342,6 +348,28 @@ export class ProgressiveFileIndex {
     this.#pathListeners.forEach((listener) =>
       listener({ directory, hasMore, type: "directory-pagination" })
     )
+  }
+
+  #scheduleTreeDirectoryLoading(directory: string): void {
+    if (this.#treeLoadingTimers.has(directory)) return
+    const timer = setTimeout(() => {
+      if (this.#treeLoadingTimers.get(directory) !== timer) return
+      this.#treeLoadingTimers.delete(directory)
+      if (!this.#disposed) this.#setTreeDirectoryHasMore(directory, true)
+    }, fileTreeInitialLoadingDelayMs)
+    this.#treeLoadingTimers.set(directory, timer)
+  }
+
+  #cancelTreeDirectoryLoading(directory: string): void {
+    const timer = this.#treeLoadingTimers.get(directory)
+    if (timer === undefined) return
+    clearTimeout(timer)
+    this.#treeLoadingTimers.delete(directory)
+  }
+
+  #clearTreeLoadingTimers(): void {
+    this.#treeLoadingTimers.forEach((timer) => clearTimeout(timer))
+    this.#treeLoadingTimers.clear()
   }
 }
 
