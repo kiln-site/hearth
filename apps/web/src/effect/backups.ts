@@ -1628,6 +1628,21 @@ export const forgetBackupEffect = Effect.fn("backups.forget")(function* (
   const database = yield* Database
   return yield* database.transaction("backup_forget", (transaction) =>
     Effect.gen(function* () {
+      const backup = (yield* transaction.queryRows<
+        Pick<
+          BackupRow,
+          "relay_id" | "repository_id" | "target_id" | "target_kind"
+        > &
+          RowDataPacket
+      >(
+        `SELECT relay_id, repository_id, target_kind, target_id
+             FROM ${databaseTable("backup")}
+            WHERE id = ?
+            LIMIT 1
+            FOR UPDATE`,
+        [backupId]
+      ))[0]
+      if (!backup) return false
       yield* transaction.execute(
         `DELETE FROM ${databaseTable("backup_download_share")}
           WHERE backup_id = ?`,
@@ -1646,6 +1661,33 @@ export const forgetBackupEffect = Effect.fn("backups.forget")(function* (
       const result = yield* transaction.execute(
         `DELETE FROM ${databaseTable("backup")} WHERE id = ?`,
         [backupId]
+      )
+      if (backup.repository_id) {
+        yield* transaction.execute(
+          `DELETE FROM ${databaseTable("backup_repository")}
+            WHERE id = ?
+              AND NOT EXISTS (
+                SELECT 1 FROM ${databaseTable("backup")}
+                 WHERE repository_id = ?
+              )`,
+          [backup.repository_id, backup.repository_id]
+        )
+      }
+      yield* transaction.execute(
+        `DELETE FROM ${databaseTable("backup_policy")}
+          WHERE relay_id = ? AND target_kind = ? AND target_id = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM ${databaseTable("backup")}
+               WHERE relay_id = ? AND target_kind = ? AND target_id = ?
+            )`,
+        [
+          backup.relay_id,
+          backup.target_kind,
+          backup.target_id,
+          backup.relay_id,
+          backup.target_kind,
+          backup.target_id,
+        ]
       )
       return result.affectedRows === 1
     })

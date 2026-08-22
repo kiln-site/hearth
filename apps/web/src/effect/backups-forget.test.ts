@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
-import type { ResultSetHeader } from "mysql2/promise"
+import type { ResultSetHeader, RowDataPacket } from "mysql2/promise"
 import { vi } from "vite-plus/test"
 
 vi.hoisted(() => {
@@ -10,7 +10,7 @@ vi.hoisted(() => {
   process.env.DB_USERNAME ??= "test"
 })
 
-import { Database } from "@/effect/database"
+import { Database, type DatabaseTransaction } from "@/effect/database"
 import { forgetBackupEffect, forgetRelayBackupsEffect } from "@/effect/backups"
 
 const removedResult: ResultSetHeader = {
@@ -28,6 +28,7 @@ describe("backup forgetting", () => {
   it.effect("forgets one backup without reserving Relay deletion work", () => {
     const statements: Array<{ sql: string; values: ReadonlyArray<unknown> }> =
       []
+    const queries: Array<{ sql: string; values: ReadonlyArray<unknown> }> = []
 
     return Effect.gen(function* () {
       const forgotten = yield* forgetBackupEffect("backup-one")
@@ -40,12 +41,60 @@ describe("backup forgetting", () => {
           "kiln_backup_final_database_delete",
           "kiln_backup_final_delete",
           "kiln_backup",
+          "kiln_backup_repository",
+          "kiln_backup_policy",
         ]
       )
       assert.deepEqual(
         statements.map(({ values }) => values),
-        Array.from({ length: 4 }, () => ["backup-one"])
+        [
+          ["backup-one"],
+          ["backup-one"],
+          ["backup-one"],
+          ["backup-one"],
+          ["repository-one", "repository-one"],
+          [
+            "relay-one",
+            "instance",
+            "instance-one",
+            "relay-one",
+            "instance",
+            "instance-one",
+          ],
+        ]
       )
+      assert.lengthOf(queries, 1)
+      assert.include(queries[0]?.sql ?? "", "FOR UPDATE")
+      assert.deepEqual(queries[0]?.values, ["backup-one"])
+      const cleanupSql = statements.slice(-2).map(({ sql }) => sql)
+      assert.isTrue(cleanupSql.every((sql) => sql.includes("NOT EXISTS")))
+      assert.notInclude(
+        statements.map(({ sql }) => sql).join("\n"),
+        "backup_task"
+      )
+    }).pipe(
+      Effect.provide(
+        databaseLayer(statements, queries, [
+          {
+            relay_id: "relay-one",
+            repository_id: "repository-one",
+            target_id: "instance-one",
+            target_kind: "instance",
+          },
+        ])
+      )
+    )
+  })
+
+  it.effect("does not remove metadata when the backup is missing", () => {
+    const statements: Array<{ sql: string; values: ReadonlyArray<unknown> }> =
+      []
+
+    return Effect.gen(function* () {
+      const forgotten = yield* forgetBackupEffect("missing-backup")
+
+      assert.isFalse(forgotten)
+      assert.isEmpty(statements)
     }).pipe(Effect.provide(databaseLayer(statements)))
   })
 
@@ -81,7 +130,14 @@ describe("backup forgetting", () => {
 })
 
 function databaseLayer(
-  statements: Array<{ sql: string; values: ReadonlyArray<unknown> }>
+  statements: Array<{ sql: string; values: ReadonlyArray<unknown> }>,
+  queries: Array<{ sql: string; values: ReadonlyArray<unknown> }> = [],
+  backupRows: ReadonlyArray<{
+    relay_id: string
+    repository_id: string | null
+    target_id: string
+    target_kind: "database" | "instance" | "platform"
+  }> = []
 ) {
   return Layer.succeed(Database)({
     execute: () => Effect.die("Unexpected standalone database write"),
@@ -93,7 +149,14 @@ function databaseLayer(
             statements.push({ sql, values: values ?? [] })
             return removedResult
           }),
-        queryRows: () => Effect.die("Unexpected transaction query"),
+        queryRows: <TRow extends RowDataPacket>(
+          sql: string,
+          values?: Parameters<DatabaseTransaction["queryRows"]>[1]
+        ) =>
+          Effect.sync(() => {
+            queries.push({ sql, values: values ?? [] })
+            return [...backupRows] as unknown as ReadonlyArray<TRow>
+          }),
       }),
   })
 }

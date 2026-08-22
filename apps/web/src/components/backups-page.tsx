@@ -1676,7 +1676,13 @@ const BackupBulkActions = React.memo(function BackupBulkActions({
     mutationFn: async (targets: Array<Backup>) => {
       const settlements = await settlePromises(
         targets,
-        (backup) => deleteBackup({ data: { backupId: backup.id } }),
+        (backup) =>
+          deleteBackup({
+            data: {
+              backupId: backup.id,
+              mode: backup.relayPresent ? "delete" : "forget",
+            },
+          }),
         4
       )
       return settlements.map(
@@ -3962,7 +3968,13 @@ function DeleteBackupDialog({
     onMutate: () => {
       deleteFeedbackStore.mark([backup])
     },
-    mutationFn: () => deleteBackup({ data: { backupId: backup.id } }),
+    mutationFn: () =>
+      deleteBackup({
+        data: {
+          backupId: backup.id,
+          mode: backup.relayPresent ? "delete" : "forget",
+        },
+      }),
     onError: async () => {
       deleteFeedbackStore.remove([backup.id])
       await queryClient.invalidateQueries({ queryKey: queryKeys.backups.all })

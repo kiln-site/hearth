@@ -104,6 +104,11 @@ const platformBackupInputSchema = z.strictObject({
 
 const backupIdInputSchema = z.strictObject({ backupId: z.uuid() })
 
+const backupRemovalInputSchema = z.strictObject({
+  backupId: z.uuid(),
+  mode: z.enum(["delete", "forget"]),
+})
+
 const renameBackupInputSchema = z.strictObject({
   backupId: z.uuid(),
   name: z.string().trim().min(1).max(120),
@@ -429,7 +434,7 @@ export const cancelBackup = createServerFn({ method: "POST" })
   })
 
 export const deleteBackup = createServerFn({ method: "POST" })
-  .validator(backupIdInputSchema)
+  .validator(backupRemovalInputSchema)
   .handler(async ({ data }) => {
     const user = await requireAuthenticatedUser()
     const catalog = await runAppEffect(
@@ -442,9 +447,14 @@ export const deleteBackup = createServerFn({ method: "POST" })
     const relayPresent = (await listPersistedRelays()).some(
       (relay) => relay.id === backup.relayId
     )
-    if (!relayPresent) {
+    if (data.mode === "forget") {
       if (!hasBackupPermission(user, grants, backup, "backup.read")) {
         throw new Error("You do not have permission to forget this backup")
+      }
+      if (relayPresent) {
+        throw new Error(
+          "This Relay belongs to Hearth again. Refresh before removing the backup."
+        )
       }
       const forgotten = await runAppEffect(
         "backups.forget",
@@ -455,6 +465,11 @@ export const deleteBackup = createServerFn({ method: "POST" })
     }
     if (!hasBackupPermission(user, grants, backup, "backup.delete")) {
       throw new Error("You do not have permission to delete this backup")
+    }
+    if (!relayPresent) {
+      throw new Error(
+        "This Relay no longer belongs to Hearth. Refresh before forgetting the backup."
+      )
     }
     const relay = await requireBackupRelay(backup.relayId)
     const input = await runAppEffect(
