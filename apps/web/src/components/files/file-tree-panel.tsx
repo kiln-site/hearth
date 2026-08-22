@@ -67,6 +67,12 @@ const fileTreeCookieMaxAge = 60 * 60 * 24 * 7
 const fileTreeMinWidth = 224
 const fileTreeMaxWidth = 480
 const mobileFileDrawerTransitionMs = 200
+const fileTreeLoadingLabel = "Loading files…"
+const fileTreeLoadingFileName = `\u0001${fileTreeLoadingLabel}`
+
+function fileTreeLoadingPath(directory: string): string {
+  return `${normalizeDirectoryPath(directory)}${fileTreeLoadingFileName}`
+}
 
 function persistFileTreeWidth(width: number) {
   document.cookie = `${fileTreeWidthCookieName}=${width}; path=/; max-age=${fileTreeCookieMaxAge}; SameSite=Lax`
@@ -94,6 +100,45 @@ const fileTreeLayoutCss = `
   [data-icon-name="file-tree-icon-chevron"] {
     width: 14px;
     height: 14px;
+  }
+
+  [data-type="item"][aria-label="\\1 ${fileTreeLoadingLabel}"] [data-item-section="icon"] {
+    display: grid;
+    place-items: center;
+    color: var(--primary);
+  }
+
+  [data-type="item"][aria-label="\\1 ${fileTreeLoadingLabel}"] [data-item-section="icon"] svg {
+    display: none;
+  }
+
+  [data-type="item"][aria-label="\\1 ${fileTreeLoadingLabel}"] [data-item-section="icon"]::before {
+    width: 12px;
+    height: 12px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 999px;
+    content: "";
+    animation: kiln-file-tree-loading-spin 0.8s linear infinite;
+  }
+
+  [data-type="item"][aria-label="\\1 ${fileTreeLoadingLabel}"] {
+    color: var(--muted-foreground);
+    cursor: progress;
+  }
+
+  [data-type="item"][aria-label="\\1 ${fileTreeLoadingLabel}"] [data-item-section="action"] {
+    display: none;
+  }
+
+  @keyframes kiln-file-tree-loading-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    [data-type="item"][aria-label="\\1 ${fileTreeLoadingLabel}"] [data-item-section="icon"]::before {
+      animation: none;
+    }
   }
 
   [data-item-path][data-external-file-drop-target="true"] {
@@ -507,6 +552,7 @@ export function FileTreePanel({
     onPathChange,
   })
   const searchTimer = React.useRef<number | null>(null)
+  const loadingPlaceholderPaths = React.useRef(new Set<string>())
   const { model } = useFileTree({
     preparedInput,
     initialExpansion: "closed",
@@ -515,7 +561,11 @@ export function FileTreePanel({
     onSelectionChange: (paths) => {
       const selected = paths.at(-1)
       const handlers = selectionHandlers.current
-      if (!selected || selected === selectionStore.getSnapshot()) {
+      if (
+        !selected ||
+        loadingPlaceholderPaths.current.has(selected) ||
+        selected === selectionStore.getSnapshot()
+      ) {
         return
       }
       handlers.onPathChange(selected)
@@ -788,6 +838,7 @@ export function FileTreePanel({
     () =>
       fileIndex.subscribePaths((event) => {
         if (event.type === "reset") {
+          loadingPlaceholderPaths.current.clear()
           model.resetPaths([], {
             initialExpandedPaths: fileTreeParentDirectoryPaths(
               selectionStore.getSnapshot()
@@ -795,11 +846,31 @@ export function FileTreePanel({
           })
           return
         }
-        const additions = event.entries.flatMap((entry) =>
-          model.getItem(entry.path)
-            ? []
-            : [{ path: entry.path, type: "add" as const }]
-        )
+        if (event.type === "directory-loading") {
+          const path = fileTreeLoadingPath(event.directory)
+          if (event.loading) {
+            if (model.getItem(path)) return
+            loadingPlaceholderPaths.current.add(path)
+            model.batch([{ path, type: "add" }])
+            return
+          }
+          if (!loadingPlaceholderPaths.current.delete(path)) return
+          if (model.getItem(path)) model.batch([{ path, type: "remove" }])
+          return
+        }
+        const additions = event.entries.flatMap((entry) => {
+          const replacesPlaceholder = loadingPlaceholderPaths.current.delete(
+            entry.path
+          )
+          return [
+            ...(replacesPlaceholder
+              ? [{ path: entry.path, type: "remove" as const }]
+              : []),
+            ...(!model.getItem(entry.path) || replacesPlaceholder
+              ? [{ path: entry.path, type: "add" as const }]
+              : []),
+          ]
+        })
         if (!additions.length) return
         model.batch(additions)
         const selectedPath = selectionStore.getSnapshot()
@@ -1178,87 +1249,89 @@ export function FileTreePanel({
               height: "100%",
             } as React.CSSProperties
           }
-          renderContextMenu={(item, context) => (
-            <FileTreeContextMenu
-              anchorRect={context.anchorRect}
-              label={`Actions for ${item.name}`}
-            >
-              <button
-                type="button"
-                role="menuitem"
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none [&>svg]:size-3.5"
-                onClick={() => {
-                  context.close()
-                  onPathChange(item.path)
-                  onFileSelected()
-                }}
+          renderContextMenu={(item, context) =>
+            loadingPlaceholderPaths.current.has(item.path) ? null : (
+              <FileTreeContextMenu
+                anchorRect={context.anchorRect}
+                label={`Actions for ${item.name}`}
               >
-                {item.kind === "directory" ? <Folder /> : <FileIcon />}
-                Open
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                disabled={!actions.canWrite}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
-                onClick={() => {
-                  context.close({ restoreFocus: false })
-                  actions.request("rename", [item.path])
-                }}
-              >
-                <ALargeSmall /> Rename
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none [&>svg]:size-3.5"
-                onClick={() => {
-                  context.close({ restoreFocus: false })
-                  actions.request("download", [item.path])
-                }}
-              >
-                <Download />
-                Download
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                disabled={!actions.canWrite}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
-                onClick={() => {
-                  context.close({ restoreFocus: false })
-                  actions.request("archive", [item.path])
-                }}
-              >
-                <Archive /> Archive
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                disabled={!actions.canWrite}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
-                onClick={() => {
-                  context.close()
-                  actions.request("duplicate", [item.path])
-                }}
-              >
-                <Copy /> Duplicate
-              </button>
-              <div className="-mx-1 my-1 h-px bg-border" />
-              <button
-                type="button"
-                role="menuitem"
-                disabled={!actions.canWrite}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-destructive transition-colors hover:bg-destructive/10 focus-visible:bg-destructive/10 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
-                onClick={() => {
-                  context.close({ restoreFocus: false })
-                  actions.request("delete", [item.path])
-                }}
-              >
-                <Trash2 /> Delete
-              </button>
-            </FileTreeContextMenu>
-          )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none [&>svg]:size-3.5"
+                  onClick={() => {
+                    context.close()
+                    onPathChange(item.path)
+                    onFileSelected()
+                  }}
+                >
+                  {item.kind === "directory" ? <Folder /> : <FileIcon />}
+                  Open
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!actions.canWrite}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
+                  onClick={() => {
+                    context.close({ restoreFocus: false })
+                    actions.request("rename", [item.path])
+                  }}
+                >
+                  <ALargeSmall /> Rename
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none [&>svg]:size-3.5"
+                  onClick={() => {
+                    context.close({ restoreFocus: false })
+                    actions.request("download", [item.path])
+                  }}
+                >
+                  <Download />
+                  Download
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!actions.canWrite}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
+                  onClick={() => {
+                    context.close({ restoreFocus: false })
+                    actions.request("archive", [item.path])
+                  }}
+                >
+                  <Archive /> Archive
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!actions.canWrite}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-popover-accent focus-visible:bg-popover-accent focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
+                  onClick={() => {
+                    context.close()
+                    actions.request("duplicate", [item.path])
+                  }}
+                >
+                  <Copy /> Duplicate
+                </button>
+                <div className="-mx-1 my-1 h-px bg-border" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!actions.canWrite}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-destructive transition-colors hover:bg-destructive/10 focus-visible:bg-destructive/10 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 [&>svg]:size-3.5"
+                  onClick={() => {
+                    context.close({ restoreFocus: false })
+                    actions.request("delete", [item.path])
+                  }}
+                >
+                  <Trash2 /> Delete
+                </button>
+              </FileTreeContextMenu>
+            )
+          }
         />
       </div>
 

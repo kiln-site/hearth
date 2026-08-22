@@ -2850,6 +2850,7 @@ interface DirectoryEntry {
 
 type DirectorySortKey = "modifiedAt" | "name" | "size"
 type DirectorySortDirection = "ascending" | "descending"
+const directoryEntryBatchSize = 128
 
 const fileModifiedAtFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -2980,6 +2981,28 @@ function useSortedDirectoryEntries(entries: Array<DirectoryEntry>) {
   return { sortDirection, sortedEntries, sortKey, toggleSort }
 }
 
+function useBatchedDirectoryEntries(
+  entries: Array<DirectoryEntry>,
+  complete: boolean,
+  loadMore: () => Promise<void>
+) {
+  const [visibleCount, setVisibleCount] = React.useState(
+    directoryEntryBatchSize
+  )
+  const visibleEntries = React.useMemo(
+    () => entries.slice(0, visibleCount),
+    [entries, visibleCount]
+  )
+  const hasBufferedEntries = visibleCount < entries.length
+  const hasMoreEntries = hasBufferedEntries || !complete
+  const revealMore = React.useCallback(() => {
+    const needsFetch = visibleCount >= entries.length
+    setVisibleCount((current) => current + directoryEntryBatchSize)
+    if (needsFetch) void loadMore()
+  }, [entries.length, loadMore, visibleCount])
+  return { hasBufferedEntries, hasMoreEntries, revealMore, visibleEntries }
+}
+
 function DirectorySortButton({
   direction,
   label,
@@ -3030,6 +3053,12 @@ function RootDirectoryList({
   )
   const { sortDirection, sortedEntries, sortKey, toggleSort } =
     useSortedDirectoryEntries(entries)
+  const loadMore = React.useCallback(
+    () => fileIndex.loadMoreDirectory(""),
+    [fileIndex]
+  )
+  const { hasBufferedEntries, hasMoreEntries, revealMore, visibleEntries } =
+    useBatchedDirectoryEntries(sortedEntries, directory.complete, loadMore)
   const [selected, setSelected] = React.useState<ReadonlySet<string>>(
     () => new Set()
   )
@@ -3041,7 +3070,8 @@ function RootDirectoryList({
     [entries, selected]
   )
   const allSelected =
-    entries.length > 0 && selectedPaths.length === entries.length
+    visibleEntries.length > 0 &&
+    visibleEntries.every((entry) => selected.has(entry.path))
 
   function toggle(path: string) {
     setSelected((current) => {
@@ -3080,7 +3110,7 @@ function RootDirectoryList({
                 setSelected(
                   allSelected
                     ? new Set()
-                    : new Set(entries.map((entry) => entry.path))
+                    : new Set(visibleEntries.map((entry) => entry.path))
                 )
               }
             />
@@ -3105,7 +3135,7 @@ function RootDirectoryList({
           />
           <span />
         </div>
-        {sortedEntries.map((entry) => (
+        {visibleEntries.map((entry) => (
           <div
             key={entry.path}
             className="grid min-h-11 grid-cols-[2.25rem_minmax(12rem,1fr)_7rem_11rem_2.5rem] items-center border-b border-border/55 px-2 last:border-b-0 hover:bg-accent/30 has-checked:bg-primary/[0.07]"
@@ -3138,17 +3168,20 @@ function RootDirectoryList({
             <FileActionsDropdown controller={actions} paths={[entry.path]} />
           </div>
         ))}
-        {directory.loading ? (
+        {directory.loading && !hasBufferedEntries ? (
           <div className="flex min-h-10 items-center justify-center gap-2 border-t border-border/55 px-6 text-xs text-muted-foreground">
             <LoaderCircle className="size-3.5 animate-spin text-primary" />
             Loading more files
           </div>
-        ) : !directory.complete ? (
+        ) : hasMoreEntries ? (
           <button
             type="button"
-            className="flex min-h-10 w-full items-center justify-center border-t border-border/55 px-6 text-xs font-medium text-primary transition-colors hover:bg-accent/30 focus-visible:bg-accent/40 focus-visible:outline-none"
-            onClick={() => void fileIndex.loadMoreDirectory("")}
+            className="flex min-h-10 w-full items-center justify-center gap-2 border-t border-border/55 px-6 text-xs font-medium text-primary transition-colors hover:bg-accent/30 focus-visible:bg-accent/40 focus-visible:outline-none"
+            onClick={revealMore}
           >
+            {directory.loading ? (
+              <LoaderCircle className="size-3.5 animate-spin" />
+            ) : null}
             Load more files
           </button>
         ) : null}
@@ -3196,6 +3229,12 @@ function DirectoryView({
   )
   const { sortDirection, sortedEntries, sortKey, toggleSort } =
     useSortedDirectoryEntries(entries)
+  const loadMore = React.useCallback(
+    () => fileIndex.loadMoreDirectory(path),
+    [fileIndex, path]
+  )
+  const { hasBufferedEntries, hasMoreEntries, revealMore, visibleEntries } =
+    useBatchedDirectoryEntries(sortedEntries, directory.complete, loadMore)
   const [selected, setSelected] = React.useState<ReadonlySet<string>>(
     () => new Set()
   )
@@ -3216,7 +3255,8 @@ function DirectoryView({
     [entries, selected]
   )
   const allSelected =
-    entries.length > 0 && selectedPaths.length === entries.length
+    visibleEntries.length > 0 &&
+    visibleEntries.every((entry) => selected.has(entry.path))
 
   function toggle(pathToToggle: string) {
     setSelected((current) => {
@@ -3317,7 +3357,7 @@ function DirectoryView({
                   setSelected(
                     allSelected
                       ? new Set()
-                      : new Set(entries.map((entry) => entry.path))
+                      : new Set(visibleEntries.map((entry) => entry.path))
                   )
                 }
               />
@@ -3365,7 +3405,7 @@ function DirectoryView({
             <span />
           </button>
 
-          {sortedEntries.map((entry) => (
+          {visibleEntries.map((entry) => (
             <div
               key={entry.path}
               className="group/row grid min-h-11 grid-cols-[2.25rem_minmax(12rem,1fr)_7rem_11rem_2.5rem] items-center border-b border-border/55 px-2 last:border-b-0 hover:bg-accent/30 has-checked:bg-primary/[0.07]"
@@ -3399,17 +3439,20 @@ function DirectoryView({
             </div>
           ))}
 
-          {directory.loading ? (
+          {directory.loading && !hasBufferedEntries ? (
             <div className="flex min-h-11 items-center justify-center gap-2 border-t border-border/55 px-6 text-xs text-muted-foreground">
               <LoaderCircle className="size-3.5 animate-spin text-primary" />
               Loading more files
             </div>
-          ) : !directory.complete ? (
+          ) : hasMoreEntries ? (
             <button
               type="button"
-              className="flex min-h-11 w-full items-center justify-center border-t border-border/55 px-6 text-xs font-medium text-primary transition-colors hover:bg-accent/30 focus-visible:bg-accent/40 focus-visible:outline-none"
-              onClick={() => void fileIndex.loadMoreDirectory(path)}
+              className="flex min-h-11 w-full items-center justify-center gap-2 border-t border-border/55 px-6 text-xs font-medium text-primary transition-colors hover:bg-accent/30 focus-visible:bg-accent/40 focus-visible:outline-none"
+              onClick={revealMore}
             >
+              {directory.loading ? (
+                <LoaderCircle className="size-3.5 animate-spin" />
+              ) : null}
               Load more files
             </button>
           ) : null}

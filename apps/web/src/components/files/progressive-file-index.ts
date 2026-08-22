@@ -27,6 +27,7 @@ export interface FileIndexStatusSnapshot {
 
 export type FileIndexPathEvent =
   | { entries: ReadonlyArray<RelayFileEntry>; type: "add" }
+  | { directory: string; loading: boolean; type: "directory-loading" }
   | { entries: ReadonlyArray<RelayFileEntry>; type: "reset" }
 
 interface MutableDirectorySnapshot extends FileDirectorySnapshot {
@@ -48,6 +49,8 @@ export class ProgressiveFileIndex {
   readonly #pathListeners = new Set<(event: FileIndexPathEvent) => void>()
   readonly #statusListeners = new Set<() => void>()
   readonly #loads = new Map<string, Promise<void>>()
+  readonly #fullLoads = new Map<string, Promise<void>>()
+  readonly #treeLoadingDirectories = new Map<string, number>()
   #disposed = false
   #epoch = 0
   #searchGeneration = 0
@@ -85,6 +88,9 @@ export class ProgressiveFileIndex {
     this.#directoryListeners.clear()
     this.#pathListeners.clear()
     this.#statusListeners.clear()
+    this.#loads.clear()
+    this.#fullLoads.clear()
+    this.#treeLoadingDirectories.clear()
   }
 
   refresh(): void {
@@ -95,6 +101,8 @@ export class ProgressiveFileIndex {
     this.#directories.clear()
     this.#knownPaths.clear()
     this.#loads.clear()
+    this.#fullLoads.clear()
+    this.#treeLoadingDirectories.clear()
     this.#setStatus({ ...initialStatus, refreshing: true })
     this.#pathListeners.forEach((listener) =>
       listener({ entries: emptyEntries, type: "reset" })
@@ -162,18 +170,64 @@ export class ProgressiveFileIndex {
 
   loadMoreDirectory(directory: string): Promise<void> {
     const normalized = normalizeDirectoryPath(directory)
-    if (this.#directories.get(normalized)?.complete) return Promise.resolve()
-    return this.#loadNextDirectoryPage(normalized)
+    const snapshot = this.#directories.get(normalized)
+    if (snapshot?.complete) return Promise.resolve()
+    if (!snapshot?.entries.length)
+      return this.#loadNextDirectoryPage(normalized)
+    const epoch = this.#epoch
+    this.#setTreeDirectoryLoading(normalized, true)
+    return ensuringPromise(
+      () => this.#loadNextDirectoryPage(normalized),
+      () => {
+        if (epoch === this.#epoch) {
+          this.#setTreeDirectoryLoading(normalized, false)
+        }
+      }
+    )
   }
 
-  async loadDirectoryFully(directory: string): Promise<void> {
+  loadDirectoryFully(directory: string): Promise<void> {
     const normalized = normalizeDirectoryPath(directory)
+    const active = this.#fullLoads.get(normalized)
+    if (active) return active
+    const epoch = this.#epoch
+    const load = ensuringPromise(
+      () => this.#loadDirectoryFully(normalized, epoch),
+      () => {
+        if (this.#fullLoads.get(normalized) === load) {
+          this.#fullLoads.delete(normalized)
+        }
+      }
+    )
+    this.#fullLoads.set(normalized, load)
+    return load
+  }
+
+  async #loadDirectoryFully(normalized: string, epoch: number): Promise<void> {
     await this.ensureDirectory(normalized)
-    while (!this.#disposed) {
-      const snapshot = this.#directories.get(normalized)
-      if (!snapshot || snapshot.complete || snapshot.error) return
-      await this.loadMoreDirectory(normalized)
-    }
+    if (this.#disposed || epoch !== this.#epoch) return
+    const snapshot = this.#directories.get(normalized)
+    if (!snapshot?.entries.length || snapshot.complete || snapshot.error) return
+    this.#setTreeDirectoryLoading(normalized, true)
+    await ensuringPromise(
+      () => this.#loadRemainingDirectoryPages(normalized, epoch),
+      () => {
+        if (epoch === this.#epoch) {
+          this.#setTreeDirectoryLoading(normalized, false)
+        }
+      }
+    )
+  }
+
+  async #loadRemainingDirectoryPages(
+    directory: string,
+    epoch: number
+  ): Promise<void> {
+    if (this.#disposed || epoch !== this.#epoch) return
+    const current = this.#directories.get(directory)
+    if (!current || current.complete || current.error) return
+    await this.#loadNextDirectoryPage(directory)
+    return this.#loadRemainingDirectoryPages(directory, epoch)
   }
 
   #loadNextDirectoryPage(directory: string): Promise<void> {
@@ -326,6 +380,17 @@ export class ProgressiveFileIndex {
     }
     this.#status = status
     this.#statusListeners.forEach((listener) => listener())
+  }
+
+  #setTreeDirectoryLoading(directory: string, loading: boolean): void {
+    const current = this.#treeLoadingDirectories.get(directory) ?? 0
+    const next = Math.max(0, current + (loading ? 1 : -1))
+    if (next) this.#treeLoadingDirectories.set(directory, next)
+    else this.#treeLoadingDirectories.delete(directory)
+    if ((current === 0) === (next === 0)) return
+    this.#pathListeners.forEach((listener) =>
+      listener({ directory, loading: next > 0, type: "directory-loading" })
+    )
   }
 }
 
