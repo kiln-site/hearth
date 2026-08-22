@@ -2522,7 +2522,7 @@ function BackupTargetLayout({
   name: React.ReactNode
 }) {
   return (
-    <div className="-mx-3 -my-2.5 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2.5 px-3 py-2.5">
+    <div className="-mx-3 -my-2.5 grid grid-cols-[auto_minmax(0,1fr)] grid-rows-[1.25rem_1.25rem] items-center gap-x-2.5 gap-y-0.5 px-3 py-2.5">
       <span className="row-span-2">{icon}</span>
       {name}
       {copyButton}
@@ -2648,7 +2648,7 @@ const BackupTargetNameAnchor = React.memo(function BackupTargetNameAnchor({
   const label = (
     <>
       <span className="truncate">{targetName}</span>
-      <ExternalLink className="size-3.5 shrink-0 text-primary/75" />
+      <ExternalLink className="size-3.5 shrink-0 translate-y-px text-primary/75" />
     </>
   )
 
