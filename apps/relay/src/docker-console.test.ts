@@ -6,7 +6,7 @@ import {
   matchingReadyLogLine,
   observedSessionReadyAt,
   parseConsoleLine,
-  shouldProbeInstanceReadiness,
+  instanceReadinessProbe,
 } from "./docker.js"
 
 describe("Docker console parsing", () => {
@@ -85,7 +85,7 @@ describe("Docker console parsing", () => {
 
   it.each([
     {
-      expected: true,
+      expected: "historical",
       hasHealthCheck: false,
       hasLogReadiness: true,
       label: "an old session with a configured readiness log",
@@ -94,7 +94,7 @@ describe("Docker console parsing", () => {
       transitionAction: undefined,
     },
     {
-      expected: false,
+      expected: null,
       hasHealthCheck: false,
       hasLogReadiness: false,
       label: "an old port-only session",
@@ -103,7 +103,7 @@ describe("Docker console parsing", () => {
       transitionAction: undefined,
     },
     {
-      expected: true,
+      expected: "live",
       hasHealthCheck: false,
       hasLogReadiness: false,
       label: "a recent port-only session",
@@ -112,7 +112,7 @@ describe("Docker console parsing", () => {
       transitionAction: undefined,
     },
     {
-      expected: true,
+      expected: "live",
       hasHealthCheck: false,
       hasLogReadiness: false,
       label: "an explicitly restarted port-only session",
@@ -121,7 +121,7 @@ describe("Docker console parsing", () => {
       transitionAction: "restart" as const,
     },
     {
-      expected: false,
+      expected: null,
       hasHealthCheck: true,
       hasLogReadiness: true,
       label: "a session whose health check owns readiness",
@@ -130,7 +130,7 @@ describe("Docker console parsing", () => {
       transitionAction: "start" as const,
     },
     {
-      expected: false,
+      expected: null,
       hasHealthCheck: false,
       hasLogReadiness: true,
       label: "a stopped session",
@@ -138,8 +138,17 @@ describe("Docker console parsing", () => {
       startedRecently: true,
       transitionAction: "start" as const,
     },
-  ])("probes readiness for $label", ({ expected, ...input }) => {
-    expect(shouldProbeInstanceReadiness(input)).toBe(expected)
+    {
+      expected: null,
+      hasHealthCheck: false,
+      hasLogReadiness: true,
+      label: "a stopping session",
+      running: true,
+      startedRecently: false,
+      transitionAction: "stop" as const,
+    },
+  ])("selects the readiness probe for $label", ({ expected, ...input }) => {
+    expect(instanceReadinessProbe(input)).toBe(expected)
   })
 
   it.each([

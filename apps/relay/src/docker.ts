@@ -452,6 +452,8 @@ const CURL_PROGRESS_ROW_PATTERN =
 const CONSOLE_TTY_COLUMNS = 120
 const CONSOLE_TTY_ROWS = 40
 const MAX_SHARED_CONSOLE_BYTES = 10 * 1024 * 1024
+export const MAX_CONSOLE_HISTORY_LINES = 5_000
+const STARTUP_READINESS_LOG_LINES = 1_000
 const RESOURCE_HISTORY_WINDOW_MS = 6 * 60_000
 const DISK_USAGE_REFRESH_MS = 60_000
 /* eslint-enable no-control-regex */
@@ -624,15 +626,19 @@ export class DockerDriver {
         const startedRecently =
           Number.isFinite(startedAt) &&
           now - startedAt < INSTANCE_STARTUP_READINESS_TIMEOUT_MS
-        const shouldProbe = shouldProbeInstanceReadiness({
+        const readinessProbe = instanceReadinessProbe({
           hasHealthCheck: container.State.Health !== undefined,
           hasLogReadiness: config.brickReadiness !== undefined,
           running: container.State.Running,
           startedRecently,
           transitionAction: transition?.action,
         })
-        if (!shouldProbe) return
-        const result = await this.#instanceReady(config, container)
+        if (!readinessProbe) return
+        const result = await this.#instanceReady(
+          config,
+          container,
+          readinessProbe
+        )
         if (!result) return
         readiness.set(config.id, result.ready)
         if (result.readyAt) readyAt.set(config.id, result.readyAt)
@@ -1177,7 +1183,10 @@ export class DockerDriver {
   ): Promise<RelayConsole> {
     const discovered = await this.#findDiscovered(instance.id)
     const targets = await this.#consoleTargets(instance, discovered)
-    const boundedLimit = Math.min(Math.max(limit, 100), 5_000)
+    const boundedLimit = Math.min(
+      Math.max(limit, 100),
+      MAX_CONSOLE_HISTORY_LINES
+    )
     const startedAt = consoleStartedAt(discovered.container)
     const results = await Promise.all(
       targets.map(async (target) => {
@@ -1288,7 +1297,10 @@ export class DockerDriver {
         Effect.gen(function* () {
           const discovered = yield* promiseEffect(findDiscovered)
           const targets = yield* promiseEffect(() => consoleTargets(discovered))
-          const boundedLimit = Math.min(Math.max(limit, 100), 5_000)
+          const boundedLimit = Math.min(
+            Math.max(limit, 100),
+            MAX_CONSOLE_HISTORY_LINES
+          )
           const occurrences = new Map<string, number>()
           let open = targets.length
 
@@ -1747,10 +1759,11 @@ export class DockerDriver {
 
   async #instanceReady(
     instance: RelayInstanceConfig,
-    container: DockerInspect
+    container: DockerInspect,
+    probe: InstanceReadinessProbe
   ): Promise<InstanceReadiness | undefined> {
     if (instance.brickReadiness) {
-      return this.#startupLogReady(instance, container)
+      return this.#startupLogReady(instance, container, probe)
     }
     const ready = await this.#primaryPortReady(instance, container)
     return ready === undefined ? undefined : { ready }
@@ -1758,8 +1771,10 @@ export class DockerDriver {
 
   async #startupLogReady(
     instance: RelayInstanceConfig,
-    container: DockerInspect
+    container: DockerInspect,
+    probe: InstanceReadinessProbe
   ): Promise<InstanceReadiness | undefined> {
+    const historical = probe === "historical"
     return runEffect(
       promiseEffect(() =>
         command(
@@ -1769,10 +1784,14 @@ export class DockerDriver {
             "--timestamps",
             ...dockerLogSinceArguments(container.State.StartedAt),
             "--tail",
-            "1000",
+            String(
+              historical
+                ? MAX_CONSOLE_HISTORY_LINES
+                : STARTUP_READINESS_LOG_LINES
+            ),
             container.Id,
           ],
-          { timeout: 2_000 }
+          { timeout: historical ? 15_000 : 2_000 }
         )
       ).pipe(
         Effect.map((result) => {
@@ -2718,7 +2737,9 @@ export function observedSessionReadyAt(
   return transitionActive ? new Date(now).toISOString() : null
 }
 
-export function shouldProbeInstanceReadiness({
+export type InstanceReadinessProbe = "historical" | "live"
+
+export function instanceReadinessProbe({
   hasHealthCheck,
   hasLogReadiness,
   running,
@@ -2730,19 +2751,27 @@ export function shouldProbeInstanceReadiness({
   running: boolean
   startedRecently: boolean
   transitionAction: InstancePowerAction | undefined
-}): boolean {
-  if (!running || hasHealthCheck) return false
+}): InstanceReadinessProbe | null {
+  if (
+    !running ||
+    hasHealthCheck ||
+    transitionAction === "stop" ||
+    transitionAction === "kill"
+  ) {
+    return null
+  }
 
-  // A configured startup log is historical evidence. Re-read it once when a
-  // Relay rediscovers an existing container so readyAt remains anchored to the
-  // actual completion line instead of falling to the end of console history.
-  if (hasLogReadiness) return true
-
-  return (
+  if (
     startedRecently ||
     transitionAction === "start" ||
     transitionAction === "restart"
-  )
+  ) {
+    return "live"
+  }
+
+  // A configured startup log is historical evidence. Re-read the complete
+  // restorable console window once when Relay rediscovers an existing session.
+  return hasLogReadiness ? "historical" : null
 }
 
 export function matchingReadyLogLine(

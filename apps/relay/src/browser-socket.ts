@@ -33,7 +33,7 @@ import {
   relayConsoleCompletionInputSchema,
 } from "@workspace/contracts"
 
-import type { DockerDriver } from "./docker.js"
+import { MAX_CONSOLE_HISTORY_LINES, type DockerDriver } from "./docker.js"
 import {
   encodeConsoleHistoryFrames,
   encodeConsoleLineFrame,
@@ -1794,7 +1794,7 @@ class ConsoleHub {
     if (this.#lineIds.has(line.id)) return
     this.#lineIds.add(line.id)
     this.#recent.push(line)
-    if (this.#recent.length > 5_000) {
+    if (this.#recent.length > MAX_CONSOLE_HISTORY_LINES) {
       const removed = this.#recent.shift()
       if (removed) this.#lineIds.delete(removed.id)
       this.#truncated = true
@@ -1871,7 +1871,7 @@ class ConsoleHub {
 
   #backfillEffect(startedAt: string | null): Effect.Effect<void, Error> {
     return browserOperation(() =>
-      this.#docker.console(this.#instance, 5_000)
+      this.#docker.console(this.#instance, MAX_CONSOLE_HISTORY_LINES)
     ).pipe(
       Effect.tap((history) =>
         Effect.sync(() => {
@@ -1903,8 +1903,11 @@ class ConsoleHub {
           if (fresh.length === 0) return
           for (const line of fresh) this.#lineIds.add(line.id)
           this.#recent.unshift(...fresh)
-          if (this.#recent.length > 5_000) {
-            const removed = this.#recent.splice(0, this.#recent.length - 5_000)
+          if (this.#recent.length > MAX_CONSOLE_HISTORY_LINES) {
+            const removed = this.#recent.splice(
+              0,
+              this.#recent.length - MAX_CONSOLE_HISTORY_LINES
+            )
             for (const line of removed) this.#lineIds.delete(line.id)
             this.#truncated = true
           } else {
