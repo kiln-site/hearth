@@ -230,7 +230,7 @@ jobs:
                 hearth: { image: "ghcr.io/kiln-site/hearth", digest: $hearthDigest },
                 relay: { image: "ghcr.io/kiln-site/relay", digest: $relayDigest }
               },
-              compatibility: { relayProtocol: 2 }
+              compatibility: { relayProtocol: 3 }
             }' > release-manifest.json
 
       - name: Publish prerelease

@@ -954,11 +954,16 @@ function actionForRequest(request: RelayControlRequest): RelayAction | null {
       return null
     }
     case "instance.files.list":
+    case "instance.files.directory.list":
+    case "instance.files.search":
       return "instance.files.list"
+    case "instance.files.stat":
+      return "instance.files.read"
     case "instance.files.read":
       return "instance.files.read"
     case "instance.files.write":
     case "instance.files.mutate":
+    case "instance.files.mutate.result":
       return "instance.files.write"
     case "instance.files.upload-url":
       return "instance.files.upload-url"

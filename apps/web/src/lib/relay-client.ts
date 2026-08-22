@@ -262,7 +262,7 @@ function relayControlRequest(path: string, init?: RequestInit) {
     return { operation: "instance.create" as const, payload: body }
   }
   const match = url.pathname.match(
-    /^\/v1\/instances\/([^/]+)(?:\/(tree|file|file-mutations|actions|resources|console|console-completions|console-share|latest-log|ports|web-routes|startup))?$/u
+    /^\/v1\/instances\/([^/]+)(?:\/(tree|directory|file-search|file-stat|file|file-mutations|actions|resources|console|console-completions|console-share|latest-log|ports|web-routes|startup))?$/u
   )
   if (!match) throw new Error("Unsupported Relay request")
   const instanceId = decodeURIComponent(match[1])
@@ -294,6 +294,37 @@ function relayControlRequest(path: string, init?: RequestInit) {
       payload: { instanceId },
     }
   }
+  if (resource === "directory" && method === "GET") {
+    const cursor = url.searchParams.get("cursor")
+    return {
+      operation: "instance.files.directory.list" as const,
+      payload: {
+        ...(cursor ? { cursor } : {}),
+        instanceId,
+        path: url.searchParams.get("path") ?? "",
+      },
+    }
+  }
+  if (resource === "file-search" && method === "GET") {
+    const cursor = url.searchParams.get("cursor")
+    return {
+      operation: "instance.files.search" as const,
+      payload: {
+        ...(cursor ? { cursor } : {}),
+        instanceId,
+        query: url.searchParams.get("query") ?? "",
+      },
+    }
+  }
+  if (resource === "file-stat" && method === "GET") {
+    return {
+      operation: "instance.files.stat" as const,
+      payload: {
+        instanceId,
+        path: url.searchParams.get("path") ?? "",
+      },
+    }
+  }
   if (resource === "resources" && method === "GET") {
     return {
       operation: "instance.resources.read" as const,
@@ -312,7 +343,7 @@ function relayControlRequest(path: string, init?: RequestInit) {
   }
   if (resource === "file-mutations" && method === "POST") {
     return {
-      operation: "instance.files.mutate" as const,
+      operation: "instance.files.mutate.result" as const,
       payload: { ...body, instanceId },
     }
   }

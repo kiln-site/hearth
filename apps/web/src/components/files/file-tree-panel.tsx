@@ -5,7 +5,6 @@ import type {
   FileTreePreparedInput,
 } from "@pierre/trees"
 import { FileTree, useFileTree, useFileTreeSearch } from "@pierre/trees/react"
-import type { RelayFileTree } from "@workspace/contracts"
 import {
   ALargeSmall,
   Archive,
@@ -25,6 +24,7 @@ import {
   RefreshCw,
   Search,
   Trash2,
+  TriangleAlert,
   Upload,
   X,
 } from "lucide-react"
@@ -58,6 +58,7 @@ import type {
   UploadFiles,
 } from "@/components/files/file-tree-utils"
 import type { FileSelectionStore } from "@/components/files/file-workspace-stores"
+import type { ProgressiveFileIndex } from "@/components/files/progressive-file-index"
 
 const contextMenuCursorGap = 4
 const contextMenuViewportPadding = 8
@@ -145,6 +146,19 @@ function resolveTreeDropDirectory(event: React.DragEvent): string {
       : directoryPath(path)
   }
   return ""
+}
+
+function resolveTreeEventDirectory(event: Event): string | null {
+  for (const target of event.composedPath()) {
+    if (!(target instanceof HTMLElement)) continue
+    const flattened = target.dataset.itemFlattenedSubitem
+    if (flattened) return normalizeDirectoryPath(flattened)
+    const path = target.dataset.itemPath
+    if (path && target.dataset.itemType === "folder") {
+      return normalizeDirectoryPath(path)
+    }
+  }
+  return null
 }
 
 export function FileTreeContextMenu({
@@ -276,20 +290,31 @@ function FileTreeHomeButton({
 
 function FileTreeSearchInput({
   model,
+  onSearchQueryChange,
   onMobileOpenChange,
   onMobileClose,
+  searchComplete,
+  searching,
 }: {
   model: ReturnType<typeof useFileTree>["model"]
+  onSearchQueryChange: (query: string) => void
   onMobileOpenChange: (open: boolean) => void
   onMobileClose: () => void
+  searchComplete: boolean
+  searching: boolean
 }) {
   const search = useFileTreeSearch(model)
 
   return (
     <label className="flex h-full min-w-0 flex-1 items-center">
-      <Search className="ml-1 size-[18px] shrink-0 text-foreground/90 md:ml-1.5" />
+      {searching ? (
+        <LoaderCircle className="ml-1 size-[18px] shrink-0 animate-spin text-primary md:ml-1.5" />
+      ) : (
+        <Search className="ml-1 size-[18px] shrink-0 text-foreground/90 md:ml-1.5" />
+      )}
       <input
         type="search"
+        maxLength={256}
         value={search.value}
         placeholder="Search files…"
         aria-label="Search instance files"
@@ -298,6 +323,7 @@ function FileTreeSearchInput({
           const value = event.target.value
           if (value) search.setValue(value)
           else search.close()
+          onSearchQueryChange(value)
         }}
         onFocus={() => {
           if (window.matchMedia("(max-width: 767px)").matches) {
@@ -318,6 +344,16 @@ function FileTreeSearchInput({
           }
         }}
       />
+      {search.value && !searching && !searchComplete ? (
+        <span
+          role="status"
+          aria-label="Search could not finish; results may be incomplete"
+          title="Search could not finish. Results may be incomplete."
+          className="mr-1 shrink-0 text-destructive"
+        >
+          <TriangleAlert className="size-4" />
+        </span>
+      ) : null}
     </label>
   )
 }
@@ -325,11 +361,9 @@ function FileTreeSearchInput({
 function FileTreeSelectionSync({
   model,
   selectionStore,
-  treePaths,
 }: {
   model: ReturnType<typeof useFileTree>["model"]
   selectionStore: FileSelectionStore
-  treePaths: ReadonlyArray<string>
 }) {
   const selectedPath = React.useSyncExternalStore(
     selectionStore.subscribe,
@@ -357,7 +391,7 @@ function FileTreeSelectionSync({
       return
     }
     for (const path of currentSelection) model.getItem(path)?.deselect()
-  }, [model, selectedPath, treePaths])
+  }, [model, selectedPath])
 
   return null
 }
@@ -421,10 +455,9 @@ function FileUploadPickerAction({
 
 export function FileTreePanel({
   instance,
-  tree,
+  fileIndex,
   preparedInput,
   selectionStore,
-  refreshing,
   refreshDisabled,
   mobileOpen,
   onPathChange,
@@ -442,10 +475,9 @@ export function FileTreePanel({
   actions,
 }: {
   instance: InstanceWorkspaceInstance
-  tree: RelayFileTree
+  fileIndex: ProgressiveFileIndex
   preparedInput: FileTreePreparedInput
   selectionStore: FileSelectionStore
-  refreshing: boolean
   refreshDisabled: boolean
   mobileOpen: boolean
   onPathChange: (path: string) => void
@@ -464,7 +496,9 @@ export function FileTreePanel({
 }) {
   const selectedPath = selectionStore.getSnapshot()
   const initialPath =
-    selectedPath && tree.paths.includes(selectedPath) ? selectedPath : undefined
+    selectedPath && fileIndex.getPaths().includes(selectedPath)
+      ? selectedPath
+      : undefined
   const initialExpandedPaths = initialPath
     ? fileTreeParentDirectoryPaths(initialPath)
     : []
@@ -472,7 +506,7 @@ export function FileTreePanel({
     onFileSelected,
     onPathChange,
   })
-  const previousPreparedInput = React.useRef(preparedInput)
+  const searchTimer = React.useRef<number | null>(null)
   const { model } = useFileTree({
     preparedInput,
     initialExpansion: "closed",
@@ -494,6 +528,18 @@ export function FileTreePanel({
     composition: { contextMenu: { enabled: true, triggerMode: "both" } },
     unsafeCSS: fileTreeLayoutCss,
   })
+  const getIndexStatus = React.useCallback(
+    () => fileIndex.getStatusSnapshot(),
+    [fileIndex]
+  )
+  const indexStatus = React.useSyncExternalStore(
+    React.useCallback(
+      (listener) => fileIndex.subscribeStatus(listener),
+      [fileIndex]
+    ),
+    getIndexStatus,
+    getIndexStatus
+  )
   const [mobileContentVisible, setMobileContentVisible] =
     React.useState(mobileOpen)
   const mobileBrowseButtonRef = React.useRef<HTMLButtonElement>(null)
@@ -738,16 +784,54 @@ export function FileTreePanel({
     }
   }, [onFileSelected, onPathChange])
 
-  React.useLayoutEffect(() => {
-    if (previousPreparedInput.current === preparedInput) return
-    previousPreparedInput.current = preparedInput
-    model.resetPaths({
-      preparedInput,
-      initialExpandedPaths: fileTreeParentDirectoryPaths(
-        selectionStore.getSnapshot()
-      ),
-    })
-  }, [model, preparedInput, selectionStore])
+  React.useLayoutEffect(
+    () =>
+      fileIndex.subscribePaths((event) => {
+        if (event.type === "reset") {
+          model.resetPaths([], {
+            initialExpandedPaths: fileTreeParentDirectoryPaths(
+              selectionStore.getSnapshot()
+            ),
+          })
+          return
+        }
+        const additions = event.entries.flatMap((entry) =>
+          model.getItem(entry.path)
+            ? []
+            : [{ path: entry.path, type: "add" as const }]
+        )
+        if (!additions.length) return
+        model.batch(additions)
+        const selectedPath = selectionStore.getSnapshot()
+        const selected = selectedPath ? model.getItem(selectedPath) : null
+        if (!selected) return
+        for (const parentPath of fileTreeParentDirectoryPaths(selectedPath)) {
+          const parent = model.getItem(parentPath)
+          if (parent && "isExpanded" in parent && !parent.isExpanded()) {
+            parent.expand()
+          }
+        }
+        selected.select()
+        model.scrollToPath(selectedPath, { focus: false, offset: "nearest" })
+      }),
+    [fileIndex, model, selectionStore]
+  )
+
+  const handleSearchQueryChange = React.useCallback(
+    (query: string) => {
+      if (searchTimer.current !== null) window.clearTimeout(searchTimer.current)
+      searchTimer.current = null
+      if (!query.trim()) {
+        fileIndex.search("")
+        return
+      }
+      searchTimer.current = window.setTimeout(() => {
+        searchTimer.current = null
+        fileIndex.search(query)
+      }, 120)
+    },
+    [fileIndex]
+  )
 
   React.useLayoutEffect(() => {
     if (mobileOpen) {
@@ -797,6 +881,7 @@ export function FileTreePanel({
       if (dropExpandTimer.current !== null) {
         window.clearTimeout(dropExpandTimer.current)
       }
+      if (searchTimer.current !== null) window.clearTimeout(searchTimer.current)
       if (resizeSession.current) restoreDocumentAfterResize()
     },
     []
@@ -936,8 +1021,11 @@ export function FileTreePanel({
         </Button>
         <FileTreeSearchInput
           model={model}
+          onSearchQueryChange={handleSearchQueryChange}
           onMobileOpenChange={onMobileOpenChange}
           onMobileClose={closeMobileFileBrowser}
+          searchComplete={indexStatus.searchComplete}
+          searching={indexStatus.searching}
         />
         <div className="flex shrink-0 items-center gap-0.5">
           <Popover>
@@ -998,7 +1086,7 @@ export function FileTreePanel({
           </Popover>
           <Tooltip>
             <TooltipTrigger asChild>
-              {refreshing ? (
+              {indexStatus.refreshing ? (
                 <span className="inline-flex">
                   <Button
                     variant="ghost"
@@ -1022,7 +1110,7 @@ export function FileTreePanel({
               )}
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>
-              {refreshing
+              {indexStatus.refreshing
                 ? "Refreshing Files"
                 : refreshDisabled
                   ? "Relay disconnected"
@@ -1051,15 +1139,20 @@ export function FileTreePanel({
       <div
         className={`order-1 mb-11 min-h-0 flex-1 overflow-hidden bg-card py-1.5 md:order-2 md:mb-0 md:block md:w-[var(--file-tree-width)] md:shrink-0 ${mobileContentVisible ? "block" : "hidden"} ${collapsed ? "md:invisible" : ""}`}
       >
-        <FileTreeSelectionSync
-          model={model}
-          selectionStore={selectionStore}
-          treePaths={tree.paths}
-        />
+        <FileTreeSelectionSync model={model} selectionStore={selectionStore} />
         <FileTree
           model={model}
           aria-label={`${instance.name} files`}
           className="block size-full min-h-[210px]"
+          onPointerDownCapture={(event) => {
+            const directory = resolveTreeEventDirectory(event.nativeEvent)
+            if (directory !== null) void fileIndex.loadDirectoryFully(directory)
+          }}
+          onKeyDownCapture={(event) => {
+            if (!["ArrowRight", "Enter", " "].includes(event.key)) return
+            const directory = resolveTreeEventDirectory(event.nativeEvent)
+            if (directory !== null) void fileIndex.loadDirectoryFully(directory)
+          }}
           style={
             {
               "--trees-selected-bg-override":

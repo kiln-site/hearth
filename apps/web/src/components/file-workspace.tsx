@@ -7,8 +7,8 @@ import type {
   RelayFileActivity,
   RelayFileActivityEntry,
   RelayFileContent,
+  RelayFileEntry,
   RelayFileMutationInput,
-  RelayFileTree,
 } from "@workspace/contracts"
 import {
   ALargeSmall,
@@ -92,6 +92,10 @@ import {
 import { FileDownloadDialog } from "@/components/files/file-download-dialog"
 import { FileTreePanel } from "@/components/files/file-tree-panel"
 import {
+  ProgressiveFileIndex,
+  type FileDirectorySnapshot,
+} from "@/components/files/progressive-file-index"
+import {
   directoryPath,
   folderInputAttributes,
   hasDraggedFiles,
@@ -130,11 +134,11 @@ import type { InstanceWorkspaceInstance } from "@/lib/relay-selectors"
 import {
   queryKeys,
   relayFileActivityQueryOptions,
+  relayFileEntryQueryOptions,
   relayFileQueryOptions,
-  relayTreeQueryOptions,
+  relayRootDirectoryQueryOptions,
 } from "@/lib/query-options"
 import {
-  getRelayTree,
   mutateRelayFiles,
   saveRelayFile,
   updateRelayFilePin,
@@ -2165,15 +2169,16 @@ type FileActionDialogState =
 function useFileActions({
   canWrite,
   instance,
+  onRefresh,
   onPathChange,
   selectionStore,
 }: {
   canWrite: boolean
   instance: InstanceWorkspaceInstance
+  onRefresh: () => void
   onPathChange: (path: string) => void
   selectionStore: FileSelectionStore
 }) {
-  const queryClient = useQueryClient()
   const [dialog, setDialog] = React.useState<FileActionDialogState>(null)
   const [downloadPath, setDownloadPath] = React.useState<string | null>(null)
   const [downloadPending, setDownloadPending] = React.useState(false)
@@ -2182,12 +2187,7 @@ function useFileActions({
       mutateRelayFiles({
         data: { ...input, instanceId: instance.id, relayId: instance.relayId },
       }),
-    onSuccess: (tree) => {
-      queryClient.setQueryData(
-        queryKeys.relay.tree(instance.relayId, instance.id),
-        tree
-      )
-    },
+    onSuccess: onRefresh,
   })
 
   const runMutation = React.useCallback(
@@ -2610,7 +2610,7 @@ function FileActivityRow({
 
 function FilesHome({
   instance,
-  tree,
+  fileIndex,
   fileTreeLoading,
   fileTreeError,
   treeCollapsed,
@@ -2621,7 +2621,7 @@ function FilesHome({
   actions,
 }: {
   instance: InstanceWorkspaceInstance
-  tree: RelayFileTree | null
+  fileIndex: ProgressiveFileIndex
   fileTreeLoading: boolean
   fileTreeError: string | null
   treeCollapsed: boolean
@@ -2641,13 +2641,7 @@ function FilesHome({
   const activityQuery = useQuery(
     relayFileActivityQueryOptions(instance.relayId, instance.id)
   )
-  const activity = React.useMemo(() => {
-    if (!tree || !activityQuery.data) return []
-    const availablePaths = new Set(tree.paths)
-    return activityQuery.data.files.filter(
-      (entry) => availablePaths.has(entry.path) && !entry.path.endsWith("/")
-    )
-  }, [activityQuery.data, tree])
+  const activity = activityQuery.data?.files ?? []
   const loading = fileTreeLoading || activityQuery.isFetching
   const error =
     fileTreeError ??
@@ -2729,9 +2723,12 @@ function FilesHome({
             </div>
           ) : null}
 
-          {tree ? (
-            <RootDirectoryList actions={actions} onOpen={onOpen} tree={tree} />
-          ) : null}
+          <RootDirectoryList
+            actions={actions}
+            enabled={!fileTreeLoading}
+            fileIndex={fileIndex}
+            onOpen={onOpen}
+          />
         </div>
       </div>
     </section>
@@ -2848,7 +2845,7 @@ interface DirectoryEntry {
   modifiedAt: number
   name: string
   path: string
-  size: number
+  size: number | null
 }
 
 type DirectorySortKey = "modifiedAt" | "name" | "size"
@@ -2859,7 +2856,8 @@ const fileModifiedAtFormatter = new Intl.DateTimeFormat(undefined, {
   timeStyle: "short",
 })
 
-function formatFileSize(bytes: number): string {
+function formatFileSize(bytes: number | null): string {
+  if (bytes === null) return "—"
   if (bytes < 1_024) return `${bytes} B`
   const units = ["KiB", "MiB", "GiB", "TiB"] as const
   let value = bytes / 1_024
@@ -2909,32 +2907,39 @@ function FileModifiedAtTime({ modifiedAt }: { modifiedAt: number }) {
   )
 }
 
+function useFileDirectory(
+  fileIndex: ProgressiveFileIndex,
+  directory: string,
+  enabled = true
+): FileDirectorySnapshot {
+  const normalized = normalizeDirectoryPath(directory)
+  const subscribe = React.useCallback(
+    (listener: () => void) =>
+      fileIndex.subscribeDirectory(normalized, listener),
+    [fileIndex, normalized]
+  )
+  const getSnapshot = React.useCallback(
+    () => fileIndex.getDirectorySnapshot(normalized),
+    [fileIndex, normalized]
+  )
+  const snapshot = React.useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    getSnapshot
+  )
+  React.useEffect(() => {
+    if (enabled) void fileIndex.ensureDirectory(normalized)
+  }, [enabled, fileIndex, normalized])
+  return snapshot
+}
+
 function directoryEntries(
-  tree: RelayFileTree,
-  directory: string
+  entries: ReadonlyArray<RelayFileEntry>
 ): Array<DirectoryEntry> {
-  const normalizedDirectory = normalizeDirectoryPath(directory)
-  const entries = new Map<string, DirectoryEntry>()
-  for (const path of tree.paths) {
-    if (!path.startsWith(normalizedDirectory) || path === normalizedDirectory)
-      continue
-    const remainder = path.slice(normalizedDirectory.length)
-    const segment = remainder.split("/")[0]
-    if (!segment) continue
-    const nested = remainder.includes("/")
-    const entryPath = `${normalizedDirectory}${segment}${nested ? "/" : ""}`
-    entries.set(entryPath, {
-      kind: nested ? "directory" : "file",
-      modifiedAt: tree.modifiedAt?.[entryPath] ?? 0,
-      name: segment,
-      path: entryPath,
-      size: tree.sizes[entryPath] ?? 0,
-    })
-  }
-  return [...entries.values()].sort((left, right) => {
-    if (left.kind !== right.kind) return left.kind === "directory" ? -1 : 1
-    return left.name.localeCompare(right.name)
-  })
+  return entries.map((entry) => ({
+    ...entry,
+    name: formatName(entry.path.replace(/\/$/u, "")),
+  }))
 }
 
 function useSortedDirectoryEntries(entries: Array<DirectoryEntry>) {
@@ -2951,7 +2956,7 @@ function useSortedDirectoryEntries(entries: Array<DirectoryEntry>) {
               numeric: true,
               sensitivity: "base",
             })
-          : left[sortKey] - right[sortKey]
+          : (left[sortKey] ?? -1) - (right[sortKey] ?? -1)
       return comparison === 0
         ? left.name.localeCompare(right.name, undefined, { numeric: true })
         : comparison * direction
@@ -3009,14 +3014,20 @@ function DirectorySortButton({
 
 function RootDirectoryList({
   actions,
+  enabled,
+  fileIndex,
   onOpen,
-  tree,
 }: {
   actions: FileActionsController
+  enabled: boolean
+  fileIndex: ProgressiveFileIndex
   onOpen: (path: string) => void
-  tree: RelayFileTree
 }) {
-  const entries = React.useMemo(() => directoryEntries(tree, ""), [tree])
+  const directory = useFileDirectory(fileIndex, "", enabled)
+  const entries = React.useMemo(
+    () => directoryEntries(directory.entries),
+    [directory.entries]
+  )
   const { sortDirection, sortedEntries, sortKey, toggleSort } =
     useSortedDirectoryEntries(entries)
   const [selected, setSelected] = React.useState<ReadonlySet<string>>(
@@ -3127,7 +3138,26 @@ function RootDirectoryList({
             <FileActionsDropdown controller={actions} paths={[entry.path]} />
           </div>
         ))}
-        {!entries.length ? (
+        {directory.loading ? (
+          <div className="flex min-h-10 items-center justify-center gap-2 border-t border-border/55 px-6 text-xs text-muted-foreground">
+            <LoaderCircle className="size-3.5 animate-spin text-primary" />
+            Loading more files
+          </div>
+        ) : !directory.complete ? (
+          <button
+            type="button"
+            className="flex min-h-10 w-full items-center justify-center border-t border-border/55 px-6 text-xs font-medium text-primary transition-colors hover:bg-accent/30 focus-visible:bg-accent/40 focus-visible:outline-none"
+            onClick={() => void fileIndex.loadMoreDirectory("")}
+          >
+            Load more files
+          </button>
+        ) : null}
+        {directory.error ? (
+          <div className="border-t border-destructive/30 bg-destructive/5 px-4 py-3 text-xs text-destructive">
+            {directory.error.message || "Could not load this directory"}
+          </div>
+        ) : null}
+        {!entries.length && directory.complete ? (
           <div className="grid min-h-32 place-items-center px-6 text-center text-xs text-muted-foreground">
             The server root is empty. Drop files anywhere on this page to
             upload.
@@ -3141,27 +3171,28 @@ function RootDirectoryList({
 function DirectoryView({
   actions,
   canWrite,
+  fileIndex,
   onOpen,
   onTreeExpand,
   onUploadFiles,
   path,
-  tree,
   treeCollapsed,
   uploading,
 }: {
   actions: FileActionsController
   canWrite: boolean
+  fileIndex: ProgressiveFileIndex
   onOpen: (path: string) => void
   onTreeExpand: () => void
   onUploadFiles: UploadFiles
   path: string
-  tree: RelayFileTree
   treeCollapsed: boolean
   uploading: boolean
 }) {
+  const directory = useFileDirectory(fileIndex, path)
   const entries = React.useMemo(
-    () => directoryEntries(tree, path),
-    [path, tree]
+    () => directoryEntries(directory.entries),
+    [directory.entries]
   )
   const { sortDirection, sortedEntries, sortKey, toggleSort } =
     useSortedDirectoryEntries(entries)
@@ -3368,7 +3399,28 @@ function DirectoryView({
             </div>
           ))}
 
-          {!entries.length ? (
+          {directory.loading ? (
+            <div className="flex min-h-11 items-center justify-center gap-2 border-t border-border/55 px-6 text-xs text-muted-foreground">
+              <LoaderCircle className="size-3.5 animate-spin text-primary" />
+              Loading more files
+            </div>
+          ) : !directory.complete ? (
+            <button
+              type="button"
+              className="flex min-h-11 w-full items-center justify-center border-t border-border/55 px-6 text-xs font-medium text-primary transition-colors hover:bg-accent/30 focus-visible:bg-accent/40 focus-visible:outline-none"
+              onClick={() => void fileIndex.loadMoreDirectory(path)}
+            >
+              Load more files
+            </button>
+          ) : null}
+
+          {directory.error ? (
+            <div className="border-t border-destructive/30 bg-destructive/5 px-4 py-3 text-xs text-destructive">
+              {directory.error.message || "Could not load this directory"}
+            </div>
+          ) : null}
+
+          {!entries.length && directory.complete ? (
             <div className="grid min-h-40 place-items-center px-6 text-center">
               <div>
                 <Folder className="mx-auto size-6 text-muted-foreground/60" />
@@ -3390,6 +3442,18 @@ function DirectoryView({
 const StableEditor = React.memo(Editor)
 const StableDirectoryView = React.memo(DirectoryView)
 const StableFileTreePanel = React.memo(FileTreePanel)
+
+const InitializedFileTreePanel = React.memo(function InitializedFileTreePanel({
+  initialPaths,
+  ...props
+}: Omit<React.ComponentProps<typeof FileTreePanel>, "preparedInput"> & {
+  readonly initialPaths: readonly string[]
+}) {
+  const [preparedInput] = React.useState(() =>
+    prepareFileTreeInput(initialPaths)
+  )
+  return <StableFileTreePanel {...props} preparedInput={preparedInput} />
+})
 
 interface FileWorkspaceProps {
   instance: InstanceWorkspaceInstance
@@ -3504,31 +3568,34 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
   const handledTreeEntry = React.useRef(false)
   const openingTreeForRouteEntry = openTreeOnEntry && !handledTreeEntry.current
   const displayedTreeCollapsed = treeCollapsed && !openingTreeForRouteEntry
-  const treeQuery = useQuery(
-    relayTreeQueryOptions(instance.relayId, instance.id)
+  const rootDirectoryQuery = useQuery(
+    relayRootDirectoryQueryOptions(instance.relayId, instance.id)
   )
-  const tree = treeQuery.data ?? null
-  const treeReady = tree !== null
-  const preparedTreeInput = React.useMemo(
-    () => (tree ? prepareFileTreeInput(tree.paths) : null),
-    [tree]
+  const [fileIndex] = React.useState(
+    () =>
+      new ProgressiveFileIndex({
+        initialRoot: rootDirectoryQuery.data ?? null,
+        instanceId: instance.id,
+        relayId: instance.relayId,
+      })
   )
-  const refreshTreeMutation = useMutation({
-    mutationFn: () =>
-      getRelayTree({
-        data: {
-          instanceId: instance.id,
-          relayId: instance.relayId,
-          fresh: true,
-        },
-      }),
-    onSuccess: (nextTree) => {
-      queryClient.setQueryData(
-        queryKeys.relay.tree(instance.relayId, instance.id),
-        nextTree
-      )
-    },
-  })
+  const treeReady = rootDirectoryQuery.data !== undefined
+  const initialTreePaths = React.useMemo(
+    () => rootDirectoryQuery.data?.entries.map((entry) => entry.path) ?? [],
+    [rootDirectoryQuery.data]
+  )
+
+  React.useLayoutEffect(() => {
+    if (rootDirectoryQuery.data) {
+      fileIndex.hydrateRoot(rootDirectoryQuery.data)
+    }
+  }, [fileIndex, rootDirectoryQuery.data])
+
+  React.useEffect(() => {
+    if (treeReady) fileIndex.start()
+  }, [fileIndex, treeReady])
+
+  React.useEffect(() => () => fileIndex.dispose(), [fileIndex])
 
   React.useEffect(() => preferencesStore.hydrate(), [preferencesStore])
 
@@ -3582,10 +3649,15 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
     setMobileTreeOpen(false)
   }, [])
 
-  const refreshTree = refreshTreeMutation.mutate
   const handleRefresh = React.useCallback(() => {
-    refreshTree()
-  }, [refreshTree])
+    fileIndex.refresh()
+    void queryClient.invalidateQueries({
+      exact: true,
+      queryKey: relayRootDirectoryQueryOptions(instance.relayId, instance.id)
+        .queryKey,
+      refetchType: "none",
+    })
+  }, [fileIndex, instance.id, instance.relayId, queryClient])
   const uploads = useFileUploadAction({
     canWrite: canWrite && relayConnected,
     instance,
@@ -3594,6 +3666,7 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
   const fileActions = useFileActions({
     canWrite: canWrite && relayConnected,
     instance,
+    onRefresh: handleRefresh,
     onPathChange,
     selectionStore,
   })
@@ -3603,14 +3676,13 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
       className="relative flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden md:flex-row"
       data-file-workspace
     >
-      {tree && preparedTreeInput ? (
-        <StableFileTreePanel
+      {treeReady && rootDirectoryQuery.data ? (
+        <InitializedFileTreePanel
           key={instance.id}
           instance={instance}
-          tree={tree}
-          preparedInput={preparedTreeInput}
+          fileIndex={fileIndex}
+          initialPaths={initialTreePaths}
           selectionStore={selectionStore}
-          refreshing={refreshTreeMutation.isPending}
           refreshDisabled={!relayConnected}
           mobileOpen={mobileTreeOpen}
           onPathChange={onPathChange}
@@ -3639,20 +3711,17 @@ const StableFileWorkspaceSurface = React.memo(function FileWorkspaceSurface({
         <FileViewer
           canShare={canShare && relayConnected}
           canWrite={canWrite && relayConnected}
-          fileTreeError={
-            queryErrorMessage(treeQuery.error, "Could not load files") ??
-            queryErrorMessage(
-              refreshTreeMutation.error,
-              "Could not refresh files"
-            )
-          }
-          fileTreeLoading={treeQuery.isPending}
+          fileTreeError={queryErrorMessage(
+            rootDirectoryQuery.error,
+            "Could not load files"
+          )}
+          fileTreeLoading={rootDirectoryQuery.isPending}
+          fileIndex={fileIndex}
           instance={instance}
           onPathChange={onPathChange}
           onTreeExpand={handleTreeExpand}
           preferencesStore={preferencesStore}
           selectionStore={selectionStore}
-          tree={tree}
           treeCollapsed={displayedTreeCollapsed}
           relayConnected={relayConnected}
           onUploadFiles={uploads.uploadFiles}
@@ -3695,12 +3764,12 @@ interface FileViewerProps {
   canWrite: boolean
   fileTreeError: string | null
   fileTreeLoading: boolean
+  fileIndex: ProgressiveFileIndex
   instance: InstanceWorkspaceInstance
   onPathChange: (path: string) => void
   onTreeExpand: () => void
   preferencesStore: FileEditorPreferencesStore
   selectionStore: FileSelectionStore
-  tree: RelayFileTree | null
   treeCollapsed: boolean
   relayConnected: boolean
   onUploadFiles: UploadFiles
@@ -3713,12 +3782,12 @@ function FileViewer({
   canWrite,
   fileTreeError,
   fileTreeLoading,
+  fileIndex,
   instance,
   onPathChange,
   onTreeExpand,
   preferencesStore,
   selectionStore,
-  tree,
   treeCollapsed,
   relayConnected,
   onUploadFiles,
@@ -3732,11 +3801,20 @@ function FileViewer({
   )
   const isHome = !selectedPath
   const selectedDirectoryPath = normalizeDirectoryPath(selectedPath)
+  const entryQuery = useQuery({
+    ...relayFileEntryQueryOptions(instance.relayId, instance.id, selectedPath),
+    enabled: Boolean(selectedPath) && relayConnected,
+  })
+  const selectedEntry = entryQuery.data ?? null
+  React.useEffect(() => {
+    if (selectedEntry) fileIndex.addEntry(selectedEntry)
+  }, [fileIndex, selectedEntry])
   const selectedPathIsDirectory = Boolean(
-    selectedPath && tree?.paths.includes(selectedDirectoryPath)
+    selectedPath &&
+    (selectedPath.endsWith("/") || selectedEntry?.kind === "directory")
   )
   const selectedPathIsReadable = Boolean(
-    tree?.paths.includes(selectedPath) && !selectedPath.endsWith("/")
+    selectedPath && selectedEntry?.kind === "file"
   )
   React.useEffect(() => {
     if (selectedPathIsDirectory && selectedPath !== selectedDirectoryPath) {
@@ -3761,10 +3839,15 @@ function FileViewer({
   })
   const file = fileQuery.data?.path === selectedPath ? fileQuery.data : null
   const loadingFile =
-    fileTreeLoading || (selectedPathIsReadable && fileQuery.isPending)
+    fileTreeLoading ||
+    (Boolean(selectedPath) && relayConnected && entryQuery.isPending) ||
+    (selectedPathIsReadable && fileQuery.isPending)
   const routeError =
-    tree && selectedPath && !selectedPathIsReadable && !selectedPathIsDirectory
-      ? `Could not find /data/${selectedPath}`
+    selectedPath && entryQuery.isError
+      ? queryErrorMessage(
+          entryQuery.error,
+          `Could not find /data/${selectedPath}`
+        )
       : null
   const error =
     routeError ??
@@ -3777,11 +3860,12 @@ function FileViewer({
     queryErrorMessage(fileQuery.error, "Could not read file")
   const selectedFileUnavailable =
     Boolean(
-      tree &&
+      entryQuery.isError &&
       selectedPath &&
       !selectedPathIsReadable &&
       !selectedPathIsDirectory
     ) ||
+    Boolean(selectedPath && !relayConnected && !selectedEntry && !file) ||
     (selectedPathIsReadable && !file && (!relayConnected || fileQuery.isError))
   const activitySyncKey = React.useRef<string | null>(null)
 
@@ -3824,7 +3908,7 @@ function FileViewer({
     return (
       <FilesHome
         instance={instance}
-        tree={tree}
+        fileIndex={fileIndex}
         fileTreeLoading={fileTreeLoading}
         fileTreeError={fileTreeError}
         treeCollapsed={treeCollapsed}
@@ -3837,17 +3921,17 @@ function FileViewer({
     )
   }
 
-  if (tree && selectedPathIsDirectory) {
+  if (selectedPathIsDirectory) {
     return (
       <StableDirectoryView
         key={selectedDirectoryPath}
         actions={actions}
         canWrite={canWrite}
+        fileIndex={fileIndex}
         onOpen={onPathChange}
         onTreeExpand={onTreeExpand}
         onUploadFiles={onUploadFiles}
         path={selectedDirectoryPath}
-        tree={tree}
         treeCollapsed={treeCollapsed}
         uploading={uploading}
       />

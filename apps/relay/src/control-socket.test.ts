@@ -728,7 +728,7 @@ describe("Relay control socket", () => {
     }
   })
 
-  it("delivers multi-megabyte tree responses and reports oversized ones without closing the socket", async () => {
+  it("delivers bounded file pages and rejects oversized legacy trees without closing the socket", async () => {
     const relayKeys = generateKeyPairSync("ed25519", {
       privateKeyEncoding: { format: "pem", type: "pkcs8" },
       publicKeyEncoding: { format: "pem", type: "spki" },
@@ -795,9 +795,14 @@ describe("Relay control socket", () => {
     })
     const server = createServer()
     const control = attachControlSocket({
-      execute: async (request) => treeResponse(
-        (request.payload as { count?: number } | null)?.count ?? 0
-      ),
+      execute: async (request) =>
+        request.operation === "instance.files.directory.list"
+          ? directoryPageResponse(
+              (request.payload as { count?: number } | null)?.count ?? 0
+            )
+          : treeResponse(
+              (request.payload as { count?: number } | null)?.count ?? 0
+            ),
       identity: {
         fingerprint: fingerprint(relayKeys.publicKey),
         name: "Test Relay",
@@ -822,27 +827,23 @@ describe("Relay control socket", () => {
     )
 
     try {
-      const largeRequestId = randomBytes(12).toString("hex")
+      const pageRequestId = randomBytes(12).toString("hex")
       socket.send(
         JSON.stringify({
           deadline: Date.now() + 15_000,
-          id: largeRequestId,
-          operation: "instance.files.list",
-          payload: { count: 10_000, instanceId: "a".repeat(40) },
+          id: pageRequestId,
+          operation: "instance.files.directory.list",
+          payload: { count: 128, instanceId: "a".repeat(40), path: "" },
           type: "request",
           v: 1,
         })
       )
-      const largeResponse = await inbox.next()
-      expect(largeResponse.type).toBe("response")
-      if (largeResponse.type === "response") {
-        const payload = largeResponse.payload as { paths: Array<string> }
-        expect(payload.paths).toHaveLength(10_000)
-        // Regression guard: this payload is larger than the previous 1 MiB
-        // control frame limit.
-        expect(JSON.stringify(largeResponse).length).toBeGreaterThan(
-          1024 * 1024
-        )
+      const pageResponse = await inbox.next()
+      expect(pageResponse.type).toBe("response")
+      if (pageResponse.type === "response") {
+        const payload = pageResponse.payload as { entries: Array<unknown> }
+        expect(payload.entries).toHaveLength(128)
+        expect(JSON.stringify(pageResponse).length).toBeLessThan(1024 * 1024)
       }
 
       const oversizeRequestId = randomBytes(12).toString("hex")
@@ -851,7 +852,7 @@ describe("Relay control socket", () => {
           deadline: Date.now() + 15_000,
           id: oversizeRequestId,
           operation: "instance.files.list",
-          payload: { count: 250_000, instanceId: "a".repeat(40) },
+          payload: { count: 10_000, instanceId: "a".repeat(40) },
           type: "request",
           v: 1,
         })
@@ -900,6 +901,20 @@ function treeResponse(count: number): Record<string, unknown> {
     modifiedAt[path] = index
   }
   return { instanceId: "instance-1", modifiedAt, paths, sizes, total: count }
+}
+
+function directoryPageResponse(count: number): Record<string, unknown> {
+  return {
+    cursor: null,
+    directory: "",
+    entries: Array.from({ length: count }, (_, index) => ({
+      kind: "file",
+      modifiedAt: index,
+      path: `file-${index}.txt`,
+      size: index,
+    })),
+    instanceId: "instance-1",
+  }
 }
 
 async function authenticateTestSocket(

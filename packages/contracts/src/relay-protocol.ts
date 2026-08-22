@@ -3,7 +3,7 @@ import { Schema } from "effect"
 export const relayControlProtocol = "kiln-relay.v1" as const
 // Release compatibility level for response-shape changes. Keep this separate
 // from the WebSocket subprotocol so Hearth can be upgraded before Relay.
-export const relayControlProtocolVersion = 2 as const
+export const relayControlProtocolVersion = 3 as const
 export const relayBrowserProtocol = "kiln-relay-browser.v1" as const
 export const relayBrowserConsoleProtocol = "kiln-relay-browser.v2" as const
 export const relayBrowserConsoleProtocols = [
@@ -11,10 +11,9 @@ export const relayBrowserConsoleProtocols = [
   relayBrowserProtocol,
 ] as const
 export const relayBrowserMaxFrameBytes = 256 * 1024
-// Shared cap for relay<->hearth control frames. Sized so large file-tree
-// responses (roughly 75,000-100,000 typical paths) fit in one message while
-// keeping a memory-safety boundary on both ends.
-export const relayControlMaxFrameBytes = 16 * 1024 * 1024
+// Shared safety cap for relay<->hearth control frames. File listings and
+// search results are paged well below this boundary.
+export const relayControlMaxFrameBytes = 1024 * 1024
 export const relayPairingProtocol = "kiln-relay-pair.v1" as const
 export const relayAuthenticationWindowMs = 10_000
 
@@ -67,10 +66,14 @@ export const relayControlOperations = [
   "instance.action",
   "instance.resources.read",
   "instance.files.list",
+  "instance.files.directory.list",
+  "instance.files.search",
+  "instance.files.stat",
   "instance.files.read",
   "instance.files.write",
   "instance.files.upload-url",
   "instance.files.mutate",
+  "instance.files.mutate.result",
   "instance.console.history",
   "instance.console.write",
   "instance.console.complete",

@@ -32,6 +32,8 @@ import { reconcilePendingPowerSnapshot } from "@/lib/instance-power-state"
 import { systemUpdateOverviewRefetchPolicy } from "@/lib/system-update-presence"
 import {
   getRelayConnectionState,
+  getRelayDirectoryPage,
+  getRelayFileEntry,
   getRelayFile,
   getRelayFileActivity,
   getRelaySnapshot,
@@ -458,6 +460,23 @@ export function relayTreeQueryOptions(relayId: string, instanceId: string) {
   })
 }
 
+export function relayRootDirectoryQueryOptions(
+  relayId: string,
+  instanceId: string
+) {
+  return queryOptions({
+    queryKey: [
+      ...queryKeys.relay.tree(relayId, instanceId),
+      "directory",
+      "root",
+    ] as const,
+    queryFn: () =>
+      getRelayDirectoryPage({ data: { instanceId, path: "", relayId } }),
+    retry: false,
+    staleTime: 15_000,
+  })
+}
+
 export function relayFileQueryOptions(
   relayId: string,
   instanceId: string,
@@ -466,6 +485,19 @@ export function relayFileQueryOptions(
   return queryOptions({
     queryKey: queryKeys.relay.file(relayId, instanceId, path),
     queryFn: () => getRelayFile({ data: { instanceId, path, relayId } }),
+    staleTime: 15_000,
+  })
+}
+
+export function relayFileEntryQueryOptions(
+  relayId: string,
+  instanceId: string,
+  path: string
+) {
+  return queryOptions({
+    queryKey: [...queryKeys.relay.file(relayId, instanceId, path), "stat"],
+    queryFn: () => getRelayFileEntry({ data: { instanceId, path, relayId } }),
+    retry: false,
     staleTime: 15_000,
   })
 }

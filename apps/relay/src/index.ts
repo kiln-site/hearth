@@ -30,7 +30,10 @@ import {
   relayInstanceWebRouteInputsSchema,
   relayNetworkingSchema,
   relayProxySettingsSchema,
+  relayDirectoryPageInputSchema,
   relayFileMutationInputSchema,
+  relayFileSearchPageInputSchema,
+  relayFileStatInputSchema,
   relayRemoteFileUploadResultSchema,
   relayRemoteFileUploadSchema,
   relaySaveFileInputSchema,
@@ -1433,6 +1436,27 @@ async function executeControlRequest(
         "relay.files.tree",
         filesystem.tree(await requiredInstance(payload))
       )
+    case "instance.files.directory.list": {
+      const input = relayDirectoryPageInputSchema.parse(payload)
+      return runRelayEffect(
+        "relay.files.directory",
+        filesystem.directory(await requiredInstance(input), input)
+      )
+    }
+    case "instance.files.search": {
+      const input = relayFileSearchPageInputSchema.parse(payload)
+      return runRelayEffect(
+        "relay.files.search",
+        filesystem.search(await requiredInstance(input), input)
+      )
+    }
+    case "instance.files.stat": {
+      const input = relayFileStatInputSchema.parse(payload)
+      return runRelayEffect(
+        "relay.files.stat",
+        filesystem.entry(await requiredInstance(input), input.path)
+      )
+    }
     case "instance.files.read":
       return runRelayEffect(
         "relay.files.read",
@@ -1466,6 +1490,18 @@ async function executeControlRequest(
       )
     }
     case "instance.files.mutate": {
+      const instance = await requiredInstance(payload)
+      const input = relayFileMutationInputSchema.parse(payload)
+      return serializeInstanceMutation(instance.id, () =>
+        runRelayEffect(
+          "relay.files.mutate.legacy",
+          filesystem
+            .mutate(instance, input)
+            .pipe(Effect.andThen(filesystem.tree(instance)))
+        )
+      )
+    }
+    case "instance.files.mutate.result": {
       const instance = await requiredInstance(payload)
       const input = relayFileMutationInputSchema.parse(payload)
       return serializeInstanceMutation(instance.id, () =>
