@@ -2506,8 +2506,8 @@ const BackupTargetIcon = React.memo(function BackupTargetIcon({
   const Icon =
     kind === "database" ? Database : kind === "platform" ? RadioTower : Server
   return (
-    <span className="grid size-10 shrink-0 place-items-center rounded-md border border-border bg-background text-muted-foreground">
-      <Icon className="size-5" />
+    <span className="grid size-9 shrink-0 place-items-center rounded-md border border-border bg-background text-muted-foreground">
+      <Icon className="size-[1.125rem]" />
     </span>
   )
 })
@@ -2590,7 +2590,7 @@ const BackupTargetLink = React.memo(function BackupTargetLink({
   targetKind: Backup["targetKind"]
 }) {
   const name = (
-    <span className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+    <span className="flex min-w-0 items-center gap-1.5 text-sm">
       {available ? (
         <BackupTargetNameAnchor
           relayId={relayId}
