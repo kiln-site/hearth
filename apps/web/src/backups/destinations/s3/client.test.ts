@@ -28,7 +28,12 @@ describe("S3 backup storage", () => {
     expect(() => normalizeObjectPrefix("team/foo bar")).toThrow(
       "The object prefix can contain only letters, numbers, periods, underscores, slashes, and hyphens"
     )
-    expect(() => normalizeObjectPrefix("é".repeat(300))).toThrow()
+    expect(() => normalizeObjectPrefix("é")).toThrow(
+      "The object prefix can contain only letters, numbers, periods, underscores, slashes, and hyphens"
+    )
+    expect(() => normalizeObjectPrefix("a".repeat(513))).toThrow(
+      "The object prefix must be 512 bytes or fewer"
+    )
   })
 
   it("bounds generated keys even when target names require heavy escaping", () => {

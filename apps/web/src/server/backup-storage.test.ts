@@ -41,6 +41,26 @@ describe("backup storage validation", () => {
       assert.deepEqual(parsed.error.issues[0]?.path, ["bucket"])
     }
   })
+
+  it("rejects regions longer than the storage column", () => {
+    const parsed = backupStorageInputSchema.safeParse({
+      accessKeyId: "key",
+      bucket: "Kiln-Backups",
+      endpoint: "https://s3.example.com",
+      name: "Backups",
+      region: "r".repeat(121),
+      secretAccessKey: "secret",
+    })
+
+    assert.isFalse(parsed.success)
+    if (!parsed.success) {
+      assert.strictEqual(
+        parsed.error.issues[0]?.message,
+        "S3 regions must be 120 characters or fewer"
+      )
+      assert.deepEqual(parsed.error.issues[0]?.path, ["region"])
+    }
+  })
 })
 
 const storage = [

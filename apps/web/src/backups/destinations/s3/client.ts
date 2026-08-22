@@ -32,6 +32,8 @@ const BACKUP_TRANSFER_IDLE_TIMEOUT_MS = 60_000
 const S3_DELETE_PAGE_SIZE = 1_000
 const RESTIC_PREFIX_SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/u
 const RESTIC_PREFIX_SAFE_PATH = /^[A-Za-z0-9._/-]*$/u
+export const RESTIC_OBJECT_PREFIX_LENGTH_ERROR =
+  "The object prefix must be 512 bytes or fewer"
 export const RESTIC_OBJECT_PREFIX_ERROR =
   "The object prefix can contain only letters, numbers, periods, underscores, slashes, and hyphens, and cannot contain '.' or '..' path segments"
 const BLOCKED_ADDRESSES = new BlockList()
@@ -119,10 +121,14 @@ export function normalizeObjectPrefix(value: string): string {
     .replace(/^\/+|\/+$/gu, "")
     .replace(/\/{2,}/gu, "/")
   if (!normalized) return ""
-  if (
-    Buffer.byteLength(normalized) > 512 ||
-    !isSafeResticObjectPrefix(normalized)
-  ) {
+  if (Buffer.byteLength(normalized) > 512) {
+    throw backupStorageError(
+      "invalid_prefix",
+      "storage.validate",
+      RESTIC_OBJECT_PREFIX_LENGTH_ERROR
+    )
+  }
+  if (!isSafeResticObjectPrefix(normalized)) {
     throw backupStorageError(
       "invalid_prefix",
       "storage.validate",
