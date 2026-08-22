@@ -32,6 +32,8 @@ const BACKUP_TRANSFER_IDLE_TIMEOUT_MS = 60_000
 const S3_DELETE_PAGE_SIZE = 1_000
 const RESTIC_PREFIX_SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/u
 const RESTIC_PREFIX_SAFE_PATH = /^[A-Za-z0-9._/-]*$/u
+export const RESTIC_OBJECT_PREFIX_ERROR =
+  "The object prefix can contain only letters, numbers, periods, underscores, slashes, and hyphens, and cannot contain '.' or '..' path segments"
 const BLOCKED_ADDRESSES = new BlockList()
 const BLOCKED_IPV4: ReadonlyArray<readonly [string, number]> = [
   ["0.0.0.0", 8],
@@ -119,18 +121,12 @@ export function normalizeObjectPrefix(value: string): string {
   if (!normalized) return ""
   if (
     Buffer.byteLength(normalized) > 512 ||
-    normalized
-      .split("/")
-      .some((segment) => segment === "." || segment === "..") ||
-    Array.from(normalized).some((character) => {
-      const code = character.codePointAt(0) ?? 0
-      return code < 32 || code === 127
-    })
+    !isSafeResticObjectPrefix(normalized)
   ) {
     throw backupStorageError(
       "invalid_prefix",
       "storage.validate",
-      "The object prefix must be a safe relative S3 key prefix"
+      RESTIC_OBJECT_PREFIX_ERROR
     )
   }
   return normalized
@@ -163,7 +159,7 @@ export function isSafeResticObjectPrefix(value: string): boolean {
   return (
     RESTIC_PREFIX_SAFE_PATH.test(value) &&
     !value.startsWith("/") &&
-    !value.split("/").includes("..")
+    !value.split("/").some((segment) => segment === "." || segment === "..")
   )
 }
 

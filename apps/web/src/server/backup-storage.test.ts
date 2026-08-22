@@ -2,7 +2,46 @@ import { assert, describe, it } from "@effect/vitest"
 
 import type { BackupStorageRecord } from "@/backups/destinations/s3"
 
-import { visibleBackupStorage } from "./backup-storage"
+import {
+  backupStorageInputSchema,
+  visibleBackupStorage,
+} from "./backup-storage"
+
+describe("backup storage validation", () => {
+  it("accepts uppercase bucket names supported by S3-compatible providers", () => {
+    const parsed = backupStorageInputSchema.safeParse({
+      accessKeyId: "key",
+      bucket: " Kiln-Backups ",
+      endpoint: "https://s3.example.com",
+      name: "Backups",
+      region: "us-east-1",
+      secretAccessKey: "secret",
+    })
+
+    assert.isTrue(parsed.success)
+    if (parsed.success) assert.strictEqual(parsed.data.bucket, "Kiln-Backups")
+  })
+
+  it("explains the bucket naming requirements when saving", () => {
+    const parsed = backupStorageInputSchema.safeParse({
+      accessKeyId: "key",
+      bucket: "Not_A_Bucket",
+      endpoint: "https://s3.example.com",
+      name: "Backups",
+      region: "us-east-1",
+      secretAccessKey: "secret",
+    })
+
+    assert.isFalse(parsed.success)
+    if (!parsed.success) {
+      assert.strictEqual(
+        parsed.error.issues[0]?.message,
+        "Bucket names must be 3 to 63 characters, start and end with a letter or number, and contain only letters, numbers, periods, or hyphens"
+      )
+      assert.deepEqual(parsed.error.issues[0]?.path, ["bucket"])
+    }
+  })
+})
 
 const storage = [
   backupStorage({ id: "platform", ownerUserId: null }),

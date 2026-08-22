@@ -34,6 +34,7 @@ import {
   backupObjectKey,
   deleteS3BackupPrefix,
   isSafeResticObjectPrefix,
+  RESTIC_OBJECT_PREFIX_ERROR,
   resticRepositoryObjectPrefix,
 } from "@/backups/destinations/s3"
 import { loadBackupStorageCredentialEffect } from "@/backups/destinations/s3"
@@ -2799,16 +2800,26 @@ const refuseIfFinalDeletionInProgress = Effect.fnUntraced(function* (
 function incrementalStorageLocationError(
   storage: BackupStorageKeyRow
 ): string | null {
-  if (!resticS3BucketSchema.safeParse(storage.bucket).success) {
-    return "This destination's bucket cannot be used for incremental backups"
+  const parsedBucket = resticS3BucketSchema.safeParse(storage.bucket)
+  if (!parsedBucket.success) {
+    return incrementalStorageValidationError(
+      parsedBucket.error.issues[0]?.message ?? "The bucket name is invalid"
+    )
   }
-  if (!resticS3RegionSchema.safeParse(storage.region).success) {
-    return "This destination's region cannot be used for incremental backups"
+  const parsedRegion = resticS3RegionSchema.safeParse(storage.region)
+  if (!parsedRegion.success) {
+    return incrementalStorageValidationError(
+      parsedRegion.error.issues[0]?.message ?? "The region is invalid"
+    )
   }
   if (!isSafeResticObjectPrefix(storage.object_prefix)) {
-    return "This destination's object prefix cannot be used for incremental backups"
+    return incrementalStorageValidationError(RESTIC_OBJECT_PREFIX_ERROR)
   }
   return null
+}
+
+function incrementalStorageValidationError(reason: string): string {
+  return `This destination can't be used for incremental backups. ${reason}. Edit the destination and save it again.`
 }
 
 function encryptRepositoryPassword(password: string) {

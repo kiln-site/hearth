@@ -142,8 +142,9 @@ export const backupS3UploadDestinationSchema = z
 
 export const resticS3BucketSchema = z
   .string()
-  .regex(/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/u, {
-    message: "S3 bucket names must follow S3 naming rules",
+  .regex(/^[A-Za-z0-9][A-Za-z0-9.-]{1,61}[A-Za-z0-9]$/u, {
+    message:
+      "Bucket names must be 3 to 63 characters, start and end with a letter or number, and contain only letters, numbers, periods, or hyphens",
   })
 
 export const resticS3RegionSchema = z.string().regex(/^[a-z0-9-]+$/u, {

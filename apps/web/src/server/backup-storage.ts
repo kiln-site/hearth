@@ -3,7 +3,11 @@ import { randomUUID } from "node:crypto"
 import { createServerFn } from "@tanstack/react-start"
 import { z } from "zod"
 
-import { relayIdSchema } from "@workspace/contracts"
+import {
+  relayIdSchema,
+  resticS3BucketSchema,
+  resticS3RegionSchema,
+} from "@workspace/contracts"
 
 import {
   deleteBackupStorageEffect,
@@ -28,10 +32,10 @@ import {
 import { requireAuthenticatedUser } from "@/server/auth"
 
 const backupStorageIdSchema = z.uuid()
-const backupStorageInputSchema = z.strictObject({
+export const backupStorageInputSchema = z.strictObject({
   accessKeyId: z.string().trim().min(1).max(512).optional(),
   allowPrivateNetwork: z.boolean().default(false),
-  bucket: z.string().trim().min(1).max(255),
+  bucket: z.string().trim().pipe(resticS3BucketSchema),
   enabled: z.boolean().default(true),
   endpoint: z.string().trim().min(1).max(2_048),
   forcePathStyle: z.boolean().default(false),
@@ -39,7 +43,7 @@ const backupStorageInputSchema = z.strictObject({
   name: z.string().trim().min(1).max(120),
   objectPrefix: z.string().max(512).default(""),
   platform: z.boolean().default(false),
-  region: z.string().trim().min(1).max(120),
+  region: z.string().trim().pipe(resticS3RegionSchema),
   secretAccessKey: z.string().min(1).max(2_048).optional(),
 })
 

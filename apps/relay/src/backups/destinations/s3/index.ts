@@ -38,27 +38,36 @@ export function s3ResticDriverLocation(
       reason: "The restic S3 repository credentials were not provided to Relay",
     })
   }
-  if (!resticS3BucketSchema.safeParse(location.bucket).success) {
+  const parsedBucket = resticS3BucketSchema.safeParse(location.bucket)
+  if (!parsedBucket.success) {
     throw RelayBackupError.make({
       code: "invalid_restic_repository",
       operation: "restic.repository",
-      reason: "The restic S3 bucket name is invalid",
+      reason:
+        parsedBucket.error.issues[0]?.message ??
+        "The restic S3 bucket name is invalid",
     })
   }
-  if (!resticS3RegionSchema.safeParse(location.region).success) {
+  const parsedRegion = resticS3RegionSchema.safeParse(location.region)
+  if (!parsedRegion.success) {
     throw RelayBackupError.make({
       code: "invalid_restic_repository",
       operation: "restic.repository",
-      reason: "The restic S3 region is invalid",
+      reason:
+        parsedRegion.error.issues[0]?.message ??
+        "The restic S3 region is invalid",
     })
   }
-  if (
-    !resticRepositoryPrefixSchema.safeParse(location.repositoryPrefix).success
-  ) {
+  const parsedPrefix = resticRepositoryPrefixSchema.safeParse(
+    location.repositoryPrefix
+  )
+  if (!parsedPrefix.success) {
     throw RelayBackupError.make({
       code: "invalid_restic_repository",
       operation: "restic.repository",
-      reason: "The restic S3 repository prefix is invalid",
+      reason:
+        parsedPrefix.error.issues[0]?.message ??
+        "The restic S3 repository prefix is invalid",
     })
   }
   return {

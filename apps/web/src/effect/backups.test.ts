@@ -311,7 +311,9 @@ describe("backup limits", () => {
           )
         )
       )
-    ).rejects.toThrow("bucket cannot be used for incremental backups")
+    ).rejects.toThrow(
+      "Bucket names must be 3 to 63 characters, start and end with a letter or number"
+    )
     await expect(
       Effect.runPromise(
         reserveInstanceBackupEffect({
@@ -334,7 +336,9 @@ describe("backup limits", () => {
           )
         )
       )
-    ).rejects.toThrow("region cannot be used for incremental backups")
+    ).rejects.toThrow(
+      "S3 regions must contain only lowercase letters, digits, and hyphens"
+    )
     await expect(
       Effect.runPromise(
         reserveInstanceBackupEffect({
@@ -357,7 +361,9 @@ describe("backup limits", () => {
           )
         )
       )
-    ).rejects.toThrow("object prefix cannot be used for incremental backups")
+    ).rejects.toThrow(
+      "The object prefix can contain only letters, numbers, periods, underscores, slashes, and hyphens"
+    )
   })
 
   it("reserves a single incremental S3 destination with a stored restic prefix", async () => {
@@ -392,7 +398,7 @@ describe("backup limits", () => {
               if (sql.includes("backup_storage")) {
                 return [
                   {
-                    bucket: "kiln-backups",
+                    bucket: "Kiln-Backups",
                     deleting: 0,
                     enabled: 1,
                     endpoint: "https://s3.example.com",
