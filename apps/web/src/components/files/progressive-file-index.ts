@@ -27,7 +27,7 @@ export interface FileIndexStatusSnapshot {
 
 export type FileIndexPathEvent =
   | { entries: ReadonlyArray<RelayFileEntry>; type: "add" }
-  | { directory: string; loading: boolean; type: "directory-loading" }
+  | { directory: string; hasMore: boolean; type: "directory-pagination" }
   | { entries: ReadonlyArray<RelayFileEntry>; type: "reset" }
 
 interface MutableDirectorySnapshot extends FileDirectorySnapshot {
@@ -49,8 +49,7 @@ export class ProgressiveFileIndex {
   readonly #pathListeners = new Set<(event: FileIndexPathEvent) => void>()
   readonly #statusListeners = new Set<() => void>()
   readonly #loads = new Map<string, Promise<void>>()
-  readonly #fullLoads = new Map<string, Promise<void>>()
-  readonly #treeLoadingDirectories = new Map<string, number>()
+  readonly #treePendingDirectories = new Set<string>()
   #disposed = false
   #epoch = 0
   #searchGeneration = 0
@@ -89,8 +88,7 @@ export class ProgressiveFileIndex {
     this.#pathListeners.clear()
     this.#statusListeners.clear()
     this.#loads.clear()
-    this.#fullLoads.clear()
-    this.#treeLoadingDirectories.clear()
+    this.#treePendingDirectories.clear()
   }
 
   refresh(): void {
@@ -101,8 +99,7 @@ export class ProgressiveFileIndex {
     this.#directories.clear()
     this.#knownPaths.clear()
     this.#loads.clear()
-    this.#fullLoads.clear()
-    this.#treeLoadingDirectories.clear()
+    this.#treePendingDirectories.clear()
     this.#setStatus({ ...initialStatus, refreshing: true })
     this.#pathListeners.forEach((listener) =>
       listener({ entries: emptyEntries, type: "reset" })
@@ -123,6 +120,10 @@ export class ProgressiveFileIndex {
 
   getPaths(): ReadonlyArray<string> {
     return [...this.#knownPaths]
+  }
+
+  getTreePendingDirectories(): ReadonlyArray<string> {
+    return [...this.#treePendingDirectories]
   }
 
   addEntry(entry: RelayFileEntry): void {
@@ -165,6 +166,7 @@ export class ProgressiveFileIndex {
     const normalized = normalizeDirectoryPath(directory)
     const existing = this.#directories.get(normalized)
     if (existing) return Promise.resolve()
+    this.#setTreeDirectoryHasMore(normalized, true)
     return this.#loadNextDirectoryPage(normalized)
   }
 
@@ -172,62 +174,8 @@ export class ProgressiveFileIndex {
     const normalized = normalizeDirectoryPath(directory)
     const snapshot = this.#directories.get(normalized)
     if (snapshot?.complete) return Promise.resolve()
-    if (!snapshot?.entries.length)
-      return this.#loadNextDirectoryPage(normalized)
-    const epoch = this.#epoch
-    this.#setTreeDirectoryLoading(normalized, true)
-    return ensuringPromise(
-      () => this.#loadNextDirectoryPage(normalized),
-      () => {
-        if (epoch === this.#epoch) {
-          this.#setTreeDirectoryLoading(normalized, false)
-        }
-      }
-    )
-  }
-
-  loadDirectoryFully(directory: string): Promise<void> {
-    const normalized = normalizeDirectoryPath(directory)
-    const active = this.#fullLoads.get(normalized)
-    if (active) return active
-    const epoch = this.#epoch
-    const load = ensuringPromise(
-      () => this.#loadDirectoryFully(normalized, epoch),
-      () => {
-        if (this.#fullLoads.get(normalized) === load) {
-          this.#fullLoads.delete(normalized)
-        }
-      }
-    )
-    this.#fullLoads.set(normalized, load)
-    return load
-  }
-
-  async #loadDirectoryFully(normalized: string, epoch: number): Promise<void> {
-    await this.ensureDirectory(normalized)
-    if (this.#disposed || epoch !== this.#epoch) return
-    const snapshot = this.#directories.get(normalized)
-    if (!snapshot?.entries.length || snapshot.complete || snapshot.error) return
-    this.#setTreeDirectoryLoading(normalized, true)
-    await ensuringPromise(
-      () => this.#loadRemainingDirectoryPages(normalized, epoch),
-      () => {
-        if (epoch === this.#epoch) {
-          this.#setTreeDirectoryLoading(normalized, false)
-        }
-      }
-    )
-  }
-
-  async #loadRemainingDirectoryPages(
-    directory: string,
-    epoch: number
-  ): Promise<void> {
-    if (this.#disposed || epoch !== this.#epoch) return
-    const current = this.#directories.get(directory)
-    if (!current || current.complete || current.error) return
-    await this.#loadNextDirectoryPage(directory)
-    return this.#loadRemainingDirectoryPages(directory, epoch)
+    this.#setTreeDirectoryHasMore(normalized, true)
+    return this.#loadNextDirectoryPage(normalized)
   }
 
   #loadNextDirectoryPage(directory: string): Promise<void> {
@@ -290,6 +238,7 @@ export class ProgressiveFileIndex {
       this.#applyDirectoryPage(result.success)
       return
     }
+    this.#setTreeDirectoryHasMore(directory, false)
     const snapshot = this.#directories.get(directory)
     this.#setDirectory(directory, {
       complete: false,
@@ -318,6 +267,7 @@ export class ProgressiveFileIndex {
       loading: false,
     })
     this.#discover(page.entries)
+    this.#setTreeDirectoryHasMore(directory, page.cursor !== null)
   }
 
   #discover(entries: ReadonlyArray<RelayFileEntry>): void {
@@ -382,14 +332,15 @@ export class ProgressiveFileIndex {
     this.#statusListeners.forEach((listener) => listener())
   }
 
-  #setTreeDirectoryLoading(directory: string, loading: boolean): void {
-    const current = this.#treeLoadingDirectories.get(directory) ?? 0
-    const next = Math.max(0, current + (loading ? 1 : -1))
-    if (next) this.#treeLoadingDirectories.set(directory, next)
-    else this.#treeLoadingDirectories.delete(directory)
-    if ((current === 0) === (next === 0)) return
+  #setTreeDirectoryHasMore(directory: string, hasMore: boolean): void {
+    const changed = hasMore
+      ? !this.#treePendingDirectories.has(directory)
+      : this.#treePendingDirectories.has(directory)
+    if (!changed) return
+    if (hasMore) this.#treePendingDirectories.add(directory)
+    else this.#treePendingDirectories.delete(directory)
     this.#pathListeners.forEach((listener) =>
-      listener({ directory, loading: next > 0, type: "directory-loading" })
+      listener({ directory, hasMore, type: "directory-pagination" })
     )
   }
 }

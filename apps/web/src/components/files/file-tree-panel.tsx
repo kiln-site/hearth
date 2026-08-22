@@ -68,7 +68,8 @@ const fileTreeMinWidth = 224
 const fileTreeMaxWidth = 480
 const mobileFileDrawerTransitionMs = 200
 const fileTreeLoadingLabel = "Loading files…"
-const fileTreeLoadingFileName = `\u0001${fileTreeLoadingLabel}`
+const fileTreeLoadingSortPrefix = "\uFFFF"
+const fileTreeLoadingFileName = `${fileTreeLoadingSortPrefix}${fileTreeLoadingLabel}`
 
 function fileTreeLoadingPath(directory: string): string {
   return `${normalizeDirectoryPath(directory)}${fileTreeLoadingFileName}`
@@ -102,17 +103,17 @@ const fileTreeLayoutCss = `
     height: 14px;
   }
 
-  [data-type="item"][aria-label="\\1 ${fileTreeLoadingLabel}"] [data-item-section="icon"] {
+  [data-kiln-file-tree-loading="true"] [data-item-section="icon"] {
     display: grid;
     place-items: center;
     color: var(--primary);
   }
 
-  [data-type="item"][aria-label="\\1 ${fileTreeLoadingLabel}"] [data-item-section="icon"] svg {
+  [data-kiln-file-tree-loading="true"] [data-item-section="icon"] svg {
     display: none;
   }
 
-  [data-type="item"][aria-label="\\1 ${fileTreeLoadingLabel}"] [data-item-section="icon"]::before {
+  [data-kiln-file-tree-loading="true"] [data-item-section="icon"]::before {
     width: 12px;
     height: 12px;
     border: 2px solid currentColor;
@@ -122,12 +123,12 @@ const fileTreeLayoutCss = `
     animation: kiln-file-tree-loading-spin 0.8s linear infinite;
   }
 
-  [data-type="item"][aria-label="\\1 ${fileTreeLoadingLabel}"] {
+  [data-kiln-file-tree-loading="true"] {
     color: var(--muted-foreground);
     cursor: progress;
   }
 
-  [data-type="item"][aria-label="\\1 ${fileTreeLoadingLabel}"] [data-item-section="action"] {
+  [data-kiln-file-tree-loading="true"] [data-item-section="action"] {
     display: none;
   }
 
@@ -136,7 +137,7 @@ const fileTreeLayoutCss = `
   }
 
   @media (prefers-reduced-motion: reduce) {
-    [data-type="item"][aria-label="\\1 ${fileTreeLoadingLabel}"] [data-item-section="icon"]::before {
+    [data-kiln-file-tree-loading="true"] [data-item-section="icon"]::before {
       animation: none;
     }
   }
@@ -834,59 +835,131 @@ export function FileTreePanel({
     }
   }, [onFileSelected, onPathChange])
 
-  React.useLayoutEffect(
-    () =>
-      fileIndex.subscribePaths((event) => {
-        if (event.type === "reset") {
-          loadingPlaceholderPaths.current.clear()
-          model.resetPaths([], {
-            initialExpandedPaths: fileTreeParentDirectoryPaths(
-              selectionStore.getSnapshot()
-            ),
-          })
-          return
-        }
-        if (event.type === "directory-loading") {
-          const path = fileTreeLoadingPath(event.directory)
-          if (event.loading) {
-            if (model.getItem(path)) return
-            loadingPlaceholderPaths.current.add(path)
-            model.batch([{ path, type: "add" }])
-            return
-          }
-          if (!loadingPlaceholderPaths.current.delete(path)) return
-          if (model.getItem(path)) model.batch([{ path, type: "remove" }])
-          return
-        }
-        const additions = event.entries.flatMap((entry) => {
-          const replacesPlaceholder = loadingPlaceholderPaths.current.delete(
-            entry.path
-          )
-          return [
-            ...(replacesPlaceholder
-              ? [{ path: entry.path, type: "remove" as const }]
-              : []),
-            ...(!model.getItem(entry.path) || replacesPlaceholder
-              ? [{ path: entry.path, type: "add" as const }]
-              : []),
-          ]
+  React.useLayoutEffect(() => {
+    const applyTreeLoadingState = (directory: string, loading: boolean) => {
+      const path = fileTreeLoadingPath(directory)
+      if (loading) {
+        if (model.getItem(path)) return
+        loadingPlaceholderPaths.current.add(path)
+        model.batch([{ path, type: "add" }])
+        return
+      }
+      if (!loadingPlaceholderPaths.current.delete(path)) return
+      if (model.getItem(path)) model.batch([{ path, type: "remove" }])
+    }
+    const unsubscribe = fileIndex.subscribePaths((event) => {
+      if (event.type === "reset") {
+        loadingPlaceholderPaths.current.clear()
+        model.resetPaths([], {
+          initialExpandedPaths: fileTreeParentDirectoryPaths(
+            selectionStore.getSnapshot()
+          ),
         })
-        if (!additions.length) return
-        model.batch(additions)
-        const selectedPath = selectionStore.getSnapshot()
-        const selected = selectedPath ? model.getItem(selectedPath) : null
-        if (!selected) return
-        for (const parentPath of fileTreeParentDirectoryPaths(selectedPath)) {
-          const parent = model.getItem(parentPath)
-          if (parent && "isExpanded" in parent && !parent.isExpanded()) {
-            parent.expand()
+        return
+      }
+      if (event.type === "directory-pagination") {
+        applyTreeLoadingState(event.directory, event.hasMore)
+        return
+      }
+      const additions = event.entries.flatMap((entry) => {
+        const replacesPlaceholder = loadingPlaceholderPaths.current.delete(
+          entry.path
+        )
+        return [
+          ...(replacesPlaceholder
+            ? [{ path: entry.path, type: "remove" as const }]
+            : []),
+          ...(!model.getItem(entry.path) || replacesPlaceholder
+            ? [{ path: entry.path, type: "add" as const }]
+            : []),
+        ]
+      })
+      if (!additions.length) return
+      model.batch(additions)
+      const selectedPath = selectionStore.getSnapshot()
+      const selected = selectedPath ? model.getItem(selectedPath) : null
+      if (!selected || model.getSelectedPaths().includes(selectedPath)) return
+      for (const parentPath of fileTreeParentDirectoryPaths(selectedPath)) {
+        const parent = model.getItem(parentPath)
+        if (parent && "isExpanded" in parent && !parent.isExpanded()) {
+          parent.expand()
+        }
+      }
+      selected.select()
+      model.scrollToPath(selectedPath, { focus: false, offset: "nearest" })
+    })
+    fileIndex
+      .getTreePendingDirectories()
+      .forEach((directory) => applyTreeLoadingState(directory, true))
+    return unsubscribe
+  }, [fileIndex, model, selectionStore])
+
+  React.useEffect(() => {
+    const shadowRoot =
+      model.getFileTreeContainer()?.shadowRoot ??
+      panelRef.current?.querySelector<HTMLElement>("file-tree-container")
+        ?.shadowRoot
+    if (!shadowRoot) return
+    let loadTimer: number | null = null
+    const loadVisiblePages = () => {
+      loadTimer = null
+      const directories = new Set<string>()
+      for (const row of shadowRoot.querySelectorAll<HTMLElement>(
+        "[data-item-path]"
+      )) {
+        const path = row.dataset.itemPath
+        if (path && loadingPlaceholderPaths.current.has(path)) {
+          directories.add(directoryPath(path))
+        }
+      }
+      directories.forEach(
+        (directory) => void fileIndex.loadMoreDirectory(directory)
+      )
+    }
+    const prepareVisibleRows = () => {
+      let hasLoadingRow = false
+      for (const row of shadowRoot.querySelectorAll<HTMLElement>(
+        "[data-item-path]"
+      )) {
+        const path = row.dataset.itemPath
+        if (!path || !loadingPlaceholderPaths.current.has(path)) {
+          row.removeAttribute("data-kiln-file-tree-loading")
+          continue
+        }
+        hasLoadingRow = true
+        row.dataset.kilnFileTreeLoading = "true"
+        row.setAttribute("aria-label", fileTreeLoadingLabel)
+        const content = row.querySelector('[data-item-section="content"]')
+        if (content) {
+          const walker = document.createTreeWalker(
+            content,
+            NodeFilter.SHOW_TEXT
+          )
+          let text = walker.nextNode()
+          while (text) {
+            const current = text.textContent ?? ""
+            const normalized = current.replaceAll(fileTreeLoadingSortPrefix, "")
+            if (normalized !== current) text.textContent = normalized
+            text = walker.nextNode()
           }
         }
-        selected.select()
-        model.scrollToPath(selectedPath, { focus: false, offset: "nearest" })
-      }),
-    [fileIndex, model, selectionStore]
-  )
+      }
+      if (hasLoadingRow && loadTimer === null) {
+        loadTimer = window.setTimeout(loadVisiblePages, 0)
+      }
+    }
+    const observer = new MutationObserver(prepareVisibleRows)
+    observer.observe(shadowRoot, {
+      characterData: true,
+      childList: true,
+      subtree: true,
+    })
+    prepareVisibleRows()
+    return () => {
+      observer.disconnect()
+      if (loadTimer !== null) window.clearTimeout(loadTimer)
+    }
+  }, [fileIndex, model])
 
   const handleSearchQueryChange = React.useCallback(
     (query: string) => {
@@ -1217,12 +1290,12 @@ export function FileTreePanel({
           className="block size-full min-h-[210px]"
           onPointerDownCapture={(event) => {
             const directory = resolveTreeEventDirectory(event.nativeEvent)
-            if (directory !== null) void fileIndex.loadDirectoryFully(directory)
+            if (directory !== null) void fileIndex.ensureDirectory(directory)
           }}
           onKeyDownCapture={(event) => {
             if (!["ArrowRight", "Enter", " "].includes(event.key)) return
             const directory = resolveTreeEventDirectory(event.nativeEvent)
-            if (directory !== null) void fileIndex.loadDirectoryFully(directory)
+            if (directory !== null) void fileIndex.ensureDirectory(directory)
           }}
           style={
             {
