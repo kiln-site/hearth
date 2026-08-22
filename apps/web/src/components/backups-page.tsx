@@ -22,7 +22,6 @@ import {
   HardDrive,
   History as RotateCcwClock,
   LoaderCircle,
-  ExternalLink,
   Link2,
   Pencil,
   Plus,
@@ -2644,13 +2643,8 @@ const BackupTargetNameAnchor = React.memo(function BackupTargetNameAnchor({
   targetName: string
 }) {
   const className =
-    "inline-flex min-w-0 items-center gap-1.5 text-primary outline-none transition-colors hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring/40"
-  const label = (
-    <>
-      <span className="truncate">{targetName}</span>
-      <ExternalLink className="size-3.5 shrink-0 translate-y-px text-primary/75" />
-    </>
-  )
+    "inline-flex min-w-0 items-center text-primary outline-none transition-colors hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring/40"
+  const label = <span className="truncate">{targetName}</span>
 
   if (targetKind === "instance") {
     return (
